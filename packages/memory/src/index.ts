@@ -136,18 +136,9 @@ export function canonicalJson(value: unknown): string {
 }
 const hash = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
+/** Assumes `scanThreat` already rejected invisible code points; facts also refuse `\r`. */
 const fact = (value: string): string => {
-  for (const char of value) {
-    const c = char.charCodeAt(0);
-    if (
-      (c < 32 && c !== 9 && c !== 10) ||
-      (c >= 0x200b && c <= 0x200f) ||
-      (c >= 0x202a && c <= 0x202e) ||
-      (c >= 0x2060 && c <= 0x2064) ||
-      c === 0xfeff
-    )
-      fail("invalid_input");
-  }
+  if (value.includes("\r")) fail("invalid_input");
   if (!value.trim() || value.includes("\n§\n")) fail("invalid_input");
   return value.trim();
 };

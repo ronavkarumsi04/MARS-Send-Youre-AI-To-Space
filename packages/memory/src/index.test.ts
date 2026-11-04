@@ -472,6 +472,8 @@ test("invalid facts, contexts and failed multi-op batches fail closed", async ()
     "x\u2064y",
     "x\ufeffy",
     "x\u0000y",
+    "x\ry",
+    "x\u00ady",
     "x\n§\ny",
   ])
     await expect(add(s, entry("bad", text))).rejects.toMatchObject({
