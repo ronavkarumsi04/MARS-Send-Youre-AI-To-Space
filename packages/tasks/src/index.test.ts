@@ -445,6 +445,15 @@ describe("@mars/tasks durable store", () => {
       [1, 2],
       [2, 3],
     ]);
+    expect(revisionPayloads.slice(0, 2).map(({ changes }) => changes)).toEqual([
+      { status: { from: "pending", to: "running" } },
+      { status: { from: "running", to: "paused" } },
+    ]);
+    await expect(
+      store.update(context("no-op"), task.task_id, resumed.revision, {
+        status: "running",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
     await store.cancel(context("cancel"), task.task_id);
     const cancelledEvent = (
       await collect(store.events(context(), task.task_id))
