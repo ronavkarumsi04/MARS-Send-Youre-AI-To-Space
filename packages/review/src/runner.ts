@@ -95,21 +95,31 @@ export const REVIEW_LIMITS = {
 } as const;
 
 const ERROR_MESSAGE_CHARS = 200;
+const SNAPSHOT_CHANGED = "Snapshot changed";
+const UNSUPPORTED = "unsupported";
+const SAFE_ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
 /**
- * Log-safe cause of a failure: error name plus a truncated message. JSON
- * `SyntaxError` messages quote the model reply, so only their name is kept.
+ * Log-safe cause of a failure. Only messages built from fixed text
+ * (`InvalidOutput`, `MemoryStoreError`, the runner's own errors) are kept;
+ * provider, skill and I/O messages may quote prompts, replies or paths, so
+ * those log just their name and `code`.
  */
-const describeError = (error: unknown) => ({
-  errorName: error instanceof Error ? error.name : typeof error,
-  ...(error instanceof SyntaxError
-    ? {}
-    : {
-        errorMessage: (error instanceof Error
-          ? error.message
-          : String(error)
-        ).slice(0, ERROR_MESSAGE_CHARS),
-      }),
-});
+const describeError = (error: unknown) => {
+  if (!(error instanceof Error)) return { errorName: typeof error };
+  const code = (error as { code?: unknown }).code;
+  return {
+    errorName: error.name,
+    ...(typeof code === "string" && SAFE_ERROR_CODE.test(code)
+      ? { errorCode: code }
+      : {}),
+    ...(error instanceof InvalidOutput ||
+    error instanceof MemoryStoreError ||
+    error.message === SNAPSHOT_CHANGED ||
+    error.message === UNSUPPORTED
+      ? { errorMessage: error.message.slice(0, ERROR_MESSAGE_CHARS) }
+      : {}),
+  };
+};
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const EXCLUDED =
@@ -357,7 +367,7 @@ export class ReviewRunner {
       ]);
       const skills = await this.deps.skills.list();
       if ((await this.deps.skills.getRevision()) !== skillsRevision)
-        throw new Error("Snapshot changed");
+        throw new Error(SNAPSHOT_CHANGED);
       const prompt = JSON.stringify({
         untrusted_evidence: true,
         transcript: turn.transcript,
@@ -405,7 +415,7 @@ export class ReviewRunner {
             memory.revision ||
           (await this.deps.skills.getRevision()) !== skillsRevision
         )
-          throw new Error("Snapshot changed");
+          throw new Error(SNAPSHOT_CHANGED);
         signal.throwIfAborted();
         if (proposal.tool === "memory.submitProposal") {
           const submitted = await this.deps.memory.submitProposal(
@@ -505,14 +515,14 @@ export class ReviewRunner {
     for (const proposal of result.proposals.splice(0)) {
       try {
         if (proposal.store === "memory") {
-          if (!this.deps.memory.rejectProposal) throw new Error("unsupported");
+          if (!this.deps.memory.rejectProposal) throw new Error(UNSUPPORTED);
           await this.deps.memory.rejectProposal(
             this.deps.context,
             proposal.id,
             reason,
           );
         } else {
-          if (!this.deps.skills.reject) throw new Error("unsupported");
+          if (!this.deps.skills.reject) throw new Error(UNSUPPORTED);
           await this.deps.skills.reject(proposal.id, reason, {
             actor: "@mars/review",
             source: "background_review",

@@ -481,8 +481,9 @@ test("a review is all-or-nothing: earlier proposals are withdrawn when a later o
   expect(log().at(-2)?.remaining).toEqual([]);
   expect(log().at(-1)).toMatchObject({
     errorName: "SkillError",
-    errorMessage: expect.any(String),
+    errorCode: "exists",
   });
+  expect(log().at(-1)).not.toHaveProperty("errorMessage");
 });
 
 test("failure logs name the cause: provider errors and failed withdrawals", async () => {
@@ -495,8 +496,8 @@ test("failure logs name the cause: provider errors and failed withdrawals", asyn
   expect(provider.log().at(-1)).toMatchObject({
     event: "error",
     errorName: "TypeError",
-    errorMessage: "x".repeat(200),
   });
+  expect(JSON.stringify(provider.log())).not.toContain("xxx");
 
   const unparsable = setup(fakeModel(() => '{"proposals": secretReplyText}'));
   expect((await unparsable.runner.reviewNow(turn())).status).toBe("rejected");
@@ -518,7 +519,9 @@ test("failure logs name the cause: provider errors and failed withdrawals", asyn
       snapshot: (ctx) => memory.snapshot(ctx),
       submitProposal: (ctx, input) => memory.submitProposal(ctx, input),
       rejectProposal: async () => {
-        throw new Error("store offline");
+        throw Object.assign(new Error("ENOSPC: /private/state/root"), {
+          code: "ENOSPC",
+        });
       },
     },
     skills,
@@ -537,7 +540,7 @@ test("failure logs name the cause: provider errors and failed withdrawals", asyn
     {
       proposal: result.proposals[0],
       errorName: "Error",
-      errorMessage: "store offline",
+      errorCode: "ENOSPC",
     },
   ]);
 });
