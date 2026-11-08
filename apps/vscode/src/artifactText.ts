@@ -10,9 +10,9 @@ export type ArtifactText =
 
 /**
  * The one text policy for artifacts, shared by the side panel and the
- * editor: only TEXT_TYPES media types are text, decoded as strict UTF-8 over
- * the first `maxBytes`; a cut that splits a character falls back to lossy
- * decoding, while invalid bytes inside an uncut artifact mean it is not text.
+ * editor: only TEXT_TYPES media types are text, and the first `maxBytes` must
+ * be strict UTF-8. A character split by the `maxBytes` cut is dropped; any
+ * other malformed byte means the artifact is not text.
  */
 export function decodeArtifactText(
   artifact: Pick<VerifiedArtifact, "media_type" | "bytes">,
@@ -22,17 +22,13 @@ export function decodeArtifactText(
   const truncated = artifact.bytes.byteLength > maxBytes;
   const slice = artifact.bytes.subarray(0, maxBytes);
   try {
-    return {
-      kind: "text",
-      text: new TextDecoder("utf-8", { fatal: true }).decode(slice),
-      truncated,
-    };
+    // `stream` leaves only a sequence cut off at the end pending; every
+    // malformed byte before the cut still throws.
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(slice, {
+      stream: truncated,
+    });
+    return { kind: "text", text, truncated };
   } catch {
-    if (!truncated) return { kind: "invalid_utf8" };
-    return {
-      kind: "text",
-      text: new TextDecoder("utf-8").decode(slice),
-      truncated,
-    };
+    return { kind: "invalid_utf8" };
   }
 }

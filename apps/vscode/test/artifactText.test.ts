@@ -42,11 +42,11 @@ describe("decodeArtifactText", () => {
     });
   });
 
-  test("a cut through a multi-byte character falls back to lossy decoding", () => {
+  test("a character split by the cut is dropped, not replaced", () => {
     const bytes = utf8("ab\u00e9");
     expect(decodeArtifactText(artifact("text/plain", bytes), 3)).toEqual({
       kind: "text",
-      text: "ab\ufffd",
+      text: "ab",
       truncated: true,
     });
     expect(decodeArtifactText(artifact("text/plain", bytes), 2)).toEqual({
@@ -54,6 +54,33 @@ describe("decodeArtifactText", () => {
       text: "ab",
       truncated: true,
     });
+    const emoji = utf8("a\u{1F600}b");
+    for (const cut of [2, 3, 4])
+      expect(decodeArtifactText(artifact("text/plain", emoji), cut)).toEqual({
+        kind: "text",
+        text: "a",
+        truncated: true,
+      });
+  });
+
+  test("malformed bytes before the cut are not text even when truncated", () => {
+    for (const bytes of [
+      Uint8Array.of(0x61, 0xff, 0x62, 0x63, 0x64),
+      Uint8Array.of(0x61, 0xc3, 0x28, 0x62, 0x63),
+      Uint8Array.of(0x61, 0xed, 0xa0, 0x80, 0x62),
+      Uint8Array.of(0x61, 0x62, 0xff, 0x63),
+    ])
+      expect(decodeArtifactText(artifact("text/plain", bytes), 3)).toEqual({
+        kind: "invalid_utf8",
+      });
+  });
+
+  test("an uncut artifact ending in a partial character is not text", () => {
+    expect(
+      decodeArtifactText(
+        artifact("text/plain", utf8("ab\u00e9").subarray(0, 3)),
+      ),
+    ).toEqual({ kind: "invalid_utf8" });
   });
 });
 
@@ -82,7 +109,13 @@ describe("artifactView", () => {
       byte_length: big.byteLength,
       final_text: true,
     });
-    expect(view.text?.endsWith("a\ufffd")).toBe(true);
-    expect(view.text?.length).toBe(256 * 1024);
+    expect(view.text).toBe("a".repeat(256 * 1024 - 1));
+    const corrupt = new Uint8Array(256 * 1024 + 1).fill(0x61);
+    corrupt[10] = 0xff;
+    expect(artifactView(artifact("text/plain", corrupt), false)).toMatchObject({
+      text: null,
+      truncated: false,
+      note: "Artifact is not valid UTF-8.",
+    });
   });
 });
