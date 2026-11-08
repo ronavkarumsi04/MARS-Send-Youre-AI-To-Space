@@ -25,6 +25,8 @@ export interface FixtureOptions {
   journal?: "available" | "unavailable";
   large?: boolean;
   status?: Task["status"];
+  /** Read methods that answer with this error instead of their fixture result. */
+  failures?: Partial<Record<RpcBody["method"], SessionRpcError>>;
 }
 
 const platform = (name: string) =>
@@ -77,7 +79,11 @@ function demoSpecs(): FixtureEventSpec[] {
   ].filter((spec): spec is FixtureEventSpec => spec !== undefined);
 }
 
-function ref(id: string, bytes: Uint8Array, media_type: string): ArtifactRef {
+export function ref(
+  id: string,
+  bytes: Uint8Array,
+  media_type: string,
+): ArtifactRef {
   return {
     artifact_id: id,
     sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -164,6 +170,8 @@ export function fixtureWorkbench(
   };
   const transport: SessionTransport = async (body) => {
     sent.push(structuredClone(body));
+    const failure = options.failures?.[body.method];
+    if (failure) throw failure;
     const params = body.params;
     switch (body.method) {
       case "workbench.describe":
