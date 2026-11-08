@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import type { RuntimeWatch } from "@mars/execution";
 import { z } from "zod";
 import { type CliResult, type CliRunner, createCliRunner } from "./cli";
@@ -132,14 +133,6 @@ export class WatchPolicyError extends Error {
     super(message);
     this.name = "WatchPolicyError";
   }
-}
-
-function inside(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return (
-    path === "" ||
-    (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`))
-  );
 }
 
 /** Truncates to at most `max` characters, ellipsis included. */
@@ -438,7 +431,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
     doctor,
     toolsFor(binding) {
       const cwd = resolve(binding.cwd);
-      if (inside(cwd, dataRoot) || inside(dataRoot, cwd))
+      if (isInsideOrEqual(cwd, dataRoot) || isInsideOrEqual(dataRoot, cwd))
         throw new Error(
           "watch dataRoot must be a host-private directory outside the task workspace",
         );
@@ -502,7 +495,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
             `${what} does not exist inside the task workspace.`,
           );
         }
-        if (!inside(cwd, real) && !inside(taskRoot, real))
+        if (!isInsideOrEqual(cwd, real) && !isInsideOrEqual(taskRoot, real))
           throw new WatchPolicyError(
             `${what} resolves outside the task workspace; only workspace files and this task's watch-skill artifacts may be used.`,
           );
@@ -1243,7 +1236,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
           const lines = records.length
             ? records.map(
                 (item, index) =>
-                  `${index + 1}. ${item.kind} ${item.tool} · verdict ${item.verdict} · assurance ${item.assurance} · ${item.verified ? "VERIFIED" : item.advisory ? "advisory" : "not verified"}${item.loop_id ? ` · loop ${item.loop_id}${item.iteration !== undefined ? ` iteration ${item.iteration}` : ""}` : ""}${item.run_id ? ` · run ${item.run_id}` : ""}${item.contract_id ? ` · contract ${item.contract_id}` : ""} · ${item.recorded_at}\n   ${clip(item.summary, 512)}`,
+                  `${index + 1}. ${item.kind} ${item.tool} · verdict ${item.verdict} · assurance ${item.assurance} · ${item.verified ? "VERIFIED" : item.advisory ? "advisory" : "not verified"}${item.loop_id ? ` · loop ${item.loop_id}${item.iteration !== undefined ? ` iteration ${item.iteration}` : ""}` : ""}${item.run_id ? ` · run ${item.run_id}` : ""}${item.contract_id ? ` · contract ${item.contract_id}` : ""}${item.binding_error ? ` · binding unavailable (${item.binding_error}): not bound to a workspace revision or diff` : ""} · ${item.recorded_at}\n   ${clip(item.summary, 512)}`,
               )
             : [
                 "No watch-skill evidence has been recorded for this task.",

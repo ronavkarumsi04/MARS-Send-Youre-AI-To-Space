@@ -3,6 +3,7 @@ import type { SkillLifecycleService, SkillRecord } from "@mars/contracts";
 import { MAX_RUNTIME_INSTRUCTION_LENGTH } from "@mars/execution";
 import { z } from "zod";
 import { serializedBytes } from "./memory-context";
+import { untrustedText } from "./untrusted-render";
 
 export type WorkbenchSkills = Pick<
   SkillLifecycleService,
@@ -34,7 +35,7 @@ const STATUS_ORDER: Record<SkillRecord["status"], number> = {
 
 /** One skill as the model sees it: a heading plus bounded content, never raw files. */
 function renderSkill(skill: SkillRecord): string {
-  const name = skill.name.replaceAll(/[\r\n]+/g, " ").trim();
+  const name = untrustedText(skill.name);
   if (!name || name.length > MAX_SKILL_NAME_LENGTH)
     throw new Error("Invalid skill name.");
   const content =

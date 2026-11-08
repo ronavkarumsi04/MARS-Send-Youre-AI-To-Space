@@ -231,24 +231,25 @@ const DEFAULT_PAGE = 20;
 const MAX_PAGE = 200;
 export const MAX_SEARCH_QUERY_CHARS = 200;
 export const MAX_SEARCH_HITS = 50;
-const EXCERPT_CHARS = 80;
-const CURSOR_PREFIX = "seq:";
+export const EXCERPT_CHARS = 80;
+export const CURSOR_PREFIX = "seq:";
 
-function excerpt(body: string): string {
-  const line = body.replace(/\s+/g, " ").trim();
-  return line.length > EXCERPT_CHARS
-    ? `${line.slice(0, EXCERPT_CHARS)}…`
-    : line;
+/** One-line preview of a body, at most `EXCERPT_CHARS` long including the ellipsis. */
+export function excerpt(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat.length <= EXCERPT_CHARS
+    ? flat
+    : `${flat.slice(0, EXCERPT_CHARS - 1)}…`;
 }
 
-function encodeCursor(sequence: number): string {
+export function encodeCursor(sequence: number): string {
   return `${CURSOR_PREFIX}${sequence}`;
 }
 
-function decodeCursor(cursor: string): number | null {
+export function decodeCursor(cursor: string): number | null {
   if (!cursor.startsWith(CURSOR_PREFIX)) return null;
-  const value = Number(cursor.slice(CURSOR_PREFIX.length));
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
+  const n = Number(cursor.slice(CURSOR_PREFIX.length));
+  return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
 /** Fixed key order so equal references always serialize identically. */

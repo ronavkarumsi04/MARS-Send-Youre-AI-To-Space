@@ -921,6 +921,26 @@ describe("review regressions", () => {
     expect(reported).toEqual([600]);
   });
 
+  test("an unknown model cost is refused before the call, not treated as free", async () => {
+    const model = fakeModel({ plan: PLAN, extracts: EXTRACTS });
+    const { instance, logs } = worker({
+      model: { ...model.gateway, estimateCostUsd: () => null },
+    });
+    await instance.run(makeInput(), fakeContext().context);
+    expect(model.purposes).toEqual([]);
+    const skipped = logs.filter((e) => e.event === "model_skipped");
+    expect(skipped.length).toBeGreaterThan(0);
+    expect(skipped.every((e) => e.detail.reason === "unknown_cost")).toBe(true);
+  });
+
+  test("a gateway without an estimator is admitted as free", async () => {
+    const model = fakeModel({ plan: PLAN, extracts: EXTRACTS });
+    const { instance, logs } = worker({ model: model.gateway });
+    await instance.run(makeInput(), fakeContext().context);
+    expect(model.purposes[0]).toBe("plan");
+    expect(logs.some((e) => e.event === "model_skipped")).toBe(false);
+  });
+
   test("retries start from the usage already reported to the control plane", async () => {
     const model = fakeModel({ plan: PLAN, extracts: EXTRACTS });
     const { instance, net, logs } = worker({ model: model.gateway });

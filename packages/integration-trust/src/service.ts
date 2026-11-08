@@ -107,6 +107,8 @@ export interface IntegrationTrustOptions {
   authorizer: HostApprovalAuthorizer;
   probe: EvidenceProbe;
   clock?: () => Date;
+  /** Called when the gate cannot record a denial/failure audit event. Must not throw. */
+  onAuditFailure?: (error: unknown) => void;
   policy?: {
     maxEvidenceAgeMs?: number;
     maxGrantTtlMs?: number;
@@ -669,10 +671,15 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
               ),
             ]);
           }
-        } catch {}
+        } catch (auditError) {
+          try {
+            const reported: unknown = options.onAuditFailure?.(auditError);
+            if (reported instanceof Promise) reported.catch(() => {});
+          } catch {}
+        }
       }
       if (dispatched) throw error;
-      throw new IntegrationTrustError(code);
+      throw new IntegrationTrustError(code, { cause: error });
     }
   }
   const gate: IntegrationGate = {

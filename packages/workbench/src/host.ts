@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   type ChildLaunch,
   type ChildRunner,
@@ -18,6 +18,7 @@ import {
   CollaborationError,
   createChildRunner,
   createOhMyPiChildAdapter,
+  isTerminalChildState,
 } from "@mars/collaboration";
 import type { RepositoryMapProvider } from "@mars/context";
 import type {
@@ -34,6 +35,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  isTerminalTaskStatus,
   JournalEntryIdsSchema,
   REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
   RequiredCheckSchema,
@@ -44,6 +46,7 @@ import {
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
 } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import {
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
@@ -67,7 +70,7 @@ import {
   OMNIROUTE_PROVIDER_ID,
 } from "@mars/providers-omniroute";
 import type { Turn } from "@mars/review";
-import type { DurableTaskStore } from "@mars/tasks";
+import type { AppendEventInput, DurableTaskStore } from "@mars/tasks";
 import {
   WATCH_EVIDENCE_PRODUCER,
   type WatchEvidenceRecord,
@@ -370,6 +373,33 @@ function parseEvidenceRecord(bytes: Uint8Array): WatchEvidenceRecord | null {
   return result.success ? result.data : null;
 }
 
+export const WORKBENCH_PACKAGE_VERSION = "0.0.1";
+const WORKBENCH_PRODUCER = "@mars/workbench";
+
+function workbenchEvent(
+  payload: unknown,
+  runId: string = randomUUID(),
+  extra: Pick<AppendEventInput, "source_event_ids" | "usage"> = {},
+): AppendEventInput {
+  return {
+    event_type: "tool.completed",
+    producer: WORKBENCH_PRODUCER,
+    run_id: runId,
+    versions: [
+      { component: WORKBENCH_PRODUCER, revision: WORKBENCH_PACKAGE_VERSION },
+    ],
+    ...extra,
+    payload,
+  };
+}
+
+/** The `code` property of a thrown value, whatever its shape. */
+function errorCodeOf(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : undefined;
+}
+
 function internalContext(scope: Scope): RequestContext {
   return { schema_version: 1, scope, request_id: randomUUID() };
 }
@@ -385,14 +415,6 @@ function scopeKey(scope: Scope, taskId: string): string {
       ]),
     )
     .digest("hex");
-}
-
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel === "" ||
-    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
-  );
 }
 
 export async function createWorkbenchHost(
@@ -592,7 +614,7 @@ export async function createWorkbenchHost(
   };
   const readLaunch = async (task: Task): Promise<Launch> => {
     const dir = taskState(task);
-    if (!inside(root, dir) || (await realpath(dir)) !== dir)
+    if (!isInsideOrEqual(root, dir) || (await realpath(dir)) !== dir)
       throw new WorkbenchError("not_found");
     const file = await open(
       join(dir, "launch.json"),
@@ -724,7 +746,7 @@ export async function createWorkbenchHost(
       if (event.payload.artifact_id === ref.artifact_id) return true;
       if (
         event.event_type === "tool.completed" &&
-        event.producer === "@mars/workbench"
+        event.producer === WORKBENCH_PRODUCER
       ) {
         const bytes = await options.store.artifacts.get(context, event.payload);
         const payload = z
@@ -797,7 +819,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "task.updated" &&
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -817,7 +839,7 @@ export async function createWorkbenchHost(
           steering_event_ids: z.array(z.string()),
         })
         .safeParse(payload);
-      if (event.producer === "@mars/workbench" && result.success) {
+      if (event.producer === WORKBENCH_PRODUCER && result.success) {
         for (const id of result.data.steering_event_ids) applied.add(id);
         input += event.usage?.input_tokens ?? 0;
         output += event.usage?.output_tokens ?? 0;
@@ -837,29 +859,35 @@ export async function createWorkbenchHost(
   ) => {
     const context = internalContext(options.scope);
     const previous = await runtimeResults(context, task.task_id);
-    await options.store.appendEvent(context, task.task_id, {
-      event_type: "tool.completed",
-      producer: "@mars/workbench",
-      run_id: randomUUID(),
-      versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-      source_event_ids: steeringEventIds,
-      payload: {
-        operation: "runtime.result",
-        status: outcome.status,
-        steering_event_ids: steeringEventIds,
-      },
-      usage: {
-        input_tokens: Math.max(0, outcome.usage.input_tokens - previous.input),
-        output_tokens: Math.max(
-          0,
-          outcome.usage.output_tokens - previous.output,
-        ),
-        cost_usd:
-          options.registry.getModel(runtime.modelId)?.pricing.free === true
-            ? 0
-            : null,
-      },
-    });
+    await options.store.appendEvent(
+      context,
+      task.task_id,
+      workbenchEvent(
+        {
+          operation: "runtime.result",
+          status: outcome.status,
+          steering_event_ids: steeringEventIds,
+        },
+        randomUUID(),
+        {
+          source_event_ids: steeringEventIds,
+          usage: {
+            input_tokens: Math.max(
+              0,
+              outcome.usage.input_tokens - previous.input,
+            ),
+            output_tokens: Math.max(
+              0,
+              outcome.usage.output_tokens - previous.output,
+            ),
+            cost_usd:
+              options.registry.getModel(runtime.modelId)?.pricing.free === true
+                ? 0
+                : null,
+          },
+        },
+      ),
+    );
   };
   /** Usage already mirrored into task events, and the last recorded state, per child. */
   const childResults = async (context: RequestContext, taskId: string) => {
@@ -870,7 +898,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "tool.completed" ||
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -1000,12 +1028,6 @@ export async function createWorkbenchHost(
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
   const sweepRooms = new Map<string, FrozenCollaboration>();
-  const TERMINAL_CHILD_STATES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "expired",
-  ]);
   /**
    * Mirrors the room's children into the parent task's durable timeline from
    * the collaboration store's charged usage (the authority for budgets, which
@@ -1051,7 +1073,7 @@ export async function createWorkbenchHost(
             ),
             cost_usd: Math.max(0, child.usage.usd - previous.usd),
           };
-          const final = TERMINAL_CHILD_STATES.has(child.state);
+          const final = isTerminalChildState(child.state);
           if (!final) settled = false;
           const terminal = final && previous.state !== child.state;
           if (
@@ -1063,26 +1085,27 @@ export async function createWorkbenchHost(
             continue;
           const childTaskId = `${taskId}.child.${child.agent_id}`;
           const launch = childLaunches.get(childTaskId);
-          await options.store.appendEvent(context, taskId, {
-            event_type: "tool.completed",
-            producer: "@mars/workbench",
-            run_id: randomUUID(),
-            versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-            payload: {
-              operation: "child.result",
-              child_task_id: childTaskId,
-              child_agent_id: child.agent_id,
-              role_label: child.role_label,
-              task_revision: child.task_revision,
-              attempt: launch?.attempt ?? null,
-              status: child.state,
-              model_id: launch?.model_id ?? null,
-              routing: await recallChildRouting(childTaskId),
-              reviewer_independent:
-                (await loadTaskModels(taskId)).verdicts[childTaskId] ?? null,
-            },
-            usage: delta,
-          });
+          await options.store.appendEvent(
+            context,
+            taskId,
+            workbenchEvent(
+              {
+                operation: "child.result",
+                child_task_id: childTaskId,
+                child_agent_id: child.agent_id,
+                role_label: child.role_label,
+                task_revision: child.task_revision,
+                attempt: launch?.attempt ?? null,
+                status: child.state,
+                model_id: launch?.model_id ?? null,
+                routing: await recallChildRouting(childTaskId),
+                reviewer_independent:
+                  (await loadTaskModels(taskId)).verdicts[childTaskId] ?? null,
+              },
+              randomUUID(),
+              { usage: delta },
+            ),
+          );
           if (final) {
             childLaunches.delete(childTaskId);
             await forgetChildRouting(childTaskId);
@@ -1098,11 +1121,7 @@ export async function createWorkbenchHost(
           .inspect(context, taskId)
           .then((task) => task.status)
           .catch(() => null);
-        if (
-          status === "completed" ||
-          status === "failed" ||
-          status === "cancelled"
-        )
+        if (status !== null && isTerminalTaskStatus(status))
           await forgetTaskModels(taskId);
       }
     };
@@ -1284,13 +1303,11 @@ export async function createWorkbenchHost(
     if (textual) diagnostics.push(textual);
     const persist = async (record: VerificationEvidenceRecord) => {
       await options.store
-        .appendEvent(context, task.task_id, {
-          event_type: "tool.completed",
-          producer: "@mars/workbench",
-          run_id: runtime.sessionId,
-          versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-          payload: record,
-        })
+        .appendEvent(
+          context,
+          task.task_id,
+          workbenchEvent(record, runtime.sessionId),
+        )
         .catch(() => undefined);
       return record;
     };
@@ -1351,8 +1368,7 @@ export async function createWorkbenchHost(
           reason = `${error.message}: ${check.path}`;
         } else if (
           error instanceof Error &&
-          "code" in error &&
-          error.code === "not_found"
+          errorCodeOf(error) === "not_found"
         ) {
           status = "failed";
           reason = `Required file missing: ${check.path}`;
@@ -1420,7 +1436,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "tool.completed" ||
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -1477,13 +1493,14 @@ export async function createWorkbenchHost(
             await options.memory.indexJournal(context, journal);
           } catch {
             await options.store
-              .appendEvent(context, task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: runtime.sessionId,
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: { operation: "memory.index", status: "unavailable" },
-              })
+              .appendEvent(
+                context,
+                task.task_id,
+                workbenchEvent(
+                  { operation: "memory.index", status: "unavailable" },
+                  runtime.sessionId,
+                ),
+              )
               .catch(() => undefined);
           }
         }
@@ -1635,12 +1652,7 @@ export async function createWorkbenchHost(
     try {
       return options.conventions?.commands?.expand(request) ?? null;
     } catch (error) {
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error as { code: unknown }).code === "too-large"
-      )
+      if (errorCodeOf(error) === "too-large")
         throw new WorkbenchError("too_large");
       throw error;
     }
@@ -1685,18 +1697,16 @@ export async function createWorkbenchHost(
     );
     if (taskId && results.length > 0)
       await options.store
-        .appendEvent(context, taskId, {
-          event_type: "tool.completed",
-          producer: "@mars/workbench",
-          run_id: randomUUID(),
-          versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-          payload: {
+        .appendEvent(
+          context,
+          taskId,
+          workbenchEvent({
             operation: "hook.completed",
             event,
             ...(hookContext.tool ? { tool: hookContext.tool } : {}),
             results: results.map(hookResultRecord),
-          },
-        })
+          }),
+        )
         .catch(() => undefined);
     if (event === "pre-tool" && results.some((result) => result.blocked))
       throw new Error(hookBlockMessage(results));
@@ -1839,11 +1849,7 @@ export async function createWorkbenchHost(
       if (writePaths.length > 0 && !withinClaimedPaths(path, writePaths))
         throw new WorkbenchError("forbidden");
     };
-    const notFound = (error: unknown) =>
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error as { code: unknown }).code === "not_found";
+    const notFound = (error: unknown) => errorCodeOf(error) === "not_found";
     const readText = async (path: string): Promise<string | null> => {
       const context = await authorize();
       let ref: ArtifactRef;
@@ -1885,12 +1891,8 @@ export async function createWorkbenchHost(
           return "file" as const;
         } catch (error) {
           if (notFound(error)) return null;
-          const code =
-            typeof error === "object" && error !== null && "code" in error
-              ? (error as { code: unknown }).code
-              : undefined;
           // A file too large to read still exists and can be deleted or moved.
-          if (code === "limit_exceeded") return "file" as const;
+          if (errorCodeOf(error) === "limit_exceeded") return "file" as const;
           throw error;
         }
       },
@@ -2493,13 +2495,14 @@ export async function createWorkbenchHost(
           } catch {
             repositoryMap = undefined;
             await options.store
-              .appendEvent(internalContext(options.scope), task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: randomUUID(),
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: { operation: "context.map", status: "unavailable" },
-              })
+              .appendEvent(
+                internalContext(options.scope),
+                task.task_id,
+                workbenchEvent({
+                  operation: "context.map",
+                  status: "unavailable",
+                }),
+              )
               .catch(() => undefined);
           }
         }
@@ -2633,12 +2636,10 @@ export async function createWorkbenchHost(
             Boolean(foundInstructions) && !instructions;
           if (expanded || omittedInstructions)
             await options.store
-              .appendEvent(internalContext(options.scope), task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: randomUUID(),
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: {
+              .appendEvent(
+                internalContext(options.scope),
+                task.task_id,
+                workbenchEvent({
                   operation: "conventions.applied",
                   ...(expanded ? { command: expanded.name } : {}),
                   instructions: instructions
@@ -2646,8 +2647,8 @@ export async function createWorkbenchHost(
                     : foundInstructions
                       ? "omitted"
                       : "none",
-                },
-              })
+                }),
+              )
               .catch(() => undefined);
           await dispatchHooks(
             task.task_id,
@@ -2909,6 +2910,9 @@ export async function createWorkbenchHost(
             record.workspace_id !== workspace.workspace_id ||
             record.workspace_revision !== workspace.revision ||
             record.diff_sha256 !== digest,
+          ...(record.binding_error === undefined
+            ? {}
+            : { binding_error: record.binding_error }),
         });
         if (records.length > MAX_EVIDENCE_RECORDS) records.shift();
       }
@@ -2927,13 +2931,11 @@ export async function createWorkbenchHost(
         await options.workspace.checkpoint(context, workspace),
       );
       await options.store.artifacts.get(context, checkpoint.artifact);
-      await options.store.appendEvent(internalContext(options.scope), taskId, {
-        event_type: "tool.completed",
-        run_id: randomUUID(),
-        producer: "@mars/workbench",
-        versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-        payload: { operation: "workspace.checkpoint", checkpoint },
-      });
+      await options.store.appendEvent(
+        internalContext(options.scope),
+        taskId,
+        workbenchEvent({ operation: "workspace.checkpoint", checkpoint }),
+      );
       return checkpoint;
     },
     async verification(context, taskId): Promise<VerificationView> {
@@ -2976,7 +2978,7 @@ export async function createWorkbenchHost(
       for await (const event of options.store.events(context, taskId)) {
         if (
           event.event_type !== "tool.completed" ||
-          event.producer !== "@mars/workbench"
+          event.producer !== WORKBENCH_PRODUCER
         )
           continue;
         const bytes = await options.store.artifacts.get(context, event.payload);
