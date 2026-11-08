@@ -7,8 +7,9 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Task } from "@mars/contracts";
+import { isStrictlyInside } from "@mars/contracts/path-containment";
 import {
   openRuntimeSession,
   type RuntimeSession,
@@ -68,16 +69,6 @@ export interface OhMyPiAdapterOptions {
   watchFor?(launch: ChildLaunch, cwd: string): RuntimeWatch | undefined;
 }
 
-function inside(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return (
-    path !== "" &&
-    !isAbsolute(path) &&
-    path !== ".." &&
-    !path.startsWith(`..${sep}`)
-  );
-}
-
 function secureModelCheck(
   launch: ChildLaunch,
   registry: ModelProviderRegistry,
@@ -125,7 +116,7 @@ async function childStateDirectory(
   await chmod(absoluteRoot, 0o700);
   const root = await realpath(absoluteRoot);
   const cwd = await realpath(workspace);
-  if (root === cwd || inside(cwd, root))
+  if (root === cwd || isStrictlyInside(cwd, root))
     throw new CollaborationError(
       "forbidden",
       "Adapter state must be outside the workspace",
@@ -140,7 +131,7 @@ async function childStateDirectory(
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const resolved = await realpath(directory);
-  if (!inside(root, resolved))
+  if (!isStrictlyInside(root, resolved))
     throw new CollaborationError("forbidden", "Adapter state path is invalid");
   return { root, directory: resolved };
 }
@@ -181,7 +172,7 @@ async function usageFromJournal(
   try {
     const file = await realpath(sessionRef);
     const root = await realpath(stateRoot);
-    if (!inside(root, file)) return null;
+    if (!isStrictlyInside(root, file)) return null;
     manager = await SessionManager.open(file, dirname(file));
     const entries = manager.getEntries();
     const budgetEntry = entries
@@ -306,7 +297,7 @@ export function createOhMyPiChildAdapter(
       }
       cancelled = checkpoint();
       if (cancelled) return cancelled;
-      if (sessionFile && !inside(state.directory, sessionFile))
+      if (sessionFile && !isStrictlyInside(state.directory, sessionFile))
         throw new CollaborationError(
           "forbidden",
           "Session journal is outside child state",

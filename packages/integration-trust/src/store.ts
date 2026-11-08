@@ -8,8 +8,9 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ScopeSchema } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
 import { canonicalJSON, sha256 } from "./canonical";
 import { fail, IntegrationTrustError } from "./errors";
@@ -97,10 +98,6 @@ async function resolved(path: string): Promise<string> {
     return join(await resolved(parent), path.slice(parent.length));
   }
 }
-function inside(a: string, b: string) {
-  const r = relative(a, b);
-  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-}
 export class FileTrustStore implements TrustStore {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
@@ -112,7 +109,8 @@ export class FileTrustStore implements TrustStore {
     const dir = await resolved(directory);
     for (const root of workspaceRoots) {
       const r = await realpath(root);
-      if (inside(r, dir) || inside(dir, r)) fail("store_location_unsafe");
+      if (isInsideOrEqual(r, dir) || isInsideOrEqual(dir, r))
+        fail("store_location_unsafe");
     }
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await this.mode(directory, 0o700);

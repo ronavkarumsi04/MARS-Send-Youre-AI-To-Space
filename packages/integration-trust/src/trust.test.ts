@@ -800,7 +800,11 @@ test("workspace location and symlink into workspace rejected", async () => {
   const root = await mkdtemp(join(tmpdir(), "trust-")),
     workspace = join(root, "workspace");
   await mkdir(workspace);
-  for (const directory of [join(workspace, "store"), root])
+  for (const directory of [
+    join(workspace, "store"),
+    join(workspace, "..store"),
+    root,
+  ])
     await expect(
       new FileTrustStore({ directory, workspaceRoots: [workspace] }).load(),
     ).rejects.toMatchObject({ code: "store_location_unsafe" });
