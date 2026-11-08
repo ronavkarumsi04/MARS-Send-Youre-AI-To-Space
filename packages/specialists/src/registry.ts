@@ -2449,6 +2449,10 @@ export class SpecialistRegistry implements ModelRegistry {
         ? "intended_specialist_ineligible"
         : "no_covering_specialist";
     const chainRecords: Array<{ ref: string; reasons: ReasonCode[] }> = [];
+    const rejectInChain = (ref: string, reasons: ReasonCode[]) => {
+      chainRecords.push({ ref, reasons });
+      rejected.push({ ref, reasons });
+    };
     const visited = new Set<string>();
     let selectedFallback: SelectedTarget | null = null;
     let fallbackFrom: string | null = null;
@@ -2467,14 +2471,9 @@ export class SpecialistRegistry implements ModelRegistry {
         );
         if (resolved.error) {
           const code = resolved.error as ReasonCode;
-          chainRecords.push({
-            ref: candidate.registration.fallback_specialist_revision,
-            reasons: [code],
-          });
-          rejected.push({
-            ref: candidate.registration.fallback_specialist_revision,
-            reasons: [code],
-          });
+          rejectInChain(candidate.registration.fallback_specialist_revision, [
+            code,
+          ]);
           continue;
         }
         for (const ref of resolved.chain) {
@@ -2484,14 +2483,12 @@ export class SpecialistRegistry implements ModelRegistry {
           }
           visited.add(ref);
           if (excluded.has(ref)) {
-            chainRecords.push({ ref, reasons: ["excluded"] });
-            rejected.push({ ref, reasons: ["excluded"] });
+            rejectInChain(ref, ["excluded"]);
             continue;
           }
           const parsed = parseRef(ref);
           if (!parsed) {
-            chainRecords.push({ ref, reasons: ["fallback_target_missing"] });
-            rejected.push({ ref, reasons: ["fallback_target_missing"] });
+            rejectInChain(ref, ["fallback_target_missing"]);
             continue;
           }
           if (parsed.kind === "specialist") {
@@ -2501,23 +2498,12 @@ export class SpecialistRegistry implements ModelRegistry {
               parsed.revision,
             );
             if (!row) {
-              chainRecords.push({
-                ref,
-                reasons: ["fallback_target_missing"],
-              });
-              rejected.push({
-                ref,
-                reasons: ["fallback_target_missing"],
-              });
+              rejectInChain(ref, ["fallback_target_missing"]);
               continue;
             }
             const registration = this.verifiedRegistration(row);
             if (!visible(registration.scope, context)) {
-              chainRecords.push({ ref, reasons: ["fallback_target_missing"] });
-              rejected.push({
-                ref,
-                reasons: ["fallback_target_missing"],
-              });
+              rejectInChain(ref, ["fallback_target_missing"]);
               continue;
             }
             const verdict = parseVerdict(row.verdict_json);
@@ -2531,13 +2517,13 @@ export class SpecialistRegistry implements ModelRegistry {
               request,
               independenceTargets,
             );
-            chainRecords.push({ ref, reasons: gate.reasons });
             if (gate.target) {
+              chainRecords.push({ ref, reasons: gate.reasons });
               selectedFallback = gate.target;
               fallbackFrom = fromRef;
               break;
             }
-            rejected.push({ ref, reasons: gate.reasons });
+            rejectInChain(ref, gate.reasons);
           } else {
             const row = this.store.readBaseline(
               scopeKey(candidate.registration.scope),
@@ -2545,11 +2531,7 @@ export class SpecialistRegistry implements ModelRegistry {
               parsed.revision,
             );
             if (!row || row.status !== "active") {
-              chainRecords.push({ ref, reasons: ["fallback_target_missing"] });
-              rejected.push({
-                ref,
-                reasons: ["fallback_target_missing"],
-              });
+              rejectInChain(ref, ["fallback_target_missing"]);
               continue;
             }
             const profile = this.store.parseRecord(
@@ -2558,11 +2540,7 @@ export class SpecialistRegistry implements ModelRegistry {
               parseBaseline,
             );
             if (!visible(profile.scope, context)) {
-              chainRecords.push({ ref, reasons: ["fallback_target_missing"] });
-              rejected.push({
-                ref,
-                reasons: ["fallback_target_missing"],
-              });
+              rejectInChain(ref, ["fallback_target_missing"]);
               continue;
             }
             const baselineResult = await this.tryBaseline(
@@ -2572,13 +2550,13 @@ export class SpecialistRegistry implements ModelRegistry {
               request,
               independenceTargets,
             );
-            chainRecords.push({ ref, reasons: baselineResult.reasons });
             if (baselineResult.target) {
+              chainRecords.push({ ref, reasons: baselineResult.reasons });
               selectedFallback = baselineResult.target;
               fallbackFrom = fromRef;
               break;
             }
-            rejected.push({ ref, reasons: baselineResult.reasons });
+            rejectInChain(ref, baselineResult.reasons);
           }
         }
         if (selectedFallback) break;
@@ -2635,8 +2613,7 @@ export class SpecialistRegistry implements ModelRegistry {
           profile.revision,
         );
         if (excluded.has(ref)) {
-          chainRecords.push({ ref, reasons: ["excluded"] });
-          rejected.push({ ref, reasons: ["excluded"] });
+          rejectInChain(ref, ["excluded"]);
           continue;
         }
         const result = await this.tryBaseline(
@@ -2646,8 +2623,8 @@ export class SpecialistRegistry implements ModelRegistry {
           request,
           independenceTargets,
         );
-        chainRecords.push({ ref, reasons: result.reasons });
         if (result.target) {
+          chainRecords.push({ ref, reasons: result.reasons });
           selectedFallback = result.target;
           fallbackFrom = coverageCandidates.length
             ? formatRef(
@@ -2658,7 +2635,7 @@ export class SpecialistRegistry implements ModelRegistry {
             : null;
           break;
         }
-        rejected.push({ ref, reasons: result.reasons });
+        rejectInChain(ref, result.reasons);
       }
     }
 
