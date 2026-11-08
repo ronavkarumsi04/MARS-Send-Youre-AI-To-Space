@@ -121,6 +121,7 @@ import {
   CheckpointRefSchema,
   type DiffResult,
   type EvidenceRecord,
+  type StartParams,
   WorkspaceRefSchema,
 } from "./protocol";
 import {
@@ -2118,6 +2119,400 @@ export async function createWorkbenchHost(
     runnerTimer.unref();
   }
 
+  // Launch stages for `api.start`, in call order. Each optional-context stage
+  // takes the instruction built so far with the capacity it may still use and
+  // returns its frozen value alongside the extended instruction and what is
+  // left of that capacity.
+  type LaunchPrompt = { instruction: string; remainingCapacity: number };
+  type LaunchStage<T> = { frozen: T | undefined; prompt: LaunchPrompt };
+  const extendPrompt = (
+    prompt: LaunchPrompt,
+    instruction: string,
+  ): LaunchPrompt => ({
+    instruction,
+    remainingCapacity:
+      prompt.remainingCapacity -
+      (serializedBytes(instruction) - serializedBytes(prompt.instruction)),
+  });
+  const launchSurface = (approvals: Approvals, instruction: string) => ({
+    approvals,
+    recall: Boolean(options.memory),
+    collaboration: Boolean(options.collaboration),
+    delegation: Boolean(delegation),
+    research: Boolean(options.research),
+    proposals: Boolean(options.optimization),
+    watch: Boolean(options.watch),
+    knowledgeGraph: Boolean(options.knowledgeGraph),
+    patch: Boolean(options.conventions?.applyPatch),
+    instruction,
+  });
+  // The coordinator runs under the room budget minus the delegation pool
+  // and carries the delegation tools, so optional evidence is sized the
+  // way the runtime will actually be constrained.
+  const coordinatorBudgetFor = (budget: Budget): Budget =>
+    delegation
+      ? {
+          ...budget,
+          max_tokens: Math.max(
+            0,
+            budget.max_tokens - delegation.pool.max_tokens,
+          ),
+        }
+      : budget;
+  const resolveLaunchRouting = async (
+    context: RequestContext,
+    task: Task,
+    params: StartParams,
+    baseInstruction: string,
+  ): Promise<FrozenRouting | undefined> => {
+    if (!options.specialists || params.model_id !== undefined) return undefined;
+    try {
+      return await routeLaunch(
+        context,
+        task,
+        toolsRequired(params.approvals, Boolean(options.collaboration)),
+        options.specialists,
+        initialRequestAllowance(
+          launchSurface(params.approvals, baseInstruction),
+        ) + MIN_INITIAL_OUTPUT_RESERVE,
+      );
+    } catch {
+      throw new WorkbenchError("unavailable");
+    }
+  };
+  const freezeLaunchMemory = async (
+    context: RequestContext,
+    approvals: Approvals,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenMemorySchema>>> => {
+    let memory: z.infer<typeof FrozenMemorySchema> | undefined;
+    if (options.memory && approvals.read) {
+      try {
+        memory = freezeMemory(
+          context,
+          await options.memory.snapshot(context),
+          prompt.instruction,
+          prompt.remainingCapacity,
+        );
+      } catch {
+        throw new WorkbenchError("unavailable");
+      }
+    }
+    return {
+      frozen: memory,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenMemory(prompt.instruction, memory),
+      ),
+    };
+  };
+  const freezeLaunchSkills = async (
+    approvals: Approvals,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<FrozenSkills>> => {
+    const source = repositorySkillsSource(
+      options.skills,
+      options.conventions?.repositorySkills,
+    );
+    if (!source || !approvals.read) return { frozen: undefined, prompt };
+    let skills: FrozenSkills | undefined;
+    try {
+      skills = await freezeCurrentSkills(
+        source,
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+    } catch {
+      throw new WorkbenchError("unavailable");
+    }
+    return {
+      frozen: skills,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenSkills(prompt.instruction, skills),
+      ),
+    };
+  };
+  // Repository instructions come from the trusted checkout, not from the
+  // workspace, so they do not depend on read approval; they are frozen whole
+  // or omitted.
+  const freezeLaunchInstructions = (
+    found: NonNullable<WorkbenchConventions["instructions"]> | undefined,
+    prompt: LaunchPrompt,
+  ): LaunchStage<FrozenInstructions> => {
+    if (!found) return { frozen: undefined, prompt };
+    const instructions = freezeInstructions(
+      found,
+      prompt.instruction,
+      prompt.remainingCapacity,
+    );
+    return {
+      frozen: instructions,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenInstructions(prompt.instruction, instructions),
+      ),
+    };
+  };
+  // A room that cannot be opened at the sized coordinator budget fails the
+  // already-running task.
+  const openLaunchRoom = async (
+    context: RequestContext,
+    running: Task,
+    approvals: Approvals,
+    modelId: string,
+    coordinatorBudget: Budget,
+  ): Promise<FrozenCollaboration | undefined> => {
+    if (!options.collaboration) return undefined;
+    try {
+      const opened = await options.collaboration.host.openRoom(context, {
+        task: running,
+        idempotency_key: running.task_id,
+        authority: {
+          approvals,
+          allow_delegation: Boolean(delegation),
+          paid_consent: false,
+        },
+        ...(delegation
+          ? {
+              delegation_pool: delegation.pool,
+              ...(delegation.limits ? { limits: delegation.limits } : {}),
+            }
+          : {}),
+        model_id: modelId,
+      });
+      if (
+        opened.room.coordinator_runtime_budget.max_tokens <
+        coordinatorBudget.max_tokens
+      ) {
+        // Evidence was sized for a larger runtime than the room grants.
+        await options.collaboration.host
+          .closeRoom(context, opened.room.room_id, "cancel")
+          .catch(() => undefined);
+        throw new Error("Room budget below the sized coordinator budget");
+      }
+      return {
+        room_id: opened.room.room_id,
+        capability: opened.coordinator,
+        budget: opened.room.coordinator_runtime_budget,
+        delegation: Boolean(delegation),
+      };
+    } catch {
+      await options.store
+        .update(context, running.task_id, running.revision, {
+          status: "failed",
+        })
+        .catch(() => undefined);
+      await reconcileResearch(running.task_id);
+      throw new WorkbenchError("unavailable");
+    }
+  };
+  const freezeLaunchRepositoryMap = async (
+    context: RequestContext,
+    task: Task,
+    approvals: Approvals,
+    workspace: WorkspaceRef,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenRepositoryMapSchema>>> => {
+    const maxOutputTokens = repositoryMapTokenBudget(
+      prompt.instruction,
+      prompt.remainingCapacity,
+    );
+    if (!options.repositoryMap || !approvals.read || !maxOutputTokens)
+      return { frozen: undefined, prompt };
+    try {
+      const repositoryMap = freezeRepositoryMap(
+        context,
+        workspace,
+        await options.repositoryMap.map(context, {
+          workspace: WorkspaceRefSchema.parse(workspace),
+          query: task.request.slice(0, 4096),
+          max_output_tokens: maxOutputTokens,
+        }),
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+      assertPublicBytes(
+        new TextEncoder().encode(repositoryMap.text),
+        await privatePatterns(context, task.task_id),
+      );
+      return {
+        frozen: repositoryMap,
+        prompt: extendPrompt(
+          prompt,
+          withFrozenRepositoryMap(prompt.instruction, repositoryMap),
+        ),
+      };
+    } catch {
+      await options.store
+        .appendEvent(
+          internalContext(options.scope),
+          task.task_id,
+          workbenchEvent({ operation: "context.map", status: "unavailable" }),
+        )
+        .catch(() => undefined);
+      return { frozen: undefined, prompt };
+    }
+  };
+  const freezeLaunchGraphSummary = async (
+    context: RequestContext,
+    taskId: string,
+    approvals: Approvals,
+    workspace: WorkspaceRef,
+    cwd: string,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenGraphSummarySchema>>> => {
+    if (!options.knowledgeGraph || !approvals.read)
+      return { frozen: undefined, prompt };
+    try {
+      const found = await options.knowledgeGraph.lookup(
+        graphBinding(context, taskId, cwd, workspace, approvals),
+      );
+      if (found.status !== "ready") return { frozen: undefined, prompt };
+      const graphSummary = freezeGraphSummary(
+        context,
+        WorkspaceRefSchema.parse(workspace),
+        found.artifact,
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+      if (!graphSummary) return { frozen: undefined, prompt };
+      assertPublicBytes(
+        new TextEncoder().encode(graphSummary.text),
+        await privatePatterns(context, taskId),
+      );
+      return {
+        frozen: graphSummary,
+        prompt: extendPrompt(
+          prompt,
+          withFrozenGraphSummary(prompt.instruction, graphSummary),
+        ),
+      };
+    } catch {
+      return { frozen: undefined, prompt };
+    }
+  };
+  // Observations emitted before the upstream session is bound are buffered
+  // and persisted by `release`.
+  const openLaunchRuntime = async (launch: {
+    context: RequestContext;
+    running: Task;
+    approvals: Approvals;
+    workspace: WorkspaceRef;
+    cwd: string;
+    stateDir: string;
+    modelId: string;
+    collaboration: FrozenCollaboration | undefined;
+    provisionalDeadline: number;
+  }) => {
+    const { context, running, approvals, workspace, cwd, collaboration } =
+      launch;
+    const taskId = running.task_id;
+    const persistObservation = observe(taskId);
+    const initialObservations: RuntimeObservation[] = [];
+    let bound = false;
+    let deadline = launch.provisionalDeadline;
+    const runtime = await runtimeFactory({
+      task: runtimeTask(running, collaboration),
+      cwd,
+      stateDir: launch.stateDir,
+      registry: options.registry,
+      modelId: launch.modelId,
+      approvals,
+      tools: toolsFor(
+        workspace,
+        approvals,
+        running.budget,
+        activeTask(taskId),
+        [],
+        taskId,
+      ),
+      ...patchFor(
+        workspace,
+        approvals,
+        running.budget,
+        activeTask(taskId),
+        taskId,
+      ),
+      ...(collaboration
+        ? roomToolsFor(taskId, collaboration, workspace, approvals)
+        : {}),
+      ...(approvals.read ? historyFor(context) : {}),
+      ...researchFor(taskId, () => deadline),
+      ...proposalsFor(),
+      ...watchOption(taskId, cwd, approvals),
+      ...graphOption(context, taskId, cwd, workspace, approvals),
+      onEvent: async (event) => {
+        if (!bound) {
+          if (initialObservations.length >= 1000)
+            throw new WorkbenchError("unavailable");
+          initialObservations.push(event);
+          return;
+        }
+        await persistObservation(event);
+      },
+    });
+    deadline = Date.now() + running.budget.max_duration_ms;
+    return {
+      runtime,
+      deadline,
+      release: async () => {
+        for (const observation of initialObservations)
+          await persistObservation(observation);
+        bound = true;
+      },
+    };
+  };
+  const announceConventions = async (
+    running: Task,
+    workspace: WorkspaceRef,
+    approvals: Approvals,
+    expanded: ReturnType<typeof expandRequest>,
+    found: boolean,
+    instructions: FrozenInstructions | undefined,
+  ) => {
+    if (!options.conventions) return;
+    if (expanded || (found && !instructions))
+      await options.store
+        .appendEvent(
+          internalContext(options.scope),
+          running.task_id,
+          workbenchEvent({
+            operation: "conventions.applied",
+            ...(expanded ? { command: expanded.name } : {}),
+            instructions: instructions ? "frozen" : found ? "omitted" : "none",
+          }),
+        )
+        .catch(() => undefined);
+    await dispatchHooks(
+      running.task_id,
+      workspace,
+      approvals,
+      running.budget,
+      "session-start",
+      {},
+    );
+  };
+  const abandonLaunch = async (
+    context: RequestContext,
+    taskId: string,
+    runtime: RuntimeSession | undefined,
+    collaboration: FrozenCollaboration | undefined,
+  ) => {
+    await runtime?.dispose().catch(() => undefined);
+    if (collaboration) await closeFrozenRoom(taskId, collaboration, "cancel");
+    const current = await options.store
+      .inspect(context, taskId)
+      .catch(() => null);
+    if (current?.status === "running")
+      await options.store
+        .update(internalContext(options.scope), taskId, current.revision, {
+          status: "failed",
+        })
+        .catch(() => undefined);
+    await reconcileResearch(taskId);
+  };
+
   const api: WorkbenchOperations &
     Required<Pick<WorkbenchOperations, "journal">> = {
     scope: options.scope,
@@ -2295,43 +2690,13 @@ export async function createWorkbenchHost(
       const baseInstruction = `${request}\n\nAcceptance criteria:\n${task.acceptance_criteria.map((criterion) => `- ${criterion}`).join("\n")}`;
       if (baseInstruction.length > MAX_RUNTIME_INSTRUCTION_LENGTH)
         throw new WorkbenchError("too_large");
-      // The coordinator runs under the room budget minus the delegation pool
-      // and carries the delegation tools, so optional evidence is sized the
-      // way the runtime will actually be constrained.
-      const coordinatorBudget: Budget = delegation
-        ? {
-            ...task.budget,
-            max_tokens: Math.max(
-              0,
-              task.budget.max_tokens - delegation.pool.max_tokens,
-            ),
-          }
-        : task.budget;
-      let routing: FrozenRouting | undefined;
-      if (options.specialists && params.model_id === undefined) {
-        try {
-          routing = await routeLaunch(
-            context,
-            task,
-            toolsRequired(params.approvals, Boolean(options.collaboration)),
-            options.specialists,
-            initialRequestAllowance({
-              approvals: params.approvals,
-              recall: Boolean(options.memory),
-              collaboration: Boolean(options.collaboration),
-              delegation: Boolean(delegation),
-              research: Boolean(options.research),
-              proposals: Boolean(options.optimization),
-              watch: Boolean(options.watch),
-              knowledgeGraph: Boolean(options.knowledgeGraph),
-              patch: Boolean(options.conventions?.applyPatch),
-              instruction: baseInstruction,
-            }) + MIN_INITIAL_OUTPUT_RESERVE,
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-      }
+      const coordinatorBudget = coordinatorBudgetFor(task.budget);
+      const routing = await resolveLaunchRouting(
+        context,
+        task,
+        params,
+        baseInstruction,
+      );
       const model = selectModel(
         params.model_id ?? routing?.model_id ?? undefined,
         toolsRequired(params.approvals, Boolean(options.collaboration)),
@@ -2339,66 +2704,18 @@ export async function createWorkbenchHost(
       const capacity = optionalInstructionCapacity({
         model,
         budget: coordinatorBudget,
-        approvals: params.approvals,
-        recall: Boolean(options.memory),
-        collaboration: Boolean(options.collaboration),
-        delegation: Boolean(delegation),
-        research: Boolean(options.research),
-        proposals: Boolean(options.optimization),
-        watch: Boolean(options.watch),
-        knowledgeGraph: Boolean(options.knowledgeGraph),
-        patch: Boolean(options.conventions?.applyPatch),
-        instruction: baseInstruction,
+        ...launchSurface(params.approvals, baseInstruction),
       });
-      let memory: z.infer<typeof FrozenMemorySchema> | undefined;
-      if (options.memory && params.approvals.read) {
-        try {
-          memory = freezeMemory(
-            context,
-            await options.memory.snapshot(context),
-            baseInstruction,
-            capacity,
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-      }
-      let instruction = withFrozenMemory(baseInstruction, memory);
-      let skills: FrozenSkills | undefined;
-      const skillsSource = repositorySkillsSource(
-        options.skills,
-        options.conventions?.repositorySkills,
-      );
-      if (skillsSource && params.approvals.read) {
-        try {
-          skills = await freezeCurrentSkills(
-            skillsSource,
-            instruction,
-            capacity -
-              (serializedBytes(instruction) - serializedBytes(baseInstruction)),
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-        instruction = withFrozenSkills(instruction, skills);
-      }
-      // Repository instructions come from the trusted checkout, not from the
-      // workspace, so they do not depend on read approval; they are frozen
-      // whole or omitted.
-      let instructions: FrozenInstructions | undefined;
+      const memory = await freezeLaunchMemory(context, params.approvals, {
+        instruction: baseInstruction,
+        remainingCapacity: capacity,
+      });
+      const skills = await freezeLaunchSkills(params.approvals, memory.prompt);
       const foundInstructions = options.conventions?.instructions;
-      if (foundInstructions) {
-        instructions = freezeInstructions(
-          foundInstructions,
-          instruction,
-          capacity -
-            (serializedBytes(instruction) - serializedBytes(baseInstruction)),
-        );
-        instruction = withFrozenInstructions(instruction, instructions);
-      }
-      const remainingCapacity =
-        capacity -
-        (serializedBytes(instruction) - serializedBytes(baseInstruction));
+      const instructions = freezeLaunchInstructions(
+        foundInstructions,
+        skills.prompt,
+      );
       const running = await options.store.update(
         context,
         task.task_id,
@@ -2412,189 +2729,50 @@ export async function createWorkbenchHost(
       );
       // Research deadlines follow the runtime ledger, whose clock starts when
       // the session opens, not when the task was marked running.
-      let launchDeadline = Date.now() + running.budget.max_duration_ms;
-      let collaboration: FrozenCollaboration | undefined;
-      if (options.collaboration) {
-        try {
-          const opened = await options.collaboration.host.openRoom(context, {
-            task: running,
-            idempotency_key: running.task_id,
-            authority: {
-              approvals: params.approvals,
-              allow_delegation: Boolean(delegation),
-              paid_consent: false,
-            },
-            ...(delegation
-              ? {
-                  delegation_pool: delegation.pool,
-                  ...(delegation.limits ? { limits: delegation.limits } : {}),
-                }
-              : {}),
-            model_id: model.id,
-          });
-          if (
-            opened.room.coordinator_runtime_budget.max_tokens <
-            coordinatorBudget.max_tokens
-          ) {
-            // Evidence was sized for a larger runtime than the room grants.
-            await options.collaboration.host
-              .closeRoom(context, opened.room.room_id, "cancel")
-              .catch(() => undefined);
-            throw new Error("Room budget below the sized coordinator budget");
-          }
-          collaboration = {
-            room_id: opened.room.room_id,
-            capability: opened.coordinator,
-            budget: opened.room.coordinator_runtime_budget,
-            delegation: Boolean(delegation),
-          };
-        } catch {
-          await options.store
-            .update(context, task.task_id, running.revision, {
-              status: "failed",
-            })
-            .catch(() => undefined);
-          await reconcileResearch(task.task_id);
-          throw new WorkbenchError("unavailable");
-        }
-      }
+      const provisionalDeadline = Date.now() + running.budget.max_duration_ms;
+      const collaboration = await openLaunchRoom(
+        context,
+        running,
+        params.approvals,
+        model.id,
+        coordinatorBudget,
+      );
       let runtime: RuntimeSession | undefined;
-      const initialObservations: RuntimeObservation[] = [];
-      let bound = false;
-      const persistObservation = observe(task.task_id);
       try {
         const workspace = await options.workspace.prepare(
           context,
           task.task_id,
         );
-        let repositoryMap:
-          | z.infer<typeof FrozenRepositoryMapSchema>
-          | undefined;
-        const maxOutputTokens = repositoryMapTokenBudget(
-          instruction,
-          remainingCapacity,
+        const repositoryMap = await freezeLaunchRepositoryMap(
+          context,
+          task,
+          params.approvals,
+          workspace,
+          instructions.prompt,
         );
-        if (options.repositoryMap && params.approvals.read && maxOutputTokens) {
-          try {
-            repositoryMap = freezeRepositoryMap(
-              context,
-              workspace,
-              await options.repositoryMap.map(context, {
-                workspace: WorkspaceRefSchema.parse(workspace),
-                query: task.request.slice(0, 4096),
-                max_output_tokens: maxOutputTokens,
-              }),
-              instruction,
-              remainingCapacity,
-            );
-            assertPublicBytes(
-              new TextEncoder().encode(repositoryMap.text),
-              await privatePatterns(context, task.task_id),
-            );
-            instruction = withFrozenRepositoryMap(instruction, repositoryMap);
-          } catch {
-            repositoryMap = undefined;
-            await options.store
-              .appendEvent(
-                internalContext(options.scope),
-                task.task_id,
-                workbenchEvent({
-                  operation: "context.map",
-                  status: "unavailable",
-                }),
-              )
-              .catch(() => undefined);
-          }
-        }
         const stateDir = taskState(task);
         await mkdir(stateDir, { mode: 0o700 });
         const cwd = await options.workspace.cwd(context, workspace);
-        let graphSummary: z.infer<typeof FrozenGraphSummarySchema> | undefined;
-        if (options.knowledgeGraph && params.approvals.read) {
-          try {
-            const found = await options.knowledgeGraph.lookup(
-              graphBinding(
-                context,
-                task.task_id,
-                cwd,
-                workspace,
-                params.approvals,
-              ),
-            );
-            if (found.status === "ready") {
-              graphSummary = freezeGraphSummary(
-                context,
-                WorkspaceRefSchema.parse(workspace),
-                found.artifact,
-                instruction,
-                capacity -
-                  (serializedBytes(instruction) -
-                    serializedBytes(baseInstruction)),
-              );
-              if (graphSummary) {
-                assertPublicBytes(
-                  new TextEncoder().encode(graphSummary.text),
-                  await privatePatterns(context, task.task_id),
-                );
-                instruction = withFrozenGraphSummary(instruction, graphSummary);
-              }
-            }
-          } catch {
-            graphSummary = undefined;
-          }
-        }
-        runtime = await runtimeFactory({
-          task: runtimeTask(running, collaboration),
+        const graphSummary = await freezeLaunchGraphSummary(
+          context,
+          task.task_id,
+          params.approvals,
+          workspace,
+          cwd,
+          repositoryMap.prompt,
+        );
+        const opened = await openLaunchRuntime({
+          context,
+          running,
+          approvals: params.approvals,
+          workspace,
           cwd,
           stateDir,
-          registry: options.registry,
           modelId: model.id,
-          approvals: params.approvals,
-          tools: toolsFor(
-            workspace,
-            params.approvals,
-            running.budget,
-            activeTask(running.task_id),
-            [],
-            task.task_id,
-          ),
-          ...patchFor(
-            workspace,
-            params.approvals,
-            running.budget,
-            activeTask(running.task_id),
-            task.task_id,
-          ),
-          ...(collaboration
-            ? roomToolsFor(
-                task.task_id,
-                collaboration,
-                workspace,
-                params.approvals,
-              )
-            : {}),
-          ...(params.approvals.read ? historyFor(context) : {}),
-          ...researchFor(task.task_id, () => launchDeadline),
-          ...proposalsFor(),
-          ...watchOption(task.task_id, cwd, params.approvals),
-          ...graphOption(
-            context,
-            task.task_id,
-            cwd,
-            workspace,
-            params.approvals,
-          ),
-          onEvent: async (event) => {
-            if (!bound) {
-              if (initialObservations.length >= 1000)
-                throw new WorkbenchError("unavailable");
-              initialObservations.push(event);
-              return;
-            }
-            await persistObservation(event);
-          },
+          collaboration,
+          provisionalDeadline,
         });
-        launchDeadline = Date.now() + running.budget.max_duration_ms;
+        runtime = opened.runtime;
         if (closing) throw new WorkbenchError("unavailable");
         await writeLaunch(task, {
           schema_version: 1,
@@ -2603,14 +2781,18 @@ export async function createWorkbenchHost(
           cwd,
           model_id: runtime.modelId,
           model_classification: classifyModel(model.id) ?? undefined,
-          deadline: launchDeadline,
+          deadline: opened.deadline,
           approvals: params.approvals,
           workspace: WorkspaceRefSchema.parse(workspace),
-          ...(memory ? { memory } : {}),
-          ...(skills ? { skills } : {}),
-          ...(repositoryMap ? { repository_map: repositoryMap } : {}),
-          ...(graphSummary ? { knowledge_graph: graphSummary } : {}),
-          ...(instructions ? { instructions } : {}),
+          ...(memory.frozen ? { memory: memory.frozen } : {}),
+          ...(skills.frozen ? { skills: skills.frozen } : {}),
+          ...(repositoryMap.frozen
+            ? { repository_map: repositoryMap.frozen }
+            : {}),
+          ...(graphSummary.frozen
+            ? { knowledge_graph: graphSummary.frozen }
+            : {}),
+          ...(instructions.frozen ? { instructions: instructions.frozen } : {}),
           ...(routing ? { routing } : {}),
           ...(collaboration ? { collaboration } : {}),
           ...(params.required_checks?.length
@@ -2628,42 +2810,20 @@ export async function createWorkbenchHost(
           },
         );
         if (closing) throw new WorkbenchError("unavailable");
-        for (const observation of initialObservations)
-          await persistObservation(observation);
-        bound = true;
-        if (options.conventions) {
-          const omittedInstructions =
-            Boolean(foundInstructions) && !instructions;
-          if (expanded || omittedInstructions)
-            await options.store
-              .appendEvent(
-                internalContext(options.scope),
-                task.task_id,
-                workbenchEvent({
-                  operation: "conventions.applied",
-                  ...(expanded ? { command: expanded.name } : {}),
-                  instructions: instructions
-                    ? "frozen"
-                    : foundInstructions
-                      ? "omitted"
-                      : "none",
-                }),
-              )
-              .catch(() => undefined);
-          await dispatchHooks(
-            task.task_id,
-            workspace,
-            params.approvals,
-            running.budget,
-            "session-start",
-            {},
-          );
-        }
+        await opened.release();
+        await announceConventions(
+          running,
+          workspace,
+          params.approvals,
+          expanded,
+          Boolean(foundInstructions),
+          instructions.frozen,
+        );
         run(
           running,
           workspace,
           runtime,
-          instruction,
+          graphSummary.prompt.instruction,
           [],
           false,
           collaboration,
@@ -2672,22 +2832,7 @@ export async function createWorkbenchHost(
         );
         return running;
       } catch (error) {
-        await runtime?.dispose().catch(() => undefined);
-        if (collaboration)
-          await closeFrozenRoom(task.task_id, collaboration, "cancel");
-        const current = await options.store
-          .inspect(context, task.task_id)
-          .catch(() => null);
-        if (current?.status === "running")
-          await options.store
-            .update(
-              internalContext(options.scope),
-              task.task_id,
-              current.revision,
-              { status: "failed" },
-            )
-            .catch(() => undefined);
-        await reconcileResearch(task.task_id);
+        await abandonLaunch(context, task.task_id, runtime, collaboration);
         throw error;
       }
     },
