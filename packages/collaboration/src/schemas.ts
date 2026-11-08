@@ -230,13 +230,16 @@ export const DeliveredMessageSchema = z
   .strict();
 export type DeliveredMessage = z.infer<typeof DeliveredMessageSchema>;
 
+export const MAX_ACCEPTANCE_CRITERION_BYTES = 512;
+export const MAX_SOLUTION_SPACE_BYTES = 512;
+
 export const DelegateInputSchema = z
   .object({
     idempotency_key: z.string().min(1).max(128),
     role_label: roleLabel,
     instruction: z.string().min(1),
     acceptance_criteria: z.array(z.string().min(1)).max(8).optional(),
-    solution_space: z.string().max(512).optional(),
+    solution_space: z.string().max(MAX_SOLUTION_SPACE_BYTES).optional(),
     complexity: z.enum(["light", "medium", "heavy"]).optional(),
     approvals: z
       .object({
