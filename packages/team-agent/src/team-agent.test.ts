@@ -9,12 +9,15 @@ import { loadModelRegistry } from "@mars/providers";
 import {
   type ClaimedAgentRequest,
   createTeamStore,
+  DEFAULT_TEAM_LIMITS,
+  TEAM_MAX_AGENT_CONTEXT_BYTES,
   type TeamActor,
   type TeamReferenceAccess,
   type TeamStore,
 } from "@mars/team";
 import {
   buildTeamContext,
+  DEFAULT_TEAM_AGENT_POLICY,
   extractCitations,
   runTeamAgentRequest,
   type TeamAgentErrorNotice,
@@ -558,4 +561,14 @@ test("error notices keep only identifier-shaped names and codes", () => {
     error_name: "string",
     error_code: null,
   });
+});
+
+test("the runner's default context cap matches the store's frozen-context cap", () => {
+  expect(DEFAULT_TEAM_AGENT_POLICY.max_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(DEFAULT_TEAM_LIMITS.max_agent_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(TEAM_MAX_AGENT_CONTEXT_BYTES).toBe(64 * 1024);
 });
