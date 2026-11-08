@@ -20,16 +20,19 @@ import type {
   TrustStore,
 } from "./index";
 import {
+  binding,
   canonicalJSON,
   createHmacApprovalAuthorizer,
   createIntegrationTrust,
   FileTrustStore,
   isSubset,
   MemoryTrustStore,
+  normalizedScope,
   normalizePermission,
   normalizePermissions,
   parseEvidence,
   runAdvisoryScan,
+  scopeKey,
   sha256,
   signApproval,
 } from "./index";
@@ -1099,3 +1102,35 @@ for (const invoke of [false, true]) {
     }
   }
 }
+
+test("normalizedScope fills workspace_id and backs scopeKey and binding", () => {
+  const scope = { owner_id: "owner", project_id: "project" };
+  expect(normalizedScope(scope)).toEqual({
+    owner_id: "owner",
+    project_id: "project",
+    workspace_id: null,
+  });
+  expect(normalizedScope({ ...scope, workspace_id: "w" }).workspace_id).toBe(
+    "w",
+  );
+  expect(scopeKey(scope)).toBe(
+    '{"owner_id":"owner","project_id":"project","workspace_id":null}',
+  );
+  const e = parseEvidence(evidence());
+  expect(binding(scope, e, [], [])).toBe(
+    sha256(
+      canonicalJSON({
+        scope: { owner_id: "owner", project_id: "project", workspace_id: null },
+        kind: e.kind,
+        integration_id: e.integration_id,
+        source: e.source,
+        dependency_sha256: e.dependency_sha256,
+        config_sha256: e.config_sha256,
+        endpoint: e.endpoint,
+        tools: e.tools,
+        permissions: [],
+        credential_bindings: [],
+      }),
+    ),
+  );
+});
