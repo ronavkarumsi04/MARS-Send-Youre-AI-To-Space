@@ -3,6 +3,7 @@ import type { RepoRegistry } from "@mars/code-refs";
 import {
   AgentPreviewSchema,
   AgentRequestSchema,
+  isRelativeRepoPath,
   MARS_AGENT_USER_ID,
   MessageViewSchema,
   ParticipantSchema,
@@ -323,12 +324,6 @@ async function dispatch(
 }
 
 const RESTRICTED_KEYS = ["reference_id", "restricted"];
-/** Repo-relative only: no absolute, drive or parent-relative path leaves the host. */
-const isRelativePath = (path: string) =>
-  !path.startsWith("/") &&
-  !path.startsWith("\\") &&
-  !/^[A-Za-z]:/.test(path) &&
-  !path.split("/").some((segment) => segment === "" || segment === "..");
 
 /**
  * Re-checks that nothing outside the actor's team, participation or repo
@@ -355,7 +350,7 @@ function validateResult(
         return;
       }
       if (
-        !isRelativePath(chip.path) ||
+        !isRelativeRepoPath(chip.path) ||
         !store.hasRepoAccess(actor, chip.repo_id)
       )
         invalid();
@@ -560,7 +555,7 @@ function validateResult(
         reference.team_id !== actor.team_id ||
         reference.repo_id !== request.params.repo_id ||
         reference.commit_sha !== request.params.commit_sha ||
-        !isRelativePath(reference.path) ||
+        !isRelativeRepoPath(reference.path) ||
         !store.hasRepoAccess(actor, reference.repo_id)
       )
         invalid();
@@ -574,7 +569,7 @@ function validateResult(
       }
       if (
         preview.reference_id !== request.params.reference_id ||
-        !isRelativePath(preview.path) ||
+        !isRelativeRepoPath(preview.path) ||
         !store.hasRepoAccess(actor, preview.repo_id)
       )
         invalid();
@@ -587,7 +582,7 @@ function validateResult(
         const limit = request.params.limit ?? store.limits.max_search_hits;
         if (search.matches.length > limit) invalid();
         for (const match of search.matches)
-          if (!isRelativePath(match.path)) invalid();
+          if (!isRelativeRepoPath(match.path)) invalid();
       }
       break;
     }

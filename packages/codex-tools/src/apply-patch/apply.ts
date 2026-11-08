@@ -21,6 +21,10 @@ export const MAX_PATCH_PATH_BYTES = 1024;
  * or empty segments, no control characters, at most 1024 bytes. Upstream
  * accepts absolute paths; MARS does not, and the workspace provider validates
  * again before touching disk. Returns a reason or `null` when valid.
+ *
+ * Mirrors `relativePathProblem` in `packages/contracts/src/path-policy.ts`
+ * (copied, not imported, so this package stays a zod-only leaf);
+ * `path-policy-sync.test.ts` fails when the two drift.
  */
 export function validatePatchPath(path: string): string | null {
   if (path.length === 0) {
@@ -40,7 +44,12 @@ export function validatePatchPath(path: string): string | null {
   }
   for (const ch of path) {
     const code = ch.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) {
+    if (
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x2028 ||
+      code === 0x2029
+    ) {
       return "path contains a control character";
     }
   }

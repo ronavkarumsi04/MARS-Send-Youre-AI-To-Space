@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+export * from "./path-policy";
 export * from "./workbench-read";
 
 export const SCHEMA_VERSION = 1;
