@@ -642,6 +642,16 @@ test("the shared evidence mirror accepts exactly what the workbench tasks.eviden
         diff_sha256: null,
       }),
     ]),
+    evidence([
+      record({
+        workspace_id: null,
+        workspace_revision: null,
+        diff_sha256: null,
+        stale: true,
+        binding_error: "WorkspaceModifiedError",
+      }),
+    ]),
+    evidence([record({ binding_error: "/private/host/path" })]),
   ];
   for (const sample of samples)
     expect(SharedEvidenceSchema.safeParse(sample).success).toBe(

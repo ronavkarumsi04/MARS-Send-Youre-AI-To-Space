@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -16,6 +16,7 @@ import {
   type RequestContext,
   SECRET_SHAPE_PATTERNS,
 } from "@mars/contracts";
+import { scopeKey } from "./canonical";
 import {
   bounded,
   CANDIDATE_SCHEMA,
@@ -33,6 +34,7 @@ import {
   keywordScore,
   OPTIMIZATION_PINS,
   OptimizationError,
+  OptimizationStore,
   PROPOSAL_REPORT_SCHEMA,
   PROPOSAL_REQUEST_SCHEMA,
   type PromptTargetRegistration,
@@ -197,6 +199,7 @@ async function setup(options: {
     put,
     readJson,
     registration: reg,
+    root,
   };
 }
 
@@ -300,6 +303,40 @@ describe("targets and holdout", () => {
     await expect(service.target(otherScope, targetId)).rejects.toThrow(
       "target_not_found",
     );
+  });
+
+  test("corrupt or unreadable target records are not reported as missing", async () => {
+    const { service, targetId, put, registration: reg, root } = await setup({});
+    const dir = path.join(root, scopeKey(context.scope), "targets", targetId);
+    const targetFile = path.join(dir, "target.json");
+    const holdoutFile = path.join(dir, "final_holdout.json");
+    const holdoutBefore = await readFile(holdoutFile, "utf8");
+    const store = new OptimizationStore(root);
+    expect(await store.hasTarget(context, "target-absent")).toBe(false);
+    await expect(store.readTarget(context, "target-absent")).rejects.toThrow(
+      "target_not_found",
+    );
+
+    await writeFile(targetFile, "{ truncated");
+    await expect(service.target(context, targetId)).rejects.toThrow(
+      "record_malformed",
+    );
+    await expect(store.hasTarget(context, targetId)).rejects.toThrow(
+      "record_malformed",
+    );
+    await expect(
+      service.registerTarget(context, await put(reg)),
+    ).rejects.toThrow("record_malformed");
+    expect(await readFile(holdoutFile, "utf8")).toBe(holdoutBefore);
+    expect(await readFile(targetFile, "utf8")).toBe("{ truncated");
+
+    await rm(targetFile);
+    await mkdir(targetFile);
+    const error = await store.readTarget(context, targetId).catch((e) => e);
+    expect(error).not.toBeInstanceOf(OptimizationError);
+    expect((error as NodeJS.ErrnoException).code).toBe("EISDIR");
+    const hasError = await store.hasTarget(context, targetId).catch((e) => e);
+    expect((hasError as NodeJS.ErrnoException).code).toBe("EISDIR");
   });
 });
 

@@ -5,9 +5,11 @@ import {
   canTransition,
   type EventEnvelope,
   EventEnvelopeSchema,
+  isTerminalTaskStatus,
   ScopeSchema,
   type Task,
   TaskSchema,
+  TaskStatusSchema,
 } from "./index";
 
 const scope = { owner_id: "owner-1", project_id: "project-1" };
@@ -124,5 +126,10 @@ describe("versioned transport contracts", () => {
     for (const status of ["completed", "failed", "cancelled"] as const) {
       expect(canTransition(status, "running")).toBe(false);
     }
+  });
+  test("classifies exactly completed, failed and cancelled as terminal", () => {
+    expect(
+      TaskStatusSchema.options.filter((status) => isTerminalTaskStatus(status)),
+    ).toEqual(["completed", "cancelled", "failed"]);
   });
 });

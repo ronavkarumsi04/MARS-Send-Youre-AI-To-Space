@@ -34,6 +34,11 @@ export * from "./schemas";
 export {
   type ConversationPage,
   type ConversationSummary,
+  CURSOR_PREFIX,
+  decodeCursor,
+  EXCERPT_CHARS,
+  encodeCursor,
+  excerpt,
   FixtureTeamService,
   type FixtureTeamServiceOptions,
   MAX_SEARCH_HITS,

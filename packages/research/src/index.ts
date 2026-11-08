@@ -17,6 +17,7 @@ export {
   type DurableResearchService,
   type EvidenceCapture,
   type FindingProposal,
+  isTerminalResearchStatus,
   type ResearchArtifactStore,
   type ResearchEventSink,
   type ResearchJob,

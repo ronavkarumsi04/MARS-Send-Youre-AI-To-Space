@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -96,6 +95,16 @@ import {
   type TeamLimits,
   TeamLimitsSchema,
 } from "./schemas";
+import * as storeDb from "./store-db";
+import {
+  type ConversationRow,
+  canonicalJson,
+  idSchema,
+  type MessageRow,
+  type ParticipantRow,
+  type StoreDbContext,
+  sha256,
+} from "./store-db";
 import {
   excerptAround,
   hasInvisibleCodePoint,
@@ -686,56 +695,13 @@ export function assessVerification(
   };
 }
 
-export function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) throw invalidInput("Value is not JSON data");
-    return serialized;
-  }
-  if (Array.isArray(value))
-    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
-/**
- * Idempotency results stored before migration 0004 lack `agent_request_id`
- * (and, for plain sends, `kind`) on messages; replays add the values those
- * rows had.
- */
-function upgradeLegacyResult(operation: string, raw: unknown): unknown {
-  if (
-    (operation === "messages.send" || operation === "shares.create") &&
-    raw !== null &&
-    typeof raw === "object" &&
-    !Array.isArray(raw) &&
-    !("agent_request_id" in raw)
-  ) {
-    // Pre-0004 cards already carried `kind: "result_card"`; plain sends had no kind.
-    const legacy = raw as { kind?: unknown };
-    return {
-      ...raw,
-      kind:
-        legacy.kind ?? (operation === "shares.create" ? "result_card" : "user"),
-      agent_request_id: null,
-    };
-  }
-  return raw;
-}
+export { canonicalJson, sha256 } from "./store-db";
 
 export function dmKey(userA: string, userB: string): string {
   return sha256(canonicalJson([userA, userB].sort()));
 }
 
 const ENVELOPE_BYTES = Buffer.byteLength('{"result":[]}');
-const idSchema = z.string().min(1).max(256);
 
 interface MemberRow {
   team_id: string;
@@ -743,45 +709,6 @@ interface MemberRow {
   role: string;
   state: string;
   revision: number;
-}
-interface ConversationRow {
-  conversation_id: string;
-  team_id: string;
-  kind: string;
-  title: string | null;
-  dm_key: string | null;
-  revision: number;
-  last_seq: number;
-  last_event_seq: number;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-interface ParticipantRow {
-  conversation_id: string;
-  user_id: string;
-  joined_seq: number;
-  joined_event_seq: number;
-  state: string;
-  pinned: number;
-  read_seq: number;
-}
-interface MessageRow {
-  message_id: string;
-  conversation_id: string;
-  seq: number;
-  author_id: string;
-  client_message_id: string;
-  body: string;
-  body_sha256: string;
-  reply_to: string | null;
-  reference_ids_json: string;
-  created_at: string;
-  edited_at: string | null;
-  deleted: number;
-  record_sha256: string;
-  kind: string;
-  agent_request_id: string | null;
 }
 interface AgentRequestRow {
   request_id: string;
@@ -799,22 +726,6 @@ interface AgentRequestRow {
   record_sha256: string;
   answer_body: string | null;
   created_seq: number;
-}
-interface TaskLinkRow {
-  link_id: string;
-  team_id: string;
-  conversation_id: string;
-  requester_id: string;
-  launch_key: string;
-  provenance_json: string;
-  reference_ids_json: string;
-  target_json: string | null;
-  workbench_json: string | null;
-  task_revision: number | null;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  record_sha256: string;
 }
 interface ResultShareRow {
   share_id: string;
@@ -993,6 +904,13 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
       );
     },
   };
+  const ctx: StoreDbContext = {
+    db,
+    limits,
+    clock: now,
+    metrics,
+    notify: (notice) => notify(notice),
+  };
   const readEnabled = (): boolean =>
     db
       .query<{ value: string }, []>(
@@ -1031,34 +949,48 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
     return row !== null && row.state === "active";
   };
 
-  const conversationRow = (conversationId: string): ConversationRow | null =>
-    db
-      .query<ConversationRow, [string]>(
-        "SELECT * FROM conversations WHERE conversation_id = ?",
-      )
-      .get(conversationId);
-  const participantRow = (
-    conversationId: string,
-    userId: string,
-  ): ParticipantRow | null =>
-    db
-      .query<ParticipantRow, [string, string]>(
-        "SELECT * FROM participants WHERE conversation_id = ? AND user_id = ?",
-      )
-      .get(conversationId, userId);
-  /** Conversation in the actor's team with the actor as an active participant; one code for absent and not-yours. */
-  const requireParticipant = (
+  const conversationRow = (conversationId: string) =>
+    storeDb.conversationRow(ctx, conversationId);
+  const participantRow = (conversationId: string, userId: string) =>
+    storeDb.participantRow(ctx, conversationId, userId);
+  const requireParticipant = (actor: TeamActor, conversationId: string) =>
+    storeDb.requireParticipant(ctx, actor, conversationId);
+  const saveLink = (link: TaskLink, insert: boolean) =>
+    storeDb.saveLink(ctx, link, insert);
+  const requireLink = (
     actor: TeamActor,
-    conversationId: string,
-  ): { conversation: ConversationRow; participant: ParticipantRow } => {
-    if (!idSchema.safeParse(conversationId).success) throw notFound();
-    const conversation = conversationRow(conversationId);
-    if (!conversation || conversation.team_id !== actor.team_id)
-      throw notFound();
-    const participant = participantRow(conversationId, actor.user_id);
-    if (!participant || participant.state !== "active") throw notFound();
-    return { conversation, participant };
-  };
+    linkId: string,
+    requesterOnly: boolean,
+  ) => storeDb.requireLink(ctx, actor, linkId, requesterOnly);
+  const emitEvent = (
+    conversation: ConversationRow,
+    kind: "message" | "membership" | "reaction" | "edit",
+    messageSeq: number,
+    messageId: string | null,
+    revision: number,
+  ) =>
+    storeDb.emitEvent(ctx, conversation, kind, messageSeq, messageId, revision);
+  const saveConversation = (conversation: ConversationRow) =>
+    storeDb.saveConversation(ctx, conversation);
+  const insertMessage = (conversation: ConversationRow, record: Message) =>
+    storeDb.insertMessage(ctx, conversation, record);
+  const idempotent = <T>(
+    actor: TeamActor,
+    requestId: string,
+    operation: string,
+    input: unknown,
+    schema: z.ZodType<T>,
+    perform: () => T,
+  ): T =>
+    storeDb.idempotent(
+      ctx,
+      actor,
+      requestId,
+      operation,
+      input,
+      schema,
+      perform,
+    );
 
   const toConversation = (row: ConversationRow): Conversation =>
     ConversationSchema.parse({
@@ -1185,112 +1117,6 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
     });
   };
 
-  const linkRow = (linkId: string): TaskLinkRow | null =>
-    idSchema.safeParse(linkId).success
-      ? (db
-          .query<TaskLinkRow, [string]>(
-            "SELECT * FROM task_links WHERE link_id = ?",
-          )
-          .get(linkId) ?? null)
-      : null;
-
-  const linkRecord = (row: TaskLinkRow): TaskLink => {
-    const record = {
-      link_id: row.link_id,
-      team_id: row.team_id,
-      conversation_id: row.conversation_id,
-      requester_id: row.requester_id,
-      launch_key: row.launch_key,
-      provenance: JSON.parse(row.provenance_json) as unknown,
-      reference_ids: JSON.parse(row.reference_ids_json) as unknown,
-      target:
-        row.target_json === null
-          ? null
-          : (JSON.parse(row.target_json) as unknown),
-      workbench:
-        row.workbench_json === null
-          ? null
-          : (JSON.parse(row.workbench_json) as unknown),
-      task_revision: row.task_revision,
-      status: row.status,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    };
-    if (sha256(canonicalJson(record)) !== row.record_sha256)
-      throw new TeamError("corrupt_record", "Stored task link is invalid");
-    return TaskLinkSchema.parse(record);
-  };
-
-  const saveLink = (link: TaskLink, insert: boolean) => {
-    const recordHash = sha256(canonicalJson(link));
-    if (insert)
-      db.query(
-        "INSERT INTO task_links (link_id, team_id, conversation_id, requester_id, launch_key, provenance_json, reference_ids_json, target_json, workbench_json, task_revision, status, created_at, updated_at, record_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        link.link_id,
-        link.team_id,
-        link.conversation_id,
-        link.requester_id,
-        link.launch_key,
-        canonicalJson(link.provenance),
-        canonicalJson(link.reference_ids),
-        link.target === null ? null : canonicalJson(link.target),
-        link.workbench === null ? null : canonicalJson(link.workbench),
-        link.task_revision,
-        link.status,
-        link.created_at,
-        link.updated_at,
-        recordHash,
-      );
-    else
-      db.query(
-        "UPDATE task_links SET target_json = ?, workbench_json = ?, task_revision = ?, status = ?, updated_at = ?, record_sha256 = ? WHERE link_id = ?",
-      ).run(
-        link.target === null ? null : canonicalJson(link.target),
-        link.workbench === null ? null : canonicalJson(link.workbench),
-        link.task_revision,
-        link.status,
-        link.updated_at,
-        recordHash,
-        link.link_id,
-      );
-  };
-
-  /**
-   * Resolves a link for the actor: absent, foreign-team and non-participant
-   * cases all answer the same `not_found`; `requesterOnly` rejects other
-   * members with `forbidden` (they may inspect, never act).
-   */
-  const requireLink = (
-    actor: TeamActor,
-    linkId: string,
-    requesterOnly: boolean,
-  ): {
-    link: TaskLink;
-    conversation: ConversationRow;
-    participant: ParticipantRow;
-  } => {
-    const row = linkRow(linkId);
-    if (!row || row.team_id !== actor.team_id) throw notFound();
-    const { conversation, participant } = requireParticipant(
-      actor,
-      row.conversation_id,
-    );
-    const link = linkRecord(row);
-    if (link.requester_id !== actor.user_id) {
-      // A member who joined (or rejoined) after the quoted messages cannot read
-      // them through history, so the link stays invisible to them as well.
-      if (link.provenance.some((entry) => entry.seq <= participant.joined_seq))
-        throw notFound();
-      if (requesterOnly)
-        throw new TeamError(
-          "forbidden",
-          "Only the requester may act on a link",
-        );
-    }
-    return { link, conversation, participant };
-  };
-
   const linkRecordSchema: z.ZodType<TaskLink> = TaskLinkSchema;
 
   const buildCard = (
@@ -1364,45 +1190,6 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
       sha256(canonicalJson(record)),
       record.message_id,
     );
-    return MessageSchema.parse(record);
-  };
-  const insertMessage = (
-    conversation: ConversationRow,
-    record: Message,
-  ): Message => {
-    db.query(
-      "INSERT INTO messages (message_id, conversation_id, seq, author_id, client_message_id, body, body_sha256, reply_to, reference_ids_json, created_at, edited_at, deleted, record_sha256, kind, agent_request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)",
-    ).run(
-      record.message_id,
-      record.conversation_id,
-      record.seq,
-      record.author_id,
-      record.client_message_id,
-      record.body,
-      record.body_sha256,
-      record.reply_to,
-      JSON.stringify(record.reference_ids),
-      record.created_at,
-      sha256(canonicalJson(record)),
-      record.kind,
-      record.agent_request_id,
-    );
-    // Chips join through message_references; ids outside code_references
-    // (agent citations supplied by the host port) render as restricted chips.
-    record.reference_ids.forEach((referenceId, position) => {
-      db.query(
-        "INSERT INTO message_references (message_id, team_id, reference_id, position) SELECT ?, team_id, reference_id, ? FROM code_references WHERE team_id = ? AND reference_id = ?",
-      ).run(record.message_id, position, conversation.team_id, referenceId);
-    });
-    conversation.last_seq = record.seq;
-    emitEvent(
-      conversation,
-      "message",
-      record.seq,
-      record.message_id,
-      conversation.revision,
-    );
-    saveConversation(conversation);
     return MessageSchema.parse(record);
   };
   /** Author-only lookup for edits; absent and not-yours answer alike. */
@@ -1512,29 +1299,6 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
     return references;
   };
 
-  const emitEvent = (
-    conversation: ConversationRow,
-    kind: "message" | "membership" | "reaction" | "edit",
-    messageSeq: number,
-    messageId: string | null,
-    revision: number,
-  ): number => {
-    const eventSeq = conversation.last_event_seq + 1;
-    db.query(
-      "INSERT INTO outbox (conversation_id, event_seq, kind, message_seq, message_id, revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      conversation.conversation_id,
-      eventSeq,
-      kind,
-      messageSeq,
-      messageId,
-      revision,
-      timestamp(),
-    );
-    conversation.last_event_seq = eventSeq;
-    notify({ type: "event", conversation_id: conversation.conversation_id });
-    return eventSeq;
-  };
   const removeParticipant = (conversationId: string, userId: string) => {
     db.query(
       "UPDATE participants SET state = 'removed' WHERE conversation_id = ? AND user_id = ?",
@@ -1544,18 +1308,6 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
       conversation_id: conversationId,
       user_id: userId,
     });
-  };
-  const saveConversation = (conversation: ConversationRow) => {
-    db.query(
-      "UPDATE conversations SET title = ?, revision = ?, last_seq = ?, last_event_seq = ?, updated_at = ? WHERE conversation_id = ?",
-    ).run(
-      conversation.title,
-      conversation.revision,
-      conversation.last_seq,
-      conversation.last_event_seq,
-      timestamp(),
-      conversation.conversation_id,
-    );
   };
   const insertParticipant = (conversation: ConversationRow, userId: string) => {
     db.query(
@@ -1583,75 +1335,6 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
       conversation.conversation_id,
       userId,
     );
-  };
-
-  // Idempotency: (team, user, request, operation, input digest) → stored result.
-  // Equal digest replays; a reused request id with another input is a conflict.
-  const idempotent = <T>(
-    actor: TeamActor,
-    requestId: string,
-    operation: string,
-    input: unknown,
-    schema: z.ZodType<T>,
-    perform: () => T,
-  ): T => {
-    if (!idSchema.safeParse(requestId).success)
-      throw invalidInput("request_id is required");
-    const inputHash = sha256(canonicalJson(input));
-    const previous = db
-      .query<
-        { input_sha256: string; result_json: string },
-        [string, string, string, string]
-      >(
-        "SELECT input_sha256, result_json FROM idempotency WHERE team_id = ? AND user_id = ? AND request_id = ? AND operation = ?",
-      )
-      .all(actor.team_id, actor.user_id, requestId, operation);
-    const match = previous.find((row) => row.input_sha256 === inputHash);
-    if (match) {
-      if (operation === "messages.send") metrics.increment("send_replays");
-      try {
-        return schema.parse(
-          upgradeLegacyResult(operation, JSON.parse(match.result_json)),
-        );
-      } catch {
-        throw new TeamError("corrupt_record", "Corrupt idempotency result");
-      }
-    }
-    if (previous.length > 0)
-      throw conflict("Request id was reused with different input");
-    const result = perform();
-    const createdSeq =
-      (db
-        .query<{ max: number | null }, []>(
-          "SELECT MAX(created_seq) AS max FROM idempotency",
-        )
-        .get()?.max ?? 0) + 1;
-    db.query(
-      "INSERT INTO idempotency (team_id, user_id, request_id, operation, input_sha256, result_json, created_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      actor.team_id,
-      actor.user_id,
-      requestId,
-      operation,
-      inputHash,
-      canonicalJson(result),
-      createdSeq,
-    );
-    const count =
-      db
-        .query<{ count: number }, [string, string]>(
-          "SELECT COUNT(*) AS count FROM idempotency WHERE team_id = ? AND user_id = ?",
-        )
-        .get(actor.team_id, actor.user_id)?.count ?? 0;
-    if (count > limits.max_pending_idempotency_rows)
-      db.query(
-        "DELETE FROM idempotency WHERE rowid IN (SELECT rowid FROM idempotency WHERE team_id = ? AND user_id = ? ORDER BY created_seq LIMIT ?)",
-      ).run(
-        actor.team_id,
-        actor.user_id,
-        count - limits.max_pending_idempotency_rows,
-      );
-    return result;
   };
 
   const viewSchema: z.ZodType<ConversationView> = z
@@ -2303,7 +1986,7 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
           author_id: MARS_AGENT_USER_ID,
           kind: "agent",
           agent_request_id: row.request_id,
-          seq: conversation.last_seq + 1,
+          seq: storeDb.nextMessageSeq(conversation),
           client_message_id: `agent:${row.request_id}`,
           body,
           body_sha256: sha256(body),
@@ -2934,7 +2617,7 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
               author_id: actor.user_id,
               kind: "user",
               agent_request_id: null,
-              seq: conversation.last_seq + 1,
+              seq: storeDb.nextMessageSeq(conversation),
               client_message_id: parsed.data.client_message_id,
               body: parsed.data.body,
               body_sha256: bodyHash,
@@ -3133,12 +2816,7 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
             : conversation.last_seq + 1;
         const inputJson = canonicalJson(frozen);
         const recordJson = canonicalJson(record);
-        const createdSeq =
-          (db
-            .query<{ max: number | null }, []>(
-              "SELECT MAX(created_seq) AS max FROM agent_requests",
-            )
-            .get()?.max ?? 0) + 1;
+        const createdSeq = storeDb.nextCreatedSeq(ctx, "agent_requests");
         metrics.increment("agent_requests.pending");
         db.query(
           "INSERT INTO agent_requests (request_id, team_id, conversation_id, requester_id, idempotency_key, params_sha256, status, cancel_requested, anchor_seq, input_json, input_sha256, record_json, record_sha256, answer_body, created_seq) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, NULL, ?)",
@@ -3838,7 +3516,7 @@ export function createTeamStore(options: TeamStoreOptions): TeamStore {
                 "too_large",
                 "Message body exceeds the size limit",
               );
-            const seq = conversation.last_seq + 1;
+            const seq = storeDb.nextMessageSeq(conversation);
             const shareId = randomId();
             const at = timestamp();
             const record = insertMessage(conversation, {

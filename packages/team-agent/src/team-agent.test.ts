@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,11 +9,20 @@ import { loadModelRegistry } from "@mars/providers";
 import {
   type ClaimedAgentRequest,
   createTeamStore,
+  DEFAULT_TEAM_LIMITS,
+  TEAM_MAX_AGENT_CONTEXT_BYTES,
   type TeamActor,
   type TeamReferenceAccess,
   type TeamStore,
 } from "@mars/team";
-import { buildTeamContext, extractCitations, runTeamAgentRequest } from "./run";
+import {
+  buildTeamContext,
+  DEFAULT_TEAM_AGENT_POLICY,
+  extractCitations,
+  runTeamAgentRequest,
+  type TeamAgentErrorNotice,
+  teamAgentErrorNotice,
+} from "./run";
 import { createTeamAgentWorker } from "./worker";
 
 /**
@@ -483,4 +492,83 @@ test("context building bounds bytes and quoted lines, labels everything untruste
   ]);
   expect(cited.dropped).toBe(2);
   expect(cited.body).toBe("see [1](msg:a@1) and x and j");
+});
+
+test("session-open and run failures keep their reason codes and reach onError as identifier-only notices", async () => {
+  const f = await fixture();
+  const m1 = f.send(alice, "m1", "Question");
+  f.request([m1.message_id]);
+  const claimed = f.store.agentHost.claimNext();
+  if (!claimed) throw new Error("expected a claim");
+  const rootDir = join(f.base, "agent-runs");
+  const key = createHash("sha256")
+    .update(claimed.request.request_id)
+    .digest("hex")
+    .slice(0, 32);
+  // A file where the state directory must go makes `openRuntimeSession` fail.
+  await mkdir(join(rootDir, key), { recursive: true });
+  await Bun.write(join(rootDir, key, "state"), "");
+  const notices: TeamAgentErrorNotice[] = [];
+  const options = {
+    request: claimed.request,
+    input: claimed.input,
+    registry: f.registry,
+    rootDir,
+    env: { FIXTURE_KEY: "dummy-not-real" },
+    fetch: async (): Promise<Response> => {
+      throw new Error("must not be called");
+    },
+    onError: (notice: TeamAgentErrorNotice) => {
+      notices.push(notice);
+    },
+  };
+  const unavailable = await runTeamAgentRequest(options);
+  expect(unavailable.reason_code).toBe("session_unavailable");
+  expect(notices).toHaveLength(1);
+  expect(notices[0]?.reason_code).toBe("session_unavailable");
+  expect(notices[0]?.error_code).toMatch(/^E[A-Z]+$/);
+  expect(JSON.stringify(notices[0])).not.toContain(rootDir);
+
+  await rm(join(rootDir, key, "state"));
+  const failed = await runTeamAgentRequest({
+    ...options,
+    onSession: () => {
+      throw new TypeError(`leaked ${INJECTION} sk-[REDACTED]`);
+    },
+  });
+  expect(failed.status).toBe("failed");
+  expect(failed.reason_code).toBe("model_failed");
+  expect(notices[1]).toEqual({
+    reason_code: "model_failed",
+    error_name: "TypeError",
+    error_code: null,
+  });
+});
+
+test("error notices keep only identifier-shaped names and codes", () => {
+  const coded = Object.assign(new Error("secret body"), { code: "ENOENT" });
+  expect(teamAgentErrorNotice(coded, "model_failed")).toEqual({
+    reason_code: "model_failed",
+    error_name: "Error",
+    error_code: "ENOENT",
+  });
+  const hostile = Object.assign(new Error("x"), {
+    code: "token sk-[REDACTED] in the code",
+  });
+  expect(teamAgentErrorNotice(hostile, "model_failed").error_code).toBeNull();
+  expect(teamAgentErrorNotice("a raw string body", "model_failed")).toEqual({
+    reason_code: "model_failed",
+    error_name: "string",
+    error_code: null,
+  });
+});
+
+test("the runner's default context cap matches the store's frozen-context cap", () => {
+  expect(DEFAULT_TEAM_AGENT_POLICY.max_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(DEFAULT_TEAM_LIMITS.max_agent_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(TEAM_MAX_AGENT_CONTEXT_BYTES).toBe(64 * 1024);
 });
