@@ -210,7 +210,7 @@ async function run() {
         );
       return response.result as T;
     };
-    /** Opens `events.stream` and collects `data:` frames until closed or aborted. */
+    /** Opens `events.stream` and collects `data:` frames until closed or aborted; a non-abort read/parse failure is kept as `streamError` and thrown by `waitFor`. */
     const stream = async (user: string, cursors: unknown) => {
       const controller = new AbortController();
       const response = await fetch(`${report.url}/v1/stream`, {
@@ -233,6 +233,7 @@ async function run() {
       const frames: { event: string | null; data: Record<string, unknown> }[] =
         [];
       let ended = false;
+      let streamError: unknown;
       const done = (async () => {
         if (response.status !== 200 || !response.body) {
           ended = true;
@@ -264,8 +265,8 @@ async function run() {
               });
             }
           }
-        } catch {
-          // aborted
+        } catch (error) {
+          if (!controller.signal.aborted) streamError = error;
         } finally {
           ended = true;
         }
@@ -273,7 +274,14 @@ async function run() {
       const waitFor = async (predicate: () => boolean, ms = 5000) => {
         const until = Date.now() + ms;
         while (!predicate()) {
-          if (ended || Date.now() > until) return predicate();
+          if (ended || Date.now() > until) {
+            if (predicate()) return true;
+            if (streamError !== undefined)
+              throw new Error(
+                `stream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`,
+              );
+            return false;
+          }
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
         return true;
@@ -285,6 +293,7 @@ async function run() {
         abort: () => controller.abort(),
         done,
         isEnded: () => ended,
+        streamError: () => streamError,
       };
     };
     const check = async (scenario: string, fn: () => Promise<string>) => {
