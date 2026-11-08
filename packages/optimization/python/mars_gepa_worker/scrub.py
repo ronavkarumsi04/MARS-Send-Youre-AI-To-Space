@@ -10,14 +10,14 @@ _SECRET_PATTERNS = [
         r"\b(?:api[_-]?key|access[_-]?token|secret|password|passwd|token)\s*[:=]\s*[\"']?[^\s\"']{6,}",
         re.IGNORECASE,
     ),
-    re.compile(r"\b(?:sk|pk|rk)-[a-z0-9_-]{16,}\b", re.IGNORECASE),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?<![A-Za-z0-9])(?:sk|pk|rk)-[a-z0-9_-]{16,}\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?"
     ),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}\b"),
 ]
 
 TRUNCATION_MARKER = "…[truncated]"

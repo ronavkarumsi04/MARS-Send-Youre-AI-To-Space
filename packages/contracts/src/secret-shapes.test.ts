@@ -19,6 +19,8 @@ const SAMPLES = [
   "github_pat_abcdefghijklmnopqrst",
   "-----BEGIN RSA PRIVATE KEY-----",
   "xoxb-1234567890",
+  "env_sk-abcdefghijklmnop",
+  "MY_ghp_abcdefghijklmnopqrst",
 ];
 
 describe("secret shapes", () => {
