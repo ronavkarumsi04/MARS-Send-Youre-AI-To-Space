@@ -1,10 +1,9 @@
-import type { GitResult } from "./git";
+import { gitFailure, verifyCommit } from "./git-probe";
 import { validateLocator } from "./locator";
 import type { RepoRegistry } from "./registry";
 import {
   type Locator,
   type ResolvedReference,
-  type ResolveErrorReason,
   type ResolveLimits,
   type ResolveLimitsInput,
   ResolveLimitsSchema,
@@ -17,13 +16,6 @@ const BINARY_PROBE_BYTES = 8 * 1024;
 type Located = Pick<Locator, "repo_id" | "commit_sha" | "path"> & {
   git_version: string | null;
 };
-
-function failure(result: GitResult): ResolveErrorReason | null {
-  if (result.spawn_error) return "git_unavailable";
-  if (result.timed_out) return "timeout";
-  if (result.truncated) return "output_truncated";
-  return null;
-}
 
 function decodeAscii(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
@@ -106,30 +98,22 @@ export async function resolveReference(
       maxOutputBytes,
     });
 
-  const commit = await run(
-    [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      "--end-of-options",
-      `${locator.commit_sha}^{commit}`,
-    ],
-    4096,
+  const commit = await verifyCommit(
+    git,
+    repo.dir,
+    locator.commit_sha,
+    limits.timeout_ms,
   );
-  const commitFailure = failure(commit);
-  if (commitFailure)
-    return { state: "error", ...located, reason: commitFailure };
-  if (
-    commit.exit_code !== 0 ||
-    decodeAscii(commit.stdout) !== locator.commit_sha
-  )
+  if (commit.state === "error")
+    return { state: "error", ...located, reason: commit.reason };
+  if (commit.state === "unavailable")
     return { state: "unavailable", ...located };
 
   const tree = await run(
     ["ls-tree", "-z", locator.commit_sha, "--", locator.path],
     64 * 1024,
   );
-  const treeFailure = failure(tree);
+  const treeFailure = gitFailure(tree);
   if (treeFailure) return { state: "error", ...located, reason: treeFailure };
   if (tree.exit_code !== 0)
     return { state: "error", ...located, reason: "git_error" };
@@ -145,7 +129,7 @@ export async function resolveReference(
   const blob_sha = entry.object;
 
   const size = await run(["cat-file", "-s", blob_sha], 64);
-  const sizeFailure = failure(size);
+  const sizeFailure = gitFailure(size);
   if (sizeFailure) return { state: "error", ...located, reason: sizeFailure };
   const size_bytes = Number.parseInt(decodeAscii(size.stdout), 10);
   if (
@@ -167,7 +151,7 @@ export async function resolveReference(
     ["cat-file", "blob", blob_sha],
     limits.max_blob_bytes + 1,
   );
-  const blobFailure = failure(blob);
+  const blobFailure = gitFailure(blob);
   if (blobFailure) return { state: "error", ...located, reason: blobFailure };
   if (blob.exit_code !== 0 || blob.stdout.length !== size_bytes)
     return { state: "error", ...located, reason: "git_error" };
