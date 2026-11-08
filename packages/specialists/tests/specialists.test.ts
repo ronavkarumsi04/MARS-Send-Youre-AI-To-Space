@@ -17,12 +17,14 @@ import { loadModelRegistry } from "@mars/providers";
 import {
   candidateDigest,
   canonicalJson,
+  checkServingReadiness,
   checkSpecialistBindings,
   formatRef,
   type ModelCatalog,
   type ReasonCode,
   rankCandidates,
   resolveFallbackChain,
+  type ServingAttestor,
   SpecialistRegistryError,
   sha256,
   verifyEvidence,
@@ -1791,6 +1793,74 @@ describe("specialist evidence and persistence", () => {
       { catalog: fakeCatalog() },
     );
     expect(bindings[0]?.cost_basis).toBe("free");
+  });
+
+  test("routing and readiness agree on serving attestation", async () => {
+    const { artifacts } = await setupRegistry();
+    const { registration } = await makeSpecialistFixture(artifacts);
+    const binding = registration.profile.serving[0];
+    if (!binding) throw new Error("fixture has no serving binding");
+    const attestation = {
+      model_id: binding.model_id,
+      provider_id: binding.provider_id,
+      provider_model: binding.provider_model,
+      base_model: registration.base_model,
+      tokenizer: registration.tokenizer,
+      chat_template_sha256: registration.chat_template.sha256,
+      adapter_formats: [],
+      loaded_adapter_sha256s: [],
+    };
+    const cases: {
+      attestor?: ServingAttestor;
+      expected: "verified" | "absent";
+      reason?: ReasonCode;
+    }[] = [
+      { expected: "absent" },
+      { attestor: { attest: async () => attestation }, expected: "verified" },
+      {
+        attestor: {
+          attest: async () => ({ ...attestation, chat_template_sha256: "0" }),
+        },
+        expected: "verified",
+        reason: "serving_chat_template_mismatch",
+      },
+      { attestor: { attest: async () => null }, expected: "absent" },
+      {
+        attestor: {
+          attest: async () => {
+            throw new Error("synthetic attestor failure");
+          },
+        },
+        expected: "absent",
+      },
+    ];
+    const attestationReasons = (reasons: ReasonCode[]) =>
+      reasons.filter(
+        (reason) =>
+          reason.startsWith("serving_") || reason === "model_binding_mismatch",
+      );
+    for (const item of cases) {
+      const options = {
+        catalog: fakeCatalog(),
+        ...(item.attestor ? { servingAttestor: item.attestor } : {}),
+      };
+      const [routed] = await checkSpecialistBindings(
+        context,
+        registration,
+        routingRequest(),
+        { cost_usd_per_task: null, runtime_ms_p95: null },
+        options,
+      );
+      const [ready] = await checkServingReadiness(
+        context,
+        registration,
+        options,
+      );
+      expect(routed?.serving_attestation).toBe(item.expected);
+      expect(ready?.serving_attestation).toBe(item.expected);
+      expect(ready?.reasons).toEqual(attestationReasons(routed?.reasons ?? []));
+      expect(ready?.reasons).toEqual(item.reason ? [item.reason] : []);
+    }
   });
 
   test("retries only before side effects, excludes attempted refs, and caps attempts", async () => {
