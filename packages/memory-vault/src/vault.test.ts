@@ -797,6 +797,53 @@ test("review: notes are written with private permissions", async () => {
   expect(statSync(join(vaultDir, "facts")).mode & 0o777).toBe(0o700);
 });
 
+test("review: an unusable new MARS note is invalid with a reason, plain Markdown stays untracked", async () => {
+  const { common, vaultDir, memory, skills } = await fixture();
+  await exportVault(ctx, common);
+  writeFileSync(join(vaultDir, "facts/plain.md"), "plain user note\n");
+  writeFileSync(
+    join(vaultDir, "facts/obsidian.md"),
+    "---\ntags: notes\n---\nMy own note.\n",
+  );
+  writeFileSync(
+    join(vaultDir, "facts/typo.md"),
+    "---\nmars_kind: memory_fact\n\tbroken: yes\n---\nAlmost a fact.\n",
+  );
+  writeFileSync(
+    join(vaultDir, "facts/wrong-kind.md"),
+    "---\nmars_kind: skill\n---\nA skill in the facts folder.\n",
+  );
+  writeFileSync(
+    join(vaultDir, "skills/unknown.md"),
+    "---\nmars_kind: recipe\n---\nNot a MARS kind.\n",
+  );
+  const report = await importVault(ctx, { ...common, actor: "tester" });
+  const reasons = Object.fromEntries(
+    report.items
+      .filter((i) => i.action === "invalid")
+      .map((i) => [i.path, i.reason]),
+  );
+  expect(Object.keys(reasons).sort()).toEqual([
+    "facts/typo.md",
+    "facts/wrong-kind.md",
+    "skills/unknown.md",
+  ]);
+  expect(reasons["facts/typo.md"]).toContain("invalid_frontmatter");
+  expect(reasons["facts/wrong-kind.md"]).toBe(
+    "mars_kind skill does not belong in facts/; expected memory_fact",
+  );
+  expect(reasons["skills/unknown.md"]).toBe(
+    "mars_kind recipe does not belong in skills/; expected skill",
+  );
+  expect(report.proposals).toEqual({ memory: [], skills: [] });
+  expect(await memory.listProposals(ctx, "pending")).toEqual([]);
+  expect(await skills.listProposals()).toEqual([]);
+  const status = await vaultStatus(ctx, common);
+  expect(status.memory.notes.invalid).toBe(2);
+  expect(status.skills.notes.invalid).toBe(1);
+  expect(status.untracked).toBe(2);
+});
+
 test("review: a tracked note whose mars_kind was changed is invalid, not proposed", async () => {
   const { common, vaultDir, memory, skills } = await fixture();
   await exportVault(ctx, common);

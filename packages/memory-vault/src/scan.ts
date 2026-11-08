@@ -4,7 +4,7 @@ import type { RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
 import { VaultError } from "./errors";
 import { readManifest, skillNotePath } from "./export";
-import { type ParsedNote, parseNote, sha256 } from "./notes";
+import { NoteParseError, type ParsedNote, parseNote, sha256 } from "./notes";
 import {
   assertVaultDirectory,
   contains,
@@ -47,7 +47,7 @@ export interface VaultScan {
   memoryStale: boolean;
   skillsStale: boolean;
   notes: ScannedNote[];
-  /** Markdown files inside facts/ or skills/ that the vault neither tracks nor recognises. */
+  /** Markdown files inside facts/ or skills/ without MARS frontmatter (no frontmatter or no `mars_kind`). */
   untracked: number;
 }
 
@@ -222,16 +222,44 @@ export async function scanVault(
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw error;
       }
+      const invalid = (reason: string): ScannedNote => ({
+        path,
+        kind: expected,
+        id: null,
+        state: "invalid",
+        derived: false,
+        tracked: null,
+        note: null,
+        reason,
+      });
       let note: ParsedNote;
       try {
         note = parseNote(text);
-      } catch {
+      } catch (error) {
+        // Plain Markdown without frontmatter is not a MARS note.
+        if (
+          error instanceof NoteParseError &&
+          error.code === "no_frontmatter"
+        ) {
+          untracked += 1;
+          continue;
+        }
+        notes.push(
+          invalid(error instanceof Error ? error.message : "unparseable note"),
+        );
+        continue;
+      }
+      if (note.frontmatter.mars_kind === undefined) {
         untracked += 1;
         continue;
       }
       const kind = kindOf(note);
       if (kind !== expected) {
-        untracked += 1;
+        notes.push(
+          invalid(
+            `mars_kind ${String(note.frontmatter.mars_kind)} does not belong in ${dir}/; expected ${expected}`,
+          ),
+        );
         continue;
       }
       const idField = kind === "memory_fact" ? "entry_id" : "name";
