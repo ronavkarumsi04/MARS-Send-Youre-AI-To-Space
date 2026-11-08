@@ -99,11 +99,20 @@ export interface ChildRunnerOptions {
   modelPolicy?: ModelSelectionPolicy;
   runnerId?: string;
   heartbeatMs?: number;
+  /**
+   * Called when the runner cannot record a job's failure. The job stays
+   * leased and is closed by `recover()` once its lease expires.
+   */
+  onError?: (error: unknown, context: { job_id: string }) => void;
 }
 
 interface LocalRun {
   promise: Promise<void>;
   cancel(): Promise<void>;
+}
+
+function isLeaseLost(error: unknown): boolean {
+  return error instanceof CollaborationError && error.code === "lease_lost";
 }
 
 function tokenUse(usage: ChildUsage): number {
@@ -326,10 +335,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
         if (isBudgetStop) await cancelRun("budget");
         else if (result.stop) await cancelRun("cancelled");
       } catch (error) {
-        if (
-          error instanceof CollaborationError &&
-          error.code === "lease_lost"
-        ) {
+        if (isLeaseLost(error)) {
           leaseLost = true;
           await cancelRun("lease_lost");
           return;
@@ -416,15 +422,9 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
         try {
           await onProgress(latest);
         } catch (error) {
-          if (
-            error instanceof CollaborationError &&
-            error.code === "lease_lost"
-          ) {
-            leaseLost = true;
-            await cancelRun("lease_lost");
-          } else {
-            throw error;
-          }
+          if (!isLeaseLost(error)) throw error;
+          leaseLost = true;
+          await cancelRun("lease_lost");
         }
         const heartbeat = async () => {
           if (heartbeatBusy || leaseLost || controller.signal.aborted) return;
@@ -432,10 +432,9 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
           try {
             await onProgress(latest);
           } catch (error) {
-            if (
-              error instanceof CollaborationError &&
-              error.code === "lease_lost"
-            ) {
+            // A failed periodic heartbeat stops the child instead of
+            // failing the run; only a lost lease skips finalization.
+            if (isLeaseLost(error)) {
               leaseLost = true;
               await cancelRun("lease_lost");
             } else {
@@ -517,7 +516,12 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
               ...(errorCode ? { errorCode } : {}),
             },
           );
-        } catch {
+        } catch (finalizeError) {
+          try {
+            options.onError?.(finalizeError, { job_id: jobId });
+          } catch {
+            // A throwing reporter must not change how the run settles.
+          }
           return;
         }
       } finally {
@@ -538,12 +542,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
             claimed.lease_epoch,
           );
         } catch (error) {
-          if (
-            !(
-              error instanceof CollaborationError && error.code === "lease_lost"
-            )
-          )
-            throw error;
+          if (!isLeaseLost(error)) throw error;
         }
         await cancelRun("cancelled");
       },
