@@ -2,6 +2,9 @@ import type { ReferenceChip } from "@mars/contracts";
 import {
   type ConversationPage,
   type ConversationSummary,
+  decodeCursor,
+  encodeCursor,
+  excerpt,
   fail,
   MAX_SEARCH_HITS,
   MAX_SEARCH_QUERY_CHARS,
@@ -32,25 +35,10 @@ import {
   type MessageView as ServiceMessage,
 } from "./protocol";
 
-const CURSOR_PREFIX = "seq:";
-const EXCERPT_CHARS = 80;
 const DEFAULT_PAGE = 20;
 const MAX_PAGE = 200;
 /** Messages kept per conversation in the host cache; older pages are re-fetched on demand. */
 const MAX_CACHED_PER_CONVERSATION = 1000;
-
-function excerpt(body: string): string {
-  const flat = body.replace(/\s+/g, " ").trim();
-  return flat.length <= EXCERPT_CHARS
-    ? flat
-    : `${flat.slice(0, EXCERPT_CHARS - 1)}…`;
-}
-
-function decodeCursor(cursor: string): number | null {
-  if (!cursor.startsWith(CURSOR_PREFIX)) return null;
-  const n = Number(cursor.slice(CURSOR_PREFIX.length));
-  return Number.isInteger(n) && n >= 0 ? n : null;
-}
 
 /**
  * Maps transport failures to the fixed `TeamErrorCode` vocabulary. Only the
@@ -537,8 +525,7 @@ export class RpcTeamService implements TeamService {
       return {
         conversation: this.summary(view, me),
         messages: visible.map((m) => this.messageView(m)),
-        older_cursor:
-          olderExists && first ? `${CURSOR_PREFIX}${first.seq}` : null,
+        older_cursor: olderExists && first ? encodeCursor(first.seq) : null,
       };
     });
   }
