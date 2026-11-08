@@ -10,6 +10,7 @@ import {
   MIN_PYTHON,
   MINI_SWE_AGENT_VERSION,
 } from "./pins";
+import { killProcessGroup } from "./process-group";
 
 /** Which agent a Harbor run launches; both arms share dataset, model and environment. */
 export type HarborArm = "baseline" | "candidate";
@@ -442,20 +443,12 @@ export function createHarborRunner(options: HarborRunnerOptions) {
     const killTree = (reason: NonNullable<HarborRunOutcome["killed"]>) => {
       if (killed) return;
       killed = reason;
-      try {
-        process.kill(-proc.pid, "SIGTERM");
-      } catch {
-        proc.kill("SIGTERM");
-      }
-      const escalate = setTimeout(() => {
-        try {
-          process.kill(-proc.pid, "SIGKILL");
-        } catch {
-          proc.kill("SIGKILL");
-        }
-      }, 5000);
-      escalate.unref();
-      void proc.exited.finally(() => clearTimeout(escalate));
+      const escalate = killProcessGroup(proc.pid, {
+        fallback: (signal) => proc.kill(signal),
+      });
+      void proc.exited.finally(() => {
+        if (escalate) clearTimeout(escalate);
+      });
     };
     const deadline = setTimeout(() => killTree("deadline"), remaining);
     deadline.unref();

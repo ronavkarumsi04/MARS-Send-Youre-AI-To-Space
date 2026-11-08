@@ -19,6 +19,7 @@ import {
   sha256Hex,
 } from "./manifest";
 import { MARS_AGENT_NAME, MINI_SWE_AGENT_VERSION } from "./pins";
+import { killProcessGroup } from "./process-group";
 import { buildEvaluationReport, EVALUATION_REPORT_MEDIA_TYPE } from "./report";
 import type { HarborRunner } from "./runner";
 import { type ArtifactSink, storeTrialBundle } from "./trajectory";
@@ -70,22 +71,6 @@ export const JobRecordSchema = z
 export type JobRecord = z.infer<typeof JobRecordSchema>;
 
 const JOB_ID_PATTERN = /^[a-f0-9]{32}$/;
-
-function killProcessGroup(pid: number): void {
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const escalate = setTimeout(() => {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  }, 5000);
-  escalate.unref();
-}
 
 function scopeKey(context: RequestContext): string {
   return `${context.scope.owner_id}/${context.scope.project_id}`;
