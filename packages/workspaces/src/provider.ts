@@ -37,6 +37,7 @@ import {
   WorkspacePolicyError,
 } from "./errors";
 import { resolveSafePath, validateRelativePath } from "./paths";
+import { isValidArgv } from "./sandbox";
 import {
   acquireProviderLock,
   type CheckpointRecord,
@@ -951,19 +952,8 @@ export async function createLocalWorkspaceProvider(
         assertOpen();
         const current = await reloadWorkspaceMeta(meta.workspace_id);
         await assertWorkspaceAvailable(current);
-        if (
-          !Array.isArray(argv) ||
-          argv.length === 0 ||
-          argv.length > 256 ||
-          argv.some(
-            (arg) =>
-              typeof arg !== "string" ||
-              arg.includes("\0") ||
-              Buffer.byteLength(arg) > 4096,
-          )
-        ) {
+        if (!isValidArgv(argv))
           throw new WorkspacePolicyError("Invalid command arguments");
-        }
         const parsedBudget = BudgetSchema.safeParse(budget);
         if (!parsedBudget.success)
           throw new WorkspacePolicyError("Invalid execution budget");

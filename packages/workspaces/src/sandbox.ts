@@ -25,6 +25,23 @@ export interface ResolvedDockerConfig {
 const PINNED_IMAGE_PATTERN = /^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/;
 const SAFE_LABEL_PATTERN = /^[A-Za-z0-9._-]+$/;
 
+export const MAX_COMMAND_ARGS = 256;
+export const MAX_COMMAND_ARG_BYTES = 4096;
+
+export function isValidArgv(argv: unknown): argv is readonly string[] {
+  return (
+    Array.isArray(argv) &&
+    argv.length > 0 &&
+    argv.length <= MAX_COMMAND_ARGS &&
+    argv.every(
+      (arg) =>
+        typeof arg === "string" &&
+        !arg.includes("\0") &&
+        Buffer.byteLength(arg) <= MAX_COMMAND_ARG_BYTES,
+    )
+  );
+}
+
 export function resolveDockerConfig(
   options: DockerSandboxOptions,
 ): ResolvedDockerConfig {
@@ -49,7 +66,7 @@ export function buildDockerRunArgs(
   containerName: string,
 ): string[] {
   validateResolvedConfig(resolved);
-  if (!/^[A-Za-z0-9._-]+$/.test(containerName))
+  if (!SAFE_LABEL_PATTERN.test(containerName))
     throw new TypeError("Invalid Docker container name");
   if (containerName !== `mars-ws-${request.runId}`)
     throw new TypeError("Container name must match the run id");
@@ -60,21 +77,10 @@ export function buildDockerRunArgs(
   ) {
     throw new TypeError("Unsafe Docker workspace mount path");
   }
-  if (!/^[A-Za-z0-9._-]+$/.test(request.runId))
+  if (!SAFE_LABEL_PATTERN.test(request.runId))
     throw new TypeError("Invalid workspace run id");
-  if (
-    !Array.isArray(request.argv) ||
-    request.argv.length === 0 ||
-    request.argv.length > 256 ||
-    request.argv.some(
-      (arg) =>
-        typeof arg !== "string" ||
-        arg.includes("\0") ||
-        Buffer.byteLength(arg) > 4096,
-    )
-  ) {
+  if (!isValidArgv(request.argv))
     throw new TypeError("Invalid command arguments");
-  }
   if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0) {
     throw new TypeError("Invalid timeout");
   }
