@@ -13,6 +13,7 @@ import {
   type UserView,
 } from "@mars/team-chat";
 import { z } from "zod";
+import { MAX_SEARCH_QUERY_CHARS } from "./protocol";
 
 const id = z
   .string()
@@ -21,7 +22,6 @@ const id = z
   .regex(/^[A-Za-z0-9._:-]+$/);
 const cursor = z.string().min(1).max(64);
 const sequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-export const MAX_SEARCH_QUERY_CHARS = 200;
 
 /**
  * Messages the Team Chat webview may send. Anything else is dropped. The
