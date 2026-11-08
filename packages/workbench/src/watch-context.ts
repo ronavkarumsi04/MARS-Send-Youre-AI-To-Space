@@ -1,6 +1,7 @@
 import type { RequestContext } from "@mars/contracts";
 import type { DurableTaskStore } from "@mars/tasks";
 import {
+  EVIDENCE_BINDING_ERROR_PATTERN,
   WATCH_EVIDENCE_PRODUCER,
   WATCH_PACKAGE_VERSION,
   WATCH_SKILL_VERSION,
@@ -39,12 +40,10 @@ export function watchEvidence(
         workspace_id: _workspace,
         workspace_revision: _revision,
         diff_sha256: _digest,
+        binding_error: _error,
         ...unbound
       } = record;
-      const bound = binding ? await binding().catch(() => null) : null;
-      const payload: WatchEvidenceRecord = bound
-        ? { ...unbound, ...bound }
-        : unbound;
+      const payload = binding ? await bindRecord(unbound, binding) : unbound;
       await store.appendEvent(context(), taskId, {
         event_type: "tool.completed",
         run_id: crypto.randomUUID(),
@@ -69,12 +68,39 @@ export function watchEvidence(
         )
           continue;
         const bytes = await store.artifacts.get(current, event.payload);
-        const parsed = WatchEvidenceRecordSchema.safeParse(
-          JSON.parse(new TextDecoder().decode(bytes)),
-        );
+        const parsed = WatchEvidenceRecordSchema.safeParse(parseJson(bytes));
         if (parsed.success) records.push(parsed.data);
       }
       return records.slice(-MAX_LISTED_RECORDS);
     },
   };
+}
+
+/**
+ * Stamps the host binding onto a record. When the binding cannot be resolved
+ * the record is still persisted, unbound, with `binding_error` naming the
+ * failure, so a later "stale" verdict is traceable to it.
+ */
+async function bindRecord(
+  record: WatchEvidenceRecord,
+  binding: () => Promise<EvidenceBinding>,
+): Promise<WatchEvidenceRecord> {
+  try {
+    return { ...record, ...(await binding()) };
+  } catch (error) {
+    return { ...record, binding_error: bindingErrorName(error) };
+  }
+}
+
+function bindingErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : undefined;
+  return name && EVIDENCE_BINDING_ERROR_PATTERN.test(name) ? name : "Error";
+}
+
+function parseJson(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
 }
