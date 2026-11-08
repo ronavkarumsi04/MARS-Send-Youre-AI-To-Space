@@ -810,6 +810,14 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
     "---\ntags:\tnotes\n---\nMy own note with a tab.\n",
   );
   writeFileSync(
+    join(vaultDir, "facts/example.md"),
+    "# Notes\n\n```yaml\nmars_kind: memory_fact\n```\n",
+  );
+  writeFileSync(
+    join(vaultDir, "facts/indented.md"),
+    "---\n  mars_kind: memory_fact\n  broken:\tyes\n---\nIndented typo.\n",
+  );
+  writeFileSync(
     join(vaultDir, "facts/typo.md"),
     "---\nmars_kind: memory_fact\n\tbroken: yes\n---\nAlmost a fact.\n",
   );
@@ -832,6 +840,7 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
       .map((i) => [i.path, i.reason]),
   );
   expect(Object.keys(reasons).sort()).toEqual([
+    "facts/indented.md",
     "facts/typo.md",
     "facts/unclosed.md",
     "facts/wrong-kind.md",
@@ -849,9 +858,9 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
   expect(await memory.listProposals(ctx, "pending")).toEqual([]);
   expect(await skills.listProposals()).toEqual([]);
   const status = await vaultStatus(ctx, common);
-  expect(status.memory.notes.invalid).toBe(3);
+  expect(status.memory.notes.invalid).toBe(4);
   expect(status.skills.notes.invalid).toBe(1);
-  expect(status.untracked).toBe(3);
+  expect(status.untracked).toBe(4);
 });
 
 test("review: a tracked note whose mars_kind was changed is invalid, not proposed", async () => {

@@ -95,6 +95,18 @@ function kindOf(note: ParsedNote): NoteKind | null {
 }
 
 /**
+ * Whether unparseable text still opens a frontmatter block that declares
+ * `mars_kind`: a broken MARS note rather than the user's own Markdown.
+ */
+function declaresMarsKind(text: string): boolean {
+  const source = text.replaceAll("\r\n", "\n");
+  if (!source.startsWith("---\n")) return false;
+  const end = source.indexOf("\n---\n", 4);
+  const block = end < 0 ? source : source.slice(0, end + 1);
+  return /^[ \t]*mars_kind[ \t]*:/m.test(block);
+}
+
+/**
  * Reads the manifest and every tracked note, classifies each against its
  * exported `content_digest`, and discovers new fact/skill notes. Pure read:
  * no store is mutated and nothing is proposed here.
@@ -236,9 +248,7 @@ export async function scanVault(
       try {
         note = parseNote(text);
       } catch (error) {
-        // Without a `mars_kind` line this is the user's own Markdown, not a
-        // broken MARS note.
-        if (!/^mars_kind[ \t]*:/m.test(text)) {
+        if (!declaresMarsKind(text)) {
           untracked += 1;
           continue;
         }
