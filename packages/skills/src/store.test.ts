@@ -470,6 +470,36 @@ describe("skill lifecycle owner", () => {
   });
 });
 
+describe("persisted state validation", () => {
+  it("reports malformed lifecycle, transaction and journal files as corrupt", async () => {
+    await store.create("test", content("test"), { ...options, reviewId: "r" });
+    const lifecycle = await read(".lifecycle.json");
+    for (const text of ["{", JSON.stringify({ skills: [] })]) {
+      await writeFile(join(root, ".lifecycle.json"), text);
+      await expect(store.list()).rejects.toMatchObject({
+        name: "SkillError",
+        code: "corrupt",
+      });
+    }
+    await writeFile(join(root, ".lifecycle.json"), lifecycle);
+
+    await writeFile(
+      join(root, ".skills-transaction.json"),
+      JSON.stringify({ state: { skills: {} }, journal: "" }),
+    );
+    await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+    await rm(join(root, ".skills-transaction.json"));
+
+    const journal = await read("changes.jsonl");
+    await writeFile(join(root, "changes.jsonl"), `${journal}{"ts":1}\n`);
+    await expect(store.undoReview("r", options)).rejects.toMatchObject({
+      code: "corrupt",
+    });
+    await writeFile(join(root, "changes.jsonl"), journal);
+    expect(await store.undoReview("r", options)).toHaveLength(1);
+  });
+});
+
 describe("writer lock recovery", () => {
   it("reclaims an aged ownerless lock directory but not a fresh one", async () => {
     const lock = join(root, ".writer.lock");
