@@ -9,14 +9,19 @@ import type {
 } from "@mars/contracts";
 import type { AdapterOptions, ProviderAdapter } from "./adapter-types";
 import { ProviderError } from "./errors";
-
-type JsonObject = Record<string, unknown>;
-
-function asObject(value: unknown): JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
+import {
+  asObject,
+  assertOk,
+  hasErrorEnvelope,
+  type JsonObject,
+  parseSseJson,
+  providerEnvelopeError,
+  readJson,
+  readSseFrames,
+  sendProviderRequest,
+  streamBody,
+  streamFailure,
+} from "./http";
 
 function contentText(
   content: string | { type: "text"; text: string }[],
@@ -24,16 +29,6 @@ function contentText(
   return typeof content === "string"
     ? content
     : content.map((part) => part.text).join("");
-}
-
-function parseRetryAfter(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const timestamp = Date.parse(header);
-  return Number.isNaN(timestamp)
-    ? undefined
-    : Math.max(0, timestamp - Date.now());
 }
 
 function anthropicMessages(messages: ChatMessage[]): JsonObject[] {
@@ -117,103 +112,6 @@ function anthropicRequestBody(
   };
 }
 
-async function* readSseEvents(
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<{ event: string; data: string }> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName = "";
-  let dataLines: string[] = [];
-  const processLine = (
-    rawLine: string,
-  ): { event: string; data: string } | undefined => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    if (!line) {
-      const frame =
-        dataLines.length > 0
-          ? { event: eventName, data: dataLines.join("\n") }
-          : undefined;
-      eventName = "";
-      dataLines = [];
-      return frame;
-    }
-    if (line.startsWith(":")) return undefined;
-    if (line.startsWith("event:")) {
-      eventName = line.slice(6).replace(/^ /, "");
-    } else if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).replace(/^ /, ""));
-    }
-    return undefined;
-  };
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      buffer += done
-        ? decoder.decode()
-        : decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf("\n");
-      while (newline !== -1) {
-        const frame = processLine(buffer.slice(0, newline));
-        buffer = buffer.slice(newline + 1);
-        if (frame) yield frame;
-        newline = buffer.indexOf("\n");
-      }
-      if (done) break;
-    }
-    if (buffer) {
-      const frame = processLine(buffer);
-      if (frame) yield frame;
-    }
-    if (dataLines.length > 0) {
-      yield { event: eventName, data: dataLines.join("\n") };
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function streamErrorStatus(error: JsonObject): number | undefined {
-  const rawStatus = error.status;
-  if (typeof rawStatus === "number" && Number.isInteger(rawStatus))
-    return rawStatus;
-  if (typeof rawStatus === "string" && /^\d{3}$/.test(rawStatus))
-    return Number(rawStatus);
-  const code =
-    typeof error.code === "string"
-      ? error.code
-      : typeof error.code === "number"
-        ? String(error.code)
-        : typeof error.type === "string"
-          ? error.type
-          : "";
-  if (/^\d{3}$/.test(code)) return Number(code);
-  const normalized = code.toLowerCase();
-  if (/rate.?limit|too.?many.?requests|quota/.test(normalized)) return 429;
-  if (/timeout|timed.?out/.test(normalized)) return 408;
-  if (/overload/.test(normalized)) return 529;
-  if (/server|internal|unavailable/.test(normalized)) return 500;
-  return undefined;
-}
-
-function providerEnvelopeError(
-  providerId: string,
-  error: JsonObject,
-): ProviderError {
-  const status = streamErrorStatus(error);
-  const retryable =
-    status === 408 || status === 429 || (status !== undefined && status >= 500);
-  return new ProviderError(
-    providerId,
-    `Provider returned an error envelope${status ? ` (HTTP ${status})` : ""}.`,
-    {
-      ...(status !== undefined ? { status } : {}),
-      retryable,
-    },
-  );
-}
-
 export function createAnthropicAdapter(
   provider: ProviderConfig,
   options: AdapterOptions = {},
@@ -223,76 +121,35 @@ export function createAnthropicAdapter(
   const timeoutMs = options.timeoutMs ?? 30_000;
   const baseUrl = provider.baseUrl.replace(/\/+$/, "");
 
+  function send(body: JsonObject, accept: string) {
+    const headers = new Headers(provider.headers);
+    headers.set("Content-Type", "application/json");
+    headers.set("Accept", accept);
+    headers.set("anthropic-version", "2023-06-01");
+    const apiKey = provider.apiKeyEnv ? env[provider.apiKeyEnv] : undefined;
+    if (apiKey) headers.set("x-api-key", apiKey);
+    return sendProviderRequest({
+      providerId: provider.id,
+      fetch: fetcher,
+      url: `${baseUrl}/v1/messages`,
+      headers,
+      body,
+      timeoutMs,
+    });
+  }
+
   async function complete(
     request: ChatRequest,
     model: ModelConfig,
   ): Promise<ChatResponse> {
-    const headers = new Headers(provider.headers);
-    headers.set("Content-Type", "application/json");
-    headers.set("Accept", "application/json");
-    headers.set("anthropic-version", "2023-06-01");
-    const apiKey = provider.apiKeyEnv ? env[provider.apiKeyEnv] : undefined;
-    if (apiKey) headers.set("x-api-key", apiKey);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const { response, signal, cleanup } = await send(
+      anthropicRequestBody(request, model, false),
+      "application/json",
+    );
     try {
-      let response: Response;
-      try {
-        response = await fetcher(`${baseUrl}/v1/messages`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(anthropicRequestBody(request, model, false)),
-          signal: controller.signal,
-        });
-      } catch {
-        throw new ProviderError(
-          provider.id,
-          "Provider network request failed or timed out.",
-          { retryable: true },
-        );
-      }
-      if (!response.ok) {
-        const retryable =
-          response.status === 408 ||
-          response.status === 429 ||
-          response.status >= 500;
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get("retry-after"),
-        );
-        throw new ProviderError(
-          provider.id,
-          `Provider returned HTTP ${response.status}.`,
-          {
-            status: response.status,
-            retryable,
-            ...(retryable && retryAfterMs !== undefined
-              ? { retryAfterMs }
-              : {}),
-          },
-        );
-      }
-
-      let payload: JsonObject;
-      try {
-        payload = asObject(await response.json());
-      } catch {
-        if (controller.signal.aborted) {
-          throw new ProviderError(provider.id, "Provider request timed out.", {
-            retryable: true,
-          });
-        }
-        throw new ProviderError(
-          provider.id,
-          "Provider returned invalid JSON.",
-          { retryable: false },
-        );
-      }
-      if (
-        Object.hasOwn(payload, "error") &&
-        payload.error !== null &&
-        typeof payload.error === "object"
-      ) {
+      assertOk(provider.id, response);
+      const payload = await readJson(provider.id, response, signal);
+      if (hasErrorEnvelope(payload)) {
         throw providerEnvelopeError(provider.id, asObject(payload.error));
       }
       const contentBlocks = payload.content;
@@ -361,7 +218,7 @@ export function createAnthropicAdapter(
         providerId: provider.id,
       };
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   }
 
@@ -369,58 +226,13 @@ export function createAnthropicAdapter(
     request: ChatRequest,
     model: ModelConfig,
   ): AsyncGenerator<StreamEvent> {
-    const headers = new Headers(provider.headers);
-    headers.set("Content-Type", "application/json");
-    headers.set("Accept", "text/event-stream");
-    headers.set("anthropic-version", "2023-06-01");
-    const apiKey = provider.apiKeyEnv ? env[provider.apiKeyEnv] : undefined;
-    if (apiKey) headers.set("x-api-key", apiKey);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const { response, cleanup } = await send(
+      anthropicRequestBody(request, model, true),
+      "text/event-stream",
+    );
     try {
-      let response: Response;
-      try {
-        response = await fetcher(`${baseUrl}/v1/messages`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(anthropicRequestBody(request, model, true)),
-          signal: controller.signal,
-        });
-      } catch {
-        throw new ProviderError(
-          provider.id,
-          "Provider network request failed or timed out.",
-          { retryable: true },
-        );
-      }
-      if (!response.ok) {
-        const retryable =
-          response.status === 408 ||
-          response.status === 429 ||
-          response.status >= 500;
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get("retry-after"),
-        );
-        throw new ProviderError(
-          provider.id,
-          `Provider returned HTTP ${response.status}.`,
-          {
-            status: response.status,
-            retryable,
-            ...(retryable && retryAfterMs !== undefined
-              ? { retryAfterMs }
-              : {}),
-          },
-        );
-      }
-      if (!response.body) {
-        throw new ProviderError(
-          provider.id,
-          "Provider response had no stream body.",
-          { retryable: false },
-        );
-      }
+      assertOk(provider.id, response);
+      const body = streamBody(provider.id, response);
 
       let content = "";
       let finishReason: string | null = null;
@@ -435,26 +247,12 @@ export function createAnthropicAdapter(
       >();
 
       try {
-        for await (const frame of readSseEvents(response.body)) {
-          let payload: JsonObject;
-          try {
-            payload = asObject(JSON.parse(frame.data));
-          } catch {
-            throw new ProviderError(
-              provider.id,
-              "Provider returned invalid SSE JSON.",
-              { retryable: false },
-            );
-          }
+        for await (const frame of readSseFrames(body)) {
+          const payload = parseSseJson(provider.id, frame.data);
           const eventType =
             frame.event ||
             (typeof payload.type === "string" ? payload.type : "");
-          if (
-            eventType === "error" ||
-            (Object.hasOwn(payload, "error") &&
-              payload.error !== null &&
-              typeof payload.error === "object")
-          ) {
+          if (eventType === "error" || hasErrorEnvelope(payload)) {
             throw providerEnvelopeError(
               provider.id,
               asObject(payload.error ?? payload),
@@ -510,12 +308,7 @@ export function createAnthropicAdapter(
           }
         }
       } catch (cause) {
-        if (cause instanceof ProviderError) throw cause;
-        throw new ProviderError(
-          provider.id,
-          "Provider stream failed or timed out.",
-          { retryable: !emittedContent },
-        );
+        throw streamFailure(provider.id, cause, emittedContent);
       }
 
       if (!messageStopped) {
@@ -577,7 +370,7 @@ export function createAnthropicAdapter(
         },
       };
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   }
 
