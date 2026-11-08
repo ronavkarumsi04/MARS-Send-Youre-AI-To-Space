@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RequestContext } from "@mars/contracts";
@@ -19,6 +16,7 @@ import {
 } from "@mars/memory-vault";
 import { SkillStore } from "@mars/skills";
 import { CliUsageError } from "./cli-errors";
+import { resolveWorkbenchLocation } from "./workbench-location";
 
 export const VAULT_USAGE = [
   "Usage: mars vault <export|import|status> --vault DIR [--state PRIVATE_DIR] [--source DIR] [--owner ID] [--project ID] [--workspace ID] [--graph ARTIFACT.json]... [--actor ID] [--allow-remove] [--strict] [--json]",
@@ -169,13 +167,11 @@ export async function runVault(args: string[]): Promise<void> {
     console.log(VAULT_USAGE);
     return;
   }
-  const source = await realpath(resolve(values.source ?? process.cwd()));
-  const project =
-    values.project ??
-    `project-${createHash("sha256").update(source).digest("hex").slice(0, 24)}`;
-  const state = resolve(
-    values.state ?? join(homedir(), ".mars", "workbench", project),
-  );
+  const { source, project, state } = await resolveWorkbenchLocation({
+    source: values.source,
+    project: values.project,
+    state: values.state,
+  });
   const vaultDir = resolve(requiredString(values.vault, "vault"));
   const memoryRoot = join(state, "memory");
   const skillsRoot = join(state, "skills");

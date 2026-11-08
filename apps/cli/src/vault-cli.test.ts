@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -14,6 +13,7 @@ import { join, resolve } from "node:path";
 import type { RequestContext } from "@mars/contracts";
 import { createMemoryStore } from "@mars/memory";
 import { SkillStore } from "@mars/skills";
+import { defaultProjectId } from "./workbench-location";
 
 const entrypoint = resolve(import.meta.dir, "main.ts");
 const ctx: RequestContext = {
@@ -154,7 +154,7 @@ test("mars vault export/status/import run against a temp state dir and only crea
       expect(linked.exit).toBe(0);
       const real = realpathSync(join(root, "src"));
       expect(JSON.parse(linked.stdout).scope.project_id).toBe(
-        `project-${createHash("sha256").update(real).digest("hex").slice(0, 24)}`,
+        defaultProjectId(real),
       );
     }
 

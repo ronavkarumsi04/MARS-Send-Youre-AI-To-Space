@@ -1,7 +1,4 @@
-import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   detectColourDepth,
@@ -17,6 +14,7 @@ import {
   ProcessTerminal,
   TUI,
 } from "@oh-my-pi/pi-tui";
+import { resolveWorkbenchLocation } from "../workbench-location";
 import { renderTranscript } from "./cards";
 import { httpTransport, SessionClient, type SessionTransport } from "./client";
 import { readConnectionFile } from "./connection";
@@ -213,11 +211,8 @@ async function defaultConnectionPath(
   project: string | undefined,
   source: string | undefined,
 ): Promise<string> {
-  const resolved = await realpath(resolve(source ?? process.cwd()));
-  const id =
-    project ??
-    `project-${createHash("sha256").update(resolved).digest("hex").slice(0, 24)}`;
-  return join(homedir(), ".mars", "workbench", id, "connection.json");
+  const { state } = await resolveWorkbenchLocation({ source, project });
+  return join(state, "connection.json");
 }
 
 export async function runSession(args: string[]): Promise<void> {
