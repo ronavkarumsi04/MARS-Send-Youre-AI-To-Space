@@ -1,6 +1,9 @@
 import type { RequestContext, ResearchFinding, Task } from "@mars/contracts";
 import type { RuntimeResearch } from "@mars/execution";
-import type { DurableResearchService } from "@mars/research";
+import {
+  type DurableResearchService,
+  isTerminalResearchStatus,
+} from "@mars/research";
 
 /** The parent-owned research service surface the workbench uses. */
 export type WorkbenchResearch = Pick<
@@ -52,16 +55,10 @@ export async function staleTaskResearch(
   for (const job of jobs) {
     if (job.task_id !== taskId || job.stale) continue;
     await service.markStale(context, job.request_id).catch(() => undefined);
-    if (!TERMINAL_RESEARCH.has(job.status))
+    if (!isTerminalResearchStatus(job.status))
       await service.cancel(context, job.request_id).catch(() => undefined);
   }
 }
-const TERMINAL_RESEARCH = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-  "expired",
-]);
 
 /**
  * Binds the session's research tools to the parent-owned service host-side.

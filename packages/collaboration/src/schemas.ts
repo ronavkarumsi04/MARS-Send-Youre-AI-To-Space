@@ -292,6 +292,21 @@ export const ChildViewSchema = z
   })
   .strict();
 export type ChildView = z.infer<typeof ChildViewSchema>;
+export type ChildState = ChildView["state"];
+
+const TERMINAL_CHILD_STATE: Record<ChildState, boolean> = {
+  queued: false,
+  running: false,
+  paused: false,
+  completed: true,
+  failed: true,
+  cancelled: true,
+  expired: true,
+};
+
+export function isTerminalChildState(state: ChildState): boolean {
+  return TERMINAL_CHILD_STATE[state];
+}
 
 export const ChildUsageSchema = usageSchema;
 export type ChildUsage = z.infer<typeof ChildUsageSchema>;
