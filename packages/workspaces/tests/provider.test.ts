@@ -26,6 +26,7 @@ import {
   LimitExceededError,
   ProviderLockedError,
   type RequestContext,
+  type ResolvedDockerConfig,
   RevisionConflictError,
   resolveDockerConfig,
   type SandboxRunRequest,
@@ -2077,6 +2078,58 @@ test("Docker args are constrained and include the fixed hardening flags [stub ru
       "name",
     ),
   ).toThrow();
+});
+
+test("Docker config is validated by one rule set at resolve and build time [stub runner — not isolation evidence]", () => {
+  const image = `mirror.gcr.io/library/busybox@sha256:${digest}`;
+  const valid = resolveDockerConfig({ image, user: { uid: 1000, gid: 1000 } });
+  const request: SandboxRunRequest = {
+    workspaceDir: "/tmp/workspaces/ws_abc/tree",
+    argv: ["true"],
+    timeoutMs: 1000,
+    maxOutputBytes: 1000,
+    signal: new AbortController().signal,
+    runId: "run-1",
+    labels: {},
+  };
+  const cases: Array<[Partial<ResolvedDockerConfig>, RegExp]> = [
+    [{ image: "busybox:latest" }, /sha256 digest/],
+    [{ dockerPath: "docker" }, /dockerPath must be absolute/],
+    [{ uid: 0 }, /non-root integers/],
+    [{ gid: 1.5 }, /non-root integers/],
+    [{ memoryBytes: 0 }, /^memoryBytes must be a positive safe integer$/],
+    [{ pids: -1 }, /^pids must be a positive safe integer$/],
+    [{ tmpfsBytes: 1.5 }, /^tmpfsBytes must be a positive safe integer$/],
+    [
+      { maxFileBytes: Number.MAX_SAFE_INTEGER + 1 },
+      /^maxFileBytes must be a positive safe integer$/,
+    ],
+    [
+      { cpus: Number.POSITIVE_INFINITY },
+      /^cpus must be a positive finite number$/,
+    ],
+    [{ cpus: 0 }, /^cpus must be a positive finite number$/],
+  ];
+  for (const [override, message] of cases) {
+    const { uid, gid, ...rest } = override;
+    const user =
+      uid === undefined && gid === undefined
+        ? { uid: 1000, gid: 1000 }
+        : { uid: uid ?? 1000, gid: gid ?? 1000 };
+    expect(() => resolveDockerConfig({ image, user, ...rest })).toThrow(
+      message,
+    );
+    expect(() =>
+      buildDockerRunArgs({ ...valid, ...override }, request, "mars-ws-run-1"),
+    ).toThrow(message);
+  }
+  expect(() =>
+    buildDockerRunArgs(
+      valid,
+      { ...request, labels: { "bad label": "x" } },
+      "mars-ws-run-1",
+    ),
+  ).toThrow("Invalid Docker label");
 });
 
 test("remove deletes one regular file through the provider, advances the revision and refuses directories, symlinks and missing paths [stub runner — not isolation evidence]", async () => {
