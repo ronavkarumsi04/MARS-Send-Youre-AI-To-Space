@@ -104,6 +104,31 @@ function addAttestationReasons(
   }
 }
 
+// Attestor failures fail closed: a throw is treated like no attestation.
+async function attestBinding(
+  context: RequestContext,
+  registration: SpecialistRegistration,
+  binding: ServingBinding,
+  options: CompatibilityOptions,
+  reasons: Set<ReasonCode>,
+): Promise<"verified" | "absent"> {
+  let attestation: ServingAttestation | null = null;
+  if (options.servingAttestor) {
+    try {
+      attestation =
+        (await options.servingAttestor.attest(context, binding)) ?? null;
+    } catch {
+      attestation = null;
+    }
+  }
+  if (!attestation) {
+    if (registration.adapter) reasons.add("serving_unattested");
+    return "absent";
+  }
+  addAttestationReasons(attestation, registration, binding, reasons, true);
+  return "verified";
+}
+
 export async function checkSpecialistBindings(
   context: RequestContext,
   registration: SpecialistRegistration,
@@ -129,50 +154,13 @@ export async function checkSpecialistBindings(
       ) {
         reasons.add("model_binding_mismatch");
       }
-      if (registration.adapter) {
-        if (!options.servingAttestor) {
-          reasons.add("serving_unattested");
-        } else {
-          let attestation: ServingAttestation | null = null;
-          try {
-            attestation = await options.servingAttestor.attest(
-              context,
-              binding,
-            );
-          } catch {
-            attestation = null;
-          }
-          if (!attestation) {
-            reasons.add("serving_unattested");
-          } else {
-            servingAttestation = "verified";
-            addAttestationReasons(
-              attestation,
-              registration,
-              binding,
-              reasons,
-              true,
-            );
-          }
-        }
-      } else if (options.servingAttestor) {
-        let attestation: ServingAttestation | null = null;
-        try {
-          attestation = await options.servingAttestor.attest(context, binding);
-        } catch {
-          attestation = null;
-        }
-        if (attestation) {
-          servingAttestation = "verified";
-          addAttestationReasons(
-            attestation,
-            registration,
-            binding,
-            reasons,
-            true,
-          );
-        }
-      }
+      servingAttestation = await attestBinding(
+        context,
+        registration,
+        binding,
+        options,
+        reasons,
+      );
       addCapabilityReasons(model, request, reasons);
       if (options.catalog.unavailableReason(binding.provider_id) !== undefined)
         reasons.add("provider_unavailable");
@@ -250,26 +238,14 @@ export async function checkServingReadiness(
     ) {
       reasons.add("model_binding_mismatch");
     }
-    if (model && (registration.adapter || options.servingAttestor)) {
-      let attestation: ServingAttestation | null = null;
-      try {
-        attestation =
-          (await options.servingAttestor?.attest(context, binding)) ?? null;
-      } catch {
-        attestation = null;
-      }
-      if (!attestation) {
-        if (registration.adapter) reasons.add("serving_unattested");
-      } else {
-        serving_attestation = "verified";
-        addAttestationReasons(
-          attestation,
-          registration,
-          binding,
-          reasons,
-          true,
-        );
-      }
+    if (model) {
+      serving_attestation = await attestBinding(
+        context,
+        registration,
+        binding,
+        options,
+        reasons,
+      );
     } else if (registration.adapter) {
       reasons.add("serving_unattested");
     }

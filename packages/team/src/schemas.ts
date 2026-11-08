@@ -19,6 +19,11 @@ export const TEAM_MAX_SEARCH_HITS = 50;
 const CODE_REFS_DEFAULTS = ResolveLimitsSchema.parse({});
 export const TEAM_MAX_PREVIEW_LINES = CODE_REFS_DEFAULTS.max_range_lines;
 export const TEAM_MAX_PREVIEW_BLOB_BYTES = CODE_REFS_DEFAULTS.max_blob_bytes;
+/**
+ * Default byte cap on one @MARS request's context: the store freezes at most
+ * this much and the `@mars/team-agent` runner renders at most this much.
+ */
+export const TEAM_MAX_AGENT_CONTEXT_BYTES = 64 * 1024;
 
 /** Server-side limits, in the style of `CollaborationLimitsSchema`. */
 export const TeamLimitsSchema = z
@@ -115,7 +120,7 @@ export const DEFAULT_TEAM_LIMITS: TeamLimits = {
   max_preview_lines: TEAM_MAX_PREVIEW_LINES,
   max_preview_blob_bytes: TEAM_MAX_PREVIEW_BLOB_BYTES,
   max_search_hits: TEAM_MAX_SEARCH_HITS,
-  max_agent_context_bytes: 64 * 1024,
+  max_agent_context_bytes: TEAM_MAX_AGENT_CONTEXT_BYTES,
   max_reference_excerpt_bytes: 16 * 1024,
   max_sends_per_minute: 120,
   max_reactions_per_minute: 240,

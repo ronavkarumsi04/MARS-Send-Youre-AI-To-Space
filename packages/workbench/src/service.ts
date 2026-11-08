@@ -316,6 +316,35 @@ export async function createWorkbenchService(
   let repositoryMap: RepositoryMapProvider | undefined;
   let research: DurableResearchService | undefined;
   let server: ReturnType<typeof serveWorkbench> | undefined;
+  // One teardown order for both close() and startup failure; each step
+  // skips resources that were never opened.
+  const teardown = async (researchDrainMs: number | undefined) => {
+    const steps: (() => unknown)[] = [
+      () => server?.stop(true),
+      () => host?.close(),
+      () =>
+        research?.close(
+          researchDrainMs === undefined
+            ? undefined
+            : { drainMs: researchDrainMs },
+        ),
+      () => review?.stop(),
+      () => omniroute?.stop(),
+      () => repositoryMap?.close(),
+      () => memory?.close(),
+      () => workspace?.close(),
+      () => store.close(),
+    ];
+    let failed = false;
+    for (const step of steps) {
+      try {
+        await step();
+      } catch {
+        failed = true;
+      }
+    }
+    return failed;
+  };
   try {
     if (options.research && researchRoot) {
       const researchOptions = options.research;
@@ -504,12 +533,6 @@ export async function createWorkbenchService(
     } finally {
       await unlink(temporary).catch(() => undefined);
     }
-    const runningHost = host;
-    const runningServer = server;
-    const runningMemory = memory;
-    const runningReview = review;
-    const runningRepositoryMap = repositoryMap;
-    const runningResearch = research;
     const researchDrainMs = options.research?.drainMs;
     let closing: Promise<void> | undefined;
     return {
@@ -518,43 +541,14 @@ export async function createWorkbenchService(
       omniroute: omniroute?.status() ?? null,
       close() {
         closing ??= (async () => {
-          const outcomes = [
-            await Promise.allSettled([runningServer.stop(true)]),
-            await Promise.allSettled([runningHost.close()]),
-            await Promise.allSettled([
-              runningResearch
-                ? runningResearch.close(
-                    researchDrainMs === undefined
-                      ? undefined
-                      : { drainMs: researchDrainMs },
-                  )
-                : Promise.resolve(),
-            ]),
-            await Promise.allSettled([
-              runningReview?.stop() ?? Promise.resolve(),
-            ]),
-            await Promise.allSettled([omniroute?.stop() ?? Promise.resolve()]),
-            await Promise.allSettled([runningRepositoryMap.close()]),
-            await Promise.allSettled([runningMemory.close()]),
-            await Promise.allSettled([provider.close()]),
-            await Promise.allSettled([store.close()]),
-          ].flat();
-          if (outcomes.some((outcome) => outcome.status === "rejected"))
+          if (await teardown(researchDrainMs))
             throw new WorkbenchError("unavailable");
         })();
         return closing;
       },
     };
   } catch (error) {
-    await server?.stop(true).catch(() => undefined);
-    if (host) await host.close().catch(() => undefined);
-    if (research) await research.close({ drainMs: 0 }).catch(() => undefined);
-    if (review) await review.stop().catch(() => undefined);
-    if (omniroute) await omniroute.stop().catch(() => undefined);
-    if (repositoryMap) await repositoryMap.close().catch(() => undefined);
-    if (workspace) await workspace.close().catch(() => undefined);
-    if (memory) await memory.close().catch(() => undefined);
-    await store.close();
+    await teardown(0);
     throw error;
   }
 }

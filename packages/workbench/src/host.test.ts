@@ -3728,6 +3728,12 @@ test("tasks.evidence pins verify records to the workspace revision and diff dige
   });
 
   const fresh = await api.evidence(context(), "task");
+  expect(fresh.verify_records.map((item) => item.binding_error)).toEqual([
+    undefined,
+    undefined,
+    "WorkspaceModifiedError",
+    undefined,
+  ]);
   expect(fresh.task_revision).toBe(
     (await api.inspect(context(), "task")).revision,
   );

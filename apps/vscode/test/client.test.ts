@@ -229,6 +229,26 @@ describe("MarsClient", () => {
     expect(await kind(client.evidence("task-1"))).toBe("protocol");
     server.on("tasks.evidence", () => ({ ...result, extra: true }));
     expect(await kind(client.evidence("task-1"))).toBe("protocol");
+    const unbound = {
+      ...result,
+      verify_records: [
+        {
+          ...record,
+          workspace_id: null,
+          workspace_revision: null,
+          diff_sha256: null,
+          stale: true,
+          binding_error: "WorkspaceModifiedError",
+        },
+      ],
+    };
+    server.on("tasks.evidence", () => unbound);
+    expect(await client.evidence("task-1")).toEqual(unbound);
+    server.on("tasks.evidence", () => ({
+      ...result,
+      verify_records: [{ ...record, binding_error: "/private/host/path" }],
+    }));
+    expect(await kind(client.evidence("task-1"))).toBe("protocol");
   });
 
   test("checkpoint/restore validate workspace identity and send exact params", async () => {
