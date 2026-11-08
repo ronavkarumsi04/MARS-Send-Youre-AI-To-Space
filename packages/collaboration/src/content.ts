@@ -1,13 +1,6 @@
+import { containsSecretShape } from "@mars/contracts";
 import { CollaborationError } from "./errors";
 import type { DeliveredMessage } from "./schemas";
-
-const secretPatterns = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\bsk-[A-Za-z0-9_-]{20,}/,
-  /\bgh[pousr]_[A-Za-z0-9]{30,}/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,
-];
 
 function containsPrivatePath(text: string, candidate: string): boolean {
   const root = candidate.replace(/\/+$/, "");
@@ -32,7 +25,7 @@ export function assertPublishable(
     [rootDir, ...hostPrivateRoots].some((root) =>
       containsPrivatePath(text, root),
     ) ||
-    secretPatterns.some((pattern) => pattern.test(text))
+    containsSecretShape(text)
   ) {
     throw new CollaborationError(
       "unsafe_content",

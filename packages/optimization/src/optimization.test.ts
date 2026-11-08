@@ -6,14 +6,15 @@ import {
   expect,
   test,
 } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type {
-  ArtifactRef,
-  Budget,
-  PromptScoringBackend,
-  RequestContext,
+import {
+  type ArtifactRef,
+  type Budget,
+  type PromptScoringBackend,
+  type RequestContext,
+  SECRET_SHAPE_PATTERNS,
 } from "@mars/contracts";
 import {
   bounded,
@@ -229,6 +230,39 @@ describe("scrub", () => {
     const clipped = bounded("a".repeat(100), 20);
     expect(clipped.length).toBe(20);
     expect(clipped.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  test("redacts GitHub fine-grained tokens and whole PEM private keys", () => {
+    expect(
+      scrubSecrets(
+        "a github_pat_abcdefghijklmnopqrstuv b -----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY----- c",
+      ),
+    ).toBe("a [redacted] b [redacted] c");
+  });
+
+  test("the Python worker's pattern list matches SECRET_SHAPE_PATTERNS", async () => {
+    const python = await readFile(
+      path.join(import.meta.dir, "../python/mars_gepa_worker/scrub.py"),
+      "utf8",
+    );
+    const list = python.slice(
+      python.indexOf("_SECRET_PATTERNS = ["),
+      python.indexOf("\n]\n"),
+    );
+    const parsed = [
+      ...list.matchAll(
+        /re\.compile\(\s*r"((?:[^"\\]|\\.)*)"\s*(,\s*re\.IGNORECASE)?/g,
+      ),
+    ].map(([, source, ignoreCase]) => ({
+      source: (source ?? "").replaceAll('\\"', '"'),
+      ignoreCase: ignoreCase !== undefined,
+    }));
+    expect(parsed).toEqual(
+      SECRET_SHAPE_PATTERNS.map((pattern) => ({
+        source: pattern.source,
+        ignoreCase: pattern.ignoreCase,
+      })),
+    );
   });
 });
 

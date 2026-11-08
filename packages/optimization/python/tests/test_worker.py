@@ -12,7 +12,7 @@ import pytest
 
 from mars_gepa_worker.adapter import BrokeredAdapter, Trace, candidate_id
 from mars_gepa_worker.protocol import Broker, Channel, ProtocolError
-from mars_gepa_worker.scrub import TRUNCATION_MARKER, UNTRUSTED_LABEL
+from mars_gepa_worker.scrub import TRUNCATION_MARKER, UNTRUSTED_LABEL, scrub_secrets
 from mars_gepa_worker.worker import EXIT_ABORTED, EXIT_GEPA_ERROR, EXIT_OK, EXIT_PIN_MISMATCH, EXIT_PROTOCOL, installed_versions, run
 
 Handler = Callable[[dict[str, Any]], dict[str, Any] | None]
@@ -245,3 +245,11 @@ def test_broker_matches_replies_by_id() -> None:
     assert [m["id"] for m in sent] == [0, 1]
     with pytest.raises(ProtocolError):
         Broker(Channel(io.StringIO(""), io.StringIO())).request({"type": "ping"}, "pong")
+
+
+def test_scrub_redacts_fine_grained_github_tokens_and_pem_keys() -> None:
+    text = (
+        "a github_pat_abcdefghijklmnopqrstuv b "
+        "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY----- c"
+    )
+    assert scrub_secrets(text) == "a [redacted] b [redacted] c"

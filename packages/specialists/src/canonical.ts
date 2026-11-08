@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { containsSecretShape } from "@mars/contracts";
 import { SpecialistRegistryError } from "./errors";
 
 function canonicalValue(value: unknown, seen = new Set<object>()): unknown {
@@ -79,15 +80,6 @@ function containsRootAtBoundary(text: string, root: string): boolean {
   return false;
 }
 
-const secretPatterns = [
-  /sk-[A-Za-z0-9_-]{16,}/,
-  /ghp_[A-Za-z0-9]{20,}/,
-  /github_pat_[A-Za-z0-9_]{20,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /xox[baprs]-[A-Za-z0-9-]{10,}/,
-];
-
 export function assertPublishable(
   value: unknown,
   options: { rootDir?: string; hostPrivateRoots?: readonly string[] } = {},
@@ -99,7 +91,7 @@ export function assertPublishable(
     throw new SpecialistRegistryError("unsafe_content", "invalid_json");
   }
   if (
-    secretPatterns.some((pattern) => pattern.test(serialized)) ||
+    containsSecretShape(serialized) ||
     (options.rootDir !== undefined &&
       containsRootAtBoundary(serialized, path.resolve(options.rootDir))) ||
     (options.hostPrivateRoots ?? []).some((root) =>
