@@ -4,7 +4,7 @@
 
 ## API
 
-Create the service with a `rootDir`, a `ResearchTaskReader`, an artifact store, and a `ResearchWorker`. The returned service implements the contracts `ResearchService` methods and adds `inspect`, `list`, `readFindings`, `markUsed`, `reconcileTask`, `pump`, and `close`. Worker input intentionally omits caller scope, request context, and filesystem paths. Worker writes are guarded by the durable request lease and abort signal.
+Create the service with a `rootDir`, a `ResearchTaskReader`, an artifact store, and a `ResearchWorker`. The returned service implements the contracts `ResearchService` methods and adds `inspect`, `list`, `readFindings`, `markUsed`, `reconcileTask`, `pump`, and `close`. Worker input intentionally omits caller scope, request context, and filesystem paths. Worker writes are guarded by the durable request lease and abort signal. Background failures that have no caller to reject (a run's terminal state write, a timer- or submit-triggered `pump`) are passed to the optional `onInternalError(where, error)` callback and the most recent one is kept for `lastInternalError()`; scheduling continues as before.
 
 ## Persistence and enforcement
 

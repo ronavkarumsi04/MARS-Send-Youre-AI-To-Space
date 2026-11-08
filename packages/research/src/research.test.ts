@@ -1428,6 +1428,103 @@ describe("@mars/research durable control plane", () => {
     expect(runCount).toBe(2);
   });
 
+  test("reports a failed completion write instead of dropping it", async () => {
+    const reports: Array<{ where: string; error: unknown }> = [];
+    let researchRoot = "";
+    let injected = false;
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "completion-write-failure-worker",
+      version: "1",
+      async run(input, workerContext) {
+        const evidence = await capture(workerContext, now, input.request_id);
+        await workerContext.publish(
+          proposal(evidence.ref, evidence.url, evidence.retrievedAt),
+        );
+        if (injected) return;
+        injected = true;
+        const db = new Database(path.join(researchRoot, "research.sqlite"));
+        try {
+          db.run(
+            `CREATE TRIGGER fail_completion BEFORE UPDATE OF status ON requests
+             WHEN NEW.status = 'completed'
+             BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END`,
+          );
+        } finally {
+          db.close();
+        }
+      },
+    };
+    const env = await setup({
+      worker,
+      service: {
+        onInternalError: (where, error) => reports.push({ where, error }),
+      },
+    });
+    researchRoot = env.researchRoot;
+    const id = await request(env.service, now, "completion-write-failure");
+    await waitFor(() => reports.length > 0);
+    expect(reports[0]?.where).toBe("run_settled");
+    expect(String(reports[0]?.error)).toContain("injected completion failure");
+    expect(env.service.lastInternalError()?.where).toBe("run_settled");
+    expect((await env.service.inspect(context(), id)).status).toBe("running");
+
+    const db = new Database(path.join(env.researchRoot, "research.sqlite"));
+    try {
+      db.run("DROP TRIGGER fail_completion");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("reports background pump failures and keeps pumping", async () => {
+    const reports: Array<{ where: string; error: unknown }> = [];
+    const env = await setup({
+      service: {
+        onInternalError: (where, error) => {
+          reports.push({ where, error });
+          throw new Error("reporter failures are contained");
+        },
+      },
+    });
+    const db = new Database(path.join(env.researchRoot, "research.sqlite"));
+    try {
+      db.run(
+        `CREATE TRIGGER fail_claim BEFORE UPDATE OF status ON requests
+         WHEN NEW.status = 'running'
+         BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`,
+      );
+      const id = await request(env.service, env.now, "pump-failure");
+      await waitFor(() => reports.length > 0);
+      expect(reports[0]?.where).toBe("pump");
+      expect(String(reports[0]?.error)).toContain("injected claim failure");
+      const last = env.service.lastInternalError();
+      expect(last?.where).toBe("pump");
+      expect(Number.isNaN(Date.parse(last?.at ?? ""))).toBe(false);
+      expect((await env.service.inspect(context(), id)).status).toBe("queued");
+
+      db.run("DROP TRIGGER fail_claim");
+      await waitFor(
+        async () =>
+          (await env.service.inspect(context(), id)).status === "completed",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  test("rejects a non-function internal error reporter", async () => {
+    expect(
+      await errorCode(() =>
+        setup({
+          service: {
+            onInternalError: "log" as unknown as () => void,
+          },
+        }),
+      ),
+    ).toBe("invalid_input");
+  });
+
   test("drains or requeues workers on shutdown and closes streams", async () => {
     let finished = false;
     let resolveStarted!: () => void;

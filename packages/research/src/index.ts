@@ -19,6 +19,8 @@ export {
   type FindingProposal,
   type ResearchArtifactStore,
   type ResearchEventSink,
+  type ResearchInternalError,
+  type ResearchInternalErrorSite,
   type ResearchJob,
   type ResearchJobStatus,
   type ResearchServiceOptions,
