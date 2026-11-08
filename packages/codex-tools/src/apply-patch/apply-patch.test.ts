@@ -284,6 +284,8 @@ describe("MARS bounds", () => {
     ["a//b", "empty segment"],
     ["./a", "'.'"],
     ["bad\u0007name", "control character"],
+    ["bad\u0085name", "control character"],
+    ["bad\u2028name", "control character"],
     [`${"x".repeat(1025)}`, "1024 bytes"],
   ])("rejects path %j", async (path, reason) => {
     expect(validatePatchPath(path)).toContain(reason);
