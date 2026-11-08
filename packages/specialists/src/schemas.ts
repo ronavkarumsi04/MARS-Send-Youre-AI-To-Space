@@ -415,6 +415,39 @@ export const REASON_CODES = [
 export type ReasonCode = (typeof REASON_CODES)[number];
 export const ReasonCodeSchema = z.enum(REASON_CODES);
 
+export const TripleGateSchema = z
+  .object({
+    domain: z.string(),
+    role: RoleSchema,
+    complexity: ComplexitySchema,
+    pass_rate: z.number(),
+    base_pass_rate: z.number(),
+    delta_vs_base: z.number(),
+    prompt_optimized_pass_rate: z.number(),
+    delta_vs_prompt_optimized: z.number(),
+    current_pass_rate: z.number().nullable(),
+    delta_vs_current: z.number().nullable(),
+    cost_usd_per_task: z.number().nullable(),
+    runtime_ms_p95: z.number().nullable(),
+    passed: z.boolean(),
+  })
+  .strict();
+
+export const EvidenceVerdictSchema = z
+  .object({
+    status: z.enum(["proposed", "evaluated", "rejected"]),
+    codes: z.array(ReasonCodeSchema),
+    covered_triples: z.array(TripleGateSchema),
+    report_id: z.string().nullable(),
+    report_sha256: z.string().nullable(),
+    synthetic_fixture: z.boolean(),
+    evidence_artifacts: z.array(z.string()),
+    lineage_dataset_sha256s: z.array(z.string()),
+    current_specialist_revision: z.string().nullable(),
+    note: z.string(),
+  })
+  .strict();
+
 export const RoutingDecisionSchema = z
   .object({
     schema_version: z.literal(1),

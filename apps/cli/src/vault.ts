@@ -18,6 +18,7 @@ import {
   vaultStatus,
 } from "@mars/memory-vault";
 import { SkillStore } from "@mars/skills";
+import { CliUsageError } from "./cli-errors";
 
 export const VAULT_USAGE = [
   "Usage: mars vault <export|import|status> --vault DIR [--state PRIVATE_DIR] [--source DIR] [--owner ID] [--project ID] [--workspace ID] [--graph ARTIFACT.json]... [--actor ID] [--allow-remove] [--strict] [--json]",
@@ -27,7 +28,7 @@ export const VAULT_USAGE = [
   "  Defaults match mars serve: --owner local, --project project-<sha256(source)>, --state ~/.mars/workbench/<project>.",
 ].join("\n");
 
-export class VaultUsageError extends Error {}
+export class VaultUsageError extends CliUsageError {}
 
 const SOURCE = "memory-vault";
 

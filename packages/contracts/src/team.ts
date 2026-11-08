@@ -541,6 +541,10 @@ export const SharedEvidenceRecordSchema = z
     workspace_revision: id.nullable(),
     diff_sha256: sha256.nullable(),
     stale: z.boolean(),
+    binding_error: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]{1,64}$/)
+      .optional(),
   })
   .strict()
   .refine((record) => !record.verified || record.verdict === "pass", {

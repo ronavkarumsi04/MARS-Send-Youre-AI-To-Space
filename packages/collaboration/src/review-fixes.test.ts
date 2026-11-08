@@ -12,6 +12,7 @@ import {
   createChildRunner,
 } from "./runner";
 import type { CollaborationLimits } from "./schemas";
+import { ChildViewSchema, isTerminalChildState } from "./schemas";
 
 const scope: Scope = {
   owner_id: "owner",
@@ -596,4 +597,12 @@ test("reopening a store created before unsafe_artifacts migrates the results tab
   expect(
     (await again.agents.results(context, f.coordinator)).results,
   ).toHaveLength(1);
+});
+
+test("classifies settled child states as terminal", () => {
+  expect(
+    ChildViewSchema.shape.state.options.filter((state) =>
+      isTerminalChildState(state),
+    ),
+  ).toEqual(["completed", "failed", "cancelled", "expired"]);
 });

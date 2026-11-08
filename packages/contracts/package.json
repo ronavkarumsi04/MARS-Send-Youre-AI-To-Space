@@ -3,7 +3,11 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./canonical": "./src/canonical.ts",
+    "./path-containment": "./src/path-containment.ts"
+  },
   "dependencies": {
     "zod": "3.25.76"
   }

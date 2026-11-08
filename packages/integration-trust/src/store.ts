@@ -8,13 +8,18 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ScopeSchema } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
 import { canonicalJSON, sha256 } from "./canonical";
 import { fail, IntegrationTrustError } from "./errors";
 import type { AuditEvent, AuditEventInput, TrustState } from "./schemas";
 import { CodeSchema, DigestSchema, KindSchema } from "./schemas";
+
+const STALE_LOCK_MS = 30000,
+  LOCK_WAIT_MS = 2000,
+  LOCK_POLL_MS = 20;
 export interface TrustStore {
   load(): Promise<{ revision: number; state: TrustState }>;
   commit(
@@ -97,10 +102,6 @@ async function resolved(path: string): Promise<string> {
     return join(await resolved(parent), path.slice(parent.length));
   }
 }
-function inside(a: string, b: string) {
-  const r = relative(a, b);
-  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-}
 export class FileTrustStore implements TrustStore {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
@@ -112,7 +113,8 @@ export class FileTrustStore implements TrustStore {
     const dir = await resolved(directory);
     for (const root of workspaceRoots) {
       const r = await realpath(root);
-      if (inside(r, dir) || inside(dir, r)) fail("store_location_unsafe");
+      if (isInsideOrEqual(r, dir) || isInsideOrEqual(dir, r))
+        fail("store_location_unsafe");
     }
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await this.mode(directory, 0o700);
@@ -165,7 +167,7 @@ export class FileTrustStore implements TrustStore {
       };
     } catch (e) {
       if (e instanceof IntegrationTrustError) throw e;
-      fail("store_corrupt");
+      fail("store_corrupt", e);
     }
   }
   async load() {
@@ -187,13 +189,13 @@ export class FileTrustStore implements TrustStore {
           handle = await open(lock, "wx", 0o600);
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "EEXIST")
-            fail("store_corrupt");
+            fail("store_corrupt", e);
           try {
-            if (Date.now() - (await stat(lock)).mtimeMs > 30000)
+            if (Date.now() - (await stat(lock)).mtimeMs > STALE_LOCK_MS)
               await unlink(lock);
           } catch {}
-          if (Date.now() - start > 2000) fail("revision_conflict");
-          await new Promise((r) => setTimeout(r, 20));
+          if (Date.now() - start > LOCK_WAIT_MS) fail("revision_conflict", e);
+          await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
         }
       }
       try {
