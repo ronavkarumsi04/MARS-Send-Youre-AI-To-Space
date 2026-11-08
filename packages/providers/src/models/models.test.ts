@@ -1413,3 +1413,121 @@ test("OpenRouter discovery maps free pricing, tool support, vision, and context 
     models.find(({ id }) => id === "example/missing-prompt")?.pricing.free,
   ).toBe(false);
 });
+
+test("both adapters map an envelope by code, then type", async () => {
+  const envelope = JSON.stringify({
+    error: {
+      code: "invalid_request",
+      type: "rate_limit_error",
+      message: "secret-echo dummy-secret-123",
+    },
+  });
+  const fetchEnvelope = async () => new Response(envelope, { status: 200 });
+  const adapters = [
+    createOpenAICompatibleAdapter(
+      provider("stub", "https://models.example/v1"),
+      { fetch: fetchEnvelope },
+    ),
+    createAnthropicAdapter(
+      provider("anthropic", "https://models.example", { kind: "anthropic" }),
+      { fetch: fetchEnvelope },
+    ),
+  ];
+  for (const adapter of adapters) {
+    const error = await rejectedValue(
+      adapter.complete(request, model("upstream", "stub")),
+    );
+    expect(error).toMatchObject({ status: 429, retryable: true });
+    expectSanitizedProviderError(error);
+  }
+});
+
+test("both adapters treat a transport failure after emitted text as non-retryable", async () => {
+  const failingStream = (chunk: string) => async () => {
+    let sent = false;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) {
+            controller.error(new Error("socket reset"));
+            return;
+          }
+          sent = true;
+          controller.enqueue(new TextEncoder().encode(chunk));
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  const adapters = [
+    createOpenAICompatibleAdapter(
+      provider("stub", "https://models.example/v1"),
+      {
+        fetch: failingStream(
+          'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        ),
+      },
+    ),
+    createAnthropicAdapter(
+      provider("anthropic", "https://models.example", { kind: "anthropic" }),
+      {
+        fetch: failingStream(
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+        ),
+      },
+    ),
+  ];
+  for (const adapter of adapters) {
+    const events: StreamEvent[] = [];
+    const consume = async () => {
+      for await (const event of adapter.stream(
+        request,
+        model("upstream", "stub"),
+      )) {
+        events.push(event);
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      name: "ProviderError",
+      message: "Provider stream failed or timed out.",
+      retryable: false,
+    });
+    expect(events).toContainEqual({ type: "text-delta", text: "partial" });
+  }
+});
+
+test("both adapters keep a transport failure before any text retryable", async () => {
+  const failingStream = async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new Error("socket reset"));
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  const adapters = [
+    createOpenAICompatibleAdapter(
+      provider("stub", "https://models.example/v1"),
+      { fetch: failingStream },
+    ),
+    createAnthropicAdapter(
+      provider("anthropic", "https://models.example", { kind: "anthropic" }),
+      { fetch: failingStream },
+    ),
+  ];
+  for (const adapter of adapters) {
+    const consume = async () => {
+      for await (const event of adapter.stream(
+        request,
+        model("upstream", "stub"),
+      )) {
+        void event;
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      message: "Provider stream failed or timed out.",
+      retryable: true,
+    });
+  }
+});

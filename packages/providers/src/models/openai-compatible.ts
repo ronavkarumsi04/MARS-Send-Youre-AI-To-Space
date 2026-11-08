@@ -9,14 +9,19 @@ import type {
 } from "@mars/contracts";
 import type { AdapterOptions, ProviderAdapter } from "./adapter-types";
 import { ProviderError } from "./errors";
-
-type JsonObject = Record<string, unknown>;
-
-function asObject(value: unknown): JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
+import {
+  asObject,
+  assertOk,
+  hasErrorEnvelope,
+  type JsonObject,
+  parseSseJson,
+  providerEnvelopeError,
+  readJson,
+  readSseFrames,
+  sendProviderRequest,
+  streamBody,
+  streamFailure,
+} from "./http";
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -39,60 +44,6 @@ function usageFrom(value: unknown): ChatResponse["usage"] {
     return undefined;
   }
   return { inputTokens, outputTokens };
-}
-
-function parseRetryAfter(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const timestamp = Date.parse(header);
-  return Number.isNaN(timestamp)
-    ? undefined
-    : Math.max(0, timestamp - Date.now());
-}
-
-function errorStatus(error: JsonObject): number | undefined {
-  const status = error.status;
-  if (typeof status === "number" && Number.isInteger(status)) return status;
-  if (typeof status === "string" && /^\d{3}$/.test(status))
-    return Number(status);
-  const code = error.code;
-  if (typeof code === "number" && Number.isInteger(code)) return code;
-  if (typeof code === "string") {
-    if (/^\d{3}$/.test(code)) return Number(code);
-    const normalized = code.toLowerCase();
-    if (/rate.?limit|too.?many.?requests|quota/.test(normalized)) return 429;
-    if (/timeout|timed.?out/.test(normalized)) return 408;
-    if (/overload/.test(normalized)) return 529;
-    if (/server|internal|unavailable/.test(normalized)) return 500;
-  }
-  const type = error.type;
-  if (typeof type === "string") {
-    const normalizedType = type.toLowerCase();
-    if (/rate.?limit|too.?many.?requests|quota/.test(normalizedType))
-      return 429;
-    if (/timeout|timed.?out/.test(normalizedType)) return 408;
-    if (/overload/.test(normalizedType)) return 529;
-    if (/server|internal|unavailable/.test(normalizedType)) return 500;
-  }
-  return undefined;
-}
-
-function providerEnvelopeError(
-  providerId: string,
-  error: JsonObject,
-): ProviderError {
-  const status = errorStatus(error);
-  const retryable =
-    status === 408 || status === 429 || (status !== undefined && status >= 500);
-  return new ProviderError(
-    providerId,
-    `Provider returned an error envelope${status ? ` (HTTP ${status})` : ""}.`,
-    {
-      ...(status !== undefined ? { status } : {}),
-      retryable,
-    },
-  );
 }
 
 function parseToolArguments(
@@ -153,10 +104,7 @@ export function createOpenAICompatibleAdapter(
   const timeoutMs = options.timeoutMs ?? 30_000;
   const baseUrl = provider.baseUrl.replace(/\/+$/, "");
 
-  async function request(
-    path: string,
-    body?: Record<string, unknown>,
-  ): Promise<{ response: Response; cleanup: () => void; signal: AbortSignal }> {
+  function request(path: string, body?: JsonObject) {
     const headers = new Headers(provider.headers);
     for (const [name, value] of Object.entries(options.headers ?? {})) {
       if (name.toLowerCase() === "authorization") continue;
@@ -166,69 +114,14 @@ export function createOpenAICompatibleAdapter(
     if (body) headers.set("Content-Type", "application/json");
     const apiKey = provider.apiKeyEnv ? env[provider.apiKeyEnv] : undefined;
     if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetcher(`${baseUrl}${path}`, {
-        method: body ? "POST" : "GET",
-        headers,
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: controller.signal,
-      });
-      return {
-        response,
-        cleanup: () => clearTimeout(timer),
-        signal: controller.signal,
-      };
-    } catch {
-      clearTimeout(timer);
-      throw new ProviderError(
-        provider.id,
-        "Provider network request failed or timed out.",
-        {
-          retryable: true,
-        },
-      );
-    }
-  }
-
-  async function assertOk(response: Response): Promise<void> {
-    if (response.ok) return;
-    const retryable =
-      response.status === 408 ||
-      response.status === 429 ||
-      response.status >= 500;
-    const retryAfterMs = retryable
-      ? parseRetryAfter(response.headers.get("retry-after"))
-      : undefined;
-    throw new ProviderError(
-      provider.id,
-      `Provider returned HTTP ${response.status}.`,
-      {
-        status: response.status,
-        retryable,
-        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-      },
-    );
-  }
-
-  async function responseJson(
-    response: Response,
-    signal: AbortSignal,
-  ): Promise<JsonObject> {
-    try {
-      return asObject(await response.json());
-    } catch {
-      if (signal.aborted) {
-        throw new ProviderError(provider.id, "Provider request timed out.", {
-          retryable: true,
-        });
-      }
-      throw new ProviderError(provider.id, "Provider returned invalid JSON.", {
-        retryable: false,
-      });
-    }
+    return sendProviderRequest({
+      providerId: provider.id,
+      fetch: fetcher,
+      url: `${baseUrl}${path}`,
+      headers,
+      ...(body ? { body } : {}),
+      timeoutMs,
+    });
   }
 
   function requestBody(
@@ -270,13 +163,9 @@ export function createOpenAICompatibleAdapter(
       requestBody(requestData, model, false),
     );
     try {
-      await assertOk(response);
-      const payload = await responseJson(response, signal);
-      if (
-        Object.hasOwn(payload, "error") &&
-        payload.error !== null &&
-        typeof payload.error === "object"
-      ) {
+      assertOk(provider.id, response);
+      const payload = await readJson(provider.id, response, signal);
+      if (hasErrorEnvelope(payload)) {
         throw providerEnvelopeError(provider.id, asObject(payload.error));
       }
       const choices: unknown[] = Array.isArray(payload.choices)
@@ -372,51 +261,6 @@ export function createOpenAICompatibleAdapter(
     }
   }
 
-  async function* readSseMessages(
-    body: ReadableStream<Uint8Array>,
-  ): AsyncGenerator<string> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let dataLines: string[] = [];
-    const processLine = (rawLine: string): string | undefined => {
-      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-      if (line === "") {
-        const message = dataLines.length ? dataLines.join("\n") : undefined;
-        dataLines = [];
-        return message;
-      }
-      if (!line.startsWith(":") && line.startsWith("data:")) {
-        dataLines.push(line.slice(5).replace(/^ /, ""));
-      }
-      return undefined;
-    };
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += done
-          ? decoder.decode()
-          : decoder.decode(value, { stream: true });
-        let newline = buffer.indexOf("\n");
-        while (newline !== -1) {
-          const message = processLine(buffer.slice(0, newline));
-          buffer = buffer.slice(newline + 1);
-          if (message !== undefined) yield message;
-          newline = buffer.indexOf("\n");
-        }
-        if (done) break;
-      }
-      if (buffer) {
-        const message = processLine(buffer);
-        if (message !== undefined) yield message;
-      }
-      if (dataLines.length) yield dataLines.join("\n");
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
   async function* stream(
     requestData: ChatRequest,
     model: ModelConfig,
@@ -426,16 +270,8 @@ export function createOpenAICompatibleAdapter(
       requestBody(requestData, model, true),
     );
     try {
-      await assertOk(response);
-      if (!response.body) {
-        throw new ProviderError(
-          provider.id,
-          "Provider response had no stream body.",
-          {
-            retryable: false,
-          },
-        );
-      }
+      assertOk(provider.id, response);
+      const body = streamBody(provider.id, response);
 
       let content = "";
       let finishReason: string | null = null;
@@ -447,28 +283,13 @@ export function createOpenAICompatibleAdapter(
         { id: string; name: string; args: string }
       >();
       try {
-        for await (const data of readSseMessages(response.body)) {
+        for await (const { data } of readSseFrames(body)) {
           if (data === "[DONE]") {
             receivedDone = true;
             break;
           }
-          let payload: JsonObject;
-          try {
-            payload = asObject(JSON.parse(data));
-          } catch {
-            throw new ProviderError(
-              provider.id,
-              "Provider returned invalid SSE JSON.",
-              {
-                retryable: false,
-              },
-            );
-          }
-          if (
-            Object.hasOwn(payload, "error") &&
-            payload.error !== null &&
-            typeof payload.error === "object"
-          ) {
+          const payload = parseSseJson(provider.id, data);
+          if (hasErrorEnvelope(payload)) {
             throw providerEnvelopeError(provider.id, asObject(payload.error));
           }
           const choice = asObject(
@@ -509,14 +330,7 @@ export function createOpenAICompatibleAdapter(
           );
         }
       } catch (cause) {
-        if (cause instanceof ProviderError) throw cause;
-        throw new ProviderError(
-          provider.id,
-          "Provider stream failed or timed out.",
-          {
-            retryable: true,
-          },
-        );
+        throw streamFailure(provider.id, cause, emittedContent);
       }
 
       const toolCalls = [...partialTools.entries()]
@@ -555,8 +369,8 @@ export function createOpenAICompatibleAdapter(
   async function listModels(): Promise<unknown[]> {
     const { response, cleanup, signal } = await request("/models");
     try {
-      await assertOk(response);
-      const payload = await responseJson(response, signal);
+      assertOk(provider.id, response);
+      const payload = await readJson(provider.id, response, signal);
       return Array.isArray(payload.data) ? payload.data : [];
     } finally {
       cleanup();
