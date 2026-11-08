@@ -3,6 +3,7 @@ import {
   catalogHealth,
   type ExclusionOverrides,
   type FetchLike,
+  type FreeTierCatalog,
   loadFreeTierCatalog,
   OMNIROUTE_API_KEY_ENV,
   OMNIROUTE_DEFAULT_URL,
@@ -91,6 +92,31 @@ export function omnirouteFromFlags(
   };
 }
 
+/** Fixed reason strings only; never the path, file content or parse message. */
+export type CatalogLoadError = "missing" | "invalid";
+
+export type OmniRouteDoctorCatalog = CatalogHealth & {
+  load_error?: CatalogLoadError;
+};
+
+type CatalogLoad =
+  | { catalog: FreeTierCatalog; error?: undefined }
+  | { catalog: undefined; error: CatalogLoadError };
+
+async function loadDoctorCatalog(path?: string): Promise<CatalogLoad> {
+  try {
+    return { catalog: await loadFreeTierCatalog(path) };
+  } catch (error) {
+    return {
+      catalog: undefined,
+      error:
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "missing"
+          : "invalid",
+    };
+  }
+}
+
 export interface OmniRouteDoctorReport {
   package: string;
   pinned_release: string;
@@ -98,7 +124,7 @@ export interface OmniRouteDoctorReport {
   enabled_by: string;
   api_key_env: string;
   gateway: OmniRouteProbe;
-  catalog: CatalogHealth;
+  catalog: OmniRouteDoctorCatalog;
   default_exclusions: string[];
   mcp_a2a_used: false;
   compression: "off (unverified; not exposed)";
@@ -117,14 +143,14 @@ export async function omnirouteDoctorReport(
 ): Promise<OmniRouteDoctorReport> {
   const env = options.env ?? process.env;
   const url = options.url ?? env.MARS_OMNIROUTE_URL ?? OMNIROUTE_DEFAULT_URL;
-  const [gateway, catalog] = await Promise.all([
+  const [gateway, catalogLoad] = await Promise.all([
     probeOmniRoute({
       url,
       env,
       timeoutMs: 1_500,
       ...(options.fetch ? { fetch: options.fetch } : {}),
     }),
-    loadFreeTierCatalog(options.catalogPath).catch(() => undefined),
+    loadDoctorCatalog(options.catalogPath),
   ]);
   return {
     package: "@mars/providers-omniroute",
@@ -134,7 +160,13 @@ export async function omnirouteDoctorReport(
       "mars serve --omniroute [--omniroute-url URL] [--omniroute-start]",
     api_key_env: OMNIROUTE_API_KEY_ENV,
     gateway,
-    catalog: catalogHealth(catalog, options.now ? { now: options.now } : {}),
+    catalog: {
+      ...catalogHealth(
+        catalogLoad.catalog,
+        options.now ? { now: options.now } : {},
+      ),
+      ...(catalogLoad.error ? { load_error: catalogLoad.error } : {}),
+    },
     default_exclusions: [
       "web-session providers (ChatGPT Web, Claude Web, Grok Web, Gemini Web and every other web-cookie login)",
       "browser-session providers (anonymous or reverse-engineered browser transports)",

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { startFakeOmniRoute } from "@mars/providers-omniroute";
 import { ServeUsageError } from "./cli-errors";
 import { omnirouteDoctorReport, omnirouteFromFlags } from "./omniroute";
@@ -88,6 +91,7 @@ describe("mars doctor omniroute section", () => {
         age_days: 14,
       });
       expect(report.catalog.entries?.routable).toBeGreaterThan(0);
+      expect(report.catalog).not.toHaveProperty("load_error");
       expect(report).toMatchObject({
         mcp_a2a_used: false,
         live_verified: false,
@@ -113,9 +117,40 @@ describe("mars doctor omniroute section", () => {
       expect(missingCatalog.catalog).toMatchObject({
         present: false,
         stale: true,
+        load_error: "missing",
       });
     } finally {
       await fake.stop();
+    }
+  });
+
+  test("separates an invalid catalog from a missing one without echoing its content", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mars-omniroute-doctor-"));
+    try {
+      const cases = [
+        ["not-json.json", "{ secret-ish content"],
+        ["bad-schema.json", JSON.stringify({ source: "secret-ish content" })],
+      ] as const;
+      for (const [name, content] of cases) {
+        const catalogPath = join(dir, name);
+        await writeFile(catalogPath, content);
+        const report = await omnirouteDoctorReport({
+          url: "http://127.0.0.1:1",
+          env: {},
+          catalogPath,
+        });
+        expect(report.catalog).toMatchObject({
+          present: false,
+          stale: true,
+          entries: null,
+          load_error: "invalid",
+        });
+        const serialized = JSON.stringify(report);
+        expect(serialized).not.toContain("secret-ish");
+        expect(serialized).not.toContain(dir);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
