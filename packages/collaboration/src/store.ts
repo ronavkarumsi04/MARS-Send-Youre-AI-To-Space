@@ -7,12 +7,14 @@ import {
   sha256,
   canonicalJson as sharedCanonicalJson,
 } from "@mars/contracts/canonical";
+import type { z } from "zod";
 import { CollaborationError } from "./errors";
 import {
   type CollaborationLimits,
   CollaborationLimitsSchema,
   RequestContextSchema,
   type RoomStats,
+  RoomStatsSchema,
 } from "./schemas";
 
 export const STORE_FORMAT_VERSION = 2;
@@ -83,12 +85,17 @@ export function canonicalJson(value: unknown): string {
   });
 }
 
-export function parseJson<T>(value: string): T {
+export function parseJson<T>(value: string, schema: z.ZodType<T>): T {
+  let decoded: unknown;
   try {
-    return JSON.parse(value) as T;
+    decoded = JSON.parse(value);
   } catch {
     throw new CollaborationError("corrupt_record", "Stored record is invalid");
   }
+  const parsed = schema.safeParse(decoded);
+  if (!parsed.success)
+    throw new CollaborationError("corrupt_record", "Stored record is invalid");
+  return parsed.data;
 }
 
 export function defaultToken(): string {
@@ -296,7 +303,7 @@ export class CollaborationStore {
 
   bump(roomId: string, key: keyof RoomStats, by = 1): void {
     const row = this.getRoomRow(roomId);
-    const counters = parseJson<RoomStats>(row.counters_json);
+    const counters = parseJson(row.counters_json, RoomStatsSchema);
     if (key === "tokens" || key === "reserved") return;
     const current = counters[key];
     if (typeof current === "number") counters[key] = current + by;

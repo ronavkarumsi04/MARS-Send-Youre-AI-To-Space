@@ -28,12 +28,16 @@ const usageSchema = z
 const memberUsageSchema = usageSchema.extend({
   messages_sent: z.number().int().nonnegative(),
 });
+export const MemberUsageSchema = memberUsageSchema;
+export type MemberUsage = z.infer<typeof MemberUsageSchema>;
 const tokenUsdSchema = z
   .object({
     tokens: z.number().int().nonnegative(),
     usd: z.number().finite().nonnegative(),
   })
   .strict();
+export const TokenUsdSchema = tokenUsdSchema;
+export type TokenUsd = z.infer<typeof TokenUsdSchema>;
 export const DelegationPoolSchema = tokenUsdSchema;
 export type DelegationPool = z.infer<typeof DelegationPoolSchema>;
 
