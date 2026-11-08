@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import {
@@ -39,12 +38,18 @@ import {
 import { resolveSafePath, validateRelativePath } from "./paths";
 import {
   acquireProviderLock,
+  CHECKPOINT_ID_PATTERN,
   type CheckpointRecord,
   listMetas,
   loadMeta,
   metaPath,
+  newCheckpointId,
+  newToken,
+  newWorkspaceId,
   revision,
   saveMeta,
+  WORKSPACE_ENTRY_PATTERN,
+  WORKSPACE_ID_PATTERN,
   type WorkspaceMeta,
   workspacePath,
 } from "./store";
@@ -71,8 +76,8 @@ const checkpointManifestSchema = z
   .object({
     schema_version: z.literal(1),
     kind: z.literal("mars.workspace.checkpoint"),
-    checkpoint_id: z.string().regex(/^cp_[a-f0-9]{32}$/),
-    workspace_id: z.string().regex(/^ws_[a-f0-9]{32}$/),
+    checkpoint_id: z.string().regex(CHECKPOINT_ID_PATTERN),
+    workspace_id: z.string().regex(WORKSPACE_ID_PATTERN),
     provider: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/),
     owner_id: z.string().min(1),
     project_id: z.string().min(1),
@@ -293,7 +298,7 @@ export async function createLocalWorkspaceProvider(
       typeof workspace === "string" ? workspace : workspace?.workspace_id;
     if (
       typeof workspaceId !== "string" ||
-      !/^ws_[a-f0-9]{32}$/.test(workspaceId) ||
+      !WORKSPACE_ID_PATTERN.test(workspaceId) ||
       (typeof workspace !== "string" && workspace.provider !== providerId)
     ) {
       throw new WorkspaceNotFoundError();
@@ -384,7 +389,7 @@ export async function createLocalWorkspaceProvider(
     const priorPath = join(
       rootDir,
       "staging",
-      `${current.workspace_id}-prior-${randomUUID().replaceAll("-", "")}`,
+      `${current.workspace_id}-prior-${newToken()}`,
     );
     const previous = {
       counter: current.counter,
@@ -469,7 +474,7 @@ export async function createLocalWorkspaceProvider(
     snapshot: TreeSnapshot,
     persist = true,
   ): Promise<CheckpointRef> => {
-    const checkpointId = `cp_${randomUUID().replaceAll("-", "")}`;
+    const checkpointId = newCheckpointId();
     const checkpointTime = now().toISOString();
     const checkpointRevision = meta.revision;
     const files: CheckpointManifest["files"] = [];
@@ -544,7 +549,7 @@ export async function createLocalWorkspaceProvider(
   ): Promise<CheckpointManifest> => {
     if (
       !checkpoint ||
-      !/^cp_[a-f0-9]{32}$/.test(checkpoint.checkpoint_id) ||
+      !CHECKPOINT_ID_PATTERN.test(checkpoint.checkpoint_id) ||
       checkpoint.workspace?.workspace_id !== meta.workspace_id ||
       checkpoint.workspace.provider !== providerId
     ) {
@@ -727,8 +732,8 @@ export async function createLocalWorkspaceProvider(
           enforceLimits: true,
           skipped: skippedFiles,
         });
-        const workspaceId = `ws_${randomUUID().replaceAll("-", "")}`;
-        const stageName = `${workspaceId}-${randomUUID().replaceAll("-", "")}`;
+        const workspaceId = newWorkspaceId();
+        const stageName = `${workspaceId}-${newToken()}`;
         const stageDir = join(rootDir, "staging", stageName);
         const stagedTree = join(stageDir, "tree");
         const finalTree = workspacePath(rootDir, workspaceId);
@@ -749,7 +754,7 @@ export async function createLocalWorkspaceProvider(
             revision: initialRevision,
             tree_digest: snapshot.digest,
             created_at: createdAt,
-            baseline_checkpoint_id: `cp_${randomUUID().replaceAll("-", "")}`,
+            baseline_checkpoint_id: newCheckpointId(),
             checkpoints: [],
             blob_index: {},
             skipped: skippedFiles,
@@ -882,7 +887,7 @@ export async function createLocalWorkspaceProvider(
         const temporary = join(
           rootDir,
           "staging",
-          `${current.workspace_id}-write-${randomUUID().replaceAll("-", "")}`,
+          `${current.workspace_id}-write-${newToken()}`,
         );
         let handle: FileHandle | undefined;
         try {
@@ -994,7 +999,7 @@ export async function createLocalWorkspaceProvider(
           parsedBudget.data.max_duration_ms,
           limits.maxExecutionMs,
         );
-        const runId = randomUUID().replaceAll("-", "");
+        const runId = newToken();
         const startedAt = now().toISOString();
         const controller = new AbortController();
         const completion = createDeferred();
@@ -1118,8 +1123,8 @@ export async function createLocalWorkspaceProvider(
         const currentSnapshot = await treeSnapshot(current, false, false);
         if (currentSnapshot.digest !== current.tree_digest)
           throw new WorkspaceModifiedError();
-        const stageName = `${current.workspace_id}-${randomUUID().replaceAll("-", "")}`;
-        const backupName = `${current.workspace_id}-${randomUUID().replaceAll("-", "")}`;
+        const stageName = `${current.workspace_id}-${newToken()}`;
+        const backupName = `${current.workspace_id}-${newToken()}`;
         const stagingDir = join(rootDir, "staging", stageName);
         const stagingTree = join(stagingDir, "tree");
         const backupDir = join(rootDir, "trash", backupName);
@@ -1491,7 +1496,7 @@ async function recoverProviderState(
     for (const entry of await readdir(join(rootDir, "meta"), {
       withFileTypes: true,
     })) {
-      if (!/^ws_[a-f0-9]{32}$/.test(entry.name)) continue;
+      if (!WORKSPACE_ID_PATTERN.test(entry.name)) continue;
       const metadataDirectory = join(rootDir, "meta", entry.name);
       metadataDirectories.add(entry.name);
       try {
@@ -1576,7 +1581,7 @@ async function recoverProviderState(
     for (const entry of await readdir(join(rootDir, "workspaces"), {
       withFileTypes: true,
     })) {
-      if (!/^ws_[a-f0-9]{32}$/.test(entry.name)) continue;
+      if (!WORKSPACE_ID_PATTERN.test(entry.name)) continue;
       if (metadataDirectories.has(entry.name)) continue;
       if (!entry.isDirectory() || entry.isSymbolicLink()) {
         lostWorkspaces.add(entry.name);
@@ -1618,7 +1623,7 @@ async function rollbackRestoreJournal(
         aside = join(
           rootDir,
           "trash",
-          `${meta.workspace_id}-aside-${randomUUID().replaceAll("-", "")}`,
+          `${meta.workspace_id}-aside-${newToken()}`,
         );
         await rename(workspace, aside);
       }
@@ -1718,7 +1723,7 @@ async function cleanupRecoveryDirectories(
     const directoryPath = join(rootDir, directory);
     const entries = await readdir(directoryPath).catch(() => []);
     for (const entry of entries) {
-      const match = /^(ws_[a-f0-9]{32})-[A-Za-z0-9-]+$/.exec(entry);
+      const match = WORKSPACE_ENTRY_PATTERN.exec(entry);
       const workspaceId = match?.[1];
       if (!workspaceId) continue;
       const meta = readableMetas.get(workspaceId);
