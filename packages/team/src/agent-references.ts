@@ -1,6 +1,7 @@
 import { type RepoRegistry, resolveReference } from "@mars/code-refs";
 import type { GitRangeReference } from "@mars/contracts";
 import type { TeamReferenceAccess, TeamReferencePort } from "./agent";
+import { locatorOf, previewLimits } from "./references";
 import type { TeamActor, TeamStore } from "./store";
 
 /** Resolver outcomes that may change without the pinned commit changing. */
@@ -60,25 +61,12 @@ export function createAgentReferencePort(
   return {
     async prepare(teamId, referenceIds) {
       const store = options.store();
-      const limits = {
-        max_blob_bytes: store.limits.max_preview_blob_bytes,
-        max_range_lines: store.limits.max_preview_lines,
-      };
+      const limits = previewLimits(store.limits);
       for (const reference of store.getReferences(teamId, referenceIds)) {
         if (excerpts.has(reference.reference_id)) continue;
         const resolved = await resolveReference(
           repos,
-          {
-            repo_id: reference.repo_id,
-            commit_sha: reference.commit_sha,
-            path: reference.path,
-            ...(reference.line_start !== null && reference.line_end !== null
-              ? {
-                  line_start: reference.line_start,
-                  line_end: reference.line_end,
-                }
-              : {}),
-          },
+          locatorOf(reference),
           limits,
         );
         // Only outcomes that are stable for a pinned commit are cached; a

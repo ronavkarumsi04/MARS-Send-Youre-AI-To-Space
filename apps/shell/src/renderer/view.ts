@@ -338,7 +338,7 @@ function evidenceSection(
         doc,
         "p",
         {},
-        `${record.verdict} · ${record.verified ? "verified" : "not verified"} · ${record.stale ? "stale" : "current"} · ${record.recorded_at}`,
+        `${record.verdict} · ${record.verified ? "verified" : "not verified"} · ${record.stale ? "stale" : "current"}${record.binding_error ? ` · binding unavailable (${record.binding_error})` : ""} · ${record.recorded_at}`,
       ),
     ),
   );

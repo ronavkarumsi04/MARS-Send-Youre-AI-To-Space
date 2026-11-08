@@ -1236,7 +1236,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
           const lines = records.length
             ? records.map(
                 (item, index) =>
-                  `${index + 1}. ${item.kind} ${item.tool} · verdict ${item.verdict} · assurance ${item.assurance} · ${item.verified ? "VERIFIED" : item.advisory ? "advisory" : "not verified"}${item.loop_id ? ` · loop ${item.loop_id}${item.iteration !== undefined ? ` iteration ${item.iteration}` : ""}` : ""}${item.run_id ? ` · run ${item.run_id}` : ""}${item.contract_id ? ` · contract ${item.contract_id}` : ""} · ${item.recorded_at}\n   ${clip(item.summary, 512)}`,
+                  `${index + 1}. ${item.kind} ${item.tool} · verdict ${item.verdict} · assurance ${item.assurance} · ${item.verified ? "VERIFIED" : item.advisory ? "advisory" : "not verified"}${item.loop_id ? ` · loop ${item.loop_id}${item.iteration !== undefined ? ` iteration ${item.iteration}` : ""}` : ""}${item.run_id ? ` · run ${item.run_id}` : ""}${item.contract_id ? ` · contract ${item.contract_id}` : ""}${item.binding_error ? ` · binding unavailable (${item.binding_error}): not bound to a workspace revision or diff` : ""} · ${item.recorded_at}\n   ${clip(item.summary, 512)}`,
               )
             : [
                 "No watch-skill evidence has been recorded for this task.",

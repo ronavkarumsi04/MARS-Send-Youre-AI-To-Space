@@ -371,6 +371,13 @@ function parseEvidenceRecord(bytes: Uint8Array): WatchEvidenceRecord | null {
   return result.success ? result.data : null;
 }
 
+/** The `code` property of a thrown value, whatever its shape. */
+function errorCodeOf(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : undefined;
+}
+
 function internalContext(scope: Scope): RequestContext {
   return { schema_version: 1, scope, request_id: randomUUID() };
 }
@@ -1344,8 +1351,7 @@ export async function createWorkbenchHost(
           reason = `${error.message}: ${check.path}`;
         } else if (
           error instanceof Error &&
-          "code" in error &&
-          error.code === "not_found"
+          errorCodeOf(error) === "not_found"
         ) {
           status = "failed";
           reason = `Required file missing: ${check.path}`;
@@ -1628,12 +1634,7 @@ export async function createWorkbenchHost(
     try {
       return options.conventions?.commands?.expand(request) ?? null;
     } catch (error) {
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error as { code: unknown }).code === "too-large"
-      )
+      if (errorCodeOf(error) === "too-large")
         throw new WorkbenchError("too_large");
       throw error;
     }
@@ -1832,11 +1833,7 @@ export async function createWorkbenchHost(
       if (writePaths.length > 0 && !withinClaimedPaths(path, writePaths))
         throw new WorkbenchError("forbidden");
     };
-    const notFound = (error: unknown) =>
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error as { code: unknown }).code === "not_found";
+    const notFound = (error: unknown) => errorCodeOf(error) === "not_found";
     const readText = async (path: string): Promise<string | null> => {
       const context = await authorize();
       let ref: ArtifactRef;
@@ -1878,12 +1875,8 @@ export async function createWorkbenchHost(
           return "file" as const;
         } catch (error) {
           if (notFound(error)) return null;
-          const code =
-            typeof error === "object" && error !== null && "code" in error
-              ? (error as { code: unknown }).code
-              : undefined;
           // A file too large to read still exists and can be deleted or moved.
-          if (code === "limit_exceeded") return "file" as const;
+          if (errorCodeOf(error) === "limit_exceeded") return "file" as const;
           throw error;
         }
       },
@@ -2902,6 +2895,9 @@ export async function createWorkbenchHost(
             record.workspace_id !== workspace.workspace_id ||
             record.workspace_revision !== workspace.revision ||
             record.diff_sha256 !== digest,
+          ...(record.binding_error === undefined
+            ? {}
+            : { binding_error: record.binding_error }),
         });
         if (records.length > MAX_EVIDENCE_RECORDS) records.shift();
       }

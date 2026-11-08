@@ -367,6 +367,81 @@ export async function createLocalWorkspaceProvider(
     });
   };
 
+  // Crash-consistent commit of one tree mutation: the write_in_progress marker
+  // is persisted before `apply` and cleared with the counter/revision bump.
+  // On failure the tree change is undone and the metadata rolled back; if
+  // either rollback fails the workspace is marked lost. `apply` may hard-link
+  // the original file into `priorPath`, which is removed unless a failed
+  // undo left it as the file's only copy.
+  const commitTreeMutation = async (
+    current: WorkspaceMeta,
+    mutation: {
+      apply: (priorPath: string) => Promise<void>;
+      undo: (priorPath: string) => Promise<void>;
+      phaseHook?: () => void | Promise<void>;
+    },
+  ): Promise<void> => {
+    const priorPath = join(
+      rootDir,
+      "staging",
+      `${current.workspace_id}-prior-${randomUUID().replaceAll("-", "")}`,
+    );
+    const previous = {
+      counter: current.counter,
+      revision: current.revision,
+      tree_digest: current.tree_digest,
+      skipped: current.skipped,
+    };
+    let markerSaved = false;
+    let applied = false;
+    let committed = false;
+    try {
+      current.write_in_progress = { started_at: now().toISOString() };
+      await saveMeta(rootDir, current);
+      markerSaved = true;
+      await mutation.apply(priorPath);
+      applied = true;
+      await mutation.phaseHook?.();
+      const after = await treeSnapshot(current, true, false);
+      updateUnsupportedSkipped(current, after);
+      current.counter += 1;
+      current.tree_digest = after.digest;
+      current.revision = revision(current.counter, after.digest);
+      delete current.write_in_progress;
+      await saveMeta(rootDir, current);
+      committed = true;
+    } catch (error) {
+      if (applied) {
+        try {
+          await mutation.undo(priorPath);
+          applied = false;
+        } catch {
+          lostWorkspaces.add(current.workspace_id);
+          throw error;
+        }
+      }
+      if (markerSaved) {
+        current.counter = previous.counter;
+        current.revision = previous.revision;
+        current.tree_digest = previous.tree_digest;
+        current.skipped = previous.skipped;
+        delete current.write_in_progress;
+        try {
+          await saveMeta(rootDir, current);
+        } catch {
+          current.write_in_progress = {
+            started_at: now().toISOString(),
+          };
+          lostWorkspaces.add(current.workspace_id);
+        }
+      }
+      throw error;
+    } finally {
+      if (committed || !applied)
+        await rm(priorPath, { force: true }).catch(() => undefined);
+    }
+  };
+
   const validateArtifact = (artifact: ArtifactRef): ArtifactRef => {
     const parsed = ArtifactRefSchema.safeParse(artifact);
     if (!parsed.success)
@@ -809,11 +884,6 @@ export async function createLocalWorkspaceProvider(
           "staging",
           `${current.workspace_id}-write-${randomUUID().replaceAll("-", "")}`,
         );
-        const priorPath = join(
-          rootDir,
-          "staging",
-          `${current.workspace_id}-prior-${randomUUID().replaceAll("-", "")}`,
-        );
         let handle: FileHandle | undefined;
         try {
           handle = await open(temporary, "wx", mode);
@@ -828,67 +898,20 @@ export async function createLocalWorkspaceProvider(
           await rm(temporary, { force: true }).catch(() => undefined);
           throw error;
         }
-        const previous = {
-          counter: current.counter,
-          revision: current.revision,
-          tree_digest: current.tree_digest,
-          skipped: current.skipped,
-        };
-        let markerSaved = false;
-        let targetReplaced = false;
-        let priorLinked = false;
-        let committed = false;
         try {
-          current.write_in_progress = { started_at: now().toISOString() };
-          await saveMeta(rootDir, current);
-          markerSaved = true;
-          if (existing) {
-            await link(absolute, priorPath);
-            priorLinked = true;
-          }
-          await rename(temporary, absolute);
-          targetReplaced = true;
-          await options.testHooks?.writePhase?.("after-rename");
-          const after = await treeSnapshot(current, true, false);
-          updateUnsupportedSkipped(current, after);
-          current.counter += 1;
-          current.tree_digest = after.digest;
-          current.revision = revision(current.counter, after.digest);
-          delete current.write_in_progress;
-          await saveMeta(rootDir, current);
-          committed = true;
-        } catch (error) {
-          if (targetReplaced) {
-            try {
-              if (priorLinked) await rename(priorPath, absolute);
+          await commitTreeMutation(current, {
+            apply: async (priorPath) => {
+              if (existing) await link(absolute, priorPath);
+              await rename(temporary, absolute);
+            },
+            undo: async (priorPath) => {
+              if (existing) await rename(priorPath, absolute);
               else await rm(absolute, { force: true });
-              priorLinked = false;
-              targetReplaced = false;
-            } catch {
-              lostWorkspaces.add(current.workspace_id);
-              throw error;
-            }
-          }
-          if (markerSaved) {
-            current.counter = previous.counter;
-            current.revision = previous.revision;
-            current.tree_digest = previous.tree_digest;
-            current.skipped = previous.skipped;
-            delete current.write_in_progress;
-            try {
-              await saveMeta(rootDir, current);
-            } catch {
-              current.write_in_progress = {
-                started_at: now().toISOString(),
-              };
-              lostWorkspaces.add(current.workspace_id);
-            }
-          }
-          throw error;
+            },
+            phaseHook: () => options.testHooks?.writePhase?.("after-rename"),
+          });
         } finally {
           await rm(temporary, { force: true }).catch(() => undefined);
-          if (committed || !targetReplaced)
-            await rm(priorPath, { force: true }).catch(() => undefined);
         }
       });
     },
@@ -912,67 +935,14 @@ export async function createLocalWorkspaceProvider(
           throw new WorkspacePolicyError(
             "Workspace remove target is not a regular file",
           );
-        const priorPath = join(
-          rootDir,
-          "staging",
-          `${current.workspace_id}-prior-${randomUUID().replaceAll("-", "")}`,
-        );
-        const previous = {
-          counter: current.counter,
-          revision: current.revision,
-          tree_digest: current.tree_digest,
-          skipped: current.skipped,
-        };
-        let markerSaved = false;
-        let targetRemoved = false;
-        let committed = false;
-        try {
-          current.write_in_progress = { started_at: now().toISOString() };
-          await saveMeta(rootDir, current);
-          markerSaved = true;
-          await link(absolute, priorPath);
-          await rm(absolute);
-          targetRemoved = true;
-          await options.testHooks?.removePhase?.("after-remove");
-          const after = await treeSnapshot(current, true, false);
-          updateUnsupportedSkipped(current, after);
-          current.counter += 1;
-          current.tree_digest = after.digest;
-          current.revision = revision(current.counter, after.digest);
-          delete current.write_in_progress;
-          await saveMeta(rootDir, current);
-          committed = true;
-        } catch (error) {
-          if (targetRemoved) {
-            try {
-              await rename(priorPath, absolute);
-              targetRemoved = false;
-            } catch {
-              lostWorkspaces.add(current.workspace_id);
-              throw error;
-            }
-          }
-          if (markerSaved) {
-            current.counter = previous.counter;
-            current.revision = previous.revision;
-            current.tree_digest = previous.tree_digest;
-            current.skipped = previous.skipped;
-            delete current.write_in_progress;
-            try {
-              await saveMeta(rootDir, current);
-            } catch {
-              current.write_in_progress = {
-                started_at: now().toISOString(),
-              };
-              lostWorkspaces.add(current.workspace_id);
-            }
-          }
-          throw error;
-        } finally {
-          // A failed restore leaves the staged link as the file's only copy.
-          if (committed || !targetRemoved)
-            await rm(priorPath, { force: true }).catch(() => undefined);
-        }
+        await commitTreeMutation(current, {
+          apply: async (priorPath) => {
+            await link(absolute, priorPath);
+            await rm(absolute);
+          },
+          undo: (priorPath) => rename(priorPath, absolute),
+          phaseHook: () => options.testHooks?.removePhase?.("after-remove"),
+        });
       });
     },
     async execute(context, workspace, argv, budget, executeOptions) {
