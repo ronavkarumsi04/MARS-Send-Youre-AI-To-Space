@@ -977,6 +977,7 @@ describe("evaluate bounds", () => {
         .catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(AggregateError);
       expect((error as AggregateError).message).toContain(job.job_id);
+      expect((error as AggregateError).message).toContain("backend exploded");
       expect((error as AggregateError).errors).toHaveLength(2);
       await expect(service.job(context, job.job_id)).rejects.toBe(error);
       await expect(service.inspect(context, job.job_id)).rejects.toBe(error);
@@ -988,6 +989,69 @@ describe("evaluate bounds", () => {
       ) as { status: string; error: string | null };
       expect(onDisk.status).toBe("running");
       expect(onDisk.error).toBeNull();
+    } finally {
+      if (jobsDir) await chmod(jobsDir, 0o700);
+    }
+  });
+
+  test("cancel reports a cancellation that cannot be written", async () => {
+    const root = await newRoot();
+    const artifacts = createMemoryArtifactStore();
+    let jobsDir = "";
+    const backend: PromptScoringBackend = {
+      async score(_context, _request, options) {
+        const [scope] = await readdir(root);
+        jobsDir = path.join(root, scope ?? "", "jobs");
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            chmod(jobsDir, 0o500).then(
+              () => reject(new Error("aborted")),
+              reject,
+            );
+          });
+        });
+      },
+    };
+    const service = createOptimizationService({
+      rootDir: root,
+      backend,
+      backendId: "unwritable-cancel",
+      reflection: createScriptedReflectionResponder(() => REFLECTION_TEXT),
+      artifacts,
+    });
+    const put = (value: unknown) =>
+      artifacts.put(
+        context,
+        new TextEncoder().encode(JSON.stringify(value)),
+        "application/json",
+      );
+    const targetId = await service.registerTarget(
+      context,
+      await put(registration()),
+    );
+    const target = await service.target(context, targetId);
+    const components = { system_prompt: `${SEED} v5` };
+    const job = await service.evaluate(
+      context,
+      await put({
+        schema: EVALUATE_REQUEST_SCHEMA,
+        target_id: targetId,
+        candidate: {
+          candidate_id: candidateId(components),
+          components,
+          parent_candidate_id: target.seed_candidate_id,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+        budget,
+      }),
+    );
+    try {
+      while (!jobsDir) await new Promise((resolve) => setTimeout(resolve, 5));
+      const error = await service
+        .cancel(context, job.job_id)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).message).toContain(job.job_id);
     } finally {
       if (jobsDir) await chmod(jobsDir, 0o700);
     }

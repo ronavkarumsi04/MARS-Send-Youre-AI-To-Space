@@ -764,6 +764,7 @@ export function createOptimizationService(
     const abort = new AbortController();
     const done = body(abort)
       .catch(async (error) => {
+        const bodyFailure = job.error;
         try {
           await finishJob(
             context,
@@ -778,7 +779,7 @@ export function createOptimizationService(
             job.job_id,
             new AggregateError(
               [error, writeError],
-              `${job.job_id} failed and its failed record could not be written`,
+              `${job.job_id} failed${bodyFailure ? ` (${bodyFailure})` : ""} and its failed record could not be written`,
             ),
           );
         }
@@ -791,10 +792,9 @@ export function createOptimizationService(
     context: RequestContext,
     jobId: string,
   ): Promise<JobRecord> {
-    const job = await store.readJob(context, jobId);
     const lost = unrecorded.get(jobId);
     if (lost) throw lost;
-    return job;
+    return store.readJob(context, jobId);
   }
 
   function newJob(
@@ -1133,6 +1133,8 @@ export function createOptimizationService(
       if (active) {
         active.abort.abort();
         await active.done;
+        const lost = unrecorded.get(jobId);
+        if (lost) throw lost;
         return;
       }
       if (job.status === "pending" || job.status === "running") {
