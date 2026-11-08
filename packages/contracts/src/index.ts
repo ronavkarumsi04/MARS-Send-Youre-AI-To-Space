@@ -620,6 +620,7 @@ export interface ModelRegistry {
 export * from "./models";
 
 export * from "./output-format";
+export * from "./secret-shapes";
 export * from "./verification";
 
 /**
