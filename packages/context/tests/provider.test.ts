@@ -225,6 +225,27 @@ describe("repository map provider", () => {
     expect(result.stats.files_parsed).toBe(2);
   });
 
+  test("rejects invalidation of a workspace outside the request scope", async () => {
+    const root = await tempRoot();
+    await putFile(root, "a.ts", "export const value = 1;\n");
+    const provider = providerFor(root);
+    await provider.map(context, { workspace, max_output_tokens: 200 });
+    const wrongScope = {
+      ...context,
+      scope: { ...context.scope, workspace_id: "different" },
+    };
+    const error = (await provider
+      .invalidate(wrongScope, { workspace_id: workspace.workspace_id })
+      .catch((caught: Error) => caught)) as Error;
+    expect(error).toBeInstanceOf(ContextPolicyError);
+    expect(error.message).toBe("Workspace is outside the request scope");
+    const warm = await provider.map(context, {
+      workspace,
+      max_output_tokens: 200,
+    });
+    expect(warm.stats.map_cache_hit).toBe(true);
+  });
+
   test("rejects invalid paths, scope mismatch, resolver rejection, and revision mismatch without leaks", async () => {
     const root = await tempRoot();
     const rootRealPath = await realpath(root);

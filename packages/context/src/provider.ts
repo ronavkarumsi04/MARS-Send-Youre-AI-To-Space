@@ -304,12 +304,7 @@ export function createRepositoryMapProvider(
     ) {
       throw new ContextPolicyError("Invalid workspace");
     }
-    if (
-      context.scope.workspace_id !== undefined &&
-      context.scope.workspace_id !== workspace.workspace_id
-    ) {
-      throw new ContextPolicyError("Workspace is outside the request scope");
-    }
+    validateWorkspaceScope(context, workspace);
     const baseKey = scopeKey(context, workspace.workspace_id);
     return lock(baseKey, async () => {
       assertOpen();
