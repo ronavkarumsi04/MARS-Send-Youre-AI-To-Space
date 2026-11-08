@@ -13,7 +13,13 @@ import {
   ReferenceSchema,
   type SendMessageInput,
 } from "./schemas";
-import { FixtureTeamService } from "./service";
+import {
+  decodeCursor,
+  EXCERPT_CHARS,
+  encodeCursor,
+  excerpt,
+  FixtureTeamService,
+} from "./service";
 
 const send = (over: Partial<SendMessageInput> = {}): SendMessageInput => ({
   conversation_id: C.dmAdaGrace,
@@ -310,7 +316,7 @@ describe("sending", () => {
     const service = new FixtureTeamService();
     ok(service.sendMessage(U.ada, send({ body: "x".repeat(400) })));
     const inbox = ok(service.listConversations(U.ada));
-    expect(inbox[0]?.last_message?.excerpt.length).toBeLessThanOrEqual(81);
+    expect(inbox[0]?.last_message?.excerpt.length).toBeLessThanOrEqual(80);
   });
 });
 
@@ -481,5 +487,24 @@ describe("review fixes", () => {
     };
     expect(FixtureDatasetSchema.safeParse(mismatch).success).toBe(false);
     expect(() => new FixtureTeamService({ dataset: mismatch })).toThrow();
+  });
+});
+
+describe("shared excerpt and cursor rules", () => {
+  test("excerpts flatten whitespace and clip to EXCERPT_CHARS with the ellipsis", () => {
+    expect(excerpt("  a\n\tb  ")).toBe("a b");
+    expect(excerpt("x".repeat(EXCERPT_CHARS))).toBe("x".repeat(EXCERPT_CHARS));
+    const clipped = excerpt("x".repeat(EXCERPT_CHARS + 1));
+    expect(clipped).toBe(`${"x".repeat(EXCERPT_CHARS - 1)}…`);
+    expect(clipped.length).toBe(EXCERPT_CHARS);
+  });
+
+  test("cursors round-trip and reject anything but a non-negative integer", () => {
+    expect(encodeCursor(7)).toBe("seq:7");
+    expect(decodeCursor(encodeCursor(7))).toBe(7);
+    expect(decodeCursor("seq:0")).toBe(0);
+    for (const bad of ["7", "seq:-1", "seq:1.5", "seq:x", "pos:3"]) {
+      expect(decodeCursor(bad)).toBeNull();
+    }
   });
 });
