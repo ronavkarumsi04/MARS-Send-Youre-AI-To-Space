@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { checkRelativePath } from "../../../apps/vscode/src/pathSafety";
-import { INVISIBLE_CODE_POINT_RANGES as MEMORY_RANGES } from "../../memory/src/threats";
-import {
-  checkLocatorPath,
-  INVISIBLE_CODE_POINT_RANGES,
-  MAX_PATH_LENGTH,
-} from "./path-rules";
+import { checkLocatorPath, MAX_PATH_LENGTH } from "./path-rules";
 
 const CORPUS = [
   "src/app.ts",
@@ -70,11 +65,5 @@ describe("path rules stay in sync with apps/vscode/src/pathSafety.ts", () => {
       if (reference.ok && local.ok)
         expect(local.segments).toEqual(reference.segments);
     }
-  });
-});
-
-describe("invisible code points stay in sync with packages/memory/src/threats.ts", () => {
-  test("identical denylist", () => {
-    expect(INVISIBLE_CODE_POINT_RANGES).toEqual(MEMORY_RANGES);
   });
 });

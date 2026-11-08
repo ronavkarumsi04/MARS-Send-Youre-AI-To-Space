@@ -26,11 +26,15 @@ import {
   ChildViewSchema,
   type CollaborationLimits,
   CollaborationLimitsSchema,
+  type DelegateInput,
   DelegateInputSchema,
+  type DelegationPool,
   DelegationPoolSchema,
   type DeliveredMessage,
   DeliveredMessageSchema,
   ListInputSchema,
+  MAX_ACCEPTANCE_CRITERION_BYTES,
+  MAX_SOLUTION_SPACE_BYTES,
   type MemberUsage,
   MemberUsageSchema,
   MessageInputSchema,
@@ -1760,6 +1764,29 @@ function pathsOverlap(left: string, right: string): boolean {
   );
 }
 
+interface NormalizedDelegation {
+  input: DelegateInput;
+  instruction: string;
+  instructionDigest: string;
+  acceptance: string[];
+  approvals: { read: boolean; write: boolean; execute: boolean };
+  paidModels: boolean;
+  mayDelegate: boolean;
+  delegationPool: DelegationPool;
+  requestedUsd: number;
+  workspaceMode: "private" | "read_only";
+  writePaths: string[];
+  digest: string;
+}
+
+interface DelegationPlan {
+  depth: number;
+  resolvedPeers: string[];
+  writePaths: string[];
+  deadline: number;
+  parentReserved: { tokens: number; usd: number };
+}
+
 function delegateChild(
   store: CollaborationStore,
   contextValue: RequestContext,
@@ -1768,54 +1795,16 @@ function delegateChild(
 ): ChildView & { capability: AgentCapability | null } {
   return store.transaction(() => {
     const { member, room } = auth(store, contextValue, capabilityValue, true);
-    const input = parseWith(DelegateInputSchema, inputValue);
-    const instruction = input.instruction.trim();
-    const acceptance = input.acceptance_criteria ?? [];
-    const requestedApprovals = {
-      read: input.approvals?.read ?? true,
-      write: input.approvals?.write ?? false,
-      execute: input.approvals?.execute ?? false,
-    };
-    const paidModels = input.paid_models ?? false;
-    const mayDelegate = input.may_delegate ?? false;
-    const delegationPool = {
-      tokens: input.budget.delegation_pool_tokens ?? 0,
-      usd: input.budget.delegation_pool_usd ?? 0,
-    };
-    const workspaceMode =
-      input.workspace ?? (requestedApprovals.write ? "private" : "read_only");
-    const writePaths = input.write_paths ?? [];
-    const canonicalInstructionDigest = sha256(instruction);
-    const digest = sha256(
-      json({
-        role_label: input.role_label,
-        instruction,
-        acceptance_criteria: acceptance,
-        solution_space: input.solution_space ?? null,
-        complexity: input.complexity ?? null,
-        approvals: requestedApprovals,
-        paid_models: paidModels,
-        may_delegate: mayDelegate,
-        budget: {
-          max_tokens: input.budget.max_tokens,
-          max_usd: input.budget.max_usd ?? 0,
-          max_duration_ms: input.budget.max_duration_ms,
-          max_steps: input.budget.max_steps,
-          max_messages: input.budget.max_messages,
-          delegation_pool: delegationPool,
-        },
-        peers: [...(input.peers ?? [])].sort(),
-        workspace: workspaceMode,
-        write_paths: writePaths,
-      }),
+    const delegation = normalizeDelegation(
+      parseWith(DelegateInputSchema, inputValue),
     );
     const old = store.db
       .query<{ digest: string; child_id: string }, [string, string, string]>(
         "SELECT digest, child_id FROM delegations WHERE room_id = ? AND parent_id = ? AND idempotency_key = ?",
       )
-      .get(room.room_id, member.agent_id, input.idempotency_key);
+      .get(room.room_id, member.agent_id, delegation.input.idempotency_key);
     if (old) {
-      if (old.digest !== digest)
+      if (old.digest !== delegation.digest)
         throw new CollaborationError(
           "conflict",
           "Delegation idempotency key was reused",
@@ -1826,295 +1815,411 @@ function delegateChild(
       });
       return { ...childView(store, child), replayed: true, capability: null };
     }
-    const parentAuthority = parseJson(
-      member.authority_json,
-      AgentAuthoritySchema,
-    );
-    if (!parentAuthority.delegate)
-      throw new CollaborationError(
-        member.parent_agent_id === null ? "single_agent" : "forbidden",
-        "Delegation is not authorized",
-      );
-    const parentBudget = agentBudget(member);
-    const limits = parseJson(room.limits_json, CollaborationLimitsSchema);
-    const depth = member.depth + 1;
-    const effectiveMaxDepth = Math.min(
-      parseJson(room.limits_json, CollaborationLimitsSchema).max_depth,
-      parseJson(room.budget_json, BudgetSchema).max_depth,
-    );
-    if (depth > effectiveMaxDepth)
-      throw new CollaborationError(
-        "limit_exceeded",
-        "Delegation depth limit reached",
-      );
-    if (mayDelegate && depth + 1 > effectiveMaxDepth)
-      throw new CollaborationError(
-        "limit_exceeded",
-        "Delegation depth limit reached",
-      );
-    const childCount =
-      store.db
-        .query<{ amount: number }, [string, string]>(
-          "SELECT COUNT(*) AS amount FROM members WHERE room_id = ? AND parent_agent_id = ?",
-        )
-        .get(room.room_id, member.agent_id)?.amount ?? 0;
-    const roomChildCount =
-      store.db
-        .query<{ amount: number }, [string]>(
-          "SELECT COUNT(*) AS amount FROM members WHERE room_id = ? AND parent_agent_id IS NOT NULL",
-        )
-        .get(room.room_id)?.amount ?? 0;
-    if (
-      childCount >= limits.max_children_per_agent ||
-      roomChildCount >= limits.max_total_children
-    )
-      throw new CollaborationError("limit_exceeded", "Child limit reached");
-    const ancestors: MemberRow[] = [member];
-    let ancestorId = member.parent_agent_id;
-    while (ancestorId) {
-      const ancestor = store.db
-        .query<MemberRow, [string, string]>(
-          "SELECT * FROM members WHERE room_id = ? AND agent_id = ?",
-        )
-        .get(room.room_id, ancestorId);
-      if (!ancestor) break;
-      ancestors.push(ancestor);
-      ancestorId = ancestor.parent_agent_id;
-    }
-    if (
-      ancestors.some(
-        (ancestor) =>
-          ancestor.instruction_digest === canonicalInstructionDigest,
-      )
-    )
-      throw new CollaborationError(
-        "recursive_delegation",
-        "Instruction repeats an ancestor task",
-      );
-    if (!instruction) invalidInput("Delegation instruction must not be blank");
-    if (Buffer.byteLength(instruction, "utf8") > limits.max_instruction_bytes)
-      invalidInput("Delegation instruction exceeds its byte limit");
-    assertPublishable(instruction, store.hostPrivateRoots, store.rootDir);
-    for (const criteria of acceptance) {
-      if (Buffer.byteLength(criteria, "utf8") > 512 || !criteria.trim())
-        invalidInput("Acceptance criteria exceed their limit");
-      assertPublishable(criteria, store.hostPrivateRoots, store.rootDir);
-    }
-    if (
-      input.solution_space !== undefined &&
-      Buffer.byteLength(input.solution_space, "utf8") > 512
-    )
-      invalidInput("Solution space exceeds its byte limit");
-    if (input.solution_space)
-      assertPublishable(
-        input.solution_space,
-        store.hostPrivateRoots,
-        store.rootDir,
-      );
-    if (
-      (requestedApprovals.read && !parentAuthority.read) ||
-      (requestedApprovals.write && !parentAuthority.write) ||
-      (requestedApprovals.execute && !parentAuthority.execute) ||
-      (paidModels && !parentAuthority.paid) ||
-      (mayDelegate && !parentAuthority.delegate)
-    )
-      throw new CollaborationError(
-        "forbidden",
-        "Requested authority exceeds parent authority",
-      );
-    if ((delegationPool.tokens > 0 || delegationPool.usd > 0) && !mayDelegate)
-      throw new CollaborationError(
-        "forbidden",
-        "Delegation pool requires delegation authority",
-      );
-    if (
-      delegationPool.tokens > input.budget.max_tokens - 1 ||
-      delegationPool.usd > (input.budget.max_usd ?? 0)
-    )
-      invalidInput("Child delegation pool exceeds its budget envelope");
-    if (requestedApprovals.write && workspaceMode === "read_only")
-      invalidInput("A read-only workspace cannot receive write permission");
-    if (input.budget.max_usd && !paidModels)
-      throw new CollaborationError(
-        "forbidden",
-        "Paid budget requires paid-model authority",
-      );
-    if (input.peers && input.peers.length > limits.max_recipients)
-      invalidInput("Too many peers");
-    const validatedWritePaths = validWritePaths(
-      writePaths,
-      requestedApprovals.write,
-    );
-    const peers = [...new Set(input.peers ?? [])];
-    const resolvedPeers: string[] = [];
-    for (const peerId of peers) {
-      const peer = store.db
-        .query<MemberRow, [string, string]>(
-          "SELECT * FROM members WHERE room_id = ? AND agent_id = ?",
-        )
-        .get(room.room_id, peerId);
-      if (!peer || peer.status !== "active")
-        throw new CollaborationError("forbidden", "Peer is not authorized");
-      if (
-        peer.agent_id !== member.agent_id &&
-        !isAncestor(store, member.agent_id, peer.agent_id, room.room_id)
-      )
-        throw new CollaborationError("forbidden", "Peer is not authorized");
-      resolvedPeers.push(peer.agent_id);
-    }
-    const claimedPaths = store.db
-      .query<{ path: string; agent_id: string }, [string]>(
-        "SELECT path, agent_id FROM write_claims WHERE room_id = ?",
-      )
-      .all(room.room_id);
-    if (
-      validatedWritePaths.some((requested) =>
-        claimedPaths.some(
-          (claim) =>
-            claim.agent_id !== member.agent_id &&
-            pathsOverlap(requested, claim.path) &&
-            !isTerminalStatus(store.getMemberRow(claim.agent_id).status),
-        ),
-      )
-    )
-      throw new CollaborationError(
-        "write_conflict",
-        "Write path is already claimed",
-      );
-    const parentUsage = parseJson(member.usage_json, MemberUsageSchema);
-    const parentPool = parseJson(member.pool_json, DelegationPoolSchema);
-    const parentReserved = parseJson(member.reserved_json, TokenUsdSchema);
-    const ownCharged = ownRuntimeCharged(store, member);
-    const requestedUsd = input.budget.max_usd ?? 0;
-    const subtreeTokens = Math.max(
-      0,
-      tokensUsed(parentUsage) - tokensUsed(ownCharged),
-    );
-    const subtreeUsd = Math.max(0, parentUsage.usd - ownCharged.usd);
-    if (
-      input.budget.max_tokens >
-        parentPool.tokens - parentReserved.tokens - subtreeTokens ||
-      requestedUsd > parentPool.usd - parentReserved.usd - subtreeUsd
-    )
-      throw new CollaborationError(
-        "budget_exceeded",
-        "Child budget exceeds available budget",
-      );
-    if (
-      parentBudget.max_messages !== null &&
-      parentUsage.messages_sent >= parentBudget.max_messages
-    )
-      throw new CollaborationError(
-        "budget_exceeded",
-        "Message budget is exhausted",
-      );
-    const deadline = Math.min(
-      parentBudget.deadline,
-      room.deadline,
-      store.now() + input.budget.max_duration_ms,
-    );
-    if (deadline <= store.now())
-      throw new CollaborationError("expired", "Child deadline has passed");
-    const memberId = store.randomId();
-    const token = store.randomToken();
-    const childAuthority: AgentAuthority = {
-      ...requestedApprovals,
-      paid: paidModels,
-      delegate: mayDelegate && delegationPool.tokens > 0,
-      may_message: resolvedPeers,
-    };
-    const childBudget: AgentBudget = {
-      max_tokens: input.budget.max_tokens,
-      max_usd: requestedUsd,
-      max_steps: input.budget.max_steps,
-      max_messages: input.budget.max_messages,
-      deadline,
-    };
-    const now = store.now();
-    const nextSeq = room.next_seq;
-    store.db
-      .query(
-        `INSERT INTO members
-         (agent_id, room_id, parent_agent_id, depth, role_label, status, task_revision, token_hash,
-          authority_json, peers_json, budget_json, usage_json, reserved_json, pool_json, instruction_digest,
-          instruction_text, workspace_mode, write_paths_json, created_at, max_steps, max_messages, acceptance_json,
-          solution_space, complexity, paid_models)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        memberId,
-        room.room_id,
-        member.agent_id,
-        depth,
-        input.role_label,
-        room.task_revision,
-        sha256(token),
-        json(childAuthority),
-        json(resolvedPeers),
-        json(childBudget),
-        json({ ...zeroUsage, messages_sent: 0 }),
-        json(zeroReserved),
-        json(delegationPool),
-        canonicalInstructionDigest,
-        instruction,
-        workspaceMode,
-        json(validatedWritePaths),
-        now,
-        input.budget.max_steps,
-        input.budget.max_messages,
-        json(acceptance),
-        input.solution_space ?? null,
-        input.complexity ?? null,
-        paidModels ? 1 : 0,
-      );
-    store.db
-      .query(
-        `INSERT INTO jobs
-         (job_id, room_id, agent_id, state, attempt, lease_owner, lease_epoch, lease_expires_at,
-          cancel_requested, session_ref, base_revision, charged_usage_json, created_seq, model_id, model_reason)
-         VALUES (?, ?, ?, 'queued', 0, NULL, 0, NULL, 0, NULL, NULL, ?, ?, NULL, NULL)`,
-      )
-      .run(store.randomId(), room.room_id, memberId, json(zeroUsage), nextSeq);
-    for (const path of validatedWritePaths)
-      store.db
-        .query(
-          "INSERT INTO write_claims(room_id, path, agent_id) VALUES (?, ?, ?)",
-        )
-        .run(room.room_id, path, memberId);
-    store.db
-      .query(
-        "INSERT INTO delegations(room_id, parent_id, idempotency_key, digest, child_id) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(
-        room.room_id,
-        member.agent_id,
-        input.idempotency_key,
-        digest,
-        memberId,
-      );
-    const nextReserved = {
-      tokens: parentReserved.tokens + input.budget.max_tokens,
-      usd: parentReserved.usd + requestedUsd,
-    };
-    store.db
-      .query("UPDATE members SET reserved_json = ? WHERE agent_id = ?")
-      .run(json(nextReserved), member.agent_id);
-    updateStats(store, room.room_id, (stats) => {
-      stats.delegations += 1;
-      if (member.parent_agent_id === null) {
-        stats.reserved.tokens += input.budget.max_tokens;
-        stats.reserved.usd += requestedUsd;
-      }
-    });
-    store.db
-      .query("UPDATE rooms SET next_seq = next_seq + 1 WHERE room_id = ?")
-      .run(room.room_id);
-    const child = store.getMemberRow(memberId);
-    return {
-      ...childView(store, child),
-      capability: capabilityFor(room.room_id, memberId, token),
-    };
+    const plan = checkDelegationPolicy(store, room, member, delegation);
+    return persistDelegation(store, room, member, delegation, plan);
   });
+}
+
+function normalizeDelegation(input: DelegateInput): NormalizedDelegation {
+  const instruction = input.instruction.trim();
+  const acceptance = input.acceptance_criteria ?? [];
+  const approvals = {
+    read: input.approvals?.read ?? true,
+    write: input.approvals?.write ?? false,
+    execute: input.approvals?.execute ?? false,
+  };
+  const paidModels = input.paid_models ?? false;
+  const mayDelegate = input.may_delegate ?? false;
+  const delegationPool = {
+    tokens: input.budget.delegation_pool_tokens ?? 0,
+    usd: input.budget.delegation_pool_usd ?? 0,
+  };
+  const requestedUsd = input.budget.max_usd ?? 0;
+  const workspaceMode =
+    input.workspace ?? (approvals.write ? "private" : "read_only");
+  const writePaths = input.write_paths ?? [];
+  const digest = sha256(
+    json({
+      role_label: input.role_label,
+      instruction,
+      acceptance_criteria: acceptance,
+      solution_space: input.solution_space ?? null,
+      complexity: input.complexity ?? null,
+      approvals,
+      paid_models: paidModels,
+      may_delegate: mayDelegate,
+      budget: {
+        max_tokens: input.budget.max_tokens,
+        max_usd: requestedUsd,
+        max_duration_ms: input.budget.max_duration_ms,
+        max_steps: input.budget.max_steps,
+        max_messages: input.budget.max_messages,
+        delegation_pool: delegationPool,
+      },
+      peers: [...(input.peers ?? [])].sort(),
+      workspace: workspaceMode,
+      write_paths: writePaths,
+    }),
+  );
+  return {
+    input,
+    instruction,
+    instructionDigest: sha256(instruction),
+    acceptance,
+    approvals,
+    paidModels,
+    mayDelegate,
+    delegationPool,
+    requestedUsd,
+    workspaceMode,
+    writePaths,
+    digest,
+  };
+}
+
+function checkDelegationPolicy(
+  store: CollaborationStore,
+  room: RoomRow,
+  member: MemberRow,
+  delegation: NormalizedDelegation,
+): DelegationPlan {
+  const { input, instruction, approvals, delegationPool, mayDelegate } =
+    delegation;
+  if (!instruction) invalidInput("Delegation instruction must not be blank");
+  const parentAuthority = parseJson(
+    member.authority_json,
+    AgentAuthoritySchema,
+  );
+  if (!parentAuthority.delegate)
+    throw new CollaborationError(
+      member.parent_agent_id === null ? "single_agent" : "forbidden",
+      "Delegation is not authorized",
+    );
+  const limits = parseJson(room.limits_json, CollaborationLimitsSchema);
+  const depth = member.depth + 1;
+  const effectiveMaxDepth = Math.min(
+    limits.max_depth,
+    parseJson(room.budget_json, BudgetSchema).max_depth,
+  );
+  if (
+    depth > effectiveMaxDepth ||
+    (mayDelegate && depth + 1 > effectiveMaxDepth)
+  )
+    throw new CollaborationError(
+      "limit_exceeded",
+      "Delegation depth limit reached",
+    );
+  const childCount =
+    store.db
+      .query<{ amount: number }, [string, string]>(
+        "SELECT COUNT(*) AS amount FROM members WHERE room_id = ? AND parent_agent_id = ?",
+      )
+      .get(room.room_id, member.agent_id)?.amount ?? 0;
+  const roomChildCount =
+    store.db
+      .query<{ amount: number }, [string]>(
+        "SELECT COUNT(*) AS amount FROM members WHERE room_id = ? AND parent_agent_id IS NOT NULL",
+      )
+      .get(room.room_id)?.amount ?? 0;
+  if (
+    childCount >= limits.max_children_per_agent ||
+    roomChildCount >= limits.max_total_children
+  )
+    throw new CollaborationError("limit_exceeded", "Child limit reached");
+  if (
+    ancestorsOf(store, room, member).some(
+      (ancestor) =>
+        ancestor.instruction_digest === delegation.instructionDigest,
+    )
+  )
+    throw new CollaborationError(
+      "recursive_delegation",
+      "Instruction repeats an ancestor task",
+    );
+  if (Buffer.byteLength(instruction, "utf8") > limits.max_instruction_bytes)
+    invalidInput("Delegation instruction exceeds its byte limit");
+  assertPublishable(instruction, store.hostPrivateRoots, store.rootDir);
+  for (const criteria of delegation.acceptance) {
+    if (
+      Buffer.byteLength(criteria, "utf8") > MAX_ACCEPTANCE_CRITERION_BYTES ||
+      !criteria.trim()
+    )
+      invalidInput("Acceptance criteria exceed their limit");
+    assertPublishable(criteria, store.hostPrivateRoots, store.rootDir);
+  }
+  if (
+    input.solution_space !== undefined &&
+    Buffer.byteLength(input.solution_space, "utf8") > MAX_SOLUTION_SPACE_BYTES
+  )
+    invalidInput("Solution space exceeds its byte limit");
+  if (input.solution_space)
+    assertPublishable(
+      input.solution_space,
+      store.hostPrivateRoots,
+      store.rootDir,
+    );
+  if (
+    (approvals.read && !parentAuthority.read) ||
+    (approvals.write && !parentAuthority.write) ||
+    (approvals.execute && !parentAuthority.execute) ||
+    (delegation.paidModels && !parentAuthority.paid)
+  )
+    throw new CollaborationError(
+      "forbidden",
+      "Requested authority exceeds parent authority",
+    );
+  if ((delegationPool.tokens > 0 || delegationPool.usd > 0) && !mayDelegate)
+    throw new CollaborationError(
+      "forbidden",
+      "Delegation pool requires delegation authority",
+    );
+  if (
+    delegationPool.tokens > input.budget.max_tokens - 1 ||
+    delegationPool.usd > delegation.requestedUsd
+  )
+    invalidInput("Child delegation pool exceeds its budget envelope");
+  if (approvals.write && delegation.workspaceMode === "read_only")
+    invalidInput("A read-only workspace cannot receive write permission");
+  if (input.budget.max_usd && !delegation.paidModels)
+    throw new CollaborationError(
+      "forbidden",
+      "Paid budget requires paid-model authority",
+    );
+  if (input.peers && input.peers.length > limits.max_recipients)
+    invalidInput("Too many peers");
+  const writePaths = validWritePaths(delegation.writePaths, approvals.write);
+  const resolvedPeers = resolveDelegationPeers(
+    store,
+    room,
+    member,
+    input.peers,
+  );
+  assertWritePathsUnclaimed(store, room, member, writePaths);
+  const parentReserved = assertDelegationBudget(store, member, delegation);
+  const deadline = Math.min(
+    agentBudget(member).deadline,
+    room.deadline,
+    store.now() + input.budget.max_duration_ms,
+  );
+  if (deadline <= store.now())
+    throw new CollaborationError("expired", "Child deadline has passed");
+  return { depth, resolvedPeers, writePaths, deadline, parentReserved };
+}
+
+function ancestorsOf(
+  store: CollaborationStore,
+  room: RoomRow,
+  member: MemberRow,
+): MemberRow[] {
+  const ancestors: MemberRow[] = [member];
+  let ancestorId = member.parent_agent_id;
+  while (ancestorId) {
+    const ancestor = store.db
+      .query<MemberRow, [string, string]>(
+        "SELECT * FROM members WHERE room_id = ? AND agent_id = ?",
+      )
+      .get(room.room_id, ancestorId);
+    if (!ancestor) break;
+    ancestors.push(ancestor);
+    ancestorId = ancestor.parent_agent_id;
+  }
+  return ancestors;
+}
+
+function resolveDelegationPeers(
+  store: CollaborationStore,
+  room: RoomRow,
+  member: MemberRow,
+  requested: string[] | undefined,
+): string[] {
+  const resolvedPeers: string[] = [];
+  for (const peerId of new Set(requested ?? [])) {
+    const peer = store.db
+      .query<MemberRow, [string, string]>(
+        "SELECT * FROM members WHERE room_id = ? AND agent_id = ?",
+      )
+      .get(room.room_id, peerId);
+    if (!peer || peer.status !== "active")
+      throw new CollaborationError("forbidden", "Peer is not authorized");
+    if (
+      peer.agent_id !== member.agent_id &&
+      !isAncestor(store, member.agent_id, peer.agent_id, room.room_id)
+    )
+      throw new CollaborationError("forbidden", "Peer is not authorized");
+    resolvedPeers.push(peer.agent_id);
+  }
+  return resolvedPeers;
+}
+
+function assertWritePathsUnclaimed(
+  store: CollaborationStore,
+  room: RoomRow,
+  member: MemberRow,
+  writePaths: string[],
+): void {
+  const claimedPaths = store.db
+    .query<{ path: string; agent_id: string }, [string]>(
+      "SELECT path, agent_id FROM write_claims WHERE room_id = ?",
+    )
+    .all(room.room_id);
+  if (
+    writePaths.some((requested) =>
+      claimedPaths.some(
+        (claim) =>
+          claim.agent_id !== member.agent_id &&
+          pathsOverlap(requested, claim.path) &&
+          !isTerminalStatus(store.getMemberRow(claim.agent_id).status),
+      ),
+    )
+  )
+    throw new CollaborationError(
+      "write_conflict",
+      "Write path is already claimed",
+    );
+}
+
+function assertDelegationBudget(
+  store: CollaborationStore,
+  member: MemberRow,
+  delegation: NormalizedDelegation,
+): { tokens: number; usd: number } {
+  const parentUsage = parseJson(member.usage_json, MemberUsageSchema);
+  const parentPool = parseJson(member.pool_json, DelegationPoolSchema);
+  const parentReserved = parseJson(member.reserved_json, TokenUsdSchema);
+  const ownCharged = ownRuntimeCharged(store, member);
+  const subtreeTokens = Math.max(
+    0,
+    tokensUsed(parentUsage) - tokensUsed(ownCharged),
+  );
+  const subtreeUsd = Math.max(0, parentUsage.usd - ownCharged.usd);
+  if (
+    delegation.input.budget.max_tokens >
+      parentPool.tokens - parentReserved.tokens - subtreeTokens ||
+    delegation.requestedUsd > parentPool.usd - parentReserved.usd - subtreeUsd
+  )
+    throw new CollaborationError(
+      "budget_exceeded",
+      "Child budget exceeds available budget",
+    );
+  const parentBudget = agentBudget(member);
+  if (
+    parentBudget.max_messages !== null &&
+    parentUsage.messages_sent >= parentBudget.max_messages
+  )
+    throw new CollaborationError(
+      "budget_exceeded",
+      "Message budget is exhausted",
+    );
+  return parentReserved;
+}
+
+function persistDelegation(
+  store: CollaborationStore,
+  room: RoomRow,
+  member: MemberRow,
+  delegation: NormalizedDelegation,
+  plan: DelegationPlan,
+): ChildView & { capability: AgentCapability } {
+  const { input, requestedUsd } = delegation;
+  const memberId = store.randomId();
+  const token = store.randomToken();
+  const childAuthority: AgentAuthority = {
+    ...delegation.approvals,
+    paid: delegation.paidModels,
+    delegate: delegation.mayDelegate && delegation.delegationPool.tokens > 0,
+    may_message: plan.resolvedPeers,
+  };
+  const childBudget: AgentBudget = {
+    max_tokens: input.budget.max_tokens,
+    max_usd: requestedUsd,
+    max_steps: input.budget.max_steps,
+    max_messages: input.budget.max_messages,
+    deadline: plan.deadline,
+  };
+  const now = store.now();
+  const nextSeq = room.next_seq;
+  store.db
+    .query(
+      `INSERT INTO members
+       (agent_id, room_id, parent_agent_id, depth, role_label, status, task_revision, token_hash,
+        authority_json, peers_json, budget_json, usage_json, reserved_json, pool_json, instruction_digest,
+        instruction_text, workspace_mode, write_paths_json, created_at, max_steps, max_messages, acceptance_json,
+        solution_space, complexity, paid_models)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      memberId,
+      room.room_id,
+      member.agent_id,
+      plan.depth,
+      input.role_label,
+      room.task_revision,
+      sha256(token),
+      json(childAuthority),
+      json(plan.resolvedPeers),
+      json(childBudget),
+      json({ ...zeroUsage, messages_sent: 0 }),
+      json(zeroReserved),
+      json(delegation.delegationPool),
+      delegation.instructionDigest,
+      delegation.instruction,
+      delegation.workspaceMode,
+      json(plan.writePaths),
+      now,
+      input.budget.max_steps,
+      input.budget.max_messages,
+      json(delegation.acceptance),
+      input.solution_space ?? null,
+      input.complexity ?? null,
+      delegation.paidModels ? 1 : 0,
+    );
+  store.db
+    .query(
+      `INSERT INTO jobs
+       (job_id, room_id, agent_id, state, attempt, lease_owner, lease_epoch, lease_expires_at,
+        cancel_requested, session_ref, base_revision, charged_usage_json, created_seq, model_id, model_reason)
+       VALUES (?, ?, ?, 'queued', 0, NULL, 0, NULL, 0, NULL, NULL, ?, ?, NULL, NULL)`,
+    )
+    .run(store.randomId(), room.room_id, memberId, json(zeroUsage), nextSeq);
+  for (const path of plan.writePaths)
+    store.db
+      .query(
+        "INSERT INTO write_claims(room_id, path, agent_id) VALUES (?, ?, ?)",
+      )
+      .run(room.room_id, path, memberId);
+  store.db
+    .query(
+      "INSERT INTO delegations(room_id, parent_id, idempotency_key, digest, child_id) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(
+      room.room_id,
+      member.agent_id,
+      input.idempotency_key,
+      delegation.digest,
+      memberId,
+    );
+  const nextReserved = {
+    tokens: plan.parentReserved.tokens + input.budget.max_tokens,
+    usd: plan.parentReserved.usd + requestedUsd,
+  };
+  store.db
+    .query("UPDATE members SET reserved_json = ? WHERE agent_id = ?")
+    .run(json(nextReserved), member.agent_id);
+  updateStats(store, room.room_id, (stats) => {
+    stats.delegations += 1;
+    if (member.parent_agent_id === null) {
+      stats.reserved.tokens += input.budget.max_tokens;
+      stats.reserved.usd += requestedUsd;
+    }
+  });
+  store.db
+    .query("UPDATE rooms SET next_seq = next_seq + 1 WHERE room_id = ?")
+    .run(room.room_id);
+  const child = store.getMemberRow(memberId);
+  return {
+    ...childView(store, child),
+    capability: capabilityFor(room.room_id, memberId, token),
+  };
 }
 
 function addUsage(left: ChildUsage, right: ChildUsage): ChildUsage {

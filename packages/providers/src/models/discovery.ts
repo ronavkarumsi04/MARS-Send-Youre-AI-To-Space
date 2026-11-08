@@ -1,14 +1,7 @@
 import type { ModelConfig, ProviderConfig } from "@mars/contracts";
 import type { AdapterOptions } from "./adapter-types";
+import { asObject } from "./http";
 import { createOpenAICompatibleAdapter } from "./openai-compatible";
-
-type JsonObject = Record<string, unknown>;
-
-function asObject(value: unknown): JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
 
 function parsePrice(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined;

@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import * as vscode from "vscode";
+import { decodeArtifactText } from "./artifactText";
 import { MarsClient, type VerifiedArtifact } from "./client";
 import { importConnection, readConnectionFile } from "./connectionFile";
 import {
@@ -302,14 +303,11 @@ class WorkbenchViewProvider
       openReview: (server, target) =>
         openReviewTarget(reviewHost, server, target),
       openArtifact: async (artifact: VerifiedArtifact, title: string) => {
-        let text: string;
-        try {
-          text = new TextDecoder("utf-8", { fatal: true }).decode(
-            artifact.bytes,
-          );
-        } catch {
-          text = `Binary artifact ${artifact.ref.artifact_id} (${artifact.media_type}, ${artifact.bytes.byteLength} bytes, sha256 ${artifact.ref.sha256}).`;
-        }
+        const decoded = decodeArtifactText(artifact);
+        const text =
+          decoded.kind === "text"
+            ? decoded.text
+            : `Binary artifact ${artifact.ref.artifact_id} (${artifact.media_type}, ${artifact.bytes.byteLength} bytes, sha256 ${artifact.ref.sha256}).`;
         const doc = await vscode.workspace.openTextDocument(
           documents.put(text, title),
         );

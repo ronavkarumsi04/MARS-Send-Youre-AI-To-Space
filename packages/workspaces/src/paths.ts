@@ -1,7 +1,13 @@
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { isSecretPath, relativePathProblem } from "@mars/contracts";
 import { WorkspacePolicyError } from "./errors";
 import type { WorkspaceLimits } from "./tree";
+
+export {
+  hasUnsupportedPathCharacters,
+  isSecretPath as isSecret,
+} from "@mars/contracts";
 
 const ignoredNames = new Set([
   ".git",
@@ -18,22 +24,6 @@ const ignoredNames = new Set([
   ".gradle",
   ".terraform",
 ]);
-const secretNames = new Set([
-  ".npmrc",
-  ".pypirc",
-  ".netrc",
-  ".git-credentials",
-  ".htpasswd",
-]);
-const secretExtensions = new Set([
-  ".pem",
-  ".key",
-  ".p12",
-  ".pfx",
-  ".keystore",
-  ".jks",
-]);
-const privateKeyPrefixes = ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 
 export function isIgnored(
   path: string,
@@ -53,95 +43,22 @@ export function isIgnored(
   });
 }
 
-export function isSecret(path: string): boolean {
-  const segments = path.split("/").map((segment) => segment.toLowerCase());
-  const basename = segments.at(-1) ?? "";
-  if (
-    segments.some((segment) =>
-      [".ssh", ".aws", ".gnupg", ".docker", ".kube", ".azure"].includes(
-        segment,
-      ),
-    )
-  ) {
-    return true;
-  }
-  if (
-    segments.some(
-      (segment, index) =>
-        segment === ".config" && segments[index + 1] === "gcloud",
-    )
-  ) {
-    return true;
-  }
-  if (segments.slice(0, -1).some((segment) => isSecretName(segment, false)))
-    return true;
-  return isSecretName(basename, true);
-}
-
-export function hasUnsupportedPathCharacters(path: string): boolean {
-  for (const character of path) {
-    const code = character.codePointAt(0);
-    if (
-      code !== undefined &&
-      (code <= 0x1f ||
-        (code >= 0x7f && code <= 0x9f) ||
-        code === 0x2028 ||
-        code === 0x2029)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isSecretName(name: string, allowExamples: boolean): boolean {
-  const normalizedName = name.toLowerCase();
-  if (
-    secretNames.has(normalizedName) ||
-    privateKeyPrefixes.some((prefix) => normalizedName.startsWith(prefix))
-  ) {
-    return true;
-  }
-  if (normalizedName === ".env" || normalizedName.startsWith(".env.")) {
-    return !(
-      allowExamples &&
-      [".env.example", ".env.sample", ".env.template"].includes(normalizedName)
-    );
-  }
-  const extension = normalizedName.slice(normalizedName.lastIndexOf("."));
-  return secretExtensions.has(extension);
-}
-
 export function validateRelativePath(
   path: string,
   limits: WorkspaceLimits,
   extraIgnores: readonly string[] = [],
 ): string {
-  if (
-    typeof path !== "string" ||
-    path.length === 0 ||
-    hasUnsupportedPathCharacters(path) ||
-    path.includes("\\") ||
-    path.startsWith("/") ||
-    /^[A-Za-z]:/.test(path)
-  ) {
+  if (relativePathProblem(path) !== null) {
     throw new WorkspacePolicyError("Invalid relative workspace path");
   }
   const segments = path.split("/");
-  if (
-    segments.some(
-      (segment) => segment.length === 0 || segment === "." || segment === "..",
-    )
-  ) {
-    throw new WorkspacePolicyError("Invalid relative workspace path");
-  }
   if (
     Buffer.byteLength(path, "utf8") > limits.maxPathBytes ||
     segments.length > limits.maxDepth
   ) {
     throw new WorkspacePolicyError("Workspace path exceeds policy limits");
   }
-  if (isIgnored(path, extraIgnores) || isSecret(path)) {
+  if (isIgnored(path, extraIgnores) || isSecretPath(path)) {
     throw new WorkspacePolicyError("Workspace path is ignored or secret");
   }
   return segments.join("/");
