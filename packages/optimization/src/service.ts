@@ -16,7 +16,7 @@ import {
   ScoringResultSchema,
 } from "@mars/contracts";
 import { z } from "zod";
-import { candidateId, canonicalJson, sha256 } from "./canonical";
+import { candidateId, canonicalJson, scopeKey, sha256 } from "./canonical";
 import { OptimizationError } from "./errors";
 import { OPTIMIZATION_PINS } from "./pins";
 import type { ReflectionResponder } from "./reflection";
@@ -139,6 +139,8 @@ export function createOptimizationService(
   const running = new Map<string, RunningJob>();
   /** Jobs whose failure could not be written, so their record on disk is stale. */
   const unrecorded = new Map<string, AggregateError>();
+  const unrecordedKey = (context: RequestContext, jobId: string) =>
+    `${scopeKey(context.scope)}/${jobId}`;
   const maxFeedbackChars = options.maxFeedbackChars ?? 1500;
   const maxRecords = options.maxRecordsPerComponent ?? 6;
   let launcher: WorkerLauncher | undefined = options.launcher;
@@ -776,7 +778,7 @@ export function createOptimizationService(
           );
         } catch (writeError) {
           unrecorded.set(
-            job.job_id,
+            unrecordedKey(context, job.job_id),
             new AggregateError(
               [error, writeError],
               `${job.job_id} failed${bodyFailure ? ` (${bodyFailure})` : ""} and its failed record could not be written`,
@@ -792,7 +794,7 @@ export function createOptimizationService(
     context: RequestContext,
     jobId: string,
   ): Promise<JobRecord> {
-    const lost = unrecorded.get(jobId);
+    const lost = unrecorded.get(unrecordedKey(context, jobId));
     if (lost) throw lost;
     return store.readJob(context, jobId);
   }
@@ -1133,7 +1135,7 @@ export function createOptimizationService(
       if (active) {
         active.abort.abort();
         await active.done;
-        const lost = unrecorded.get(jobId);
+        const lost = unrecorded.get(unrecordedKey(context, jobId));
         if (lost) throw lost;
         return;
       }

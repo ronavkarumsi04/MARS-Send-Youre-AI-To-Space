@@ -980,6 +980,9 @@ describe("evaluate bounds", () => {
       expect((error as AggregateError).message).toContain("backend exploded");
       expect((error as AggregateError).errors).toHaveLength(2);
       await expect(service.job(context, job.job_id)).rejects.toBe(error);
+      await expect(service.job(otherScope, job.job_id)).rejects.toThrow(
+        "job_not_found",
+      );
       await expect(service.inspect(context, job.job_id)).rejects.toBe(error);
       await chmod(jobsDir, 0o700);
       await expect(service.cancel(context, job.job_id)).rejects.toBe(error);
