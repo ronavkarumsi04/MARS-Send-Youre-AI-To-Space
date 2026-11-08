@@ -186,8 +186,8 @@ Reconciliation rules, per tracked note:
 | skill note deleted | reported; with `--allow-remove` an `archive` proposal (skills are never erased) |
 | project/graph note edited or deleted | `ignored_derived` — rebuilt by the next export, never proposed |
 | frontmatter unparsable, or `mars_kind` differs from the exported kind | `invalid`, nothing proposed |
-| new `facts/` or `skills/` note whose frontmatter is unparsable, or whose `mars_kind` is not that folder's kind | `invalid` with the parse error or the kind mismatch as the reason, nothing proposed |
-| new note with no frontmatter, or frontmatter without `mars_kind` | untracked (counted by `status`, never proposed) |
+| new `facts/` or `skills/` note with a `mars_kind` line whose frontmatter is unparsable, or whose `mars_kind` is not that folder's kind | `invalid` with the parse error or the kind mismatch as the reason, nothing proposed |
+| new note without a `mars_kind` line (no frontmatter, or frontmatter that does not declare `mars_kind`, parsable or not) | untracked (counted by `status`, never proposed) |
 | note is a symlink or sits in a symlinked directory (tracked or new) | `invalid` (`path_escape`), never read |
 | tracked note edited after its entry/skill left the store | `stale_export` with reason `entry … was removed after the export`; copy the body into a new note to propose it |
 | identical proposal already pending from the vault | `already_proposed` (no duplicate) |

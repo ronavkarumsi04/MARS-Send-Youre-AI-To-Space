@@ -4,7 +4,7 @@ import type { RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
 import { VaultError } from "./errors";
 import { readManifest, skillNotePath } from "./export";
-import { NoteParseError, type ParsedNote, parseNote, sha256 } from "./notes";
+import { type ParsedNote, parseNote, sha256 } from "./notes";
 import {
   assertVaultDirectory,
   contains,
@@ -236,13 +236,9 @@ export async function scanVault(
       try {
         note = parseNote(text);
       } catch (error) {
-        // Plain Markdown without frontmatter is not a MARS note; an opening
-        // `---` with no closing one is a broken note, not plain Markdown.
-        if (
-          error instanceof NoteParseError &&
-          error.code === "no_frontmatter" &&
-          !/^---\r?\n/.test(text)
-        ) {
+        // Without a `mars_kind` line this is the user's own Markdown, not a
+        // broken MARS note.
+        if (!/^mars_kind[ \t]*:/m.test(text)) {
           untracked += 1;
           continue;
         }

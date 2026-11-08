@@ -806,6 +806,10 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
     "---\ntags: notes\n---\nMy own note.\n",
   );
   writeFileSync(
+    join(vaultDir, "facts/obsidian-tab.md"),
+    "---\ntags:\tnotes\n---\nMy own note with a tab.\n",
+  );
+  writeFileSync(
     join(vaultDir, "facts/typo.md"),
     "---\nmars_kind: memory_fact\n\tbroken: yes\n---\nAlmost a fact.\n",
   );
@@ -847,7 +851,7 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
   const status = await vaultStatus(ctx, common);
   expect(status.memory.notes.invalid).toBe(3);
   expect(status.skills.notes.invalid).toBe(1);
-  expect(status.untracked).toBe(2);
+  expect(status.untracked).toBe(3);
 });
 
 test("review: a tracked note whose mars_kind was changed is invalid, not proposed", async () => {
