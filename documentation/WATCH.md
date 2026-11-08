@@ -257,7 +257,8 @@ and `versions: [{component:"@mars/watch",revision:"0.0.1"},{component:"watch-ski
   "recorded_at": "ISO 8601",
   "workspace_id"?: string,       // host-stamped: the workspace the verifier inspected (a child's private copy for delegated children)
   "workspace_revision"?: string, // host-stamped: provider WorkspaceRef.revision when recorded
-  "diff_sha256"?: string         // host-stamped: canonical tasks.diff digest when recorded
+  "diff_sha256"?: string,        // host-stamped: canonical tasks.diff digest when recorded
+  "binding_error"?: string       // host-stamped instead of the three stamps when the host could not resolve them: the error class name (/^[A-Za-z0-9_.-]{1,64}$/, never the message)
 }
 ```
 

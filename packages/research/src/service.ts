@@ -463,6 +463,18 @@ function mapTaskError(error: unknown): ResearchError {
   return new ResearchError("invalid_input", "Task validation failed");
 }
 
+// Missing, cross-scope, and mismatched references all read as not_found so a
+// caller cannot probe artifacts outside its scope; storage faults still surface.
+function mapKnownContextError(error: unknown): unknown {
+  if (isErrorCode(error, "not_found") || isErrorCode(error, "invalid_input")) {
+    return new ResearchError("not_found", NOT_FOUND_MESSAGE);
+  }
+  if (isErrorCode(error, "corrupt_record") || isErrorCode(error, "closed")) {
+    return mapTaskError(error);
+  }
+  return error;
+}
+
 function usageFromJson(value: string): ResearchUsage {
   let parsed: unknown;
   try {
@@ -1064,7 +1076,7 @@ export async function createResearchService(
         `UPDATE requests
          SET status = 'cancelled', error_code = 'cancelled', finished_at = ?,
              lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-         WHERE status IN ('queued', 'running') AND status = 'queued'
+         WHERE status = 'queued'
            AND cancel_requested = 1`,
       ).run(timestamp(now));
       const candidates = db
@@ -1163,7 +1175,7 @@ export async function createResearchService(
          SET status = 'completed', finished_at = ?, lease_owner = NULL,
              lease_token = NULL, lease_expires_at = NULL
          WHERE scope_key = ? AND request_id = ? AND lease_token = ?
-           AND status IN ('queued', 'running') AND status = 'running'
+           AND status = 'running'
            AND cancel_requested = 0
            AND lease_expires_at > ?`,
       ).run(
@@ -1207,7 +1219,7 @@ export async function createResearchService(
           `UPDATE requests SET status = 'queued', available_at = ?,
              lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
            WHERE scope_key = ? AND request_id = ? AND lease_token = ?
-             AND status IN ('queued', 'running') AND status = 'running'
+             AND status = 'running'
              AND lease_expires_at > ?`,
         ).run(
           currentTime() + configured.retryBackoffMs * row.attempts,
@@ -1222,7 +1234,7 @@ export async function createResearchService(
              finished_at = ?, lease_owner = NULL, lease_token = NULL,
              lease_expires_at = NULL
            WHERE scope_key = ? AND request_id = ? AND lease_token = ?
-             AND status IN ('queued', 'running') AND status = 'running'
+             AND status = 'running'
              AND lease_expires_at > ?`,
         ).run(
           nonRetryable ? "worker_failed" : "attempts_exhausted",
@@ -1261,8 +1273,8 @@ export async function createResearchService(
             ),
             known,
           );
-        } catch {
-          throw new ResearchError("not_found", NOT_FOUND_MESSAGE);
+        } catch (error) {
+          throw mapKnownContextError(error);
         }
       },
       async captureEvidence(capture) {
@@ -1561,7 +1573,7 @@ export async function createResearchService(
                  error_code = 'budget_exceeded', finished_at = ?,
                  lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
                WHERE scope_key = ? AND request_id = ? AND lease_token = ?
-                 AND status IN ('queued', 'running') AND status = 'running'`,
+                 AND status = 'running'`,
             ).run(
               JSON.stringify(nextUsage),
               timestamp(currentTime()),
@@ -1864,8 +1876,8 @@ export async function createResearchService(
       for (const ref of request.known_context) {
         try {
           await options.artifacts.get(parsedContext.context, ref);
-        } catch {
-          throw new ResearchError("not_found", NOT_FOUND_MESSAGE);
+        } catch (error) {
+          throw mapKnownContextError(error);
         }
       }
       const record = canonicalRecord(request);
@@ -2177,7 +2189,7 @@ export async function createResearchService(
                    lease_owner = NULL, lease_token = NULL,
                    lease_expires_at = NULL
                  WHERE scope_key = ? AND request_id = ? AND lease_token = ?
-                   AND status IN ('queued', 'running') AND status = 'running'`,
+                   AND status = 'running'`,
               ).run(currentTime(), run.scopeKey, run.requestId, run.token);
             });
           }

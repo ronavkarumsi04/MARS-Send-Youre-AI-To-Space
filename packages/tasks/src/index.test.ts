@@ -445,6 +445,15 @@ describe("@mars/tasks durable store", () => {
       [1, 2],
       [2, 3],
     ]);
+    expect(revisionPayloads.slice(0, 2).map(({ changes }) => changes)).toEqual([
+      { status: { from: "pending", to: "running" } },
+      { status: { from: "running", to: "paused" } },
+    ]);
+    await expect(
+      store.update(context("no-op"), task.task_id, resumed.revision, {
+        status: "running",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
     await store.cancel(context("cancel"), task.task_id);
     const cancelledEvent = (
       await collect(store.events(context(), task.task_id))
@@ -661,15 +670,13 @@ describe("@mars/tasks durable store", () => {
     }
     const size = lstatSync(dbPath).size;
     truncateSync(dbPath, Math.floor(size / 2));
-    let truncationRejected = false;
-    try {
-      const truncated = await openStore(truncatedRoot);
-      await truncated.inspect(context(), task.task_id);
-      await truncated.close();
-    } catch {
-      truncationRejected = true;
-    }
-    expect(truncationRejected).toBe(true);
+    await expect(
+      (async () => {
+        const truncated = await openStore(truncatedRoot);
+        await truncated.inspect(context(), task.task_id);
+        await truncated.close();
+      })(),
+    ).rejects.toMatchObject({ name: "SQLiteError", code: "SQLITE_CORRUPT" });
 
     const artifactRoot = makeRoot();
     const artifactStore = await openStore(artifactRoot);
