@@ -1,6 +1,10 @@
 import type { RequestContext, ResearchFinding, Task } from "@mars/contracts";
 import type { RuntimeResearch } from "@mars/execution";
-import type { DurableResearchService } from "@mars/research";
+import {
+  type DurableResearchService,
+  isTerminalResearchStatus,
+} from "@mars/research";
+import { untrustedText } from "./untrusted-render";
 
 /** The parent-owned research service surface the workbench uses. */
 export type WorkbenchResearch = Pick<
@@ -22,9 +26,7 @@ const MAX_FIELD_CHARS = 2048;
 const MAX_OUTPUT_CHARS = 96 * 1024;
 
 function clip(value: string): string {
-  return value.length > MAX_FIELD_CHARS
-    ? `${value.slice(0, MAX_FIELD_CHARS)}…`
-    : value;
+  return untrustedText(value, MAX_FIELD_CHARS);
 }
 
 /** Renders a finding as clearly untrusted, cited evidence. */
@@ -37,7 +39,8 @@ export function renderUntrustedFinding(finding: ResearchFinding): string {
       .slice(0, 8)
       .map((item) => `Uncertainty: ${clip(item)}`),
     ...finding.sources.map(
-      (source) => `Source: ${source.url} (retrieved ${source.retrieved_at})`,
+      (source) =>
+        `Source: ${untrustedText(source.url)} (retrieved ${source.retrieved_at})`,
     ),
   ].join("\n");
 }
@@ -52,16 +55,10 @@ export async function staleTaskResearch(
   for (const job of jobs) {
     if (job.task_id !== taskId || job.stale) continue;
     await service.markStale(context, job.request_id).catch(() => undefined);
-    if (!TERMINAL_RESEARCH.has(job.status))
+    if (!isTerminalResearchStatus(job.status))
       await service.cancel(context, job.request_id).catch(() => undefined);
   }
 }
-const TERMINAL_RESEARCH = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-  "expired",
-]);
 
 /**
  * Binds the session's research tools to the parent-owned service host-side.

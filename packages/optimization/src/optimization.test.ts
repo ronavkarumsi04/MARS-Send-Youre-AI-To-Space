@@ -6,7 +6,15 @@ import {
   expect,
   test,
 } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -15,6 +23,7 @@ import type {
   PromptScoringBackend,
   RequestContext,
 } from "@mars/contracts";
+import { scopeKey } from "./canonical";
 import {
   bounded,
   CANDIDATE_SCHEMA,
@@ -32,6 +41,7 @@ import {
   keywordScore,
   OPTIMIZATION_PINS,
   OptimizationError,
+  OptimizationStore,
   PROPOSAL_REPORT_SCHEMA,
   PROPOSAL_REQUEST_SCHEMA,
   type PromptTargetRegistration,
@@ -196,6 +206,7 @@ async function setup(options: {
     put,
     readJson,
     registration: reg,
+    root,
   };
 }
 
@@ -266,6 +277,40 @@ describe("targets and holdout", () => {
     await expect(service.target(otherScope, targetId)).rejects.toThrow(
       "target_not_found",
     );
+  });
+
+  test("corrupt or unreadable target records are not reported as missing", async () => {
+    const { service, targetId, put, registration: reg, root } = await setup({});
+    const dir = path.join(root, scopeKey(context.scope), "targets", targetId);
+    const targetFile = path.join(dir, "target.json");
+    const holdoutFile = path.join(dir, "final_holdout.json");
+    const holdoutBefore = await readFile(holdoutFile, "utf8");
+    const store = new OptimizationStore(root);
+    expect(await store.hasTarget(context, "target-absent")).toBe(false);
+    await expect(store.readTarget(context, "target-absent")).rejects.toThrow(
+      "target_not_found",
+    );
+
+    await writeFile(targetFile, "{ truncated");
+    await expect(service.target(context, targetId)).rejects.toThrow(
+      "record_malformed",
+    );
+    await expect(store.hasTarget(context, targetId)).rejects.toThrow(
+      "record_malformed",
+    );
+    await expect(
+      service.registerTarget(context, await put(reg)),
+    ).rejects.toThrow("record_malformed");
+    expect(await readFile(holdoutFile, "utf8")).toBe(holdoutBefore);
+    expect(await readFile(targetFile, "utf8")).toBe("{ truncated");
+
+    await rm(targetFile);
+    await mkdir(targetFile);
+    const error = await store.readTarget(context, targetId).catch((e) => e);
+    expect(error).not.toBeInstanceOf(OptimizationError);
+    expect((error as NodeJS.ErrnoException).code).toBe("EISDIR");
+    const hasError = await store.hasTarget(context, targetId).catch((e) => e);
+    expect((hasError as NodeJS.ErrnoException).code).toBe("EISDIR");
   });
 });
 
@@ -925,6 +970,140 @@ describe("evaluate bounds", () => {
     expect(signals).toHaveLength(2);
     expect(signals[1]?.aborted).toBe(true);
   }, 20_000);
+
+  test("a job whose failure cannot be written reports the errors instead of claiming to run", async () => {
+    const root = await newRoot();
+    const artifacts = createMemoryArtifactStore();
+    let jobsDir = "";
+    const backend: PromptScoringBackend = {
+      async score() {
+        const [scope] = await readdir(root);
+        jobsDir = path.join(root, scope ?? "", "jobs");
+        await chmod(jobsDir, 0o500);
+        throw new Error("backend exploded");
+      },
+    };
+    const service = createOptimizationService({
+      rootDir: root,
+      backend,
+      backendId: "unwritable",
+      reflection: createScriptedReflectionResponder(() => REFLECTION_TEXT),
+      artifacts,
+    });
+    const put = (value: unknown) =>
+      artifacts.put(
+        context,
+        new TextEncoder().encode(JSON.stringify(value)),
+        "application/json",
+      );
+    const targetId = await service.registerTarget(
+      context,
+      await put(registration()),
+    );
+    const target = await service.target(context, targetId);
+    const components = { system_prompt: `${SEED} v4` };
+    const job = await service.evaluate(
+      context,
+      await put({
+        schema: EVALUATE_REQUEST_SCHEMA,
+        target_id: targetId,
+        candidate: {
+          candidate_id: candidateId(components),
+          components,
+          parent_candidate_id: target.seed_candidate_id,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+        budget,
+      }),
+    );
+    try {
+      const error = await service
+        .waitForJob(context, job.job_id)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).message).toContain(job.job_id);
+      expect((error as AggregateError).message).toContain("backend exploded");
+      expect((error as AggregateError).errors).toHaveLength(2);
+      await expect(service.job(context, job.job_id)).rejects.toBe(error);
+      await expect(service.job(otherScope, job.job_id)).rejects.toThrow(
+        "job_not_found",
+      );
+      await expect(service.inspect(context, job.job_id)).rejects.toBe(error);
+      await chmod(jobsDir, 0o700);
+      await expect(service.cancel(context, job.job_id)).rejects.toBe(error);
+      // Nothing is running it, and cancel did not relabel the crash.
+      const onDisk = JSON.parse(
+        await Bun.file(path.join(jobsDir, `${job.job_id}.json`)).text(),
+      ) as { status: string; error: string | null };
+      expect(onDisk.status).toBe("running");
+      expect(onDisk.error).toBeNull();
+    } finally {
+      if (jobsDir) await chmod(jobsDir, 0o700);
+    }
+  });
+
+  test("cancel reports a cancellation that cannot be written", async () => {
+    const root = await newRoot();
+    const artifacts = createMemoryArtifactStore();
+    let jobsDir = "";
+    const backend: PromptScoringBackend = {
+      async score(_context, _request, options) {
+        const [scope] = await readdir(root);
+        jobsDir = path.join(root, scope ?? "", "jobs");
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            chmod(jobsDir, 0o500).then(
+              () => reject(new Error("aborted")),
+              reject,
+            );
+          });
+        });
+      },
+    };
+    const service = createOptimizationService({
+      rootDir: root,
+      backend,
+      backendId: "unwritable-cancel",
+      reflection: createScriptedReflectionResponder(() => REFLECTION_TEXT),
+      artifacts,
+    });
+    const put = (value: unknown) =>
+      artifacts.put(
+        context,
+        new TextEncoder().encode(JSON.stringify(value)),
+        "application/json",
+      );
+    const targetId = await service.registerTarget(
+      context,
+      await put(registration()),
+    );
+    const target = await service.target(context, targetId);
+    const components = { system_prompt: `${SEED} v5` };
+    const job = await service.evaluate(
+      context,
+      await put({
+        schema: EVALUATE_REQUEST_SCHEMA,
+        target_id: targetId,
+        candidate: {
+          candidate_id: candidateId(components),
+          components,
+          parent_candidate_id: target.seed_candidate_id,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+        budget,
+      }),
+    );
+    try {
+      while (!jobsDir) await new Promise((resolve) => setTimeout(resolve, 5));
+      const error = await service
+        .cancel(context, job.job_id)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).message).toContain(job.job_id);
+    } finally {
+      if (jobsDir) await chmod(jobsDir, 0o700);
+    }
+  });
 
   test("the seed is re-scored under every evaluate request instead of reusing a stale baseline", async () => {
     const { service, targetId, put, readJson } = await setup({

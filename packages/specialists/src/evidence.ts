@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { RequestContext, VersionRef } from "@mars/contracts";
+import type { z } from "zod";
 import {
   canonicalJson,
   sameJson,
@@ -10,8 +11,10 @@ import {
   DatasetLineageSchema,
   type EvaluationReport,
   EvaluationReportSchema,
+  type EvidenceVerdictSchema,
   type ReasonCode,
   type SpecialistRegistration,
+  type TripleGateSchema,
 } from "./schemas";
 
 export interface ArtifactLoader {
@@ -52,34 +55,9 @@ export interface EvidenceVerifier {
 
 type zInferDatasetLineage = ReturnType<typeof DatasetLineageSchema.parse>;
 
-export interface TripleGate {
-  domain: string;
-  role: SpecialistRegistration["profile"]["roles"][number];
-  complexity: SpecialistRegistration["profile"]["complexity"][number];
-  pass_rate: number;
-  base_pass_rate: number;
-  delta_vs_base: number;
-  prompt_optimized_pass_rate: number;
-  delta_vs_prompt_optimized: number;
-  current_pass_rate: number | null;
-  delta_vs_current: number | null;
-  cost_usd_per_task: number | null;
-  runtime_ms_p95: number | null;
-  passed: boolean;
-}
+export type TripleGate = z.infer<typeof TripleGateSchema>;
 
-export interface EvidenceVerdict {
-  status: "proposed" | "evaluated" | "rejected";
-  codes: ReasonCode[];
-  covered_triples: TripleGate[];
-  report_id: string | null;
-  report_sha256: string | null;
-  synthetic_fixture: boolean;
-  evidence_artifacts: string[];
-  lineage_dataset_sha256s: string[];
-  current_specialist_revision: string | null;
-  note: string;
-}
+export type EvidenceVerdict = z.infer<typeof EvidenceVerdictSchema>;
 
 export interface VerifyEvidenceOptions {
   artifacts: ArtifactLoader;
@@ -226,6 +204,78 @@ function reportIsMalformed(report: EvaluationReport): boolean {
   return false;
 }
 
+export function evaluateTriple(
+  report: EvaluationReport,
+  manifest: SpecialistRegistration,
+  triple: Pick<TripleGate, "domain" | "role" | "complexity">,
+  currentRevision: string | null,
+): { gate?: TripleGate; codes: ReasonCode[] } {
+  const codes: ReasonCode[] = [];
+  const candidate = rate(report, "candidate", triple);
+  const base = rate(report, "base", triple);
+  const prompt = rate(report, "prompt_optimized_baseline", triple);
+  const current = rate(report, "current_specialist", triple);
+  if (!candidate || !base || !prompt) return { codes: [] };
+  const currentRequired = currentRevision !== null;
+  if (currentRequired && !current) return { codes: [] };
+  const passRate = candidate.passed / candidate.attempted;
+  const baseRate = base.passed / base.attempted;
+  const promptRate = prompt.passed / prompt.attempted;
+  const currentRate =
+    current && currentRevision !== null
+      ? current.passed / current.attempted
+      : null;
+  const deltaVsBase = passRate - baseRate;
+  const deltaVsPrompt = passRate - promptRate;
+  const deltaVsCurrent = currentRate === null ? null : passRate - currentRate;
+  let passed =
+    candidate.attempted >=
+      manifest.profile.acceptance.min_heldout_tasks_per_coverage &&
+    deltaVsBase >= manifest.profile.acceptance.min_pass_rate_delta_vs_base &&
+    deltaVsPrompt >=
+      manifest.profile.acceptance.min_pass_rate_delta_vs_prompt_optimized &&
+    (deltaVsCurrent === null ||
+      deltaVsCurrent >=
+        manifest.profile.acceptance.min_pass_rate_delta_vs_current);
+  const cost =
+    candidate.cost_usd_total === null
+      ? null
+      : candidate.cost_usd_total / candidate.attempted;
+  const maxCost = manifest.profile.acceptance.max_cost_usd_per_task;
+  if (maxCost !== null && cost === null) {
+    codes.push("cost_unmeasured");
+    passed = false;
+  } else if (maxCost !== null && cost !== null && cost > maxCost) {
+    passed = false;
+  }
+  const runtime = candidate.runtime_ms_p95;
+  const maxRuntime = manifest.profile.acceptance.max_runtime_ms_p95;
+  if (maxRuntime !== null && runtime === null) {
+    codes.push("runtime_unmeasured");
+    passed = false;
+  } else if (maxRuntime !== null && runtime !== null && runtime > maxRuntime) {
+    passed = false;
+  }
+  return {
+    codes,
+    gate: {
+      domain: triple.domain,
+      role: triple.role,
+      complexity: triple.complexity,
+      pass_rate: passRate,
+      base_pass_rate: baseRate,
+      delta_vs_base: deltaVsBase,
+      prompt_optimized_pass_rate: promptRate,
+      delta_vs_prompt_optimized: deltaVsPrompt,
+      current_pass_rate: currentRate,
+      delta_vs_current: deltaVsCurrent,
+      cost_usd_per_task: cost,
+      runtime_ms_p95: runtime,
+      passed,
+    },
+  };
+}
+
 export async function verifyEvidence(
   ctx: RequestContext,
   manifest: SpecialistRegistration,
@@ -358,74 +408,14 @@ export async function verifyEvidence(
     for (const domain of manifest.tested_task_coverage) {
       for (const role of manifest.profile.roles) {
         for (const complexity of manifest.profile.complexity) {
-          const triple = { domain, role, complexity };
-          const candidate = rate(report, "candidate", triple);
-          const base = rate(report, "base", triple);
-          const prompt = rate(report, "prompt_optimized_baseline", triple);
-          const current = rate(report, "current_specialist", triple);
-          if (!candidate || !base || !prompt) continue;
-          const currentRequired = currentRevision !== null;
-          if (currentRequired && !current) continue;
-          const passRate = candidate.passed / candidate.attempted;
-          const baseRate = base.passed / base.attempted;
-          const promptRate = prompt.passed / prompt.attempted;
-          const currentRate =
-            current && currentRevision !== null
-              ? current.passed / current.attempted
-              : null;
-          const deltaVsBase = passRate - baseRate;
-          const deltaVsPrompt = passRate - promptRate;
-          const deltaVsCurrent =
-            currentRate === null ? null : passRate - currentRate;
-          let passed =
-            candidate.attempted >=
-              manifest.profile.acceptance.min_heldout_tasks_per_coverage &&
-            deltaVsBase >=
-              manifest.profile.acceptance.min_pass_rate_delta_vs_base &&
-            deltaVsPrompt >=
-              manifest.profile.acceptance
-                .min_pass_rate_delta_vs_prompt_optimized &&
-            (deltaVsCurrent === null ||
-              deltaVsCurrent >=
-                manifest.profile.acceptance.min_pass_rate_delta_vs_current);
-          const cost =
-            candidate.cost_usd_total === null
-              ? null
-              : candidate.cost_usd_total / candidate.attempted;
-          const maxCost = manifest.profile.acceptance.max_cost_usd_per_task;
-          if (maxCost !== null && cost === null) {
-            codes.add("cost_unmeasured");
-            passed = false;
-          } else if (maxCost !== null && cost !== null && cost > maxCost) {
-            passed = false;
-          }
-          const runtime = candidate.runtime_ms_p95;
-          const maxRuntime = manifest.profile.acceptance.max_runtime_ms_p95;
-          if (maxRuntime !== null && runtime === null) {
-            codes.add("runtime_unmeasured");
-            passed = false;
-          } else if (
-            maxRuntime !== null &&
-            runtime !== null &&
-            runtime > maxRuntime
-          ) {
-            passed = false;
-          }
-          coveredTriples.push({
-            domain,
-            role,
-            complexity,
-            pass_rate: passRate,
-            base_pass_rate: baseRate,
-            delta_vs_base: deltaVsBase,
-            prompt_optimized_pass_rate: promptRate,
-            delta_vs_prompt_optimized: deltaVsPrompt,
-            current_pass_rate: currentRate,
-            delta_vs_current: deltaVsCurrent,
-            cost_usd_per_task: cost,
-            runtime_ms_p95: runtime,
-            passed,
-          });
+          const result = evaluateTriple(
+            report,
+            manifest,
+            { domain, role, complexity },
+            currentRevision,
+          );
+          for (const code of result.codes) codes.add(code);
+          if (result.gate) coveredTriples.push(result.gate);
         }
       }
     }

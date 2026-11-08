@@ -302,6 +302,7 @@
       "name": "@mars/watch",
       "version": "0.0.1",
       "dependencies": {
+        "@mars/contracts": "workspace:*",
         "@mars/execution": "workspace:*",
         "zod": "3.25.76",
       },

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+export * from "./invisible";
 export * from "./workbench-read";
 
 export const SCHEMA_VERSION = 1;
@@ -133,6 +134,11 @@ const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
 
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
   return transitions[from].includes(to);
+}
+
+/** A terminal task status has no outgoing transitions. */
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return transitions[status].length === 0;
 }
 
 export interface RequestContext {

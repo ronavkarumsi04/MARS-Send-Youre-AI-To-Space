@@ -21,6 +21,7 @@ import type {
 } from "@mars/contracts";
 import { fixture, type RpcResult, TEAM, type User } from "../test/fixture";
 import type { ConversationViewResult, PathSearchResult } from "./protocol";
+import { locatorOf, previewLimits } from "./references";
 import { TEAM_MIGRATIONS } from "./store";
 
 const GIT = Bun.which("git");
@@ -80,6 +81,34 @@ const B_TEXT = [
   "export const b3 = 3;",
 ];
 const ZERO_SHA = "0".repeat(40);
+
+describe("@mars/team reference resolve helpers", () => {
+  const pinned = {
+    repo_id: "repo-1",
+    commit_sha: "a".repeat(40),
+    path: "src/index.ts",
+  };
+
+  test("locatorOf keeps line bounds only when both are set", () => {
+    expect(locatorOf({ ...pinned, line_start: 3, line_end: 7 })).toEqual({
+      ...pinned,
+      line_start: 3,
+      line_end: 7,
+    });
+    expect(locatorOf({ ...pinned, line_start: null, line_end: null })).toEqual(
+      pinned,
+    );
+    expect(locatorOf({ ...pinned, line_start: 3, line_end: null })).toEqual(
+      pinned,
+    );
+  });
+
+  test("previewLimits maps team preview limits to resolver limits", () => {
+    expect(
+      previewLimits({ max_preview_blob_bytes: 1024, max_preview_lines: 50 }),
+    ).toEqual({ max_blob_bytes: 1024, max_range_lines: 50 });
+  });
+});
 
 describe.skipIf(!GIT)("@mars/team committed code references", () => {
   let root: string;

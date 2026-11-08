@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { BudgetSchema, PromptCandidateSchema } from "@mars/contracts";
+import { canonicalJson as sharedCanonicalJson } from "@mars/contracts/canonical";
 import { z } from "zod";
 import {
   BASELINE_AGENT_NAME,
@@ -219,21 +219,12 @@ export function parseComparisonManifestBytes(
 
 /** Stable JSON used for request/manifest digests (sorted keys, no whitespace). */
 export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
+  return sharedCanonicalJson(value, {
+    undefinedMembers: "omit",
+    keyOrder: "integer-keys-first",
+  });
 }
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort())
-      out[key] = sortKeys((value as Record<string, unknown>)[key]);
-    return out;
-  }
-  return value;
-}
-export function sha256Hex(data: Uint8Array | string): string {
-  return createHash("sha256").update(data).digest("hex");
-}
+export { sha256 as sha256Hex } from "@mars/contracts/canonical";
 
 /** Image reference for a task, resolving the `task_id: null` wildcard. */
 export function imageForTask(

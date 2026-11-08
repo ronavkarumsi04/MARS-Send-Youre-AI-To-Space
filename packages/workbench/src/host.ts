@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   type ChildLaunch,
   type ChildRunner,
@@ -18,6 +18,7 @@ import {
   CollaborationError,
   createChildRunner,
   createOhMyPiChildAdapter,
+  isTerminalChildState,
 } from "@mars/collaboration";
 import type { RepositoryMapProvider } from "@mars/context";
 import type {
@@ -34,6 +35,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  isTerminalTaskStatus,
   JournalEntryIdsSchema,
   REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
   RequiredCheckSchema,
@@ -44,6 +46,7 @@ import {
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
 } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import {
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
@@ -67,7 +70,7 @@ import {
   OMNIROUTE_PROVIDER_ID,
 } from "@mars/providers-omniroute";
 import type { Turn } from "@mars/review";
-import type { DurableTaskStore } from "@mars/tasks";
+import type { AppendEventInput, DurableTaskStore } from "@mars/tasks";
 import {
   WATCH_EVIDENCE_PRODUCER,
   type WatchEvidenceRecord,
@@ -118,6 +121,7 @@ import {
   CheckpointRefSchema,
   type DiffResult,
   type EvidenceRecord,
+  type StartParams,
   WorkspaceRefSchema,
 } from "./protocol";
 import {
@@ -370,6 +374,33 @@ function parseEvidenceRecord(bytes: Uint8Array): WatchEvidenceRecord | null {
   return result.success ? result.data : null;
 }
 
+export const WORKBENCH_PACKAGE_VERSION = "0.0.1";
+const WORKBENCH_PRODUCER = "@mars/workbench";
+
+function workbenchEvent(
+  payload: unknown,
+  runId: string = randomUUID(),
+  extra: Pick<AppendEventInput, "source_event_ids" | "usage"> = {},
+): AppendEventInput {
+  return {
+    event_type: "tool.completed",
+    producer: WORKBENCH_PRODUCER,
+    run_id: runId,
+    versions: [
+      { component: WORKBENCH_PRODUCER, revision: WORKBENCH_PACKAGE_VERSION },
+    ],
+    ...extra,
+    payload,
+  };
+}
+
+/** The `code` property of a thrown value, whatever its shape. */
+function errorCodeOf(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : undefined;
+}
+
 function internalContext(scope: Scope): RequestContext {
   return { schema_version: 1, scope, request_id: randomUUID() };
 }
@@ -385,14 +416,6 @@ function scopeKey(scope: Scope, taskId: string): string {
       ]),
     )
     .digest("hex");
-}
-
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel === "" ||
-    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
-  );
 }
 
 export async function createWorkbenchHost(
@@ -592,7 +615,7 @@ export async function createWorkbenchHost(
   };
   const readLaunch = async (task: Task): Promise<Launch> => {
     const dir = taskState(task);
-    if (!inside(root, dir) || (await realpath(dir)) !== dir)
+    if (!isInsideOrEqual(root, dir) || (await realpath(dir)) !== dir)
       throw new WorkbenchError("not_found");
     const file = await open(
       join(dir, "launch.json"),
@@ -724,7 +747,7 @@ export async function createWorkbenchHost(
       if (event.payload.artifact_id === ref.artifact_id) return true;
       if (
         event.event_type === "tool.completed" &&
-        event.producer === "@mars/workbench"
+        event.producer === WORKBENCH_PRODUCER
       ) {
         const bytes = await options.store.artifacts.get(context, event.payload);
         const payload = z
@@ -797,7 +820,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "task.updated" &&
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -817,7 +840,7 @@ export async function createWorkbenchHost(
           steering_event_ids: z.array(z.string()),
         })
         .safeParse(payload);
-      if (event.producer === "@mars/workbench" && result.success) {
+      if (event.producer === WORKBENCH_PRODUCER && result.success) {
         for (const id of result.data.steering_event_ids) applied.add(id);
         input += event.usage?.input_tokens ?? 0;
         output += event.usage?.output_tokens ?? 0;
@@ -837,29 +860,35 @@ export async function createWorkbenchHost(
   ) => {
     const context = internalContext(options.scope);
     const previous = await runtimeResults(context, task.task_id);
-    await options.store.appendEvent(context, task.task_id, {
-      event_type: "tool.completed",
-      producer: "@mars/workbench",
-      run_id: randomUUID(),
-      versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-      source_event_ids: steeringEventIds,
-      payload: {
-        operation: "runtime.result",
-        status: outcome.status,
-        steering_event_ids: steeringEventIds,
-      },
-      usage: {
-        input_tokens: Math.max(0, outcome.usage.input_tokens - previous.input),
-        output_tokens: Math.max(
-          0,
-          outcome.usage.output_tokens - previous.output,
-        ),
-        cost_usd:
-          options.registry.getModel(runtime.modelId)?.pricing.free === true
-            ? 0
-            : null,
-      },
-    });
+    await options.store.appendEvent(
+      context,
+      task.task_id,
+      workbenchEvent(
+        {
+          operation: "runtime.result",
+          status: outcome.status,
+          steering_event_ids: steeringEventIds,
+        },
+        randomUUID(),
+        {
+          source_event_ids: steeringEventIds,
+          usage: {
+            input_tokens: Math.max(
+              0,
+              outcome.usage.input_tokens - previous.input,
+            ),
+            output_tokens: Math.max(
+              0,
+              outcome.usage.output_tokens - previous.output,
+            ),
+            cost_usd:
+              options.registry.getModel(runtime.modelId)?.pricing.free === true
+                ? 0
+                : null,
+          },
+        },
+      ),
+    );
   };
   /** Usage already mirrored into task events, and the last recorded state, per child. */
   const childResults = async (context: RequestContext, taskId: string) => {
@@ -870,7 +899,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "tool.completed" ||
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -1000,12 +1029,6 @@ export async function createWorkbenchHost(
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
   const sweepRooms = new Map<string, FrozenCollaboration>();
-  const TERMINAL_CHILD_STATES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "expired",
-  ]);
   /**
    * Mirrors the room's children into the parent task's durable timeline from
    * the collaboration store's charged usage (the authority for budgets, which
@@ -1051,7 +1074,7 @@ export async function createWorkbenchHost(
             ),
             cost_usd: Math.max(0, child.usage.usd - previous.usd),
           };
-          const final = TERMINAL_CHILD_STATES.has(child.state);
+          const final = isTerminalChildState(child.state);
           if (!final) settled = false;
           const terminal = final && previous.state !== child.state;
           if (
@@ -1063,26 +1086,27 @@ export async function createWorkbenchHost(
             continue;
           const childTaskId = `${taskId}.child.${child.agent_id}`;
           const launch = childLaunches.get(childTaskId);
-          await options.store.appendEvent(context, taskId, {
-            event_type: "tool.completed",
-            producer: "@mars/workbench",
-            run_id: randomUUID(),
-            versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-            payload: {
-              operation: "child.result",
-              child_task_id: childTaskId,
-              child_agent_id: child.agent_id,
-              role_label: child.role_label,
-              task_revision: child.task_revision,
-              attempt: launch?.attempt ?? null,
-              status: child.state,
-              model_id: launch?.model_id ?? null,
-              routing: await recallChildRouting(childTaskId),
-              reviewer_independent:
-                (await loadTaskModels(taskId)).verdicts[childTaskId] ?? null,
-            },
-            usage: delta,
-          });
+          await options.store.appendEvent(
+            context,
+            taskId,
+            workbenchEvent(
+              {
+                operation: "child.result",
+                child_task_id: childTaskId,
+                child_agent_id: child.agent_id,
+                role_label: child.role_label,
+                task_revision: child.task_revision,
+                attempt: launch?.attempt ?? null,
+                status: child.state,
+                model_id: launch?.model_id ?? null,
+                routing: await recallChildRouting(childTaskId),
+                reviewer_independent:
+                  (await loadTaskModels(taskId)).verdicts[childTaskId] ?? null,
+              },
+              randomUUID(),
+              { usage: delta },
+            ),
+          );
           if (final) {
             childLaunches.delete(childTaskId);
             await forgetChildRouting(childTaskId);
@@ -1098,11 +1122,7 @@ export async function createWorkbenchHost(
           .inspect(context, taskId)
           .then((task) => task.status)
           .catch(() => null);
-        if (
-          status === "completed" ||
-          status === "failed" ||
-          status === "cancelled"
-        )
+        if (status !== null && isTerminalTaskStatus(status))
           await forgetTaskModels(taskId);
       }
     };
@@ -1284,13 +1304,11 @@ export async function createWorkbenchHost(
     if (textual) diagnostics.push(textual);
     const persist = async (record: VerificationEvidenceRecord) => {
       await options.store
-        .appendEvent(context, task.task_id, {
-          event_type: "tool.completed",
-          producer: "@mars/workbench",
-          run_id: runtime.sessionId,
-          versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-          payload: record,
-        })
+        .appendEvent(
+          context,
+          task.task_id,
+          workbenchEvent(record, runtime.sessionId),
+        )
         .catch(() => undefined);
       return record;
     };
@@ -1351,8 +1369,7 @@ export async function createWorkbenchHost(
           reason = `${error.message}: ${check.path}`;
         } else if (
           error instanceof Error &&
-          "code" in error &&
-          error.code === "not_found"
+          errorCodeOf(error) === "not_found"
         ) {
           status = "failed";
           reason = `Required file missing: ${check.path}`;
@@ -1420,7 +1437,7 @@ export async function createWorkbenchHost(
     for await (const event of options.store.events(context, taskId)) {
       if (
         event.event_type !== "tool.completed" ||
-        event.producer !== "@mars/workbench"
+        event.producer !== WORKBENCH_PRODUCER
       )
         continue;
       const bytes = await options.store.artifacts.get(context, event.payload);
@@ -1477,13 +1494,14 @@ export async function createWorkbenchHost(
             await options.memory.indexJournal(context, journal);
           } catch {
             await options.store
-              .appendEvent(context, task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: runtime.sessionId,
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: { operation: "memory.index", status: "unavailable" },
-              })
+              .appendEvent(
+                context,
+                task.task_id,
+                workbenchEvent(
+                  { operation: "memory.index", status: "unavailable" },
+                  runtime.sessionId,
+                ),
+              )
               .catch(() => undefined);
           }
         }
@@ -1635,12 +1653,7 @@ export async function createWorkbenchHost(
     try {
       return options.conventions?.commands?.expand(request) ?? null;
     } catch (error) {
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error as { code: unknown }).code === "too-large"
-      )
+      if (errorCodeOf(error) === "too-large")
         throw new WorkbenchError("too_large");
       throw error;
     }
@@ -1685,18 +1698,16 @@ export async function createWorkbenchHost(
     );
     if (taskId && results.length > 0)
       await options.store
-        .appendEvent(context, taskId, {
-          event_type: "tool.completed",
-          producer: "@mars/workbench",
-          run_id: randomUUID(),
-          versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-          payload: {
+        .appendEvent(
+          context,
+          taskId,
+          workbenchEvent({
             operation: "hook.completed",
             event,
             ...(hookContext.tool ? { tool: hookContext.tool } : {}),
             results: results.map(hookResultRecord),
-          },
-        })
+          }),
+        )
         .catch(() => undefined);
     if (event === "pre-tool" && results.some((result) => result.blocked))
       throw new Error(hookBlockMessage(results));
@@ -1839,11 +1850,7 @@ export async function createWorkbenchHost(
       if (writePaths.length > 0 && !withinClaimedPaths(path, writePaths))
         throw new WorkbenchError("forbidden");
     };
-    const notFound = (error: unknown) =>
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error as { code: unknown }).code === "not_found";
+    const notFound = (error: unknown) => errorCodeOf(error) === "not_found";
     const readText = async (path: string): Promise<string | null> => {
       const context = await authorize();
       let ref: ArtifactRef;
@@ -1885,12 +1892,8 @@ export async function createWorkbenchHost(
           return "file" as const;
         } catch (error) {
           if (notFound(error)) return null;
-          const code =
-            typeof error === "object" && error !== null && "code" in error
-              ? (error as { code: unknown }).code
-              : undefined;
           // A file too large to read still exists and can be deleted or moved.
-          if (code === "limit_exceeded") return "file" as const;
+          if (errorCodeOf(error) === "limit_exceeded") return "file" as const;
           throw error;
         }
       },
@@ -2116,6 +2119,400 @@ export async function createWorkbenchHost(
     runnerTimer.unref();
   }
 
+  // Launch stages for `api.start`, in call order. Each optional-context stage
+  // takes the instruction built so far with the capacity it may still use and
+  // returns its frozen value alongside the extended instruction and what is
+  // left of that capacity.
+  type LaunchPrompt = { instruction: string; remainingCapacity: number };
+  type LaunchStage<T> = { frozen: T | undefined; prompt: LaunchPrompt };
+  const extendPrompt = (
+    prompt: LaunchPrompt,
+    instruction: string,
+  ): LaunchPrompt => ({
+    instruction,
+    remainingCapacity:
+      prompt.remainingCapacity -
+      (serializedBytes(instruction) - serializedBytes(prompt.instruction)),
+  });
+  const launchSurface = (approvals: Approvals, instruction: string) => ({
+    approvals,
+    recall: Boolean(options.memory),
+    collaboration: Boolean(options.collaboration),
+    delegation: Boolean(delegation),
+    research: Boolean(options.research),
+    proposals: Boolean(options.optimization),
+    watch: Boolean(options.watch),
+    knowledgeGraph: Boolean(options.knowledgeGraph),
+    patch: Boolean(options.conventions?.applyPatch),
+    instruction,
+  });
+  // The coordinator runs under the room budget minus the delegation pool
+  // and carries the delegation tools, so optional evidence is sized the
+  // way the runtime will actually be constrained.
+  const coordinatorBudgetFor = (budget: Budget): Budget =>
+    delegation
+      ? {
+          ...budget,
+          max_tokens: Math.max(
+            0,
+            budget.max_tokens - delegation.pool.max_tokens,
+          ),
+        }
+      : budget;
+  const resolveLaunchRouting = async (
+    context: RequestContext,
+    task: Task,
+    params: StartParams,
+    baseInstruction: string,
+  ): Promise<FrozenRouting | undefined> => {
+    if (!options.specialists || params.model_id !== undefined) return undefined;
+    try {
+      return await routeLaunch(
+        context,
+        task,
+        toolsRequired(params.approvals, Boolean(options.collaboration)),
+        options.specialists,
+        initialRequestAllowance(
+          launchSurface(params.approvals, baseInstruction),
+        ) + MIN_INITIAL_OUTPUT_RESERVE,
+      );
+    } catch {
+      throw new WorkbenchError("unavailable");
+    }
+  };
+  const freezeLaunchMemory = async (
+    context: RequestContext,
+    approvals: Approvals,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenMemorySchema>>> => {
+    let memory: z.infer<typeof FrozenMemorySchema> | undefined;
+    if (options.memory && approvals.read) {
+      try {
+        memory = freezeMemory(
+          context,
+          await options.memory.snapshot(context),
+          prompt.instruction,
+          prompt.remainingCapacity,
+        );
+      } catch {
+        throw new WorkbenchError("unavailable");
+      }
+    }
+    return {
+      frozen: memory,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenMemory(prompt.instruction, memory),
+      ),
+    };
+  };
+  const freezeLaunchSkills = async (
+    approvals: Approvals,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<FrozenSkills>> => {
+    const source = repositorySkillsSource(
+      options.skills,
+      options.conventions?.repositorySkills,
+    );
+    if (!source || !approvals.read) return { frozen: undefined, prompt };
+    let skills: FrozenSkills | undefined;
+    try {
+      skills = await freezeCurrentSkills(
+        source,
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+    } catch {
+      throw new WorkbenchError("unavailable");
+    }
+    return {
+      frozen: skills,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenSkills(prompt.instruction, skills),
+      ),
+    };
+  };
+  // Repository instructions come from the trusted checkout, not from the
+  // workspace, so they do not depend on read approval; they are frozen whole
+  // or omitted.
+  const freezeLaunchInstructions = (
+    found: NonNullable<WorkbenchConventions["instructions"]> | undefined,
+    prompt: LaunchPrompt,
+  ): LaunchStage<FrozenInstructions> => {
+    if (!found) return { frozen: undefined, prompt };
+    const instructions = freezeInstructions(
+      found,
+      prompt.instruction,
+      prompt.remainingCapacity,
+    );
+    return {
+      frozen: instructions,
+      prompt: extendPrompt(
+        prompt,
+        withFrozenInstructions(prompt.instruction, instructions),
+      ),
+    };
+  };
+  // A room that cannot be opened at the sized coordinator budget fails the
+  // already-running task.
+  const openLaunchRoom = async (
+    context: RequestContext,
+    running: Task,
+    approvals: Approvals,
+    modelId: string,
+    coordinatorBudget: Budget,
+  ): Promise<FrozenCollaboration | undefined> => {
+    if (!options.collaboration) return undefined;
+    try {
+      const opened = await options.collaboration.host.openRoom(context, {
+        task: running,
+        idempotency_key: running.task_id,
+        authority: {
+          approvals,
+          allow_delegation: Boolean(delegation),
+          paid_consent: false,
+        },
+        ...(delegation
+          ? {
+              delegation_pool: delegation.pool,
+              ...(delegation.limits ? { limits: delegation.limits } : {}),
+            }
+          : {}),
+        model_id: modelId,
+      });
+      if (
+        opened.room.coordinator_runtime_budget.max_tokens <
+        coordinatorBudget.max_tokens
+      ) {
+        // Evidence was sized for a larger runtime than the room grants.
+        await options.collaboration.host
+          .closeRoom(context, opened.room.room_id, "cancel")
+          .catch(() => undefined);
+        throw new Error("Room budget below the sized coordinator budget");
+      }
+      return {
+        room_id: opened.room.room_id,
+        capability: opened.coordinator,
+        budget: opened.room.coordinator_runtime_budget,
+        delegation: Boolean(delegation),
+      };
+    } catch {
+      await options.store
+        .update(context, running.task_id, running.revision, {
+          status: "failed",
+        })
+        .catch(() => undefined);
+      await reconcileResearch(running.task_id);
+      throw new WorkbenchError("unavailable");
+    }
+  };
+  const freezeLaunchRepositoryMap = async (
+    context: RequestContext,
+    task: Task,
+    approvals: Approvals,
+    workspace: WorkspaceRef,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenRepositoryMapSchema>>> => {
+    const maxOutputTokens = repositoryMapTokenBudget(
+      prompt.instruction,
+      prompt.remainingCapacity,
+    );
+    if (!options.repositoryMap || !approvals.read || !maxOutputTokens)
+      return { frozen: undefined, prompt };
+    try {
+      const repositoryMap = freezeRepositoryMap(
+        context,
+        workspace,
+        await options.repositoryMap.map(context, {
+          workspace: WorkspaceRefSchema.parse(workspace),
+          query: task.request.slice(0, 4096),
+          max_output_tokens: maxOutputTokens,
+        }),
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+      assertPublicBytes(
+        new TextEncoder().encode(repositoryMap.text),
+        await privatePatterns(context, task.task_id),
+      );
+      return {
+        frozen: repositoryMap,
+        prompt: extendPrompt(
+          prompt,
+          withFrozenRepositoryMap(prompt.instruction, repositoryMap),
+        ),
+      };
+    } catch {
+      await options.store
+        .appendEvent(
+          internalContext(options.scope),
+          task.task_id,
+          workbenchEvent({ operation: "context.map", status: "unavailable" }),
+        )
+        .catch(() => undefined);
+      return { frozen: undefined, prompt };
+    }
+  };
+  const freezeLaunchGraphSummary = async (
+    context: RequestContext,
+    taskId: string,
+    approvals: Approvals,
+    workspace: WorkspaceRef,
+    cwd: string,
+    prompt: LaunchPrompt,
+  ): Promise<LaunchStage<z.infer<typeof FrozenGraphSummarySchema>>> => {
+    if (!options.knowledgeGraph || !approvals.read)
+      return { frozen: undefined, prompt };
+    try {
+      const found = await options.knowledgeGraph.lookup(
+        graphBinding(context, taskId, cwd, workspace, approvals),
+      );
+      if (found.status !== "ready") return { frozen: undefined, prompt };
+      const graphSummary = freezeGraphSummary(
+        context,
+        WorkspaceRefSchema.parse(workspace),
+        found.artifact,
+        prompt.instruction,
+        prompt.remainingCapacity,
+      );
+      if (!graphSummary) return { frozen: undefined, prompt };
+      assertPublicBytes(
+        new TextEncoder().encode(graphSummary.text),
+        await privatePatterns(context, taskId),
+      );
+      return {
+        frozen: graphSummary,
+        prompt: extendPrompt(
+          prompt,
+          withFrozenGraphSummary(prompt.instruction, graphSummary),
+        ),
+      };
+    } catch {
+      return { frozen: undefined, prompt };
+    }
+  };
+  // Observations emitted before the upstream session is bound are buffered
+  // and persisted by `release`.
+  const openLaunchRuntime = async (launch: {
+    context: RequestContext;
+    running: Task;
+    approvals: Approvals;
+    workspace: WorkspaceRef;
+    cwd: string;
+    stateDir: string;
+    modelId: string;
+    collaboration: FrozenCollaboration | undefined;
+    provisionalDeadline: number;
+  }) => {
+    const { context, running, approvals, workspace, cwd, collaboration } =
+      launch;
+    const taskId = running.task_id;
+    const persistObservation = observe(taskId);
+    const initialObservations: RuntimeObservation[] = [];
+    let bound = false;
+    let deadline = launch.provisionalDeadline;
+    const runtime = await runtimeFactory({
+      task: runtimeTask(running, collaboration),
+      cwd,
+      stateDir: launch.stateDir,
+      registry: options.registry,
+      modelId: launch.modelId,
+      approvals,
+      tools: toolsFor(
+        workspace,
+        approvals,
+        running.budget,
+        activeTask(taskId),
+        [],
+        taskId,
+      ),
+      ...patchFor(
+        workspace,
+        approvals,
+        running.budget,
+        activeTask(taskId),
+        taskId,
+      ),
+      ...(collaboration
+        ? roomToolsFor(taskId, collaboration, workspace, approvals)
+        : {}),
+      ...(approvals.read ? historyFor(context) : {}),
+      ...researchFor(taskId, () => deadline),
+      ...proposalsFor(),
+      ...watchOption(taskId, cwd, approvals),
+      ...graphOption(context, taskId, cwd, workspace, approvals),
+      onEvent: async (event) => {
+        if (!bound) {
+          if (initialObservations.length >= 1000)
+            throw new WorkbenchError("unavailable");
+          initialObservations.push(event);
+          return;
+        }
+        await persistObservation(event);
+      },
+    });
+    deadline = Date.now() + running.budget.max_duration_ms;
+    return {
+      runtime,
+      deadline,
+      release: async () => {
+        for (const observation of initialObservations)
+          await persistObservation(observation);
+        bound = true;
+      },
+    };
+  };
+  const announceConventions = async (
+    running: Task,
+    workspace: WorkspaceRef,
+    approvals: Approvals,
+    expanded: ReturnType<typeof expandRequest>,
+    found: boolean,
+    instructions: FrozenInstructions | undefined,
+  ) => {
+    if (!options.conventions) return;
+    if (expanded || (found && !instructions))
+      await options.store
+        .appendEvent(
+          internalContext(options.scope),
+          running.task_id,
+          workbenchEvent({
+            operation: "conventions.applied",
+            ...(expanded ? { command: expanded.name } : {}),
+            instructions: instructions ? "frozen" : found ? "omitted" : "none",
+          }),
+        )
+        .catch(() => undefined);
+    await dispatchHooks(
+      running.task_id,
+      workspace,
+      approvals,
+      running.budget,
+      "session-start",
+      {},
+    );
+  };
+  const abandonLaunch = async (
+    context: RequestContext,
+    taskId: string,
+    runtime: RuntimeSession | undefined,
+    collaboration: FrozenCollaboration | undefined,
+  ) => {
+    await runtime?.dispose().catch(() => undefined);
+    if (collaboration) await closeFrozenRoom(taskId, collaboration, "cancel");
+    const current = await options.store
+      .inspect(context, taskId)
+      .catch(() => null);
+    if (current?.status === "running")
+      await options.store
+        .update(internalContext(options.scope), taskId, current.revision, {
+          status: "failed",
+        })
+        .catch(() => undefined);
+    await reconcileResearch(taskId);
+  };
+
   const api: WorkbenchOperations &
     Required<Pick<WorkbenchOperations, "journal">> = {
     scope: options.scope,
@@ -2293,43 +2690,13 @@ export async function createWorkbenchHost(
       const baseInstruction = `${request}\n\nAcceptance criteria:\n${task.acceptance_criteria.map((criterion) => `- ${criterion}`).join("\n")}`;
       if (baseInstruction.length > MAX_RUNTIME_INSTRUCTION_LENGTH)
         throw new WorkbenchError("too_large");
-      // The coordinator runs under the room budget minus the delegation pool
-      // and carries the delegation tools, so optional evidence is sized the
-      // way the runtime will actually be constrained.
-      const coordinatorBudget: Budget = delegation
-        ? {
-            ...task.budget,
-            max_tokens: Math.max(
-              0,
-              task.budget.max_tokens - delegation.pool.max_tokens,
-            ),
-          }
-        : task.budget;
-      let routing: FrozenRouting | undefined;
-      if (options.specialists && params.model_id === undefined) {
-        try {
-          routing = await routeLaunch(
-            context,
-            task,
-            toolsRequired(params.approvals, Boolean(options.collaboration)),
-            options.specialists,
-            initialRequestAllowance({
-              approvals: params.approvals,
-              recall: Boolean(options.memory),
-              collaboration: Boolean(options.collaboration),
-              delegation: Boolean(delegation),
-              research: Boolean(options.research),
-              proposals: Boolean(options.optimization),
-              watch: Boolean(options.watch),
-              knowledgeGraph: Boolean(options.knowledgeGraph),
-              patch: Boolean(options.conventions?.applyPatch),
-              instruction: baseInstruction,
-            }) + MIN_INITIAL_OUTPUT_RESERVE,
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-      }
+      const coordinatorBudget = coordinatorBudgetFor(task.budget);
+      const routing = await resolveLaunchRouting(
+        context,
+        task,
+        params,
+        baseInstruction,
+      );
       const model = selectModel(
         params.model_id ?? routing?.model_id ?? undefined,
         toolsRequired(params.approvals, Boolean(options.collaboration)),
@@ -2337,66 +2704,18 @@ export async function createWorkbenchHost(
       const capacity = optionalInstructionCapacity({
         model,
         budget: coordinatorBudget,
-        approvals: params.approvals,
-        recall: Boolean(options.memory),
-        collaboration: Boolean(options.collaboration),
-        delegation: Boolean(delegation),
-        research: Boolean(options.research),
-        proposals: Boolean(options.optimization),
-        watch: Boolean(options.watch),
-        knowledgeGraph: Boolean(options.knowledgeGraph),
-        patch: Boolean(options.conventions?.applyPatch),
-        instruction: baseInstruction,
+        ...launchSurface(params.approvals, baseInstruction),
       });
-      let memory: z.infer<typeof FrozenMemorySchema> | undefined;
-      if (options.memory && params.approvals.read) {
-        try {
-          memory = freezeMemory(
-            context,
-            await options.memory.snapshot(context),
-            baseInstruction,
-            capacity,
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-      }
-      let instruction = withFrozenMemory(baseInstruction, memory);
-      let skills: FrozenSkills | undefined;
-      const skillsSource = repositorySkillsSource(
-        options.skills,
-        options.conventions?.repositorySkills,
-      );
-      if (skillsSource && params.approvals.read) {
-        try {
-          skills = await freezeCurrentSkills(
-            skillsSource,
-            instruction,
-            capacity -
-              (serializedBytes(instruction) - serializedBytes(baseInstruction)),
-          );
-        } catch {
-          throw new WorkbenchError("unavailable");
-        }
-        instruction = withFrozenSkills(instruction, skills);
-      }
-      // Repository instructions come from the trusted checkout, not from the
-      // workspace, so they do not depend on read approval; they are frozen
-      // whole or omitted.
-      let instructions: FrozenInstructions | undefined;
+      const memory = await freezeLaunchMemory(context, params.approvals, {
+        instruction: baseInstruction,
+        remainingCapacity: capacity,
+      });
+      const skills = await freezeLaunchSkills(params.approvals, memory.prompt);
       const foundInstructions = options.conventions?.instructions;
-      if (foundInstructions) {
-        instructions = freezeInstructions(
-          foundInstructions,
-          instruction,
-          capacity -
-            (serializedBytes(instruction) - serializedBytes(baseInstruction)),
-        );
-        instruction = withFrozenInstructions(instruction, instructions);
-      }
-      const remainingCapacity =
-        capacity -
-        (serializedBytes(instruction) - serializedBytes(baseInstruction));
+      const instructions = freezeLaunchInstructions(
+        foundInstructions,
+        skills.prompt,
+      );
       const running = await options.store.update(
         context,
         task.task_id,
@@ -2410,188 +2729,50 @@ export async function createWorkbenchHost(
       );
       // Research deadlines follow the runtime ledger, whose clock starts when
       // the session opens, not when the task was marked running.
-      let launchDeadline = Date.now() + running.budget.max_duration_ms;
-      let collaboration: FrozenCollaboration | undefined;
-      if (options.collaboration) {
-        try {
-          const opened = await options.collaboration.host.openRoom(context, {
-            task: running,
-            idempotency_key: running.task_id,
-            authority: {
-              approvals: params.approvals,
-              allow_delegation: Boolean(delegation),
-              paid_consent: false,
-            },
-            ...(delegation
-              ? {
-                  delegation_pool: delegation.pool,
-                  ...(delegation.limits ? { limits: delegation.limits } : {}),
-                }
-              : {}),
-            model_id: model.id,
-          });
-          if (
-            opened.room.coordinator_runtime_budget.max_tokens <
-            coordinatorBudget.max_tokens
-          ) {
-            // Evidence was sized for a larger runtime than the room grants.
-            await options.collaboration.host
-              .closeRoom(context, opened.room.room_id, "cancel")
-              .catch(() => undefined);
-            throw new Error("Room budget below the sized coordinator budget");
-          }
-          collaboration = {
-            room_id: opened.room.room_id,
-            capability: opened.coordinator,
-            budget: opened.room.coordinator_runtime_budget,
-            delegation: Boolean(delegation),
-          };
-        } catch {
-          await options.store
-            .update(context, task.task_id, running.revision, {
-              status: "failed",
-            })
-            .catch(() => undefined);
-          await reconcileResearch(task.task_id);
-          throw new WorkbenchError("unavailable");
-        }
-      }
+      const provisionalDeadline = Date.now() + running.budget.max_duration_ms;
+      const collaboration = await openLaunchRoom(
+        context,
+        running,
+        params.approvals,
+        model.id,
+        coordinatorBudget,
+      );
       let runtime: RuntimeSession | undefined;
-      const initialObservations: RuntimeObservation[] = [];
-      let bound = false;
-      const persistObservation = observe(task.task_id);
       try {
         const workspace = await options.workspace.prepare(
           context,
           task.task_id,
         );
-        let repositoryMap:
-          | z.infer<typeof FrozenRepositoryMapSchema>
-          | undefined;
-        const maxOutputTokens = repositoryMapTokenBudget(
-          instruction,
-          remainingCapacity,
+        const repositoryMap = await freezeLaunchRepositoryMap(
+          context,
+          task,
+          params.approvals,
+          workspace,
+          instructions.prompt,
         );
-        if (options.repositoryMap && params.approvals.read && maxOutputTokens) {
-          try {
-            repositoryMap = freezeRepositoryMap(
-              context,
-              workspace,
-              await options.repositoryMap.map(context, {
-                workspace: WorkspaceRefSchema.parse(workspace),
-                query: task.request.slice(0, 4096),
-                max_output_tokens: maxOutputTokens,
-              }),
-              instruction,
-              remainingCapacity,
-            );
-            assertPublicBytes(
-              new TextEncoder().encode(repositoryMap.text),
-              await privatePatterns(context, task.task_id),
-            );
-            instruction = withFrozenRepositoryMap(instruction, repositoryMap);
-          } catch {
-            repositoryMap = undefined;
-            await options.store
-              .appendEvent(internalContext(options.scope), task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: randomUUID(),
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: { operation: "context.map", status: "unavailable" },
-              })
-              .catch(() => undefined);
-          }
-        }
         const stateDir = taskState(task);
         await mkdir(stateDir, { mode: 0o700 });
         const cwd = await options.workspace.cwd(context, workspace);
-        let graphSummary: z.infer<typeof FrozenGraphSummarySchema> | undefined;
-        if (options.knowledgeGraph && params.approvals.read) {
-          try {
-            const found = await options.knowledgeGraph.lookup(
-              graphBinding(
-                context,
-                task.task_id,
-                cwd,
-                workspace,
-                params.approvals,
-              ),
-            );
-            if (found.status === "ready") {
-              graphSummary = freezeGraphSummary(
-                context,
-                WorkspaceRefSchema.parse(workspace),
-                found.artifact,
-                instruction,
-                capacity -
-                  (serializedBytes(instruction) -
-                    serializedBytes(baseInstruction)),
-              );
-              if (graphSummary) {
-                assertPublicBytes(
-                  new TextEncoder().encode(graphSummary.text),
-                  await privatePatterns(context, task.task_id),
-                );
-                instruction = withFrozenGraphSummary(instruction, graphSummary);
-              }
-            }
-          } catch {
-            graphSummary = undefined;
-          }
-        }
-        runtime = await runtimeFactory({
-          task: runtimeTask(running, collaboration),
+        const graphSummary = await freezeLaunchGraphSummary(
+          context,
+          task.task_id,
+          params.approvals,
+          workspace,
+          cwd,
+          repositoryMap.prompt,
+        );
+        const opened = await openLaunchRuntime({
+          context,
+          running,
+          approvals: params.approvals,
+          workspace,
           cwd,
           stateDir,
-          registry: options.registry,
           modelId: model.id,
-          approvals: params.approvals,
-          tools: toolsFor(
-            workspace,
-            params.approvals,
-            running.budget,
-            activeTask(running.task_id),
-            [],
-            task.task_id,
-          ),
-          ...patchFor(
-            workspace,
-            params.approvals,
-            running.budget,
-            activeTask(running.task_id),
-            task.task_id,
-          ),
-          ...(collaboration
-            ? roomToolsFor(
-                task.task_id,
-                collaboration,
-                workspace,
-                params.approvals,
-              )
-            : {}),
-          ...(params.approvals.read ? historyFor(context) : {}),
-          ...researchFor(task.task_id, () => launchDeadline),
-          ...proposalsFor(),
-          ...watchOption(task.task_id, cwd, params.approvals),
-          ...graphOption(
-            context,
-            task.task_id,
-            cwd,
-            workspace,
-            params.approvals,
-          ),
-          onEvent: async (event) => {
-            if (!bound) {
-              if (initialObservations.length >= 1000)
-                throw new WorkbenchError("unavailable");
-              initialObservations.push(event);
-              return;
-            }
-            await persistObservation(event);
-          },
+          collaboration,
+          provisionalDeadline,
         });
-        launchDeadline = Date.now() + running.budget.max_duration_ms;
+        runtime = opened.runtime;
         if (closing) throw new WorkbenchError("unavailable");
         await writeLaunch(task, {
           schema_version: 1,
@@ -2600,14 +2781,18 @@ export async function createWorkbenchHost(
           cwd,
           model_id: runtime.modelId,
           model_classification: classifyModel(model.id) ?? undefined,
-          deadline: launchDeadline,
+          deadline: opened.deadline,
           approvals: params.approvals,
           workspace: WorkspaceRefSchema.parse(workspace),
-          ...(memory ? { memory } : {}),
-          ...(skills ? { skills } : {}),
-          ...(repositoryMap ? { repository_map: repositoryMap } : {}),
-          ...(graphSummary ? { knowledge_graph: graphSummary } : {}),
-          ...(instructions ? { instructions } : {}),
+          ...(memory.frozen ? { memory: memory.frozen } : {}),
+          ...(skills.frozen ? { skills: skills.frozen } : {}),
+          ...(repositoryMap.frozen
+            ? { repository_map: repositoryMap.frozen }
+            : {}),
+          ...(graphSummary.frozen
+            ? { knowledge_graph: graphSummary.frozen }
+            : {}),
+          ...(instructions.frozen ? { instructions: instructions.frozen } : {}),
           ...(routing ? { routing } : {}),
           ...(collaboration ? { collaboration } : {}),
           ...(params.required_checks?.length
@@ -2625,44 +2810,20 @@ export async function createWorkbenchHost(
           },
         );
         if (closing) throw new WorkbenchError("unavailable");
-        for (const observation of initialObservations)
-          await persistObservation(observation);
-        bound = true;
-        if (options.conventions) {
-          const omittedInstructions =
-            Boolean(foundInstructions) && !instructions;
-          if (expanded || omittedInstructions)
-            await options.store
-              .appendEvent(internalContext(options.scope), task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: randomUUID(),
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: {
-                  operation: "conventions.applied",
-                  ...(expanded ? { command: expanded.name } : {}),
-                  instructions: instructions
-                    ? "frozen"
-                    : foundInstructions
-                      ? "omitted"
-                      : "none",
-                },
-              })
-              .catch(() => undefined);
-          await dispatchHooks(
-            task.task_id,
-            workspace,
-            params.approvals,
-            running.budget,
-            "session-start",
-            {},
-          );
-        }
+        await opened.release();
+        await announceConventions(
+          running,
+          workspace,
+          params.approvals,
+          expanded,
+          Boolean(foundInstructions),
+          instructions.frozen,
+        );
         run(
           running,
           workspace,
           runtime,
-          instruction,
+          graphSummary.prompt.instruction,
           [],
           false,
           collaboration,
@@ -2671,22 +2832,7 @@ export async function createWorkbenchHost(
         );
         return running;
       } catch (error) {
-        await runtime?.dispose().catch(() => undefined);
-        if (collaboration)
-          await closeFrozenRoom(task.task_id, collaboration, "cancel");
-        const current = await options.store
-          .inspect(context, task.task_id)
-          .catch(() => null);
-        if (current?.status === "running")
-          await options.store
-            .update(
-              internalContext(options.scope),
-              task.task_id,
-              current.revision,
-              { status: "failed" },
-            )
-            .catch(() => undefined);
-        await reconcileResearch(task.task_id);
+        await abandonLaunch(context, task.task_id, runtime, collaboration);
         throw error;
       }
     },
@@ -2909,6 +3055,9 @@ export async function createWorkbenchHost(
             record.workspace_id !== workspace.workspace_id ||
             record.workspace_revision !== workspace.revision ||
             record.diff_sha256 !== digest,
+          ...(record.binding_error === undefined
+            ? {}
+            : { binding_error: record.binding_error }),
         });
         if (records.length > MAX_EVIDENCE_RECORDS) records.shift();
       }
@@ -2927,13 +3076,11 @@ export async function createWorkbenchHost(
         await options.workspace.checkpoint(context, workspace),
       );
       await options.store.artifacts.get(context, checkpoint.artifact);
-      await options.store.appendEvent(internalContext(options.scope), taskId, {
-        event_type: "tool.completed",
-        run_id: randomUUID(),
-        producer: "@mars/workbench",
-        versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-        payload: { operation: "workspace.checkpoint", checkpoint },
-      });
+      await options.store.appendEvent(
+        internalContext(options.scope),
+        taskId,
+        workbenchEvent({ operation: "workspace.checkpoint", checkpoint }),
+      );
       return checkpoint;
     },
     async verification(context, taskId): Promise<VerificationView> {
@@ -2976,7 +3123,7 @@ export async function createWorkbenchHost(
       for await (const event of options.store.events(context, taskId)) {
         if (
           event.event_type !== "tool.completed" ||
-          event.producer !== "@mars/workbench"
+          event.producer !== WORKBENCH_PRODUCER
         )
           continue;
         const bytes = await options.store.artifacts.get(context, event.payload);

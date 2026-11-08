@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2017,6 +2018,83 @@ test("pre-run forbidden and invalid-input failures charge zero usage", async () 
   }
 });
 
+test("a failed finalize after a start failure is reported and left to lease recovery", async () => {
+  const f = await fixture({ leaseMs: 300 });
+  await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("finalize-fails"),
+  );
+  const finalizeError = new Error("database is locked");
+  const jobs = Object.assign(Object.create(f.collaboration.host.jobs), {
+    async finalize() {
+      throw finalizeError;
+    },
+  });
+  const reported: { error: unknown; job_id: string }[] = [];
+  const runner = createChildRunner({
+    collaboration: {
+      ...f.collaboration,
+      host: { ...f.collaboration.host, jobs },
+    },
+    runnerId: "finalize-fails",
+    adapter: {
+      async start() {
+        throw new CollaborationError("forbidden", "Pre-run failure.");
+      },
+    },
+    onError(error, { job_id }) {
+      reported.push({ error, job_id });
+      throw new Error("Reporter failure must not escape the run.");
+    },
+  });
+  expect(await runner.tick()).toBe(1);
+  await runner.idle();
+  const [report] = reported;
+  if (!report) throw new Error("Finalize failure was not reported");
+  expect(reported).toHaveLength(1);
+  expect(report.error).toBe(finalizeError);
+  f.advance(301);
+  const expired = await f.collaboration.host.jobs.recoverExpired();
+  expect(expired.map((job) => job.job_id)).toEqual([report.job_id]);
+
+  await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("finalize-fails-async"),
+  );
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const asyncReported: string[] = [];
+    const asyncRunner = createChildRunner({
+      collaboration: {
+        ...f.collaboration,
+        host: { ...f.collaboration.host, jobs },
+      },
+      runnerId: "finalize-fails-async",
+      adapter: {
+        async start() {
+          throw new CollaborationError("forbidden", "Pre-run failure.");
+        },
+      },
+      async onError(_error, { job_id }) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        asyncReported.push(job_id);
+        throw new Error("Async reporter failure must not escape the run.");
+      },
+    });
+    expect(await asyncRunner.tick()).toBe(1);
+    await asyncRunner.idle();
+    expect(asyncReported).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("runtime caps stop exhausted starts and finalize token or step overruns", async () => {
   const f = await fixture({ leaseMs: 300 });
   await f.collaboration.agents.delegate(
@@ -2500,6 +2578,81 @@ test("runner cancellation before runtime start releases reservation without usag
   expect(stats.tokens).toEqual({ input: 0, output: 0 });
   expect(stats.children_cancelled).toBe(1);
   expect(stats.discarded_results).toBe(1);
+});
+
+test("runner-requested cancel releases write claims and expires pending deliveries", async () => {
+  const f = await fixture();
+  const writesRoom = await f.collaboration.host.openRoom(context, {
+    task: task("runner-cancel"),
+    idempotency_key: "runner-cancel",
+    delegation_pool: { max_tokens: 800 },
+    authority: {
+      approvals: { read: true, write: true, execute: false },
+      allow_delegation: true,
+      paid_consent: false,
+    },
+  });
+  const child = await f.collaboration.agents.delegate(
+    context,
+    writesRoom.coordinator,
+    delegation("runner-cancel-child", {
+      approvals: { read: true, write: true, execute: false },
+      write_paths: ["src/feature.ts"],
+    }),
+  );
+  await f.collaboration.agents.send(context, writesRoom.coordinator, {
+    idempotency_key: "runner-cancel-message",
+    recipients: [child.agent_id],
+    kind: "request",
+    body: "Report status before stopping.",
+  });
+  const claim = await f.collaboration.host.jobs.claim("runner-cancel");
+  if (!claim) throw new Error("Child was not claimed");
+  await f.collaboration.host.jobs.requestCancel(
+    claim.job_id,
+    "runner-cancel",
+    claim.lease_epoch,
+  );
+  await f.collaboration.host.jobs.finalize(
+    claim.job_id,
+    "runner-cancel",
+    claim.lease_epoch,
+    {
+      status: "cancelled",
+      summary: "Stopped.",
+      artifacts: [],
+      usage: { input_tokens: 1, output_tokens: 0, usd: 0, steps: 1 },
+    },
+  );
+  const db = new Database(join(f.rootDir, "collaboration.sqlite"), {
+    readonly: true,
+  });
+  try {
+    expect(
+      db
+        .query<{ agent_id: string }, [string]>(
+          "SELECT agent_id FROM write_claims WHERE agent_id = ?",
+        )
+        .all(child.agent_id),
+    ).toEqual([]);
+    expect(
+      db
+        .query<{ state: string }, [string]>(
+          "SELECT state FROM deliveries WHERE recipient_id = ?",
+        )
+        .all(child.agent_id),
+    ).toEqual([{ state: "expired" }]);
+  } finally {
+    db.close();
+  }
+  const stats = await f.collaboration.host.stats(
+    context,
+    writesRoom.room.room_id,
+  );
+  expect(stats.children_cancelled).toBe(1);
+  expect(stats.discarded_results).toBe(1);
+  expect(stats.expired).toBe(1);
+  expect(stats.reserved).toEqual({ tokens: 0, usd: 0 });
 });
 
 test("queued cancellation releases its reservation and expires descendants", async () => {

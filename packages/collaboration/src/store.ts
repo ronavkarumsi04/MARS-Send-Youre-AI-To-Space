@@ -1,13 +1,12 @@
 import { Database } from "bun:sqlite";
-import {
-  createHash,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { CollaborationError } from "./errors";
 import {
   type CollaborationLimits,
@@ -75,24 +74,13 @@ export interface CollaborationStoreOptions {
   randomToken?: () => string;
 }
 
-export function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
+export { sha256 };
 
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined)
-      throw new CollaborationError("invalid_input", "Value is not JSON data");
-    return serialized;
-  }
-  if (Array.isArray(value))
-    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
+  return sharedCanonicalJson(value, {
+    error: () =>
+      new CollaborationError("invalid_input", "Value is not JSON data"),
+  });
 }
 
 export function parseJson<T>(value: string): T {

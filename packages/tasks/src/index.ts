@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -25,6 +24,7 @@ import {
   canTransition,
   type EventEnvelope,
   EventEnvelopeSchema,
+  isTerminalTaskStatus,
   type RequestContext,
   SCHEMA_VERSION,
   type Scope,
@@ -36,6 +36,10 @@ import {
   TaskStatusSchema,
   VersionRefSchema,
 } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { z } from "zod";
 
 export const TASK_STORE_FORMAT_VERSION = 1;
@@ -210,6 +214,16 @@ interface InstanceRow {
   closed_at: string | null;
 }
 
+/** A task's runner row; the instance columns are null once the instance row is gone. */
+type RunnerRow = Omit<InstanceRow, "instance_id"> & {
+  instance_id: string | null;
+};
+
+/** Cancelling an already-cancelled task is an idempotent no-op. */
+function isCancellable(status: TaskStatus): boolean {
+  return status === "cancelled" || !isTerminalTaskStatus(status);
+}
+
 const NOT_FOUND_MESSAGE = "Task or artifact not found";
 const MAX_EVENT_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_STEER_BYTES = 16 * 1024;
@@ -222,65 +236,31 @@ function fail(code: TaskStoreErrorCode, message: string): never {
   throw new TaskStoreError(code, message);
 }
 
-function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function canonicalValue(value: unknown, seen = new Set<object>()): unknown {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw invalidInput("Value is not JSON-serializable");
-    return Object.is(value, -0) ? 0 : value;
-  }
-  if (typeof value !== "object")
-    throw invalidInput("Value is not JSON-serializable");
-  if (seen.has(value)) throw invalidInput("Cyclic JSON value");
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const entries: unknown[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index))
-          throw invalidInput("Value is not JSON-serializable");
-        entries.push(canonicalValue(value[index], seen));
-      }
-      return entries;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw invalidInput("Value is not a plain JSON object");
-    }
-    const record = value as Record<string, unknown>;
-    const output: Record<string, unknown> = Object.create(null) as Record<
-      string,
-      unknown
-    >;
-    for (const key of Object.keys(record).sort()) {
-      output[key] = canonicalValue(record[key], seen);
-    }
-    return output;
-  } finally {
-    seen.delete(value);
-  }
-}
-
 export function canonicalJson(value: unknown): string {
-  try {
-    const serialized = JSON.stringify(canonicalValue(value));
-    if (typeof serialized !== "string")
-      throw invalidInput("Value is not JSON-serializable");
-    return serialized;
-  } catch (error) {
-    if (error instanceof TaskStoreError) throw error;
-    throw invalidInput("Value is not JSON-serializable");
+  return sharedCanonicalJson(value, {
+    keyOrder: "integer-keys-first",
+    error: (failure) =>
+      invalidInput(
+        failure === "cycle"
+          ? "Cyclic JSON value"
+          : failure === "non_plain_object"
+            ? "Value is not a plain JSON object"
+            : "Value is not JSON-serializable",
+      ),
+  });
+}
+
+function changedFields(
+  from: Task,
+  to: Task,
+  keys: readonly (keyof Task)[],
+): Record<string, { from: unknown; to: unknown }> {
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const field of keys) {
+    if (canonicalJson(from[field]) !== canonicalJson(to[field]))
+      changes[field] = { from: from[field], to: to[field] };
   }
+  return changes;
 }
 
 function parseJson<T>(text: string, schema: z.ZodType<T>, label: string): T {
@@ -1177,6 +1157,12 @@ export async function createTaskStore(
       "INSERT INTO task_runners (scope_key, task_id, instance_id) VALUES (?, ?, ?) ON CONFLICT(scope_key, task_id) DO UPDATE SET instance_id = excluded.instance_id",
     ).run(key, taskId, instanceId);
   };
+  const readRunner = (key: string, taskId: string): RunnerRow | null =>
+    db
+      .query(
+        "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
+      )
+      .get(key, taskId) as RunnerRow | null;
   const clearRunner = (key: string, taskId: string): void => {
     db.query(
       "DELETE FROM task_runners WHERE scope_key = ? AND task_id = ?",
@@ -1598,7 +1584,7 @@ export async function createTaskStore(
         throw invalidInput("Invalid task patch");
       }
       const patch = patchInput as Record<string, unknown>;
-      const keys = Object.keys(patch);
+      const keys = Object.keys(patch) as (keyof Task)[];
       if (
         keys.length === 0 ||
         keys.some(
@@ -1635,13 +1621,7 @@ export async function createTaskStore(
         { ...snapshot, ...patch, revision: snapshot.revision + 1 },
         "Invalid task patch",
       );
-      const changed: Record<string, unknown> = {};
-      for (const field of keys) {
-        const from = (snapshot as unknown as Record<string, unknown>)[field];
-        const to = (prospective as unknown as Record<string, unknown>)[field];
-        if (canonicalJson(from) !== canonicalJson(to))
-          changed[field] = { from, to };
-      }
+      const changed = changedFields(snapshot, prospective, keys);
       if (Object.keys(changed).length === 0)
         throw invalidInput("Task patch makes no changes");
       const payload = {
@@ -1668,13 +1648,7 @@ export async function createTaskStore(
           { ...current, ...patch, revision: current.revision + 1 },
           "Invalid task patch",
         );
-        const actualChanges: Record<string, unknown> = {};
-        for (const field of keys) {
-          const from = (current as unknown as Record<string, unknown>)[field];
-          const to = (next as unknown as Record<string, unknown>)[field];
-          if (canonicalJson(from) !== canonicalJson(to))
-            actualChanges[field] = { from, to };
-        }
+        const actualChanges = changedFields(current, next, keys);
         if (Object.keys(actualChanges).length === 0)
           throw invalidInput("Task patch makes no changes");
         if (
@@ -1715,7 +1689,7 @@ export async function createTaskStore(
       const inputHash = idemKeyInput({});
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const snapshot = readTask(key, taskId);
-        if (snapshot.status === "completed" || snapshot.status === "failed") {
+        if (!isCancellable(snapshot.status)) {
           throw new TaskStoreError(
             "invalid_transition",
             "Terminal tasks cannot be cancelled",
@@ -1753,7 +1727,7 @@ export async function createTaskStore(
           }
           const current = readTask(key, taskId);
           if (current.revision !== snapshot.revision) return "retry";
-          if (current.status === "completed" || current.status === "failed") {
+          if (!isCancellable(current.status)) {
             fail("invalid_transition", "Terminal tasks cannot be cancelled");
           }
           if (current.status !== "cancelled") {
@@ -1808,7 +1782,7 @@ export async function createTaskStore(
       if (replay !== null) return;
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const snapshot = readTask(key, taskId);
-        if (["completed", "cancelled", "failed"].includes(snapshot.status)) {
+        if (isTerminalTaskStatus(snapshot.status)) {
           fail("invalid_transition", "Terminal tasks cannot be steered");
         }
         const payload = {
@@ -1829,7 +1803,7 @@ export async function createTaskStore(
           if (replay !== null) return "replay";
           const current = readTask(key, taskId);
           if (current.revision !== snapshot.revision) return "retry";
-          if (["completed", "cancelled", "failed"].includes(current.status)) {
+          if (isTerminalTaskStatus(current.status)) {
             fail("invalid_transition", "Terminal tasks cannot be steered");
           }
           assertNoHostPathLeak(key, instruction);
@@ -2066,7 +2040,7 @@ export async function createTaskStore(
           );
           return;
         }
-        if (["completed", "cancelled", "failed"].includes(task.status)) {
+        if (isTerminalTaskStatus(task.status)) {
           fail(
             "invalid_transition",
             "Terminal tasks cannot bind an upstream session",
@@ -2119,20 +2093,8 @@ export async function createTaskStore(
       const recovered: Task[] = [];
       for (const candidate of tasks) {
         if (candidate.status !== "running") continue;
-        const runner = db
-          .query(
-            "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
-          )
-          .get(key, candidate.task_id) as
-          | (Omit<InstanceRow, "instance_id"> & { instance_id: string | null })
-          | null;
-        const shouldRecover = (
-          instance:
-            | (Omit<InstanceRow, "instance_id"> & {
-                instance_id: string | null;
-              })
-            | null,
-        ): boolean => {
+        const runner = readRunner(key, candidate.task_id);
+        const shouldRecover = (instance: RunnerRow | null): boolean => {
           if (!instance || !instance.instance_id || instance.closed_at !== null)
             return true;
           if (instance.hostname !== hostname()) return false;
@@ -2161,15 +2123,7 @@ export async function createTaskStore(
             current.revision !== candidate.revision
           )
             return null;
-          const currentRunner = db
-            .query(
-              "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
-            )
-            .get(key, candidate.task_id) as
-            | (Omit<InstanceRow, "instance_id"> & {
-                instance_id: string | null;
-              })
-            | null;
+          const currentRunner = readRunner(key, candidate.task_id);
           if (
             !shouldRecover(currentRunner) ||
             (currentRunner?.instance_id ?? null) !==

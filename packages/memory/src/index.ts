@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, SQLiteError } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -60,16 +60,31 @@ export class MemoryStoreError extends Error {
     public readonly code: MemoryStoreErrorCode,
     message: string,
     public readonly details?: Record<string, unknown>,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "MemoryStoreError";
   }
 }
 function fail(
   code: MemoryStoreErrorCode,
   details?: Record<string, unknown>,
+  cause?: unknown,
 ): never {
-  throw new MemoryStoreError(code, `Memory store: ${code}`, details);
+  throw new MemoryStoreError(
+    code,
+    `Memory store: ${code}`,
+    details,
+    cause === undefined ? undefined : { cause },
+  );
+}
+function storageError(cause: unknown): never {
+  if (cause instanceof MemoryStoreError) throw cause;
+  fail(
+    "storage_error",
+    cause instanceof SQLiteError ? { sqlite_code: cause.code } : undefined,
+    cause,
+  );
 }
 const id = z.string().min(1);
 const timestamp = z.string().datetime({ offset: true });
@@ -137,18 +152,9 @@ export function canonicalJson(value: unknown): string {
 }
 const hash = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
+/** Assumes `scanThreat` already rejected invisible code points; facts also refuse `\r`. */
 const fact = (value: string): string => {
-  for (const char of value) {
-    const c = char.charCodeAt(0);
-    if (
-      (c < 32 && c !== 9 && c !== 10) ||
-      (c >= 0x200b && c <= 0x200f) ||
-      (c >= 0x202a && c <= 0x202e) ||
-      (c >= 0x2060 && c <= 0x2064) ||
-      c === 0xfeff
-    )
-      fail("invalid_input");
-  }
+  if (value.includes("\r")) fail("invalid_input");
   if (!value.trim() || value.includes("\n§\n")) fail("invalid_input");
   return value.trim();
 };
@@ -348,8 +354,7 @@ export class DurableMemoryStore
         CREATE TABLE IF NOT EXISTS proposals (proposal_id TEXT PRIMARY KEY, scope_key TEXT, status TEXT, ordinal INTEGER, record TEXT);
         PRAGMA user_version=2; COMMIT;`);
     } catch (e) {
-      if (e instanceof MemoryStoreError) throw e;
-      fail("storage_error");
+      storageError(e);
     }
   }
   private context(ctx: RequestContext): RequestContext {
@@ -364,8 +369,7 @@ export class DurableMemoryStore
       return result;
     } catch (e) {
       this.db.exec("ROLLBACK");
-      if (e instanceof MemoryStoreError) throw e;
-      fail("storage_error");
+      storageError(e);
     }
   }
   private write<T>(work: () => T, erase = false): Promise<T> {

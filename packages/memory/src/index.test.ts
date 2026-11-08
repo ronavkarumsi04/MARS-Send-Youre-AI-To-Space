@@ -1,7 +1,13 @@
-import { Database } from "bun:sqlite";
+import { Database, SQLiteError } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
@@ -12,6 +18,7 @@ import {
   DEFAULT_BUDGETS,
   type DurableMemoryStore,
   formatSnapshot,
+  MemoryStoreError,
 } from "./index";
 
 const roots: string[] = [];
@@ -474,6 +481,8 @@ test("invalid facts, contexts and failed multi-op batches fail closed", async ()
     "x\u2064y",
     "x\ufeffy",
     "x\u0000y",
+    "x\ry",
+    "x\u00ady",
     "x\n§\ny",
   ])
     await expect(add(s, entry("bad", text))).rejects.toMatchObject({
@@ -1176,4 +1185,33 @@ test("private facts reject without echoes, erased journal text absent from bytes
             Buffer.from(secret),
           ),
         ).toBe(false);
+});
+
+test("storage errors keep the original cause and SQLite code", async () => {
+  const dir = root(),
+    s = open(dir);
+  await add(s, entry("before"));
+  const db = new Database(join(dir, "memory.sqlite"));
+  db.exec("DROP TABLE sequence");
+  db.close();
+  const error = await add(s, entry("after"), 1).catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(MemoryStoreError);
+  expect(error).toMatchObject({
+    code: "storage_error",
+    message: "Memory store: storage_error",
+    details: { sqlite_code: "SQLITE_ERROR" },
+  });
+  expect((error as Error).cause).toBeInstanceOf(SQLiteError);
+
+  const file = join(root(), "not-a-directory");
+  writeFileSync(file, "");
+  let openError: unknown;
+  try {
+    open(file);
+  } catch (e) {
+    openError = e;
+  }
+  expect(openError).toMatchObject({ code: "storage_error" });
+  expect((openError as MemoryStoreError).details).toBeUndefined();
+  expect((openError as Error).cause).toMatchObject({ code: "EEXIST" });
 });
