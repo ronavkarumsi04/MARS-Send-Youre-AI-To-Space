@@ -923,10 +923,19 @@ export async function createWorkbenchHost(
   const loadTaskModels = async (taskId: string): Promise<TaskModels> => {
     const known = taskModels.get(taskId);
     if (known) return known;
-    const parsed = await readFile(taskModelsPath(taskId), "utf8")
-      .then((text) => TaskModelsSchema.safeParse(JSON.parse(text)))
-      .catch(() => null);
-    const record = parsed?.success ? parsed.data : { models: [], verdicts: {} };
+    // Only a missing file is an empty history (it is created on first
+    // save). A corrupt or unreadable one throws so it is never cached or
+    // overwritten, which would drop models a reviewer must avoid.
+    const text = await readFile(taskModelsPath(taskId), "utf8").catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      },
+    );
+    const record =
+      text === null
+        ? { models: [], verdicts: {} }
+        : TaskModelsSchema.parse(JSON.parse(text));
     taskModels.set(taskId, record);
     return record;
   };
@@ -1078,8 +1087,12 @@ export async function createWorkbenchHost(
               status: child.state,
               model_id: launch?.model_id ?? null,
               routing: await recallChildRouting(childTaskId),
-              reviewer_independent:
-                (await loadTaskModels(taskId)).verdicts[childTaskId] ?? null,
+              // An unreadable history leaves independence unknown; the
+              // child's usage and result are still recorded.
+              reviewer_independent: await loadTaskModels(taskId).then(
+                (history) => history.verdicts[childTaskId] ?? null,
+                () => null,
+              ),
             },
             usage: delta,
           });

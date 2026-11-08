@@ -2201,8 +2201,7 @@ test("coordinators delegate bounded children that run in private workspaces and 
   await api.close();
 });
 
-test("a reviewer after pause, host restart and resume skips every model used before the pause", async () => {
-  const f = await fixture();
+const threeModelDelegation = async (f: Awaited<ReturnType<typeof fixture>>) => {
   const dir = join(f.root, "three-models");
   await mkdir(join(dir, ".mars"), { recursive: true });
   await writeFile(
@@ -2288,6 +2287,28 @@ test("a reviewer after pause, host restart and resume skips every model used bef
       usage: { input_tokens: 2, output_tokens: 1, usd: 0, steps: 1 },
     });
 
+  return {
+    registry,
+    rooms,
+    launches,
+    delegationOf,
+    untilResults,
+    request,
+    finish,
+  };
+};
+
+test("a reviewer after pause, host restart and resume skips every model used before the pause", async () => {
+  const f = await fixture();
+  const {
+    registry,
+    rooms,
+    launches,
+    delegationOf,
+    untilResults,
+    request,
+    finish,
+  } = await threeModelDelegation(f);
   const api = await f.makeHost(
     registry,
     undefined,
@@ -2374,6 +2395,66 @@ test("a reviewer after pause, host restart and resume skips every model used bef
   expect(
     await readdir(join(f.root, "children", "models")).catch(() => []),
   ).toEqual([]);
+});
+
+test("a corrupt model history fails the reviewer launch instead of being overwritten", async () => {
+  const f = await fixture();
+  const {
+    registry,
+    rooms,
+    launches,
+    delegationOf,
+    untilResults,
+    request,
+    finish,
+  } = await threeModelDelegation(f);
+  const api = await f.makeHost(
+    registry,
+    undefined,
+    undefined,
+    undefined,
+    rooms,
+  );
+  const base = task();
+  await api.create(context(), {
+    ...base,
+    budget: { ...base.budget, max_duration_ms: 60_000, max_concurrency: 3 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    model_id: "fixture/alt",
+    approvals: { read: true, write: false, execute: false },
+  });
+  const first = required(f.sessions[0]);
+  await delegationOf(0).delegate({ ...request, role_label: "worker" });
+  finish(0, "Worker proposal.");
+  await untilResults(0, "Worker proposal.");
+  first.finish("paused");
+  await first.disposed;
+  await api.close();
+
+  const modelsDir = join(f.root, "children", "models");
+  const [historyFile] = await readdir(modelsDir);
+  const historyPath = join(modelsDir, required(historyFile));
+  await writeFile(historyPath, "{not json");
+
+  const replacement = await f.makeHost(
+    registry,
+    undefined,
+    undefined,
+    undefined,
+    rooms,
+  );
+  const paused = await replacement.inspect(context(), "task");
+  await replacement.resume(context(), "task", paused.revision);
+  await delegationOf(1).delegate({ ...request, role_label: "reviewer" });
+  await untilResults(1, "failed");
+  expect(launches).toHaveLength(1);
+  expect(await readFile(historyPath, "utf8")).toBe("{not json");
+  required(f.sessions[1]).finish("paused");
+  await required(f.sessions[1]).disposed;
+  await replacement.close();
 });
 
 test("path-scoped writable children write only inside their claim and never execute", async () => {
