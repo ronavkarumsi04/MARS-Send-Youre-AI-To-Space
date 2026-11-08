@@ -17,6 +17,7 @@ import {
 } from "./harbor-records";
 import { type ComparisonManifest, canonicalJson, sha256Hex } from "./manifest";
 import { MARS_AGENT_NAME } from "./pins";
+import { strictMean, trialRejectionReason, validTrials } from "./report";
 import type { HarborRunner, HarborRunOutcome } from "./runner";
 import {
   type ArtifactSink,
@@ -205,14 +206,13 @@ export function createHarborScoringBackend(
       const byTask = new Map<string, TrialRecord[]>();
       const requested = new Set(request.instance_ids);
       for (const trial of parsed?.trials ?? []) {
-        // Same acceptance rule as buildEvaluationReport: only MARS trials of
-        // the requested tasks from the pinned source may contribute a score.
         if (
-          !requested.has(trial.task_id) ||
-          trial.task_source.git_url !== manifest.dataset.tasks_source.git_url ||
-          trial.task_source.git_commit_id !==
-            manifest.dataset.tasks_source.git_commit_id ||
-          trial.agent.name !== MARS_AGENT_NAME
+          trialRejectionReason(
+            manifest,
+            requested,
+            { name: MARS_AGENT_NAME, arm: "candidate" },
+            trial,
+          ) !== null
         )
           continue;
         byTask.set(trial.task_id, [
@@ -240,12 +240,12 @@ export function createHarborScoringBackend(
           });
           continue;
         }
-        const valid = trials.filter(
-          (trial) => trial.reward_valid && trial.reward !== null,
+        const valid = validTrials(trials);
+        const meanScore = strictMean(
+          valid.map((trial) => clampScore(trial.reward)),
+          request.repeats,
+          trials.length,
         );
-        const meanScore =
-          valid.reduce((sum, trial) => sum + clampScore(trial.reward), 0) /
-          Math.max(request.repeats, trials.length);
         const costs = trials
           .map((trial) => trial.cost_usd)
           .filter((cost): cost is number => cost !== null);
