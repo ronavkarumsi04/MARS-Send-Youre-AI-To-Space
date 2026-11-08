@@ -213,6 +213,42 @@ export interface RunTeamAgentRequestOptions {
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   /** Test seam only: observe the session (its tool allow-list) before it runs. */
   onSession?: (session: RuntimeSession) => void;
+  /** Operational notice for a caught failure. Carries no message, stack, body, prompt or path: see `teamAgentErrorNotice`. */
+  onError?(notice: TeamAgentErrorNotice): void;
+}
+
+export interface TeamAgentErrorNotice {
+  reason_code: string;
+  /** Constructor name of the thrown value (`TypeError`, `ProviderError`, …) or its `typeof`. */
+  error_name: string;
+  /** Symbolic error code (`ENOTDIR`, `ERR_INVALID_URL`, …) when the error carries one. */
+  error_code: string | null;
+}
+
+const ERROR_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * Reduces a caught error to identifiers only. Messages and stacks can quote
+ * conversation text, prompts or provider responses, so they never leave here.
+ */
+export function teamAgentErrorNotice(
+  error: unknown,
+  reason_code: string,
+): TeamAgentErrorNotice {
+  const name =
+    error instanceof Error
+      ? error.constructor?.name || error.name
+      : typeof error;
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return {
+    reason_code,
+    error_name: ERROR_IDENTIFIER.test(name) ? name : "Error",
+    error_code:
+      typeof code === "string" && ERROR_IDENTIFIER.test(code) ? code : null,
+  };
 }
 
 export interface TeamAgentRunResult {
@@ -326,7 +362,8 @@ export async function runTeamAgentRequest(
       fetch: countedFetch,
       ...(options.env ? { env: options.env } : {}),
     });
-  } catch {
+  } catch (error) {
+    options.onError?.(teamAgentErrorNotice(error, "session_unavailable"));
     return { ...base, reason_code: "session_unavailable" };
   }
   const result: TeamAgentRunResult = {
@@ -360,11 +397,13 @@ export async function runTeamAgentRequest(
       citations: extracted.citations,
       dropped_citations: extracted.dropped,
     };
-  } catch {
+  } catch (error) {
     result.model_requests = modelRequests;
-    return options.signal?.aborted
-      ? { ...result, status: "cancelled", reason_code: "cancelled" }
-      : { ...result, reason_code: "model_failed" };
+    const reason_code = options.signal?.aborted ? "cancelled" : "model_failed";
+    options.onError?.(teamAgentErrorNotice(error, reason_code));
+    return reason_code === "cancelled"
+      ? { ...result, status: "cancelled", reason_code }
+      : { ...result, reason_code };
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
     await session.dispose().catch(() => undefined);
