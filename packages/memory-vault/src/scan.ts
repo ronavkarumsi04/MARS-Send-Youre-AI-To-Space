@@ -236,10 +236,12 @@ export async function scanVault(
       try {
         note = parseNote(text);
       } catch (error) {
-        // Plain Markdown without frontmatter is not a MARS note.
+        // Plain Markdown without frontmatter is not a MARS note; an opening
+        // `---` with no closing one is a broken note, not plain Markdown.
         if (
           error instanceof NoteParseError &&
-          error.code === "no_frontmatter"
+          error.code === "no_frontmatter" &&
+          !/^---\r?\n/.test(text)
         ) {
           untracked += 1;
           continue;

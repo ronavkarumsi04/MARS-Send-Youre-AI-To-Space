@@ -810,6 +810,10 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
     "---\nmars_kind: memory_fact\n\tbroken: yes\n---\nAlmost a fact.\n",
   );
   writeFileSync(
+    join(vaultDir, "facts/unclosed.md"),
+    "---\nmars_kind: memory_fact\nForgot the closing delimiter.\n",
+  );
+  writeFileSync(
     join(vaultDir, "facts/wrong-kind.md"),
     "---\nmars_kind: skill\n---\nA skill in the facts folder.\n",
   );
@@ -825,10 +829,12 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
   );
   expect(Object.keys(reasons).sort()).toEqual([
     "facts/typo.md",
+    "facts/unclosed.md",
     "facts/wrong-kind.md",
     "skills/unknown.md",
   ]);
   expect(reasons["facts/typo.md"]).toContain("invalid_frontmatter");
+  expect(reasons["facts/unclosed.md"]).toBe("no_frontmatter");
   expect(reasons["facts/wrong-kind.md"]).toBe(
     "mars_kind skill does not belong in facts/; expected memory_fact",
   );
@@ -839,7 +845,7 @@ test("review: an unusable new MARS note is invalid with a reason, plain Markdown
   expect(await memory.listProposals(ctx, "pending")).toEqual([]);
   expect(await skills.listProposals()).toEqual([]);
   const status = await vaultStatus(ctx, common);
-  expect(status.memory.notes.invalid).toBe(2);
+  expect(status.memory.notes.invalid).toBe(3);
   expect(status.skills.notes.invalid).toBe(1);
   expect(status.untracked).toBe(2);
 });
