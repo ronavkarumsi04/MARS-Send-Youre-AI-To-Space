@@ -103,7 +103,10 @@ export interface ChildRunnerOptions {
    * Called when the runner cannot record a job's failure. The job stays
    * leased and is closed by `recover()` once its lease expires.
    */
-  onError?: (error: unknown, context: { job_id: string }) => void;
+  onError?: (
+    error: unknown,
+    context: { job_id: string },
+  ) => void | Promise<void>;
 }
 
 interface LocalRun {
@@ -517,11 +520,13 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
             },
           );
         } catch (finalizeError) {
+          // A failing reporter must not change how the run settles.
           try {
-            options.onError?.(finalizeError, { job_id: jobId });
-          } catch {
-            // A throwing reporter must not change how the run settles.
-          }
+            const reported = options.onError?.(finalizeError, {
+              job_id: jobId,
+            });
+            void Promise.resolve(reported).catch(() => undefined);
+          } catch {}
           return;
         }
       } finally {
