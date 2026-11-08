@@ -927,6 +927,14 @@ test("harbor scoring backend reports unreadable Harbor records instead of a miss
       "No Harbor trial record was produced",
     );
 
+    await rm(join(fixture, "result.json"));
+    const missing = await scoreWith("jobs-missing");
+    expect(missing.scores[0]).toMatchObject({ score: 0, reward_valid: false });
+    expect(missing.scores[0]?.error).toContain("No trial record for regex-log");
+    expect(missing.scores[0]?.feedback).toContain(
+      "No Harbor trial record was produced",
+    );
+
     await writeFile(join(fixture, "result.json"), "not json");
     const job = await scoreWith("jobs-job");
     expect(job.scores[0]).toMatchObject({ score: 0, reward_valid: false });

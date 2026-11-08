@@ -190,10 +190,14 @@ export function createHarborScoringBackend(
             (job) => ({ job, error: null }),
             (error: unknown) => ({
               job: null,
+              // A job record Harbor never wrote is a missing record, not an
+              // unreadable one.
               error:
-                error instanceof Error
-                  ? error.message.slice(0, 512)
-                  : "unreadable",
+                (error as NodeJS.ErrnoException)?.code === "ENOENT"
+                  ? null
+                  : error instanceof Error
+                    ? error.message.slice(0, 512)
+                    : "unreadable",
             }),
           );
       const parsed = read?.job ?? null;
