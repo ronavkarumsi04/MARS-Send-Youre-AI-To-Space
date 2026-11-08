@@ -1,32 +1,38 @@
 import {
   type ArtifactRef,
   ArtifactRefSchema,
-  type Budget,
+  BudgetSchema,
   type RequestContext,
   type Scope,
+  ScopeSchema,
   type Task,
   TaskSchema,
 } from "@mars/contracts";
+import { z } from "zod";
 import { assertPublishable, renderUntrustedMessage } from "./content";
 import { CollaborationError } from "./errors";
 import {
   type AgentAuthority,
+  AgentAuthoritySchema,
   type AgentBudget,
+  AgentBudgetSchema,
   type AgentCapability,
   AgentCapabilitySchema,
   type AgentView,
   AgentViewSchema,
   type ChildUsage,
+  ChildUsageSchema,
   type ChildView,
   ChildViewSchema,
   type CollaborationLimits,
   CollaborationLimitsSchema,
   DelegateInputSchema,
-  type DelegationPool,
   DelegationPoolSchema,
   type DeliveredMessage,
   DeliveredMessageSchema,
   ListInputSchema,
+  type MemberUsage,
+  MemberUsageSchema,
   MessageInputSchema,
   type MessageView,
   MessageViewSchema,
@@ -39,6 +45,7 @@ import {
   RoomStatsSchema,
   type RoomView,
   RoomViewSchema,
+  TokenUsdSchema,
 } from "./schemas";
 import {
   CollaborationStore,
@@ -64,6 +71,8 @@ const zeroMemberUsage: MemberUsage = {
   messages_sent: 0,
 };
 const zeroReserved = { tokens: 0, usd: 0 };
+const StringListSchema = z.array(z.string());
+const ArtifactRefListSchema = z.array(ArtifactRefSchema);
 
 function invalidInput(message: string): never {
   throw new CollaborationError("invalid_input", message);
@@ -81,22 +90,19 @@ function parseWith<T>(schema: { parse(value: unknown): T }, value: unknown): T {
   }
 }
 
-function decodeJson<T>(value: string): T {
-  return parseJson<T>(value);
-}
-
 function json(value: unknown): string {
   return canonicalJson(value);
 }
 
 function scopeOf(room: RoomRow): Scope {
-  return decodeJson<Scope>(room.scope_json);
+  return parseJson(room.scope_json, ScopeSchema);
 }
 
 function roomView(store: CollaborationStore, room: RoomRow): RoomView {
-  const budget = decodeJson<Budget>(room.budget_json);
-  const pool = decodeJson<DelegationPool>(
+  const budget = parseJson(room.budget_json, BudgetSchema);
+  const pool = parseJson(
     store.getMemberRow(room.root_agent_id).pool_json,
+    DelegationPoolSchema,
   );
   return RoomViewSchema.parse({
     room_id: room.room_id,
@@ -110,12 +116,12 @@ function roomView(store: CollaborationStore, room: RoomRow): RoomView {
       max_usd: budget.max_usd - pool.usd,
     },
     deadline: room.deadline,
-    limits: decodeJson<CollaborationLimits>(room.limits_json),
+    limits: parseJson(room.limits_json, CollaborationLimitsSchema),
     status: room.status,
     model_id: room.model_id,
     next_seq: room.next_seq,
     created_at: room.created_at,
-    counters: decodeJson<RoomStats>(room.counters_json),
+    counters: parseJson(room.counters_json, RoomStatsSchema),
   });
 }
 
@@ -127,14 +133,14 @@ function memberView(member: MemberRow): AgentView {
     role_label: member.role_label,
     status: member.status,
     task_revision: member.task_revision,
-    authority: decodeJson<AgentAuthority>(member.authority_json),
-    peers: decodeJson<string[]>(member.peers_json),
-    budget: decodeJson<AgentBudget>(member.budget_json),
-    pool: decodeJson<DelegationPool>(member.pool_json),
-    usage: decodeJson<ChildUsage>(member.usage_json),
-    reserved: decodeJson<{ tokens: number; usd: number }>(member.reserved_json),
+    authority: parseJson(member.authority_json, AgentAuthoritySchema),
+    peers: parseJson(member.peers_json, StringListSchema),
+    budget: parseJson(member.budget_json, AgentBudgetSchema),
+    pool: parseJson(member.pool_json, DelegationPoolSchema),
+    usage: parseJson(member.usage_json, MemberUsageSchema),
+    reserved: parseJson(member.reserved_json, TokenUsdSchema),
     workspace_mode: member.workspace_mode,
-    write_paths: decodeJson<string[]>(member.write_paths_json),
+    write_paths: parseJson(member.write_paths_json, StringListSchema),
     created_at: member.created_at,
   });
 }
@@ -145,7 +151,7 @@ function updateStats(
   mutate: (stats: RoomStats) => void,
 ): void {
   const room = store.getRoomRow(roomId);
-  const stats = decodeJson<RoomStats>(room.counters_json);
+  const stats = parseJson(room.counters_json, RoomStatsSchema);
   mutate(stats);
   RoomStatsSchema.parse(stats);
   store.db
@@ -192,7 +198,7 @@ function assertRoomMutation(room: RoomRow): void {
 }
 
 function pageLimit(room: RoomRow, requested: number | undefined): number {
-  const limits = decodeJson<CollaborationLimits>(room.limits_json);
+  const limits = parseJson(room.limits_json, CollaborationLimitsSchema);
   const limit = requested ?? limits.page_limit;
   if (limit > limits.page_limit)
     throw new CollaborationError(
@@ -506,8 +512,8 @@ function resultViewFromRow(row: ResultRow): ResultView {
     summary_truncated: Boolean(row.summary_truncated),
     unsafe_summary: Boolean(row.unsafe_summary),
     unsafe_artifacts: row.unsafe_artifacts,
-    artifacts: decodeJson<ArtifactRef[]>(row.artifacts_json),
-    usage: decodeJson<ChildUsage>(row.usage_json),
+    artifacts: parseJson(row.artifacts_json, ArtifactRefListSchema),
+    usage: parseJson(row.usage_json, ChildUsageSchema),
     created_at: row.created_at,
     trust: "untrusted",
   });
@@ -619,7 +625,7 @@ function activeDescendantUsage(
   const total = { tokens: 0, usd: 0 };
   for (const child of children) {
     if (jobReleased(store, child.agent_id)) continue;
-    const usage = decodeJson<MemberUsage>(child.usage_json);
+    const usage = parseJson(child.usage_json, MemberUsageSchema);
     total.tokens += tokensUsed(usage);
     total.usd += usage.usd;
   }
@@ -638,9 +644,7 @@ function releaseReservation(
 ): void {
   if (!member.parent_agent_id) return;
   const budget = agentBudget(member);
-  const held = decodeJson<{ tokens: number; usd: number }>(
-    member.reserved_json,
-  );
+  const held = parseJson(member.reserved_json, TokenUsdSchema);
   const release = {
     tokens: Math.max(0, budget.max_tokens - held.tokens),
     usd: Math.max(0, budget.max_usd - held.usd),
@@ -649,9 +653,7 @@ function releaseReservation(
   let reachedRoot = false;
   while (ancestorId) {
     const ancestor: MemberRow = store.getMemberRow(ancestorId);
-    const reserved = decodeJson<{ tokens: number; usd: number }>(
-      ancestor.reserved_json,
-    );
+    const reserved = parseJson(ancestor.reserved_json, TokenUsdSchema);
     store.db
       .query("UPDATE members SET reserved_json = ? WHERE agent_id = ?")
       .run(
@@ -669,7 +671,7 @@ function releaseReservation(
     ancestorId = ancestor.parent_agent_id;
   }
   if (reachedRoot) {
-    const usage = decodeJson<MemberUsage>(member.usage_json);
+    const usage = parseJson(member.usage_json, MemberUsageSchema);
     const active = activeDescendantUsage(store, member);
     const consumed = {
       tokens: Math.max(0, tokensUsed(usage) - active.tokens),
@@ -954,7 +956,7 @@ function createHost(store: CollaborationStore): CollaborationHost {
           )
           .run(task.revision, json(task.budget), deadline, roomId);
         const root = store.getMemberRow(room.root_agent_id);
-        const pool = decodeJson<DelegationPool>(root.pool_json);
+        const pool = parseJson(root.pool_json, DelegationPoolSchema);
         if (
           pool.tokens > task.budget.max_tokens - 1 ||
           pool.usd > task.budget.max_usd
@@ -1035,7 +1037,7 @@ function createHost(store: CollaborationStore): CollaborationHost {
     async stats(contextValue, roomId) {
       const context = parseContext(contextValue);
       const room = roomByContext(store, context, roomId);
-      return RoomStatsSchema.parse(decodeJson<RoomStats>(room.counters_json));
+      return parseJson(room.counters_json, RoomStatsSchema);
     },
   };
 }
@@ -1045,7 +1047,7 @@ function createAgentPort(store: CollaborationStore): AgentPort {
     async send(contextValue, capabilityValue, inputValue) {
       const { member, room } = auth(store, contextValue, capabilityValue, true);
       const input = parseWith(MessageInputSchema, inputValue);
-      const limits = decodeJson<CollaborationLimits>(room.limits_json);
+      const limits = parseJson(room.limits_json, CollaborationLimitsSchema);
       const recipients = [...input.recipients];
       if (
         recipients.length > limits.max_recipients ||
@@ -1245,7 +1247,7 @@ function createAgentPort(store: CollaborationStore): AgentPort {
           store.db
             .query("UPDATE rooms SET next_seq = next_seq + 1 WHERE room_id = ?")
             .run(room.room_id);
-          const usage = decodeJson<MemberUsage>(member.usage_json);
+          const usage = parseJson(member.usage_json, MemberUsageSchema);
           usage.messages_sent += 1;
           store.db
             .query("UPDATE members SET usage_json = ? WHERE agent_id = ?")
@@ -1317,7 +1319,7 @@ function createAgentPort(store: CollaborationStore): AgentPort {
             kind: row.kind,
             body: row.body,
             in_reply_to: row.in_reply_to,
-            artifacts: decodeJson<ArtifactRef[]>(row.artifacts_json),
+            artifacts: parseJson(row.artifacts_json, ArtifactRefListSchema),
             created_at: row.created_at,
             expires_at: row.expires_at,
             delivered_count: nextCount,
@@ -1585,15 +1587,13 @@ interface InboxRow extends MessageRow {
   role_label: string;
 }
 
-type MemberUsage = ChildUsage & { messages_sent: number };
-
 function agentBudget(member: MemberRow): AgentBudget {
-  return decodeJson<AgentBudget>(member.budget_json);
+  return parseJson(member.budget_json, AgentBudgetSchema);
 }
 
 function runtimeCap(member: MemberRow): { tokens: number; usd: number } {
   const budget = agentBudget(member);
-  const pool = decodeJson<DelegationPool>(member.pool_json);
+  const pool = parseJson(member.pool_json, DelegationPoolSchema);
   return {
     tokens: budget.max_tokens - pool.tokens,
     usd: budget.max_usd - pool.usd,
@@ -1620,7 +1620,7 @@ function messageView(
     kind: message.kind,
     body: message.body,
     in_reply_to: message.in_reply_to,
-    artifacts: decodeJson<ArtifactRef[]>(message.artifacts_json),
+    artifacts: parseJson(message.artifacts_json, ArtifactRefListSchema),
     created_at: message.created_at,
     expires_at: message.expires_at,
     replayed,
@@ -1654,7 +1654,7 @@ function canAddress(
     sender.parent_agent_id === recipient.agent_id
   )
     return true;
-  const peers = decodeJson<string[]>(sender.peers_json);
+  const peers = parseJson(sender.peers_json, StringListSchema);
   if (peers.includes(recipient.agent_id)) return true;
   if (kind === "reply" && inReplyTo) {
     const original = store.db
@@ -1713,7 +1713,7 @@ function childView(store: CollaborationStore, child: MemberRow): ChildView {
       : child.status === "active"
         ? "queued"
         : child.status;
-  const usage = decodeJson<MemberUsage>(child.usage_json);
+  const usage = parseJson(child.usage_json, MemberUsageSchema);
   return ChildViewSchema.parse({
     agent_id: child.agent_id,
     parent_agent_id: child.parent_agent_id,
@@ -1729,7 +1729,7 @@ function childView(store: CollaborationStore, child: MemberRow): ChildView {
     },
     task_revision: child.task_revision,
     workspace_mode: child.workspace_mode,
-    write_paths: decodeJson<string[]>(child.write_paths_json),
+    write_paths: parseJson(child.write_paths_json, StringListSchema),
     created_at: child.created_at,
     result_id: result?.result_id ?? null,
   });
@@ -1834,18 +1834,21 @@ function delegateChild(
       });
       return { ...childView(store, child), replayed: true, capability: null };
     }
-    const parentAuthority = decodeJson<AgentAuthority>(member.authority_json);
+    const parentAuthority = parseJson(
+      member.authority_json,
+      AgentAuthoritySchema,
+    );
     if (!parentAuthority.delegate)
       throw new CollaborationError(
         member.parent_agent_id === null ? "single_agent" : "forbidden",
         "Delegation is not authorized",
       );
     const parentBudget = agentBudget(member);
-    const limits = decodeJson<CollaborationLimits>(room.limits_json);
+    const limits = parseJson(room.limits_json, CollaborationLimitsSchema);
     const depth = member.depth + 1;
     const effectiveMaxDepth = Math.min(
-      decodeJson<CollaborationLimits>(room.limits_json).max_depth,
-      decodeJson<Budget>(room.budget_json).max_depth,
+      parseJson(room.limits_json, CollaborationLimitsSchema).max_depth,
+      parseJson(room.budget_json, BudgetSchema).max_depth,
     );
     if (depth > effectiveMaxDepth)
       throw new CollaborationError(
@@ -1986,11 +1989,9 @@ function delegateChild(
         "write_conflict",
         "Write path is already claimed",
       );
-    const parentUsage = decodeJson<MemberUsage>(member.usage_json);
-    const parentPool = decodeJson<DelegationPool>(member.pool_json);
-    const parentReserved = decodeJson<{ tokens: number; usd: number }>(
-      member.reserved_json,
-    );
+    const parentUsage = parseJson(member.usage_json, MemberUsageSchema);
+    const parentPool = parseJson(member.pool_json, DelegationPoolSchema);
+    const parentReserved = parseJson(member.reserved_json, TokenUsdSchema);
     const ownCharged = ownRuntimeCharged(store, member);
     const requestedUsd = input.budget.max_usd ?? 0;
     const subtreeTokens = Math.max(
@@ -2156,7 +2157,7 @@ function ownRuntimeCharged(
       "SELECT charged_usage_json FROM jobs WHERE agent_id = ?",
     )
     .get(member.agent_id);
-  return job ? decodeJson<ChildUsage>(job.charged_usage_json) : zeroUsage;
+  return job ? parseJson(job.charged_usage_json, ChildUsageSchema) : zeroUsage;
 }
 
 function chargeUsage(
@@ -2171,7 +2172,7 @@ function chargeUsage(
     delta.steps === 0
   )
     return;
-  const memberUsage = decodeJson<MemberUsage>(member.usage_json);
+  const memberUsage = parseJson(member.usage_json, MemberUsageSchema);
   const nextMember: MemberUsage = {
     ...addUsage(memberUsage, delta),
     messages_sent: memberUsage.messages_sent,
@@ -2182,7 +2183,7 @@ function chargeUsage(
   let parentId = member.parent_agent_id;
   while (parentId) {
     const parent = store.getMemberRow(parentId);
-    const usage = decodeJson<MemberUsage>(parent.usage_json);
+    const usage = parseJson(parent.usage_json, MemberUsageSchema);
     store.db.query("UPDATE members SET usage_json = ? WHERE agent_id = ?").run(
       json({
         ...addUsage(usage, delta),
@@ -2283,7 +2284,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             expireJob(store, job, member);
             continue;
           }
-          const roomBudget = decodeJson<Budget>(room.budget_json);
+          const roomBudget = parseJson(room.budget_json, BudgetSchema);
           const running =
             store.db
               .query<{ amount: number }, [string]>(
@@ -2389,7 +2390,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
               : progress.base_revision,
             jobId,
           );
-        const charged = decodeJson<ChildUsage>(job.charged_usage_json);
+        const charged = parseJson(job.charged_usage_json, ChildUsageSchema);
         const observed = progress.usage
           ? {
               ...progress.usage,
@@ -2426,7 +2427,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
         }
         const member = store.getMemberRow(job.agent_id);
         const room = store.getRoomRow(job.room_id);
-        const charged = decodeJson<ChildUsage>(job.charged_usage_json);
+        const charged = parseJson(job.charged_usage_json, ChildUsageSchema);
         const ownRuntimeCap = runtimeCap(member);
         let effectiveOutcome = outcome;
         if (outcome.usage === null) {
@@ -2519,8 +2520,9 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             updateStats(store, room.room_id, (stats) => {
               stats.children_failed += 1;
             });
-          const summaryLimit = decodeJson<CollaborationLimits>(
+          const summaryLimit = parseJson(
             freshRoom.limits_json,
+            CollaborationLimitsSchema,
           ).max_summary_bytes;
           const { summary, truncated } = truncateUtf8(
             effectiveOutcome.summary,
@@ -2539,8 +2541,9 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             safeSummary = "";
             unsafeSummary = true;
           }
-          const maxArtifacts = decodeJson<CollaborationLimits>(
+          const maxArtifacts = parseJson(
             freshRoom.limits_json,
+            CollaborationLimitsSchema,
           ).max_artifacts;
           const artifacts: ArtifactRef[] = [];
           let unsafeArtifacts = 0;
@@ -2641,7 +2644,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           return "unchanged" as const;
         const member = store.getMemberRow(job.agent_id);
         const room = store.getRoomRow(job.room_id);
-        const charged = decodeJson<ChildUsage>(job.charged_usage_json);
+        const charged = parseJson(job.charged_usage_json, ChildUsageSchema);
         const ownRuntimeCap = runtimeCap(member);
         if (usage === null) {
           chargeUsage(store, member, {
@@ -2745,7 +2748,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
               )
               .get(member.parent_agent_id)?.model_id
           : null;
-        const criteria = decodeJson<string[]>(member.acceptance_json);
+        const criteria = parseJson(member.acceptance_json, StringListSchema);
         const now = store.now();
         const delivered = store.db
           .query<InboxRow, [string, number]>(
@@ -2765,7 +2768,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             kind: row.kind,
             body: row.body,
             in_reply_to: row.in_reply_to,
-            artifacts: decodeJson<ArtifactRef[]>(row.artifacts_json),
+            artifacts: parseJson(row.artifacts_json, ArtifactRefListSchema),
             created_at: row.created_at,
             expires_at: row.expires_at,
             delivered_count: Math.max(1, row.delivered_count + 1),
@@ -2812,7 +2815,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           job_id: job.job_id,
           model_id: job.model_id,
           model_reason: job.model_reason,
-          charged_usage: decodeJson<ChildUsage>(job.charged_usage_json),
+          charged_usage: parseJson(job.charged_usage_json, ChildUsageSchema),
         };
       });
     },

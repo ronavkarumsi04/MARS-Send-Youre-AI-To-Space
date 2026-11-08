@@ -597,3 +597,46 @@ test("reopening a store created before unsafe_artifacts migrates the results tab
     (await again.agents.results(context, f.coordinator)).results,
   ).toHaveLength(1);
 });
+
+test("stored JSON with the wrong shape is reported as corrupt_record", async () => {
+  const f = await fixture();
+  const tamper = (sql: string) => {
+    const db = new Database(join(f.rootDir, "collaboration.sqlite"));
+    db.query(sql).run();
+    db.close();
+  };
+  tamper(
+    `UPDATE members SET pool_json = '{"tokens":"800","usd":0}' WHERE agent_id = '${f.coordinator.agent_id}'`,
+  );
+  await expectCode(
+    () => f.collaboration.host.inspectRoom(context, f.room.room_id),
+    "corrupt_record",
+  );
+  tamper(`UPDATE rooms SET counters_json = '{"messages_sent":0}'`);
+  await expectCode(
+    () => f.collaboration.host.stats(context, f.room.room_id),
+    "corrupt_record",
+  );
+  tamper(`UPDATE rooms SET limits_json = '{"max_recipients":"4"}'`);
+  await expectCode(
+    () =>
+      f.collaboration.agents.send(context, f.coordinator, {
+        idempotency_key: "send-1",
+        recipients: ["someone"],
+        kind: "notice",
+        body: "hello",
+      }),
+    "corrupt_record",
+  );
+  tamper(`UPDATE rooms SET limits_json = 'not json'`);
+  await expectCode(
+    () =>
+      f.collaboration.agents.send(context, f.coordinator, {
+        idempotency_key: "send-2",
+        recipients: ["someone"],
+        kind: "notice",
+        body: "hello",
+      }),
+    "corrupt_record",
+  );
+});
