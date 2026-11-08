@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { containsSecretShape } from "@mars/contracts";
+import { containsSecretToken } from "@mars/contracts";
 import { SpecialistRegistryError } from "./errors";
 
 function canonicalValue(value: unknown, seen = new Set<object>()): unknown {
@@ -91,7 +91,7 @@ export function assertPublishable(
     throw new SpecialistRegistryError("unsafe_content", "invalid_json");
   }
   if (
-    containsSecretShape(serialized) ||
+    containsSecretToken(serialized) ||
     (options.rootDir !== undefined &&
       containsRootAtBoundary(serialized, path.resolve(options.rootDir))) ||
     (options.hostPrivateRoots ?? []).some((root) =>

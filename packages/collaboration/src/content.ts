@@ -1,4 +1,4 @@
-import { containsSecretShape } from "@mars/contracts";
+import { containsSecretToken } from "@mars/contracts";
 import { CollaborationError } from "./errors";
 import type { DeliveredMessage } from "./schemas";
 
@@ -25,7 +25,7 @@ export function assertPublishable(
     [rootDir, ...hostPrivateRoots].some((root) =>
       containsPrivatePath(text, root),
     ) ||
-    containsSecretShape(text)
+    containsSecretToken(text)
   ) {
     throw new CollaborationError(
       "unsafe_content",

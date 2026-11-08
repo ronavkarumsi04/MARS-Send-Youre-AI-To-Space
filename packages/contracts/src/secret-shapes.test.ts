@@ -1,14 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
-  containsSecretShape,
+  containsSecretToken,
+  SECRET_CONTEXT_PATTERNS,
   SECRET_SHAPE_PATTERNS,
+  SECRET_TOKEN_PATTERNS,
   secretShapeRegexes,
 } from "./index";
 
-const SAMPLES = [
+const CONTEXT_SAMPLES = [
   "Authorization: Bearer abcdefghijklmnop",
   "api_key=supersecretvalue99",
   "password: hunter2hunter2",
+];
+
+const TOKEN_SAMPLES = [
   "sk-abcdefghijklmnop",
   "pk-abcdefghijklmnop",
   "rk-abcdefghijklmnop",
@@ -25,8 +30,20 @@ const SAMPLES = [
 
 describe("secret shapes", () => {
   test("every known token shape is detected", () => {
-    for (const sample of SAMPLES) {
-      expect(containsSecretShape(`see ${sample} here`)).toBe(true);
+    for (const sample of TOKEN_SAMPLES) {
+      expect(containsSecretToken(`see ${sample} here`)).toBe(true);
+    }
+  });
+
+  test("credential-context shapes are scrubbed but do not fail publishing", () => {
+    for (const sample of [
+      ...CONTEXT_SAMPLES,
+      "Requires Bearer authentication",
+    ]) {
+      expect(containsSecretToken(sample)).toBe(false);
+      expect(secretShapeRegexes().some((pattern) => pattern.test(sample))).toBe(
+        true,
+      );
     }
   });
 
@@ -37,7 +54,7 @@ describe("secret shapes", () => {
       "ghp_short",
       "sk-short",
     ]) {
-      expect(containsSecretShape(text)).toBe(false);
+      expect(containsSecretToken(text)).toBe(false);
     }
   });
 
@@ -49,6 +66,10 @@ describe("secret shapes", () => {
     );
     expect(global.every((p) => p.global)).toBe(true);
     expect(global[0]?.flags).toBe("gi");
+    expect(SECRET_SHAPE_PATTERNS).toEqual([
+      ...SECRET_CONTEXT_PATTERNS,
+      ...SECRET_TOKEN_PATTERNS,
+    ]);
   });
 
   test("a PEM block is matched through its END line", () => {
