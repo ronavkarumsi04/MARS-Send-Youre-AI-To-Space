@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { startFakeOmniRoute } from "@mars/providers-omniroute";
+import { ServeUsageError } from "./cli-errors";
 import { omnirouteDoctorReport, omnirouteFromFlags } from "./omniroute";
-import { ServeUsageError } from "./serve-errors";
 
 describe("mars serve --omniroute flags", () => {
   test("absent flag yields no OmniRoute options and rejects dependent flags", () => {

@@ -10,10 +10,14 @@ import type {
   ScoringResult,
 } from "@mars/contracts";
 import { ScoringRequestSchema, ScoringResultSchema } from "@mars/contracts";
-import { readHarborJob, type TrialRecord } from "./harbor-records";
+import {
+  type ParsedHarborJob,
+  readHarborJob,
+  type TrialRecord,
+} from "./harbor-records";
 import { type ComparisonManifest, canonicalJson, sha256Hex } from "./manifest";
 import { MARS_AGENT_NAME } from "./pins";
-import type { HarborRunner } from "./runner";
+import type { HarborRunner, HarborRunOutcome } from "./runner";
 import {
   type ArtifactSink,
   packTrialDir,
@@ -39,6 +43,57 @@ export function requestSha256(request: ScoringRequest): string {
 function clampScore(value: number | null): number {
   if (value === null || !Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Error and feedback for an instance with no accepted trial, naming the
+ * cause: a killed run, an unreadable job record, unreadable trial records,
+ * or no record at all.
+ */
+function missingTrialDiagnostics(
+  instance: string,
+  outcome: HarborRunOutcome,
+  jobError: string | null,
+  unreadable: ParsedHarborJob["unreadable_trials"],
+): Pick<InstanceScore, "error" | "feedback"> {
+  const evidence = `[untrusted evaluation evidence · task ${instance}]`;
+  const stderr = `Harbor stderr tail: ${outcome.stderr_tail.slice(-1024)}`;
+  const exit = `harbor exit ${outcome.exit_code ?? "unknown"}`;
+  if (outcome.killed)
+    return {
+      error: `Harbor run ${outcome.killed}; no trial record`,
+      feedback: `${evidence} No Harbor trial record was produced. ${stderr}`,
+    };
+  if (jobError !== null)
+    return {
+      error: `Unreadable Harbor job record for ${instance} (${exit}): ${jobError}`,
+      feedback: `${evidence} The Harbor job result.json could not be read: ${jobError}. ${stderr}`,
+    };
+  const own = unreadable.filter(
+    (entry) =>
+      entry.trial_dir === instance ||
+      entry.trial_dir.startsWith(`${instance}__`),
+  );
+  if (own.length > 0) {
+    const detail = own
+      .map((entry) => `${entry.trial_dir}: ${entry.error}`)
+      .join("; ")
+      .slice(0, 2048);
+    return {
+      error: `Unreadable trial record for ${instance} (${exit}): ${detail}`,
+      feedback: `${evidence} Harbor produced trial records that could not be read: ${detail}. ${stderr}`,
+    };
+  }
+  const others = unreadable.length
+    ? ` Unreadable trial records not attributed to this task: ${unreadable
+        .map((entry) => `${entry.trial_dir}: ${entry.error}`)
+        .join("; ")
+        .slice(0, 2048)}.`
+    : "";
+  return {
+    error: `No trial record for ${instance} (${exit})`,
+    feedback: `${evidence} No Harbor trial record was produced.${others} ${stderr}`,
+  };
 }
 
 /**
@@ -129,9 +184,24 @@ export function createHarborScoringBackend(
         candidatePath,
         ...(scoringOptions?.signal ? { signal: scoringOptions.signal } : {}),
       });
-      const parsed = outcome.killed
+      const read = outcome.killed
         ? null
-        : await readHarborJob(outcome.job_dir).catch(() => null);
+        : await readHarborJob(outcome.job_dir).then(
+            (job) => ({ job, error: null }),
+            (error: unknown) => ({
+              job: null,
+              // A job record Harbor never wrote is a missing record, not an
+              // unreadable one.
+              error:
+                (error as NodeJS.ErrnoException)?.code === "ENOENT"
+                  ? null
+                  : error instanceof Error
+                    ? error.message.slice(0, 512)
+                    : "unreadable",
+            }),
+          );
+      const parsed = read?.job ?? null;
+      const unreadable = parsed?.unreadable_trials ?? [];
       const byTask = new Map<string, TrialRecord[]>();
       const requested = new Set(request.instance_ids);
       for (const trial of parsed?.trials ?? []) {
@@ -160,11 +230,13 @@ export function createHarborScoringBackend(
             reward_valid: false,
             runtime_ms: 0,
             cost_usd: null,
-            error: outcome.killed
-              ? `Harbor run ${outcome.killed}; no trial record`
-              : `No trial record for ${instance} (harbor exit ${outcome.exit_code ?? "unknown"})`,
+            ...missingTrialDiagnostics(
+              instance,
+              outcome,
+              read?.error ?? null,
+              unreadable,
+            ),
             trajectory: null,
-            feedback: `[untrusted evaluation evidence · task ${instance}] No Harbor trial record was produced. Harbor stderr tail: ${outcome.stderr_tail.slice(-1024)}`,
           });
           continue;
         }

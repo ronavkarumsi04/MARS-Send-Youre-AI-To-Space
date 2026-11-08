@@ -175,11 +175,17 @@ export interface TrustState {
   consumed_nonces: string[];
   events: AuditEvent[];
 }
-export function scopeKey(scope: Scope): string {
-  return canonicalJSON({
+export type NormalizedScope = Omit<Scope, "workspace_id"> & {
+  workspace_id: string | null;
+};
+export function normalizedScope(scope: Scope): NormalizedScope {
+  return {
     ...ScopeSchema.parse(scope),
     workspace_id: scope.workspace_id ?? null,
-  });
+  };
+}
+export function scopeKey(scope: Scope): string {
+  return canonicalJSON(normalizedScope(scope));
 }
 export function binding(
   scope: Scope,
@@ -189,7 +195,7 @@ export function binding(
 ): string {
   return sha256(
     canonicalJSON({
-      scope: JSON.parse(scopeKey(scope)),
+      scope: normalizedScope(scope),
       kind: e.kind,
       integration_id: e.integration_id,
       source: e.source,

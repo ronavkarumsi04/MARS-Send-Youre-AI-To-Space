@@ -1,3 +1,4 @@
+import { verifyCommit } from "./git-probe";
 import { hasInvisibleCodePoint, validateLocatorPath } from "./path-rules";
 import type { RepoRegistry } from "./registry";
 import {
@@ -86,26 +87,15 @@ export async function searchPaths(
   const git_version = await git.version();
   const base = { repo_id, commit_sha, git_version };
 
-  const commit = await git.run({
-    args: [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      "--end-of-options",
-      `${commit_sha}^{commit}`,
-    ],
-    cwd: repo.dir,
-    timeoutMs: limits.timeout_ms,
-    maxOutputBytes: 4096,
-  });
-  if (commit.spawn_error)
-    return { state: "error", ...base, reason: "git_unavailable" };
-  if (commit.timed_out) return { state: "error", ...base, reason: "timeout" };
-  if (
-    commit.exit_code !== 0 ||
-    new TextDecoder().decode(commit.stdout).trim() !== commit_sha
-  )
-    return { state: "unavailable", ...base };
+  const commit = await verifyCommit(
+    git,
+    repo.dir,
+    commit_sha,
+    limits.timeout_ms,
+  );
+  if (commit.state === "error")
+    return { state: "error", ...base, reason: commit.reason };
+  if (commit.state === "unavailable") return { state: "unavailable", ...base };
 
   const decoder = new TextDecoder("utf-8", { fatal: false });
   // One bounded bucket per rank: memory stays at most RANKS * limit matches
