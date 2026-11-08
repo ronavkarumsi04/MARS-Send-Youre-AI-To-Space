@@ -12,6 +12,7 @@ import { MarsClient } from "../src/client";
 import type { ConnectResult, WorkbenchUi } from "../src/controller";
 import type { OpenOutcome } from "../src/diffOpener";
 import type { ViewState } from "../src/messages";
+import { applyParsed, parsePatch } from "../src/patch";
 import type { DescribeResult } from "../src/protocol";
 import type { ReviewTarget } from "../src/reviewOpener";
 import { RpcError, type RpcRequest, type RpcTransport } from "../src/rpc";
@@ -280,4 +281,15 @@ export function harness(server = new FakeServer()): Harness {
 export async function flush(times = 5): Promise<void> {
   for (let i = 0; i < times; i++)
     await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Parses `patch` (which must be well formed) and applies it the way diffOpener does. */
+export function applyPatchText(
+  source: string,
+  patch: string,
+  reverse = false,
+): string | null {
+  const parsed = parsePatch(patch);
+  if (!parsed.ok) throw new Error(parsed.reason);
+  return applyParsed(source, parsed.patch, reverse);
 }
