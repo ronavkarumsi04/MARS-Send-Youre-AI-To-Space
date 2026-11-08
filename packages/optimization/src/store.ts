@@ -1,4 +1,12 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactRef, RequestContext } from "@mars/contracts";
 import { ArtifactRefSchema } from "@mars/contracts";
@@ -91,9 +99,14 @@ async function writeAtomic(
   file: string,
   data: Uint8Array | string,
 ): Promise<void> {
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, data, { mode: 0o600 });
-  await rename(temp, file);
+  const temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, data, { flag: "wx", mode: 0o600 });
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readJson<T>(
