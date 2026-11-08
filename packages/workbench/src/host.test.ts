@@ -58,6 +58,7 @@ import { diffDigest } from "./diff-digest";
 import type { WorkbenchKnowledgeGraph } from "./graph-context";
 import {
   createWorkbenchHost,
+  WORKBENCH_PACKAGE_VERSION,
   type WorkbenchHostOptions,
   type WorkbenchReview,
   type WorkspaceHost,
@@ -99,6 +100,13 @@ const task = (taskId = "task"): Task => ({
   artifacts: [],
 });
 const cleanup: (() => Promise<void>)[] = [];
+test("workbench event revision matches the package version", async () => {
+  const manifest = await Bun.file(
+    new URL("../package.json", import.meta.url),
+  ).json();
+  expect(WORKBENCH_PACKAGE_VERSION).toBe(manifest.version);
+});
+
 test("read-only describe and inspect expose offline metadata without launching a runtime", async () => {
   const f = await fixture();
   const api = await f.makeHost(
@@ -2181,6 +2189,9 @@ test("coordinators delegate bounded children that run in private workspaces and 
       event.producer !== "@mars/workbench"
     )
       continue;
+    expect(event.versions).toEqual([
+      { component: "@mars/workbench", revision: WORKBENCH_PACKAGE_VERSION },
+    ]);
     const payload = JSON.parse(
       new TextDecoder().decode(
         await f.store.artifacts.get(context(), event.payload),
