@@ -199,6 +199,9 @@ export async function createLocalWorkspaceProvider(
       "extraIgnores must contain segment names or simple segment globs",
     );
   }
+  // Identifies sandbox containers owned by this provider root; startup
+  // cleanup matches on it to remove containers leaked by a previous process.
+  const rootLabels = { "mars.root": sha256(rootDir).slice(0, 16) };
   const releaseLock = await acquireProviderLock(rootDir);
   let recoveryState: RecoveryState;
   try {
@@ -206,9 +209,7 @@ export async function createLocalWorkspaceProvider(
       await ensureDirectory(join(rootDir, directory));
     }
     if (options.sandbox) {
-      await options.sandbox.cleanup({
-        "mars.root": sha256(rootDir).slice(0, 16),
-      });
+      await options.sandbox.cleanup(rootLabels);
     }
     recoveryState = await recoverProviderState(
       rootDir,
@@ -1042,7 +1043,7 @@ export async function createLocalWorkspaceProvider(
               runId,
               labels: {
                 "mars.workspace": current.workspace_id,
-                "mars.root": sha256(rootDir).slice(0, 16),
+                ...rootLabels,
               },
             });
           } catch (error) {
