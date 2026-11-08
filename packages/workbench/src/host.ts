@@ -484,6 +484,21 @@ export async function createWorkbenchHost(
     const watch = watchFor(taskId, cwd, approvals);
     return watch ? { watch } : {};
   };
+  // Optional launch context is best-effort: a failed block is omitted and
+  // recorded as reviewable evidence, and a failing sink never fails launch.
+  const recordContextUnavailable = (
+    taskId: string,
+    operation: "context.map" | "context.graph",
+  ) =>
+    options.store
+      .appendEvent(internalContext(options.scope), taskId, {
+        event_type: "tool.completed",
+        producer: "@mars/workbench",
+        run_id: randomUUID(),
+        versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
+        payload: { operation, status: "unavailable" },
+      })
+      .catch(() => undefined);
   // Graph tools are host-bound and revision-fenced: the artifact is a derived,
   // rebuildable cache next to the repository map, never a memory owner, and
   // build attempts land in the task's events.
@@ -2492,15 +2507,7 @@ export async function createWorkbenchHost(
             instruction = withFrozenRepositoryMap(instruction, repositoryMap);
           } catch {
             repositoryMap = undefined;
-            await options.store
-              .appendEvent(internalContext(options.scope), task.task_id, {
-                event_type: "tool.completed",
-                producer: "@mars/workbench",
-                run_id: randomUUID(),
-                versions: [{ component: "@mars/workbench", revision: "0.0.1" }],
-                payload: { operation: "context.map", status: "unavailable" },
-              })
-              .catch(() => undefined);
+            await recordContextUnavailable(task.task_id, "context.map");
           }
         }
         const stateDir = taskState(task);
@@ -2538,6 +2545,7 @@ export async function createWorkbenchHost(
             }
           } catch {
             graphSummary = undefined;
+            await recordContextUnavailable(task.task_id, "context.graph");
           }
         }
         runtime = await runtimeFactory({
