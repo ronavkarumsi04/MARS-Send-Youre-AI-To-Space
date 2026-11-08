@@ -20,6 +20,12 @@ import {
   conservativeTokenCounter,
   createRepositoryMapProvider,
 } from "../src";
+import {
+  BINARY_SNIFF_BYTES,
+  GENERATED_MARKER_WINDOW,
+  MAX_AVERAGE_LINE_LENGTH,
+  MAX_GENERATED_LINE_LENGTH,
+} from "../src/inventory";
 import { context, providerFor, putFile, tempRoot, workspace } from "./helpers";
 
 const extraRoots: string[] = [];
@@ -352,6 +358,55 @@ describe("repository map provider", () => {
     expect(result.stats.skipped.symlink).toBe(2);
     expect(JSON.stringify(result)).not.toContain(root);
     expect(JSON.stringify(result)).not.toContain(outside);
+  });
+
+  test("generated and binary detection thresholds are inclusive at their boundaries", async () => {
+    const root = await tempRoot();
+    const marker = "@generated";
+    const shortLines = "\n".repeat(16);
+    const withNulAt = (index: number) => {
+      const bytes = new Uint8Array(index + 2).fill(10);
+      bytes[index] = 0;
+      return bytes;
+    };
+    await putFile(
+      root,
+      "marker-inside.ts",
+      `${"\n".repeat(GENERATED_MARKER_WINDOW - marker.length)}${marker}\n`,
+    );
+    await putFile(
+      root,
+      "marker-outside.ts",
+      `${"\n".repeat(GENERATED_MARKER_WINDOW)}${marker}\n`,
+    );
+    await putFile(
+      root,
+      "line-at-max.ts",
+      `//${"x".repeat(MAX_GENERATED_LINE_LENGTH - 2)}${shortLines}`,
+    );
+    await putFile(
+      root,
+      "line-over-max.ts",
+      `//${"x".repeat(MAX_GENERATED_LINE_LENGTH - 1)}${shortLines}`,
+    );
+    await putFile(
+      root,
+      "average-at-max.ts",
+      `//${"x".repeat(MAX_AVERAGE_LINE_LENGTH - 2)}`,
+    );
+    await putFile(
+      root,
+      "average-over-max.ts",
+      `//${"x".repeat(MAX_AVERAGE_LINE_LENGTH - 1)}`,
+    );
+    await putFile(root, "nul-inside.ts", withNulAt(BINARY_SNIFF_BYTES - 1));
+    await putFile(root, "nul-outside.ts", withNulAt(BINARY_SNIFF_BYTES));
+    const result = await providerFor(root).map(context, {
+      workspace,
+      max_output_tokens: 300,
+    });
+    expect(result.stats.skipped.generated).toBe(3);
+    expect(result.stats.skipped.binary).toBe(1);
   });
 
   test("honors inventory limits, cancellation, timeout, and close", async () => {
