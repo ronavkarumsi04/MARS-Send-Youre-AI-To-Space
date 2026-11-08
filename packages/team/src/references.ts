@@ -17,6 +17,7 @@ import type {
   PathSearchResult,
   SearchPathsParams,
 } from "./protocol";
+import type { TeamLimits } from "./schemas";
 import type { TeamActor, TeamStore } from "./store";
 
 export interface ReferenceServiceOptions {
@@ -46,16 +47,40 @@ export interface ReferenceService {
 
 const RATE_WINDOW_MS = 60_000;
 
+type PinnedRange = Pick<
+  GitRangeReference,
+  "repo_id" | "commit_sha" | "path" | "line_start" | "line_end"
+>;
+
+/** `resolveReference` locator for a pinned range: line bounds only when both are set. */
+export function locatorOf(reference: PinnedRange) {
+  return {
+    repo_id: reference.repo_id,
+    commit_sha: reference.commit_sha,
+    path: reference.path,
+    ...(reference.line_start !== null && reference.line_end !== null
+      ? { line_start: reference.line_start, line_end: reference.line_end }
+      : {}),
+  };
+}
+
+/** `resolveReference` limits shared by user previews and agent excerpts. */
+export function previewLimits(
+  limits: Pick<TeamLimits, "max_preview_blob_bytes" | "max_preview_lines">,
+) {
+  return {
+    max_blob_bytes: limits.max_preview_blob_bytes,
+    max_range_lines: limits.max_preview_lines,
+  };
+}
+
 export function createReferenceService(
   options: ReferenceServiceOptions,
 ): ReferenceService {
   const { store, repos } = options;
   const now = options.now ?? (() => Date.now());
   const limits = store.limits;
-  const resolveLimits = {
-    max_blob_bytes: limits.max_preview_blob_bytes,
-    max_range_lines: limits.max_preview_lines,
-  };
+  const resolveLimits = previewLimits(limits);
   const resolves = new Map<string, number[]>();
 
   const takeResolveSlot = (actor: TeamActor) => {
@@ -76,15 +101,6 @@ export function createReferenceService(
     resolves.set(key, recent);
   };
 
-  const locatorOf = (reference: GitRangeReference) => ({
-    repo_id: reference.repo_id,
-    commit_sha: reference.commit_sha,
-    path: reference.path,
-    ...(reference.line_start !== null && reference.line_end !== null
-      ? { line_start: reference.line_start, line_end: reference.line_end }
-      : {}),
-  });
-
   return {
     async create(actor, input) {
       const check = validateLocator(input, {
@@ -95,14 +111,7 @@ export function createReferenceService(
       store.requireRepoAccess(actor, locator.repo_id);
       const resolved = await resolveReference(
         repos,
-        {
-          repo_id: locator.repo_id,
-          commit_sha: locator.commit_sha,
-          path: locator.path,
-          ...(locator.line_start !== null && locator.line_end !== null
-            ? { line_start: locator.line_start, line_end: locator.line_end }
-            : {}),
-        },
+        locatorOf(locator),
         resolveLimits,
       );
       switch (resolved.state) {

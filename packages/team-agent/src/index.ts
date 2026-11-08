@@ -5,10 +5,12 @@ export {
   type RunTeamAgentRequestOptions,
   runTeamAgentRequest,
   TEAM_AGENT_INSTRUCTION,
+  type TeamAgentErrorNotice,
   type TeamAgentPolicy,
   TeamAgentPolicySchema,
   type TeamAgentRunResult,
   type TeamContextBuild,
+  teamAgentErrorNotice,
 } from "./run";
 export {
   createTeamAgentWorker,
