@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DerivedArtifactStore } from "@mars/context";
+import { canonicalJson } from "@mars/contracts/canonical";
 import type { RuntimeKnowledgeGraph } from "@mars/execution";
 import { z } from "zod";
 import { createGraphifyRunner, type GraphifyRunner } from "./cli";
@@ -137,20 +138,6 @@ const rawAnalysisSchema = z
     community_labels: z.record(z.string()).optional(),
   })
   .passthrough();
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
-      )
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 function taskKey(taskId: string): string {
   if (!ID_PATTERN.test(taskId)) throw new Error("invalid task id");
@@ -302,7 +289,7 @@ export function normalizeGraph(input: {
       };
     });
   const digest = createHash("sha256")
-    .update(canonical({ nodes, edges, communities: communityList }))
+    .update(canonicalJson({ nodes, edges, communities: communityList }))
     .digest("hex");
   return KnowledgeGraphArtifactSchema.parse({
     schema_version: 1,

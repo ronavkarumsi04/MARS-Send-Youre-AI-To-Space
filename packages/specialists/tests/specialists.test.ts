@@ -175,6 +175,48 @@ describe("specialist evidence and persistence", () => {
     await expectCode(() => second.registry.audit(context), "corrupt_record");
   });
 
+  test("classifies corrupt stored verdicts and retry lineage as corrupt_record", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    const fixture = await makeSpecialistFixture(artifacts);
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    const first = await registry.route(context, routingRequest());
+    const firstRef = first.selected?.ref;
+    if (!firstRef) throw new Error("expected a selected target");
+    const retry = await registry.fallbackAfterFailure(
+      context,
+      first.decision_id,
+      { ref: firstRef, side_effects: "none" },
+    );
+    const retryRef = retry.selected?.ref;
+    if (!retryRef) throw new Error("expected a fallback target");
+    registry.store.db
+      .query(
+        "UPDATE routing_decisions SET decision_json = ? WHERE decision_id = ?",
+      )
+      .run('{"rejected":null}', first.decision_id);
+    await expectCode(
+      () =>
+        registry.fallbackAfterFailure(context, retry.decision_id, {
+          ref: retryRef,
+          side_effects: "none",
+        }),
+      "corrupt_record",
+    );
+
+    for (const verdictJson of ["not json", '{"status":"evaluated"}']) {
+      registry.store.db
+        .query(
+          "UPDATE specialist_revisions SET verdict_json = ? WHERE specialist_id = ?",
+        )
+        .run(verdictJson, fixture.registration.specialist_id);
+      await expectCode(
+        () => registry.inspect(context, fixture.registration.specialist_id),
+        "corrupt_record",
+      );
+    }
+  });
+
   test("enforces scope isolation while allowing workspace reads of project profiles", async () => {
     const { registry, artifacts } = await setupRegistry();
     const fixture = await makeSpecialistFixture(artifacts);
@@ -742,6 +784,31 @@ describe("specialist evidence and persistence", () => {
     );
     expect(decision.rejected[0]?.reasons).toContain("evidence_missing");
     expect(decision.fallback?.chain[0]?.ref).toBe("baseline:baseline@1");
+  });
+
+  test("records rejected fallback refs in both the chain and the rejected list", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    await registry.registerBaseline(
+      context,
+      makeBaseline(context.scope, { baseline_id: "baseline-2", priority: 2 }),
+    );
+    const fixture = await makeSpecialistFixture(artifacts);
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    artifacts.delete(fixture.registration.evaluation);
+    const decision = await registry.route(
+      context,
+      routingRequest({ exclude_refs: ["baseline:baseline@1"] }),
+    );
+    expect(decision.outcome).toBe("baseline");
+    expect(decision.selected?.ref).toBe("baseline:baseline-2@1");
+    expect(decision.fallback?.chain).toEqual([
+      { ref: "baseline:baseline@1", reasons: ["excluded"] },
+      { ref: "baseline:baseline-2@1", reasons: [] },
+    ]);
+    expect(
+      decision.rejected.filter((item) => item.ref.startsWith("baseline:")),
+    ).toEqual([{ ref: "baseline:baseline@1", reasons: ["excluded"] }]);
   });
 
   test("rejects stale current-specialist evidence at promotion", async () => {
@@ -1622,6 +1689,26 @@ describe("specialist evidence and persistence", () => {
     expect(await registry.evaluationJobs(context, "lifecycle", "1")).toEqual([
       job,
     ]);
+    for (const manifestJson of ["not json", '{"artifact_id":"x"}']) {
+      registry.store.db
+        .query(
+          "UPDATE evaluation_jobs SET input_manifest_json = ? WHERE job_id = ?",
+        )
+        .run(manifestJson, job.job_id);
+      await expectCode(
+        () => registry.evaluationJobs(context, "lifecycle", "1"),
+        "corrupt_record",
+      );
+      await expectCode(
+        () => registry.inspect(context, "lifecycle"),
+        "corrupt_record",
+      );
+    }
+    registry.store.db
+      .query(
+        "UPDATE evaluation_jobs SET input_manifest_json = ? WHERE job_id = ?",
+      )
+      .run(canonicalJson(job.input_manifest), job.job_id);
     await registry.deploy(context, "lifecycle@1", "none");
     const v2 = await makeSpecialistFixture(artifacts, {
       specialistId: "lifecycle",
