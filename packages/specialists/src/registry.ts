@@ -2041,6 +2041,59 @@ export class SpecialistRegistry implements ModelRegistry {
     };
   }
 
+  private async resolveFallbackTarget(
+    context: RequestContext,
+    parsed: SpecialistRef,
+    fallbackScopeKey: string,
+    request: RoutingRequest,
+    independenceTargets: SelectedTarget[],
+  ): Promise<{ target: SelectedTarget | null; reasons: ReasonCode[] }> {
+    const missing = (): { target: null; reasons: ReasonCode[] } => ({
+      target: null,
+      reasons: ["fallback_target_missing"],
+    });
+    if (parsed.kind === "specialist") {
+      const row = this.store.readSpecialist(
+        fallbackScopeKey,
+        parsed.id,
+        parsed.revision,
+      );
+      if (!row) return missing();
+      const registration = this.verifiedRegistration(row);
+      if (!visible(registration.scope, context)) return missing();
+      const gate = await this.resolveGate(
+        context,
+        registration,
+        row.candidate_sha256,
+        row.record_sha256,
+        row.status,
+        parseVerdict(row.verdict_json),
+        request,
+        independenceTargets,
+      );
+      return { target: gate.target, reasons: gate.reasons };
+    }
+    const row = this.store.readBaseline(
+      fallbackScopeKey,
+      parsed.id,
+      parsed.revision,
+    );
+    if (!row || row.status !== "active") return missing();
+    const profile = this.store.parseRecord(
+      row.record_json,
+      row.record_sha256,
+      parseBaseline,
+    );
+    if (!visible(profile.scope, context)) return missing();
+    return this.tryBaseline(
+      context,
+      profile,
+      row.record_sha256,
+      request,
+      independenceTargets,
+    );
+  }
+
   async route(
     context: RequestContext,
     request: RoutingRequest,
@@ -2505,73 +2558,20 @@ export class SpecialistRegistry implements ModelRegistry {
             rejectInChain(ref, ["fallback_target_missing"]);
             continue;
           }
-          if (parsed.kind === "specialist") {
-            const row = this.store.readSpecialist(
-              scopeKey(candidate.registration.scope),
-              parsed.id,
-              parsed.revision,
-            );
-            if (!row) {
-              rejectInChain(ref, ["fallback_target_missing"]);
-              continue;
-            }
-            const registration = this.verifiedRegistration(row);
-            if (!visible(registration.scope, context)) {
-              rejectInChain(ref, ["fallback_target_missing"]);
-              continue;
-            }
-            const verdict = parseVerdict(row.verdict_json);
-            const gate = await this.resolveGate(
-              context,
-              registration,
-              row.candidate_sha256,
-              row.record_sha256,
-              row.status,
-              verdict,
-              request,
-              independenceTargets,
-            );
-            if (gate.target) {
-              chainRecords.push({ ref, reasons: gate.reasons });
-              selectedFallback = gate.target;
-              fallbackFrom = fromRef;
-              break;
-            }
-            rejectInChain(ref, gate.reasons);
-          } else {
-            const row = this.store.readBaseline(
-              scopeKey(candidate.registration.scope),
-              parsed.id,
-              parsed.revision,
-            );
-            if (!row || row.status !== "active") {
-              rejectInChain(ref, ["fallback_target_missing"]);
-              continue;
-            }
-            const profile = this.store.parseRecord(
-              row.record_json,
-              row.record_sha256,
-              parseBaseline,
-            );
-            if (!visible(profile.scope, context)) {
-              rejectInChain(ref, ["fallback_target_missing"]);
-              continue;
-            }
-            const baselineResult = await this.tryBaseline(
-              context,
-              profile,
-              row.record_sha256,
-              request,
-              independenceTargets,
-            );
-            if (baselineResult.target) {
-              chainRecords.push({ ref, reasons: baselineResult.reasons });
-              selectedFallback = baselineResult.target;
-              fallbackFrom = fromRef;
-              break;
-            }
-            rejectInChain(ref, baselineResult.reasons);
+          const result = await this.resolveFallbackTarget(
+            context,
+            parsed,
+            scopeKey(candidate.registration.scope),
+            request,
+            independenceTargets,
+          );
+          if (result.target) {
+            chainRecords.push({ ref, reasons: result.reasons });
+            selectedFallback = result.target;
+            fallbackFrom = fromRef;
+            break;
           }
+          rejectInChain(ref, result.reasons);
         }
         if (selectedFallback) break;
       }
