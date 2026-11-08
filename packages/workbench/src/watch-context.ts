@@ -16,11 +16,6 @@ export type WorkbenchWatch = Pick<WatchService, "toolsFor">;
 
 const MAX_LISTED_RECORDS = 50;
 
-/**
- * Persists watch-skill evidence as `tool.completed` task events so loop and
- * verification verdicts are durable, reviewable and bound to the task, and
- * reads them back for `mars_watch_evidence`.
- */
 /** Host-authoritative binding stamped onto every evidence record it writes. */
 export interface EvidenceBinding {
   workspace_id: string;
@@ -28,6 +23,11 @@ export interface EvidenceBinding {
   diff_sha256: string;
 }
 
+/**
+ * Persists watch-skill evidence as `tool.completed` task events so loop and
+ * verification verdicts are durable, reviewable and bound to the task, and
+ * reads them back for `mars_watch_evidence`.
+ */
 export function watchEvidence(
   store: Pick<DurableTaskStore, "appendEvent" | "events" | "artifacts">,
   context: () => RequestContext,
