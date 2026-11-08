@@ -22,11 +22,17 @@ export type ErrorCode =
   | "store_corrupt"
   | "store_location_unsafe";
 export class IntegrationTrustError extends Error {
-  constructor(public readonly code: ErrorCode) {
-    super(code);
+  constructor(
+    public readonly code: ErrorCode,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
     this.name = "IntegrationTrustError";
   }
 }
-export function fail(code: ErrorCode): never {
-  throw new IntegrationTrustError(code);
+export function fail(code: ErrorCode, cause?: unknown): never {
+  throw new IntegrationTrustError(
+    code,
+    cause === undefined ? undefined : { cause },
+  );
 }

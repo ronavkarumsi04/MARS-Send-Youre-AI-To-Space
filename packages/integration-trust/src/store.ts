@@ -15,6 +15,10 @@ import { canonicalJSON, sha256 } from "./canonical";
 import { fail, IntegrationTrustError } from "./errors";
 import type { AuditEvent, AuditEventInput, TrustState } from "./schemas";
 import { CodeSchema, DigestSchema, KindSchema } from "./schemas";
+
+const STALE_LOCK_MS = 30000,
+  LOCK_WAIT_MS = 2000,
+  LOCK_POLL_MS = 20;
 export interface TrustStore {
   load(): Promise<{ revision: number; state: TrustState }>;
   commit(
@@ -165,7 +169,7 @@ export class FileTrustStore implements TrustStore {
       };
     } catch (e) {
       if (e instanceof IntegrationTrustError) throw e;
-      fail("store_corrupt");
+      fail("store_corrupt", e);
     }
   }
   async load() {
@@ -187,13 +191,13 @@ export class FileTrustStore implements TrustStore {
           handle = await open(lock, "wx", 0o600);
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "EEXIST")
-            fail("store_corrupt");
+            fail("store_corrupt", e);
           try {
-            if (Date.now() - (await stat(lock)).mtimeMs > 30000)
+            if (Date.now() - (await stat(lock)).mtimeMs > STALE_LOCK_MS)
               await unlink(lock);
           } catch {}
-          if (Date.now() - start > 2000) fail("revision_conflict");
-          await new Promise((r) => setTimeout(r, 20));
+          if (Date.now() - start > LOCK_WAIT_MS) fail("revision_conflict", e);
+          await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
         }
       }
       try {
