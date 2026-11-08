@@ -101,9 +101,10 @@ export interface ChildRunnerOptions {
   heartbeatMs?: number;
   /**
    * Called with the original error when a run fails outside the adapter's
-   * outcome, and again when the runner cannot record that failure. The run
-   * waits for each report; an unrecorded job stays leased and is closed by
-   * `recover()` once its lease expires.
+   * outcome, after the runner has tried to record that failure, and again
+   * with the finalize error when it could not. The run waits for each report;
+   * an unrecorded job stays leased and is closed by `recover()` once its
+   * lease expires.
    */
   onError?: (
     error: unknown,
@@ -508,7 +509,6 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
       } catch (error) {
         markReady();
         if (leaseLost) return;
-        await reportError(error);
         const zeroUsageStartFailure =
           childRun === undefined &&
           adapterCalled &&
@@ -543,9 +543,11 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
             },
           );
         } catch (finalizeError) {
+          await reportError(error);
           await reportError(finalizeError);
           return;
         }
+        await reportError(error);
       } finally {
         if (timer) clearInterval(timer);
         disarmDeadline?.();

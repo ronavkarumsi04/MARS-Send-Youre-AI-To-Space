@@ -2157,6 +2157,7 @@ test("a non-lease first heartbeat failure cancels the started child and is repor
     },
   });
   const reported: unknown[] = [];
+  const finalizedBeforeReport: number[] = [];
   let cancels = 0;
   const runner = createChildRunner({
     collaboration: {
@@ -2177,6 +2178,7 @@ test("a non-lease first heartbeat failure cancels the started child and is repor
       },
     },
     onError(error) {
+      finalizedBeforeReport.push(finalized.length);
       reported.push(error);
     },
   });
@@ -2184,6 +2186,7 @@ test("a non-lease first heartbeat failure cancels the started child and is repor
   await runner.idle();
   expect(cancels).toBeGreaterThan(0);
   expect(reported).toEqual([heartbeatError]);
+  expect(finalizedBeforeReport).toEqual([1]);
   expect(finalized).toEqual([
     {
       status: "failed",
