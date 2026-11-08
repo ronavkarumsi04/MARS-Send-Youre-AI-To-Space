@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import type {
   ArtifactRef,
   RequestContext,
@@ -1585,7 +1586,30 @@ describe("@mars/research durable control plane", () => {
       service: {
         onInternalError: (where, error) => {
           reports.push({ where, error });
-          throw new Error("reporter failures are contained");
+          const failure = new Error("reporter failures are contained");
+          switch (reports.length % 5) {
+            case 1:
+              throw failure;
+            case 2:
+              return Promise.reject(failure) as unknown as undefined;
+            case 3:
+              return {
+                // biome-ignore lint/suspicious/noThenProperty: a rejecting non-native thenable
+                then: (_resolve: unknown, reject: (reason: unknown) => void) =>
+                  reject(failure),
+              } as unknown as undefined;
+            case 4:
+              return runInNewContext(
+                "Promise.reject(new Error('cross-realm reporter failure'))",
+              ) as undefined;
+            default:
+              return {
+                // biome-ignore lint/suspicious/noThenProperty: a thenable whose getter throws
+                get then(): never {
+                  throw failure;
+                },
+              } as unknown as undefined;
+          }
         },
       },
     });
@@ -1597,7 +1621,7 @@ describe("@mars/research durable control plane", () => {
          BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`,
       );
       const id = await request(env.service, env.now, "pump-failure");
-      await waitFor(() => reports.length > 0);
+      await waitFor(() => reports.length >= 10);
       expect(reports[0]?.where).toBe("pump");
       expect(String(reports[0]?.error)).toContain("injected claim failure");
       const last = env.service.lastInternalError();
@@ -1611,6 +1635,124 @@ describe("@mars/research durable control plane", () => {
           (await env.service.inspect(context(), id)).status === "completed",
       );
     } finally {
+      db.close();
+    }
+  });
+
+  test("reports a post-run pump failure as pump, not run_settled", async () => {
+    const reports: Array<{ where: string; error: unknown }> = [];
+    let researchRoot = "";
+    let injected = false;
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "post-run-pump-failure-worker",
+      version: "1",
+      async run(input, workerContext) {
+        const evidence = await capture(workerContext, now, input.request_id);
+        await workerContext.publish(
+          proposal(evidence.ref, evidence.url, evidence.retrievedAt),
+        );
+        if (injected) return;
+        injected = true;
+        const db = new Database(path.join(researchRoot, "research.sqlite"));
+        try {
+          db.run(
+            `CREATE TRIGGER fail_next_claim BEFORE UPDATE OF status ON requests
+             WHEN NEW.status = 'running'
+             BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`,
+          );
+        } finally {
+          db.close();
+        }
+      },
+    };
+    const env = await setup({
+      worker,
+      service: {
+        maxConcurrency: 1,
+        onInternalError: (where, error) => {
+          reports.push({ where, error });
+        },
+      },
+    });
+    researchRoot = env.researchRoot;
+    const first = await request(env.service, now, "post-run-first");
+    const second = await request(env.service, now, "post-run-second");
+    await waitFor(
+      async () =>
+        (await env.service.inspect(context(), first)).status === "completed",
+    );
+    await waitFor(() => reports.length > 0);
+    expect(reports.map((report) => report.where)).not.toContain("run_settled");
+    expect(reports[0]?.where).toBe("pump");
+    expect(String(reports[0]?.error)).toContain("injected claim failure");
+    expect((await env.service.inspect(context(), second)).status).toBe(
+      "queued",
+    );
+
+    const db = new Database(path.join(env.researchRoot, "research.sqlite"));
+    try {
+      db.run("DROP TRIGGER fail_next_claim");
+    } finally {
+      db.close();
+    }
+    await waitFor(
+      async () =>
+        (await env.service.inspect(context(), second)).status === "completed",
+    );
+  });
+
+  test("reports a post-run outbox flush failure as flush_events", async () => {
+    const reports: Array<{ where: string; error: unknown }> = [];
+    let researchRoot = "";
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "post-run-flush-failure-worker",
+      version: "1",
+      async run(input, workerContext) {
+        const evidence = await capture(workerContext, now, input.request_id);
+        await workerContext.publish(
+          proposal(evidence.ref, evidence.url, evidence.retrievedAt),
+        );
+        const db = new Database(path.join(researchRoot, "research.sqlite"));
+        try {
+          db.run(
+            "ALTER TABLE findings RENAME COLUMN event_state TO event_state_hidden",
+          );
+        } finally {
+          db.close();
+        }
+      },
+    };
+    const env = await setup({
+      worker,
+      service: {
+        events: { appendEvent: async () => undefined },
+        onInternalError: (where, error) => {
+          reports.push({ where, error });
+        },
+      },
+    });
+    researchRoot = env.researchRoot;
+    const db = new Database(path.join(env.researchRoot, "research.sqlite"));
+    try {
+      const id = await request(env.service, now, "post-run-flush");
+      await waitFor(() =>
+        reports.some((report) => report.where === "flush_events"),
+      );
+      expect(reports.map((report) => report.where)).not.toContain(
+        "run_settled",
+      );
+      expect(
+        String(reports.find((r) => r.where === "flush_events")?.error),
+      ).toContain("event_state");
+      expect((await env.service.inspect(context(), id)).status).toBe(
+        "completed",
+      );
+    } finally {
+      db.run(
+        "ALTER TABLE findings RENAME COLUMN event_state_hidden TO event_state",
+      );
       db.close();
     }
   });

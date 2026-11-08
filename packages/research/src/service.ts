@@ -160,8 +160,10 @@ export interface ResearchEventSink {
   ): Promise<unknown>;
 }
 
+// Names the background operation that failed, not the handler that caught it.
 export type ResearchInternalErrorSite =
   | "run_settled"
+  | "flush_events"
   | "execute_claim"
   | "pump";
 
@@ -745,8 +747,7 @@ export async function createResearchService(
     lastInternalError = { where, error, at: new Date().toISOString() };
     // A failing reporter must not break scheduling; the error stays recorded.
     try {
-      const reported: unknown = options.onInternalError?.(where, error);
-      if (reported instanceof Promise) reported.catch(() => {});
+      Promise.resolve(options.onInternalError?.(where, error)).catch(() => {});
     } catch {}
   };
   const checkOpen = (): void => {
@@ -1681,26 +1682,40 @@ export async function createResearchService(
     const task = Promise.resolve().then(() =>
       options.worker.run(input, workerContext(entry, context, claim.request)),
     );
+    const release = (): void => {
+      clearInterval(entry.heartbeat);
+      clearTimeout(entry.deadlineTimer);
+      localRuns.delete(key);
+      wake();
+    };
+    const afterRun = async (): Promise<void> => {
+      try {
+        await flushEvents();
+      } catch (error) {
+        reportInternalError("flush_events", error);
+        return;
+      }
+      if (state === "open" && configured.autoStart) {
+        await pump().catch((error: unknown) =>
+          reportInternalError("pump", error),
+        );
+      }
+    };
     entry.settled = task
       .then(
         () => finishSuccess(entry),
         (error: unknown) => finishFailure(entry, error),
       )
-      .then(async () => {
-        clearInterval(entry.heartbeat);
-        clearTimeout(entry.deadlineTimer);
-        localRuns.delete(key);
-        wake();
-        await flushEvents();
-        if (state === "open" && configured.autoStart) await pump();
-      })
-      .catch((error: unknown) => {
-        reportInternalError("run_settled", error);
-        clearInterval(entry.heartbeat);
-        clearTimeout(entry.deadlineTimer);
-        localRuns.delete(key);
-        wake();
-      });
+      .then(
+        async () => {
+          release();
+          await afterRun();
+        },
+        (error: unknown) => {
+          reportInternalError("run_settled", error);
+          release();
+        },
+      );
     void entry.settled;
   };
 
