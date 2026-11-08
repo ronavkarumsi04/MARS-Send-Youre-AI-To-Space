@@ -426,7 +426,9 @@ export function createResearchWorker(
       maxTokens = config.max_model_output_tokens,
     ): Promise<T | undefined> => {
       const estimate = estimateTokens(SYSTEM_PROMPT) + estimateTokens(user);
-      const cost = options.model.estimateCostUsd?.(estimate, maxTokens) ?? 0;
+      const cost = options.model.estimateCostUsd
+        ? options.model.estimateCostUsd(estimate, maxTokens)
+        : 0;
       const reservation = ledger.reserve(estimate, maxTokens, cost);
       if (!reservation) {
         log("model_skipped", {
