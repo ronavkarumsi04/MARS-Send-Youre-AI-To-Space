@@ -61,6 +61,11 @@ interface WalkDirectory {
   handle?: FileHandle;
 }
 
+export const BINARY_SNIFF_BYTES = 8192;
+export const GENERATED_MARKER_WINDOW = 1024;
+export const MAX_GENERATED_LINE_LENGTH = 2000;
+export const MAX_AVERAGE_LINE_LENGTH = 300;
+
 const reasons: SkippedReason[] = [
   "ignored",
   "gitignored",
@@ -339,7 +344,7 @@ async function inventoryInternal(
         throw asIoError(error);
       }
       totalBytes += bytes.length;
-      if (bytes.subarray(0, 8192).includes(0)) {
+      if (bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
         skip("binary");
         continue;
       }
@@ -351,11 +356,14 @@ async function inventoryInternal(
         continue;
       }
       if (
-        text.slice(0, 1024).includes("@generated") ||
-        text.slice(0, 1024).includes("DO NOT EDIT") ||
-        text.split(/\r?\n/).some((line) => line.length > 2000) ||
+        text.slice(0, GENERATED_MARKER_WINDOW).includes("@generated") ||
+        text.slice(0, GENERATED_MARKER_WINDOW).includes("DO NOT EDIT") ||
+        text
+          .split(/\r?\n/)
+          .some((line) => line.length > MAX_GENERATED_LINE_LENGTH) ||
         (text.length > 0 &&
-          text.length / Math.max(1, text.split(/\r?\n/).length) > 300)
+          text.length / Math.max(1, text.split(/\r?\n/).length) >
+            MAX_AVERAGE_LINE_LENGTH)
       ) {
         skip("generated");
         continue;
