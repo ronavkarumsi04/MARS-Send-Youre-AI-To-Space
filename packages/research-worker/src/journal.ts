@@ -1,3 +1,5 @@
+import { canonicalJson, sha256 } from "@mars/contracts/canonical";
+
 export type JournalKind = "search" | "fetch" | "model";
 
 export interface JournalEntry {
@@ -19,20 +21,8 @@ export class ReplayMissError extends Error {
   }
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
 export function journalKey(input: unknown): string {
-  return new Bun.CryptoHasher("sha256").update(canonical(input)).digest("hex");
+  return sha256(canonicalJson(input, { undefinedMembers: "omit" }));
 }
 
 export function createRecordingJournal(): ResearchJournal & {

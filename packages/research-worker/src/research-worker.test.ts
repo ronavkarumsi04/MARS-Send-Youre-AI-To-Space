@@ -23,6 +23,7 @@ import {
   type FetchLike,
   htmlToText,
   isPrivateAddress,
+  journalKey,
   type ModelGateway,
   type ModelRequest,
   PaidModelConsentError,
@@ -432,6 +433,26 @@ describe("guards", () => {
     expect(canonicalizeUrl("ftp://example.org/a")).toBeUndefined();
     expect(canonicalizeUrl("https://user:pw@example.org/")).toBeUndefined();
     expect(canonicalizeUrl("https://example.org/a b")).toBeUndefined();
+  });
+
+  test("journal keys keep their pinned digests and refuse non-JSON input", () => {
+    expect(journalKey({ url: "https://example.org/a", maxBytes: 1024 })).toBe(
+      "89c57374f8c3470cc9b39e191cc382815e49b55523ce42d99377d8e5ca5b5236",
+    );
+    expect(
+      journalKey({
+        provider: "fixture",
+        query: "mars",
+        limit: 5,
+        extra: undefined,
+      }),
+    ).toBe("179e4bbf63c50b1fbd0c0b7b7f37a9d0585952b7a73d5fbdd4e85a972d9e9548");
+    for (const value of [
+      { limit: Number.NaN },
+      { at: new Date(0) },
+      [undefined],
+    ])
+      expect(() => journalKey(value)).toThrow();
   });
 
   test("robots rules use longest match and crawl delay", () => {
