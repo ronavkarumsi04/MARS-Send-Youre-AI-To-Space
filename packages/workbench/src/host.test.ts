@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -2487,30 +2486,32 @@ test("an unsaved model history fails the child launch and is not cached", async 
     model_id: "fixture/alt",
     approvals: { read: true, write: false, execute: false },
   });
-  const modelsDir = join(f.root, "children", "models");
-  await mkdir(modelsDir, { recursive: true });
-  await chmod(modelsDir, 0o500);
-  try {
-    await delegationOf(0).delegate({ ...request, role_label: "worker" });
-    await untilResults(0, "failed");
-    expect(launches).toHaveLength(0);
-  } finally {
-    await chmod(modelsDir, 0o700);
-  }
-  expect(await readdir(modelsDir)).toEqual([]);
-  // The failed save left nothing cached: the next child persists the
-  // history it is routed with.
   await delegationOf(0).delegate({ ...request, role_label: "worker" });
-  for (let attempt = 0; attempt < 500 && launches.length === 0; attempt++)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(required(launches[0]).model_id).toBe("fixture/free");
-  const [historyFile] = await readdir(modelsDir);
-  expect(
-    JSON.parse(await readFile(join(modelsDir, required(historyFile)), "utf8"))
-      .models,
-  ).toEqual(["fixture/free"]);
   finish(0, "Worker proposal.");
   await untilResults(0, "Worker proposal.");
+  expect(required(launches[0]).model_id).toBe("fixture/free");
+  const modelsDir = join(f.root, "children", "models");
+  const [historyFile] = await readdir(modelsDir);
+  const historyPath = join(modelsDir, required(historyFile));
+  const saved = await readFile(historyPath, "utf8");
+  // A directory at the record path makes the atomic rename fail for any
+  // user, root included; the history is already cached, so nothing re-reads.
+  await rm(historyPath);
+  await mkdir(historyPath);
+  await delegationOf(0).delegate({ ...request, role_label: "reviewer" });
+  await untilResults(0, "failed");
+  expect(launches).toHaveLength(1);
+  expect((await readdir(modelsDir)).sort()).toEqual([required(historyFile)]);
+  await rm(historyPath, { recursive: true });
+  // The reviewer's model was never cached: the next save holds only the
+  // worker's model, not fixture/third.
+  await delegationOf(0).delegate({ ...request, role_label: "worker" });
+  for (let attempt = 0; attempt < 500 && launches.length < 2; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(required(launches[1]).model_id).toBe("fixture/free");
+  expect(await readFile(historyPath, "utf8")).toBe(saved);
+  finish(1, "Second proposal.");
+  await untilResults(0, "Second proposal.");
   required(f.sessions[0]).finish("completed");
   await required(f.sessions[0]).disposed;
   await api.close();
