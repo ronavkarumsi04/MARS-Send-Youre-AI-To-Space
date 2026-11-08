@@ -12,15 +12,7 @@ import {
   rename,
   rm,
 } from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   type ArtifactRef,
   ArtifactRefSchema,
@@ -31,6 +23,7 @@ import {
   ScopeSchema,
   type WorkspaceRef,
 } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
 import { createWorkspaceDiff } from "./diff";
 import {
@@ -162,8 +155,8 @@ export async function createLocalWorkspaceProvider(
   const requestedRoot = resolve(options.rootDir);
   const rootCandidate = await resolveFromExistingParent(requestedRoot);
   if (
-    isWithin(rootCandidate, sourceRoot) ||
-    isWithin(sourceRoot, rootCandidate)
+    isInsideOrEqual(rootCandidate, sourceRoot) ||
+    isInsideOrEqual(sourceRoot, rootCandidate)
   ) {
     throw new WorkspacePolicyError(
       "rootDir and sourceRoot must not contain one another",
@@ -171,7 +164,10 @@ export async function createLocalWorkspaceProvider(
   }
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
   const rootDir = await realDirectory(options.rootDir, "rootDir");
-  if (isWithin(rootDir, sourceRoot) || isWithin(sourceRoot, rootDir)) {
+  if (
+    isInsideOrEqual(rootDir, sourceRoot) ||
+    isInsideOrEqual(sourceRoot, rootDir)
+  ) {
     throw new WorkspacePolicyError(
       "rootDir and sourceRoot must not contain one another",
     );
@@ -1449,16 +1445,6 @@ async function resolveFromExistingParent(path: string): Promise<string> {
       candidate = parent;
     }
   }
-}
-
-function isWithin(parent: string, child: string): boolean {
-  const relation = relative(parent, child);
-  return (
-    relation === "" ||
-    (relation !== ".." &&
-      !relation.startsWith(`..${sep}`) &&
-      !isAbsolute(relation))
-  );
 }
 
 function sameArtifact(left: ArtifactRef, right: ArtifactRef): boolean {

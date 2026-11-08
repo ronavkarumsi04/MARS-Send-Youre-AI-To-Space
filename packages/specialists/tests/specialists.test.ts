@@ -19,6 +19,7 @@ import {
   canonicalJson,
   checkServingReadiness,
   checkSpecialistBindings,
+  evaluateTriple,
   formatRef,
   type ModelCatalog,
   type ReasonCode,
@@ -172,6 +173,48 @@ describe("specialist evidence and persistence", () => {
       .query("UPDATE audit_events SET detail_json = '{}' WHERE seq = 1")
       .run();
     await expectCode(() => second.registry.audit(context), "corrupt_record");
+  });
+
+  test("classifies corrupt stored verdicts and retry lineage as corrupt_record", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    const fixture = await makeSpecialistFixture(artifacts);
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    const first = await registry.route(context, routingRequest());
+    const firstRef = first.selected?.ref;
+    if (!firstRef) throw new Error("expected a selected target");
+    const retry = await registry.fallbackAfterFailure(
+      context,
+      first.decision_id,
+      { ref: firstRef, side_effects: "none" },
+    );
+    const retryRef = retry.selected?.ref;
+    if (!retryRef) throw new Error("expected a fallback target");
+    registry.store.db
+      .query(
+        "UPDATE routing_decisions SET decision_json = ? WHERE decision_id = ?",
+      )
+      .run('{"rejected":null}', first.decision_id);
+    await expectCode(
+      () =>
+        registry.fallbackAfterFailure(context, retry.decision_id, {
+          ref: retryRef,
+          side_effects: "none",
+        }),
+      "corrupt_record",
+    );
+
+    for (const verdictJson of ["not json", '{"status":"evaluated"}']) {
+      registry.store.db
+        .query(
+          "UPDATE specialist_revisions SET verdict_json = ? WHERE specialist_id = ?",
+        )
+        .run(verdictJson, fixture.registration.specialist_id);
+      await expectCode(
+        () => registry.inspect(context, fixture.registration.specialist_id),
+        "corrupt_record",
+      );
+    }
   });
 
   test("enforces scope isolation while allowing workspace reads of project profiles", async () => {
@@ -1621,6 +1664,26 @@ describe("specialist evidence and persistence", () => {
     expect(await registry.evaluationJobs(context, "lifecycle", "1")).toEqual([
       job,
     ]);
+    for (const manifestJson of ["not json", '{"artifact_id":"x"}']) {
+      registry.store.db
+        .query(
+          "UPDATE evaluation_jobs SET input_manifest_json = ? WHERE job_id = ?",
+        )
+        .run(manifestJson, job.job_id);
+      await expectCode(
+        () => registry.evaluationJobs(context, "lifecycle", "1"),
+        "corrupt_record",
+      );
+      await expectCode(
+        () => registry.inspect(context, "lifecycle"),
+        "corrupt_record",
+      );
+    }
+    registry.store.db
+      .query(
+        "UPDATE evaluation_jobs SET input_manifest_json = ? WHERE job_id = ?",
+      )
+      .run(canonicalJson(job.input_manifest), job.job_id);
     await registry.deploy(context, "lifecycle@1", "none");
     const v2 = await makeSpecialistFixture(artifacts, {
       specialistId: "lifecycle",
@@ -2092,5 +2155,83 @@ describe("routing utilities and provider structural compatibility", () => {
     expect(sha256("synthetic")).toHaveLength(64);
     expect(candidateDigest(changedEvaluation)).toBe(fixture.candidateSha256);
     expect(formatRef("specialist", "x", "1")).toBe("specialist:x@1");
+  });
+
+  test("evaluates one coverage triple as a pure acceptance gate", async () => {
+    const artifacts = new MemoryArtifacts();
+    const triple = {
+      domain: "coding/mechanical-edit",
+      role: "worker",
+      complexity: "medium",
+    } as const;
+    const passing = await makeSpecialistFixture(artifacts);
+    expect(
+      evaluateTriple(passing.report, passing.registration, triple, null),
+    ).toEqual({
+      codes: [],
+      gate: {
+        ...triple,
+        pass_rate: 1,
+        base_pass_rate: 0,
+        delta_vs_base: 1,
+        prompt_optimized_pass_rate: 0,
+        delta_vs_prompt_optimized: 1,
+        current_pass_rate: null,
+        delta_vs_current: null,
+        cost_usd_per_task: 0.01,
+        runtime_ms_p95: 100,
+        passed: true,
+      },
+    });
+    expect(
+      evaluateTriple(
+        passing.report,
+        passing.registration,
+        { ...triple, complexity: "heavy" },
+        null,
+      ),
+    ).toEqual({ codes: [] });
+    const withoutCurrent = {
+      ...passing.report,
+      results: passing.report.results.filter(
+        (result) => result.arm !== "current_specialist",
+      ),
+    };
+    expect(
+      evaluateTriple(withoutCurrent, passing.registration, triple, "0"),
+    ).toEqual({ codes: [] });
+
+    const unmeasured = await makeSpecialistFixture(artifacts, {
+      specialistId: "unmeasured",
+      costUsdTotal: null,
+      runtimeMsP95: null,
+      acceptance: { max_cost_usd_per_task: 1, max_runtime_ms_p95: 1000 },
+    });
+    const unmeasuredResult = evaluateTriple(
+      unmeasured.report,
+      unmeasured.registration,
+      triple,
+      null,
+    );
+    expect(unmeasuredResult.codes).toEqual([
+      "cost_unmeasured",
+      "runtime_unmeasured",
+    ]);
+    expect(unmeasuredResult.gate?.passed).toBe(false);
+
+    const overBudget = await makeSpecialistFixture(artifacts, {
+      specialistId: "over-budget",
+      costUsdTotal: 5,
+      runtimeMsP95: 5000,
+      acceptance: { max_cost_usd_per_task: 1, max_runtime_ms_p95: 1000 },
+    });
+    const overBudgetResult = evaluateTriple(
+      overBudget.report,
+      overBudget.registration,
+      triple,
+      null,
+    );
+    expect(overBudgetResult.codes).toEqual([]);
+    expect(overBudgetResult.gate?.passed).toBe(false);
   });
 });

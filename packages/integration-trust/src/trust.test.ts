@@ -88,7 +88,11 @@ function proof(
     nonce,
   );
 }
-function fixture(store: TrustStore = new MemoryTrustStore(), policy = {}) {
+function fixture(
+  store: TrustStore = new MemoryTrustStore(),
+  policy = {},
+  onAuditFailure?: (error: unknown) => void,
+) {
   let current = evidence(),
     now = Date.now();
   const probe = mock(async () => structuredClone(current));
@@ -103,6 +107,7 @@ function fixture(store: TrustStore = new MemoryTrustStore(), policy = {}) {
     probe: { observe: probe },
     clock: () => new Date(now),
     policy,
+    ...(onAuditFailure ? { onAuditFailure } : {}),
   });
   return {
     ...service,
@@ -765,6 +770,56 @@ test("callback errors propagate, audit sanitized dispatch.failed", async () => {
   expect(history.at(-1)?.type).toBe("dispatch.failed");
   expect(JSON.stringify(history)).not.toContain("sk-test-secret");
 });
+test("unexpected gate errors keep their cause and audit failures are reported", async () => {
+  const inner = new MemoryTrustStore(),
+    failure = new TypeError("disk"),
+    reported: unknown[] = [];
+  let broken = false;
+  const store: TrustStore = {
+    load: () => (broken ? Promise.reject(failure) : inner.load()),
+    commit: (...args) => inner.commit(...args),
+  };
+  const f = fixture(store, {}, (e) => reported.push(e));
+  await f.approved();
+  broken = true;
+  const error = await f.gate
+    .admit(ctx, { ...id, action: "load" }, async () => undefined)
+    .catch((e) => e);
+  expect(error).toMatchObject({ code: "permission_denied" });
+  expect(error.cause).toBe(failure);
+  expect(reported).toEqual([failure]);
+});
+test("rejecting async audit reporter does not escape the gate", async () => {
+  const inner = new MemoryTrustStore(),
+    unhandled: unknown[] = [],
+    onUnhandled = (e: unknown) => unhandled.push(e);
+  let broken = false;
+  const store: TrustStore = {
+    load: () => (broken ? Promise.reject(new TypeError("disk")) : inner.load()),
+    commit: (...args) => inner.commit(...args),
+  };
+  const f = fixture(store, {}, (async () => {
+    throw new Error("reporter");
+  }) as (error: unknown) => void);
+  await f.approved();
+  broken = true;
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await denied(f, "permission_denied");
+    await new Promise((r) => setTimeout(r, 10));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  expect(unhandled).toEqual([]);
+});
+test("file store I/O errors keep their cause", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "trust-")),
+    s = new FileTrustStore({ directory, workspaceRoots: [] });
+  await mkdir(join(directory, "state.json"));
+  const error = await s.load().catch((e) => e);
+  expect(error).toMatchObject({ code: "store_corrupt" });
+  expect(error.cause).toMatchObject({ code: "EISDIR" });
+});
 test("file store permissions, CAS from two instances and no secret values", async () => {
   const root = await mkdtemp(join(tmpdir(), "trust-")),
     directory = join(root, "host"),
@@ -800,7 +855,11 @@ test("workspace location and symlink into workspace rejected", async () => {
   const root = await mkdtemp(join(tmpdir(), "trust-")),
     workspace = join(root, "workspace");
   await mkdir(workspace);
-  for (const directory of [join(workspace, "store"), root])
+  for (const directory of [
+    join(workspace, "store"),
+    join(workspace, "..store"),
+    root,
+  ])
     await expect(
       new FileTrustStore({ directory, workspaceRoots: [workspace] }).load(),
     ).rejects.toMatchObject({ code: "store_location_unsafe" });
