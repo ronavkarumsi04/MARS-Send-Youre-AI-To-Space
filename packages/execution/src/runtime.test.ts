@@ -954,3 +954,107 @@ test("mars_apply_patch is not declared without read approval, without write appr
     await f.cleanup();
   }
 }, 30000);
+
+test("openRuntimeSession declares every capability's tools in a fixed order and gates them on approvals", async () => {
+  const f = await fixture();
+  const declared: string[][] = [];
+  const unused = async () => "unused";
+  const respond = async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as {
+      tools?: { function: { name: string } }[];
+    };
+    declared.push((body.tools ?? []).map((tool) => tool.function.name));
+    return sse({ content: "Done." });
+  };
+  const capabilities = {
+    recall: unused,
+    collaboration: {
+      send: unused,
+      inbox: unused,
+      ack: unused,
+      members: unused,
+      delegation: {
+        delegate: unused,
+        cancelChild: unused,
+        children: unused,
+        results: unused,
+        reviewResult: unused,
+      },
+    },
+    research: { submit: unused, findings: unused },
+    proposals: { summary: unused },
+    watch: {
+      watch: unused,
+      ask: unused,
+      search: unused,
+      capture: unused,
+      extract: unused,
+      loop: unused,
+      verify: unused,
+      evidence: unused,
+    },
+    knowledgeGraph: { build: unused, query: unused },
+    patch: { apply: unused },
+    teamContext: { context: unused },
+    fetch: respond,
+  };
+  try {
+    const full = await f.open({
+      ...capabilities,
+      approvals: { read: true, write: true, execute: true },
+    });
+    await full.run(f.task.request);
+    const order = [
+      "mars_read",
+      "mars_history",
+      "mars_send",
+      "mars_inbox",
+      "mars_ack",
+      "mars_members",
+      "mars_delegate",
+      "mars_cancel_child",
+      "mars_children",
+      "mars_results",
+      "mars_review_result",
+      "mars_research",
+      "mars_findings",
+      "mars_proposals",
+      "mars_watch",
+      "mars_watch_ask",
+      "mars_watch_search",
+      "mars_watch_capture",
+      "mars_watch_extract",
+      "mars_loop",
+      "mars_verify",
+      "mars_watch_evidence",
+      "mars_graph_build",
+      "mars_graph_query",
+      "mars_write",
+      "mars_apply_patch",
+      "mars_team_context",
+      "mars_execute",
+    ];
+    expect(declared[0]).toEqual(order);
+    expect(full.toolNames).toEqual([...order].sort());
+    const unapproved = await f.open({
+      ...capabilities,
+      approvals: { read: false, write: false, execute: false },
+    });
+    await unapproved.run(f.task.request);
+    expect(declared[1]).toEqual(
+      order.filter(
+        (name) =>
+          ![
+            "mars_read",
+            "mars_history",
+            "mars_proposals",
+            "mars_write",
+            "mars_apply_patch",
+            "mars_execute",
+          ].includes(name),
+      ),
+    );
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
