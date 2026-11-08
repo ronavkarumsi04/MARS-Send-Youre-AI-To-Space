@@ -124,7 +124,7 @@ describe("mars doctor omniroute section", () => {
     }
   });
 
-  test("separates an invalid catalog from a missing one without echoing its content", async () => {
+  test("separates invalid and unreadable catalogs from a missing one without echoing content or path", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mars-omniroute-doctor-"));
     try {
       const cases = [
@@ -149,6 +149,16 @@ describe("mars doctor omniroute section", () => {
         expect(serialized).not.toContain("secret-ish");
         expect(serialized).not.toContain(dir);
       }
+      const unreadable = await omnirouteDoctorReport({
+        url: "http://127.0.0.1:1",
+        env: {},
+        catalogPath: dir,
+      });
+      expect(unreadable.catalog).toMatchObject({
+        present: false,
+        load_error: "unreadable",
+      });
+      expect(JSON.stringify(unreadable)).not.toContain(dir);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

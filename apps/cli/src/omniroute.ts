@@ -93,7 +93,7 @@ export function omnirouteFromFlags(
 }
 
 /** Fixed reason strings only; never the path, file content or parse message. */
-export type CatalogLoadError = "missing" | "invalid";
+export type CatalogLoadError = "missing" | "unreadable" | "invalid";
 
 export type OmniRouteDoctorCatalog = CatalogHealth & {
   load_error?: CatalogLoadError;
@@ -107,12 +107,10 @@ async function loadDoctorCatalog(path?: string): Promise<CatalogLoad> {
   try {
     return { catalog: await loadFreeTierCatalog(path) };
   } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
     return {
       catalog: undefined,
-      error:
-        (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? "missing"
-          : "invalid",
+      error: code === "ENOENT" ? "missing" : code ? "unreadable" : "invalid",
     };
   }
 }
