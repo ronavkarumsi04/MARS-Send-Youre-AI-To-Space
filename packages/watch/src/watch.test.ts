@@ -686,6 +686,53 @@ test("a hung CLI is killed at the host timeout and reported inconclusive", async
   }
 });
 
+test("mars_watch_evidence shows why an evidence record is not bound to a workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-watch-binding-"));
+  try {
+    const record = WatchEvidenceRecordSchema.parse({
+      schema_version: 1,
+      operation: "watch.evidence",
+      kind: "verify",
+      tool: "mars_verify",
+      verdict: "pass",
+      assurance: "isolated_local",
+      verified: true,
+      advisory: false,
+      required_checks: { passed: 1, failed: 0, inconclusive: 0 },
+      limitations: [],
+      summary: "verify",
+      cli_version: null,
+      recorded_at: "2026-01-01T00:00:00.000Z",
+      binding_error: "WorkspaceModifiedError",
+    });
+    const tools = createWatchService({
+      command: ["bun", FAKE_CLI],
+      dataRoot: join(root, "data"),
+    }).toolsFor({
+      task_id: "t",
+      cwd: await mkdir(join(root, "ws"), { recursive: true }).then(() =>
+        join(root, "ws"),
+      ),
+      evidence: {
+        append: async () => undefined,
+        list: async () => [record, { ...record, binding_error: undefined }],
+      },
+    });
+    const rendered = await tools.evidence();
+    expect(
+      rendered.match(/binding unavailable \(WorkspaceModifiedError\)/g),
+    ).toHaveLength(1);
+    expect(
+      WatchEvidenceRecordSchema.safeParse({
+        ...record,
+        binding_error: "/private/host/path",
+      }).success,
+    ).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("evidence records reject a verified flag without a passed deterministic required check", () => {
   const base = {
     schema_version: 1,

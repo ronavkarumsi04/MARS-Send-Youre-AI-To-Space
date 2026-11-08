@@ -471,6 +471,18 @@
             "workspace_revision": "fixture-r4",
             "diff_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "stale": false
+          },
+          {
+            "event_id": "fixture-evidence-unbound",
+            "verdict": "pass",
+            "assurance": "isolated_local",
+            "verified": true,
+            "recorded_at": "2026-03-01T12:03:00.000Z",
+            "workspace_id": null,
+            "workspace_revision": null,
+            "diff_sha256": null,
+            "stale": true,
+            "binding_error": "WorkspaceModifiedError"
           }
         ]
       },

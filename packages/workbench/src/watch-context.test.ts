@@ -80,7 +80,7 @@ test("a resolved binding replaces any tool-supplied stamp", async () => {
   expect(await sink.list()).toEqual([{ ...record(), ...binding }]);
 });
 
-test("a failed binding persists the record unbound with a limitation naming the failure", async () => {
+test("a failed binding persists the record unbound and names the error class, never its message", async () => {
   class WorkspaceModifiedError extends Error {
     override name = "WorkspaceModifiedError";
   }
@@ -97,30 +97,43 @@ test("a failed binding persists the record unbound with a limitation naming the 
   expect(listed?.workspace_id).toBeUndefined();
   expect(listed?.workspace_revision).toBeUndefined();
   expect(listed?.diff_sha256).toBeUndefined();
-  expect(listed?.limitations).toEqual([
-    "earlier",
-    expect.stringContaining(
-      "workspace binding unavailable (WorkspaceModifiedError)",
-    ),
-  ]);
+  expect(listed?.binding_error).toBe("WorkspaceModifiedError");
+  expect(listed?.limitations).toEqual(["earlier"]);
   expect(JSON.stringify(listed)).not.toContain("/private/host/path");
 });
 
-test("the binding limitation stays within the schema's limitation cap", async () => {
-  const full = Array.from({ length: 32 }, (_, index) => `limit ${index}`);
-  const sink = watchEvidence(
+test("an unsafe or non-Error binding failure is recorded as a generic error name", async () => {
+  for (const thrown of [
+    Object.assign(new Error("x"), { name: "/private/host/path" }),
+    "not an error",
+  ]) {
+    const sink = watchEvidence(
+      memoryStore(),
+      () => context,
+      "task",
+      async () => {
+        throw thrown;
+      },
+    );
+    await sink.append(record());
+    const [listed] = await sink.list();
+    expect(listed?.binding_error).toBe("Error");
+  }
+});
+
+test("a tool-supplied binding_error is never trusted", async () => {
+  const forged = { ...record(), binding_error: "Forged" };
+  const bound = watchEvidence(
     memoryStore(),
     () => context,
     "task",
-    async () => {
-      throw new Error("unavailable");
-    },
+    async () => binding,
   );
-  await sink.append(record(full));
-  const [listed] = await sink.list();
-  expect(listed?.limitations).toHaveLength(32);
-  expect(listed?.limitations.slice(0, 31)).toEqual(full.slice(0, 31));
-  expect(listed?.limitations[31]).toContain("workspace binding unavailable");
+  await bound.append(forged);
+  expect((await bound.list())[0]?.binding_error).toBeUndefined();
+  const unbound = watchEvidence(memoryStore(), () => context, "task");
+  await unbound.append(forged);
+  expect((await unbound.list())[0]?.binding_error).toBeUndefined();
 });
 
 test("without a binding function records are stored unbound and unchanged", async () => {

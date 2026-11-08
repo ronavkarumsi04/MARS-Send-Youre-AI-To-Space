@@ -2902,6 +2902,9 @@ export async function createWorkbenchHost(
             record.workspace_id !== workspace.workspace_id ||
             record.workspace_revision !== workspace.revision ||
             record.diff_sha256 !== digest,
+          ...(record.binding_error === undefined
+            ? {}
+            : { binding_error: record.binding_error }),
         });
         if (records.length > MAX_EVIDENCE_RECORDS) records.shift();
       }

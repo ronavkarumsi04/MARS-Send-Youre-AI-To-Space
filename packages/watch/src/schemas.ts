@@ -51,6 +51,9 @@ const id = z.string().min(1).max(256);
  * perception run), appended to the task's events as `tool.completed`.
  * `verified` is true only for a deterministic required check that passed.
  */
+/** An error class name, never its message: messages can carry host-private paths. */
+export const EVIDENCE_BINDING_ERROR_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+
 export const WatchEvidenceRecordSchema = z
   .object({
     schema_version: z.literal(1),
@@ -87,6 +90,8 @@ export const WatchEvidenceRecordSchema = z
       .string()
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
+    /** Name of the error that kept the host from stamping the binding fields above (host-stamped, additive). */
+    binding_error: z.string().regex(EVIDENCE_BINDING_ERROR_PATTERN).optional(),
   })
   .strict()
   .refine(

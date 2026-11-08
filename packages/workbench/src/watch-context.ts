@@ -1,6 +1,7 @@
 import type { RequestContext } from "@mars/contracts";
 import type { DurableTaskStore } from "@mars/tasks";
 import {
+  EVIDENCE_BINDING_ERROR_PATTERN,
   WATCH_EVIDENCE_PRODUCER,
   WATCH_PACKAGE_VERSION,
   WATCH_SKILL_VERSION,
@@ -14,8 +15,6 @@ import {
 export type WorkbenchWatch = Pick<WatchService, "toolsFor">;
 
 const MAX_LISTED_RECORDS = 50;
-/** `WatchEvidenceRecordSchema` caps `limitations` at 32 entries. */
-const MAX_LIMITATIONS = 32;
 
 /**
  * Persists watch-skill evidence as `tool.completed` task events so loop and
@@ -41,6 +40,7 @@ export function watchEvidence(
         workspace_id: _workspace,
         workspace_revision: _revision,
         diff_sha256: _digest,
+        binding_error: _error,
         ...unbound
       } = record;
       const payload = binding ? await bindRecord(unbound, binding) : unbound;
@@ -78,8 +78,8 @@ export function watchEvidence(
 
 /**
  * Stamps the host binding onto a record. When the binding cannot be resolved
- * the record is still persisted, but unbound and carrying a limitation that
- * says why, so a later "stale" verdict is traceable to the failure.
+ * the record is still persisted, unbound, with `binding_error` naming the
+ * failure, so a later "stale" verdict is traceable to it.
  */
 async function bindRecord(
   record: WatchEvidenceRecord,
@@ -88,16 +88,13 @@ async function bindRecord(
   try {
     return { ...record, ...(await binding()) };
   } catch (error) {
-    const reason = error instanceof Error ? error.name : "unknown error";
-    const limitation = `workspace binding unavailable (${reason}): evidence is not bound to a workspace revision or diff and reads as stale`;
-    return {
-      ...record,
-      limitations: [
-        ...record.limitations.slice(0, MAX_LIMITATIONS - 1),
-        limitation,
-      ],
-    };
+    return { ...record, binding_error: bindingErrorName(error) };
   }
+}
+
+function bindingErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : undefined;
+  return name && EVIDENCE_BINDING_ERROR_PATTERN.test(name) ? name : "Error";
 }
 
 function parseJson(bytes: Uint8Array): unknown {
