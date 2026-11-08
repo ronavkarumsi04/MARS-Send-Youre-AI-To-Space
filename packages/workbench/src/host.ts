@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   type ChildLaunch,
   type ChildRunner,
@@ -44,6 +44,7 @@ import {
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
 } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import {
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
@@ -387,14 +388,6 @@ function scopeKey(scope: Scope, taskId: string): string {
     .digest("hex");
 }
 
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel === "" ||
-    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
-  );
-}
-
 export async function createWorkbenchHost(
   options: WorkbenchHostOptions,
 ): Promise<WorkbenchHostApi> {
@@ -592,7 +585,7 @@ export async function createWorkbenchHost(
   };
   const readLaunch = async (task: Task): Promise<Launch> => {
     const dir = taskState(task);
-    if (!inside(root, dir) || (await realpath(dir)) !== dir)
+    if (!isInsideOrEqual(root, dir) || (await realpath(dir)) !== dir)
       throw new WorkbenchError("not_found");
     const file = await open(
       join(dir, "launch.json"),

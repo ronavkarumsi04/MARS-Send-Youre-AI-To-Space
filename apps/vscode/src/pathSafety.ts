@@ -1,4 +1,5 @@
-import { isAbsolute, join, relative, sep } from "node:path";
+import { join } from "node:path";
+import { isStrictlyInside } from "@mars/contracts/path-containment";
 
 export type PathCheck =
   | { ok: true; segments: string[] }
@@ -38,16 +39,6 @@ export function checkRelativePath(path: string): PathCheck {
   return { ok: true, segments };
 }
 
-function inside(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return (
-    rel !== "" &&
-    rel !== ".." &&
-    !rel.startsWith(`..${sep}`) &&
-    !isAbsolute(rel)
-  );
-}
-
 export type Realpath = (path: string) => Promise<string>;
 
 export type ResolvedPath =
@@ -70,7 +61,7 @@ export async function resolveInsideRoot(
     return { ok: false, reason: "Workspace folder is not accessible." };
   }
   const target = join(realRoot, ...segments);
-  if (!inside(realRoot, target))
+  if (!isStrictlyInside(realRoot, target))
     return { ok: false, reason: "Path escapes the workspace." };
   for (let depth = segments.length; depth >= 0; depth--) {
     const probe = join(realRoot, ...segments.slice(0, depth));
@@ -80,7 +71,7 @@ export async function resolveInsideRoot(
     } catch {
       continue;
     }
-    if (depth > 0 && !inside(realRoot, real))
+    if (depth > 0 && !isStrictlyInside(realRoot, real))
       return { ok: false, reason: "Path resolves outside the workspace." };
     if (depth === 0 && real !== realRoot)
       return { ok: false, reason: "Workspace folder changed." };

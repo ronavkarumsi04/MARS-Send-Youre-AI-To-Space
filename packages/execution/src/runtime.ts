@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import {
   type Budget,
   type ModelConfig,
   type Task,
   TaskSchema,
 } from "@mars/contracts";
+import { isStrictlyInside } from "@mars/contracts/path-containment";
 import { OUTPUT_FORMAT_PROMPT } from "@mars/output-format";
 import type { ModelProviderRegistry } from "@mars/providers";
 import { type as defineSchema } from "@oh-my-pi/pi-ai";
@@ -672,16 +673,6 @@ export interface RuntimeOutcome {
   usage: BudgetLedger;
 }
 
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel !== "" &&
-    !isAbsolute(rel) &&
-    rel !== ".." &&
-    !rel.startsWith(`..${sep}`)
-  );
-}
-
 export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const task = TaskSchema.parse(options.task);
   const systemPrompt = resolveSystemPrompt(options.systemPromptOverride);
@@ -693,11 +684,15 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   );
   const cwd = await realpath(options.cwd);
   const requestedState = resolve(options.stateDir);
-  if (requestedState === cwd || inside(cwd, requestedState))
+  if (requestedState === cwd || isStrictlyInside(cwd, requestedState))
     throw new Error("Runtime state must be outside the agent workspace.");
   await mkdir(requestedState, { recursive: true, mode: 0o700 });
   const stateDir = await realpath(requestedState);
-  if (stateDir !== requestedState || stateDir === cwd || inside(cwd, stateDir))
+  if (
+    stateDir !== requestedState ||
+    stateDir === cwd ||
+    isStrictlyInside(cwd, stateDir)
+  )
     throw new Error("Unsafe runtime state directory.");
   const scopeKey = createHash("sha256")
     .update(
@@ -720,7 +715,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   let manager: SessionManager;
   if (options.sessionFile) {
     const file = await realpath(options.sessionFile);
-    if (!inside(stateDir, file) || !(await stat(file)).isFile())
+    if (!isStrictlyInside(stateDir, file) || !(await stat(file)).isFile())
       throw new Error("Session journal is outside runtime state.");
     manager = await SessionManager.open(file, stateDir);
     const saved = manager

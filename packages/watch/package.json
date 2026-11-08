@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@mars/contracts": "workspace:*",
     "@mars/execution": "workspace:*",
     "zod": "3.25.76"
   }
