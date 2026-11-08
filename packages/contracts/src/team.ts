@@ -204,6 +204,7 @@ export type TeamDeliveryEvent = z.infer<typeof TeamDeliveryEventSchema>;
 // names are fixed now.
 // ---------------------------------------------------------------------------
 
+/** The one runtime schema for `WorkspaceRef`; workbench and context reuse it. */
 export const WorkspaceRefSchema = z
   .object({ workspace_id: id, provider: id, revision: id })
   .strict();
