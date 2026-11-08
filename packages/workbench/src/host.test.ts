@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -2455,6 +2456,64 @@ test("a corrupt model history fails the reviewer launch instead of being overwri
   required(f.sessions[1]).finish("paused");
   await required(f.sessions[1]).disposed;
   await replacement.close();
+});
+
+test("an unsaved model history fails the child launch and is not cached", async () => {
+  const f = await fixture();
+  const {
+    registry,
+    rooms,
+    launches,
+    delegationOf,
+    untilResults,
+    request,
+    finish,
+  } = await threeModelDelegation(f);
+  const api = await f.makeHost(
+    registry,
+    undefined,
+    undefined,
+    undefined,
+    rooms,
+  );
+  const base = task();
+  await api.create(context(), {
+    ...base,
+    budget: { ...base.budget, max_duration_ms: 60_000, max_concurrency: 3 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    model_id: "fixture/alt",
+    approvals: { read: true, write: false, execute: false },
+  });
+  const modelsDir = join(f.root, "children", "models");
+  await mkdir(modelsDir, { recursive: true });
+  await chmod(modelsDir, 0o500);
+  try {
+    await delegationOf(0).delegate({ ...request, role_label: "worker" });
+    await untilResults(0, "failed");
+    expect(launches).toHaveLength(0);
+  } finally {
+    await chmod(modelsDir, 0o700);
+  }
+  expect(await readdir(modelsDir)).toEqual([]);
+  // The failed save left nothing cached: the next child persists the
+  // history it is routed with.
+  await delegationOf(0).delegate({ ...request, role_label: "worker" });
+  for (let attempt = 0; attempt < 500 && launches.length === 0; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(required(launches[0]).model_id).toBe("fixture/free");
+  const [historyFile] = await readdir(modelsDir);
+  expect(
+    JSON.parse(await readFile(join(modelsDir, required(historyFile)), "utf8"))
+      .models,
+  ).toEqual(["fixture/free"]);
+  finish(0, "Worker proposal.");
+  await untilResults(0, "Worker proposal.");
+  required(f.sessions[0]).finish("completed");
+  await required(f.sessions[0]).disposed;
+  await api.close();
 });
 
 test("path-scoped writable children write only inside their claim and never execute", async () => {

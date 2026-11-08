@@ -946,13 +946,20 @@ export async function createWorkbenchHost(
     taskModels.set(taskId, record);
     return record;
   };
+  // Cached only once durable: a restart must never find less history than
+  // the models this process already handed out.
   const saveTaskModels = async (taskId: string, record: TaskModels) => {
-    taskModels.set(taskId, record);
     const path = taskModelsPath(taskId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = path + "." + randomUUID() + ".tmp";
-    await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    await rename(temporary, path);
+    try {
+      await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+      await rename(temporary, path);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    taskModels.set(taskId, record);
   };
   const forgetTaskModels = async (taskId: string) => {
     taskModels.delete(taskId);
@@ -2112,7 +2119,7 @@ export async function createWorkbenchHost(
                     ...history.verdicts,
                     [request.child_task_id]: choice.independent,
                   },
-          }).catch(() => undefined);
+          });
           return { model_id: choice.model_id, reason: choice.reason };
         }),
     });
