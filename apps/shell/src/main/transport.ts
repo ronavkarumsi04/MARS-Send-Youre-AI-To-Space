@@ -1,4 +1,4 @@
-import type { BridgeErrorKind } from "../shared/methods";
+import { BRIDGE_ERROR_MESSAGES, type BridgeErrorKind } from "../shared/methods";
 import { isLoopbackHost } from "./connection";
 
 export type RequestContext = {
@@ -18,11 +18,8 @@ export type RpcTransport = {
 };
 
 export class TransportError extends Error {
-  constructor(
-    readonly kind: BridgeErrorKind,
-    message: string,
-  ) {
-    super(message);
+  constructor(readonly kind: BridgeErrorKind) {
+    super(BRIDGE_ERROR_MESSAGES[kind]);
     this.name = "TransportError";
   }
 }
@@ -36,7 +33,7 @@ function validateLoopbackUrl(raw: string): string {
   try {
     url = new URL(raw);
   } catch {
-    throw new TransportError("refused", "Workbench connection URL is invalid.");
+    throw new TransportError("refused");
   }
   if (
     url.protocol !== "http:" ||
@@ -47,10 +44,7 @@ function validateLoopbackUrl(raw: string): string {
     url.hash ||
     url.pathname !== "/"
   )
-    throw new TransportError(
-      "refused",
-      "Workbench connection must be loopback HTTP.",
-    );
+    throw new TransportError("refused");
   return url.origin;
 }
 
@@ -60,15 +54,14 @@ async function readBounded(
 ): Promise<string> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maxBytes)
-    throw new TransportError("protocol", "Workbench response is too large.");
+    throw new TransportError("protocol");
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes)
-      throw new TransportError("protocol", "Workbench response is too large.");
+    if (bytes.byteLength > maxBytes) throw new TransportError("protocol");
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
-      throw new TransportError("protocol", "Workbench response is malformed.");
+      throw new TransportError("protocol");
     }
   }
   const reader = response.body.getReader();
@@ -82,17 +75,14 @@ async function readBounded(
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel().catch(() => {});
-        throw new TransportError(
-          "protocol",
-          "Workbench response is too large.",
-        );
+        throw new TransportError("protocol");
       }
       text += decoder.decode(value, { stream: true });
     }
     return text + decoder.decode();
   } catch (error) {
     if (error instanceof TransportError) throw error;
-    throw new TransportError("protocol", "Workbench response is malformed.");
+    throw new TransportError("protocol");
   } finally {
     reader.releaseLock();
   }
@@ -117,20 +107,6 @@ function codeKind(code: string): BridgeErrorKind | undefined {
     return "unavailable";
   return undefined;
 }
-
-const ERROR_MESSAGES: Record<BridgeErrorKind, string> = {
-  not_connected: "Not connected to a workbench.",
-  refused: "Workbench request was refused.",
-  unauthorized: "Workbench authentication failed.",
-  forbidden: "Workbench request is not permitted.",
-  not_found: "Workbench resource was not found.",
-  conflict: "Workbench request conflicts with the current state.",
-  timeout: "Workbench did not respond in time.",
-  unavailable: "Workbench is unavailable.",
-  protocol: "Workbench returned an invalid response.",
-  invalid_response: "Workbench returned an invalid response.",
-  hash_mismatch: "Workbench artifact failed integrity verification.",
-};
 
 export function createLoopbackTransport(options: {
   url: string;
@@ -171,13 +147,12 @@ export function createLoopbackTransport(options: {
             .toLowerCase()
             .startsWith("application/json")
         )
-          throw new TransportError("protocol", ERROR_MESSAGES.protocol);
+          throw new TransportError("protocol");
         body = await readBounded(response, maxBytes);
       } catch (error) {
         if (error instanceof TransportError) throw error;
-        if (timedOut)
-          throw new TransportError("timeout", ERROR_MESSAGES.timeout);
-        throw new TransportError("unavailable", ERROR_MESSAGES.unavailable);
+        if (timedOut) throw new TransportError("timeout");
+        throw new TransportError("unavailable");
       } finally {
         clearTimeout(timer);
       }
@@ -185,22 +160,19 @@ export function createLoopbackTransport(options: {
       try {
         parsed = JSON.parse(body);
       } catch {
-        throw new TransportError("protocol", ERROR_MESSAGES.protocol);
+        throw new TransportError("protocol");
       }
       if (
         parsed === null ||
         typeof parsed !== "object" ||
         Array.isArray(parsed)
       )
-        throw new TransportError("protocol", ERROR_MESSAGES.protocol);
+        throw new TransportError("protocol");
       const keys = Object.keys(parsed);
       const record = parsed as Record<string, unknown>;
       if (keys.length !== 1 || (keys[0] !== "result" && keys[0] !== "error")) {
         const kind = statusKind(response.status);
-        throw new TransportError(
-          kind ?? "protocol",
-          kind ? ERROR_MESSAGES[kind] : ERROR_MESSAGES.protocol,
-        );
+        throw new TransportError(kind ?? "protocol");
       }
       if (keys[0] === "error") {
         const error = record.error;
@@ -212,17 +184,17 @@ export function createLoopbackTransport(options: {
           typeof (error as Record<string, unknown>).code !== "string" ||
           typeof (error as Record<string, unknown>).message !== "string"
         )
-          throw new TransportError("protocol", ERROR_MESSAGES.protocol);
+          throw new TransportError("protocol");
         const kind =
           codeKind((error as { code: string }).code) ??
           statusKind(response.status) ??
           "unavailable";
-        throw new TransportError(kind, ERROR_MESSAGES[kind]);
+        throw new TransportError(kind);
       }
       const kind = statusKind(response.status);
-      if (kind) throw new TransportError(kind, ERROR_MESSAGES[kind]);
+      if (kind) throw new TransportError(kind);
       if (response.status < 200 || response.status >= 300)
-        throw new TransportError("protocol", ERROR_MESSAGES.protocol);
+        throw new TransportError("protocol");
       return record.result;
     },
   };
