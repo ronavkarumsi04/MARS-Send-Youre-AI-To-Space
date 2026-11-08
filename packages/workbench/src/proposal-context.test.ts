@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import type { RequestContext } from "@mars/contracts";
-import type {
-  CandidateRecord,
-  PromptOptimizationService,
-  ProposalReport,
+import {
+  type CandidateRecord,
+  OptimizationError,
+  type PromptOptimizationService,
+  type ProposalReport,
 } from "@mars/optimization";
 import {
   PROPOSAL_SUMMARY_LIMIT,
@@ -110,7 +111,14 @@ const report = {
   produced_at: "2026-11-02T00:00:00.000Z",
 } as ProposalReport;
 
-function service(records: CandidateRecord[]) {
+function service(
+  records: CandidateRecord[],
+  reportFailure: (jobId: string) => Error = (jobId) =>
+    new OptimizationError(
+      "job_not_finished",
+      `${jobId} has not been published`,
+    ),
+) {
   const calls: string[] = [];
   const svc: Pick<PromptOptimizationService, "candidates" | "report"> = {
     async candidates(_ctx, targetId) {
@@ -122,7 +130,7 @@ function service(records: CandidateRecord[]) {
       calls.push(`report:${jobId}`);
       if (jobId === "job-3")
         return { ...report, report_id: "rep-other", target_id: "other-target" };
-      if (jobId !== "job-1") throw new Error("not published");
+      if (jobId !== "job-1") throw reportFailure(jobId);
       return report;
     },
   };
@@ -157,6 +165,7 @@ test("renders candidates and reports as labelled untrusted evidence without prom
   expect(text).not.toContain("\u0007");
   expect(text).not.toContain("rep-other");
   expect(text).not.toContain("other-target");
+  expect(text).not.toContain("[untrusted proposal report job-");
   expect(calls).toEqual([
     "candidates:target-1",
     "report:job-0",
@@ -165,6 +174,31 @@ test("renders candidates and reports as labelled untrusted evidence without prom
     "report:job-2",
     "candidates:missing",
   ]);
+});
+
+test("report failures other than an unpublished job render an unavailable marker", async () => {
+  const { svc } = service(
+    [
+      candidate("seed", "draft", 0.5, null),
+      candidate("c1", "proposed", 0.5, "job-1"),
+      candidate("c2", "rejected", 0.1, "job-2"),
+    ],
+    (jobId) =>
+      jobId === "job-2"
+        ? new Error("store read failed")
+        : new OptimizationError("job_not_finished", `${jobId} unpublished`),
+  );
+  const text = await proposalTools(
+    { service: svc, targets: ["target-1"] },
+    context,
+  ).summary();
+  expect(text).toContain(
+    "[untrusted optimization target target-1 · 3 candidate(s) · 1 report(s)",
+  );
+  expect(text).toContain("[untrusted proposal report rep-1 · job job-1");
+  expect(text).toContain("[untrusted proposal report job-2 · unavailable]");
+  expect(text).not.toContain("job-0 · unavailable");
+  expect(text).not.toContain("store read failed");
 });
 
 test("empty registration and oversized summaries stay bounded", async () => {
