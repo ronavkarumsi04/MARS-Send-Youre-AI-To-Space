@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./canonical": "./src/canonical.ts",
     "./path-containment": "./src/path-containment.ts"
   },
   "dependencies": {
