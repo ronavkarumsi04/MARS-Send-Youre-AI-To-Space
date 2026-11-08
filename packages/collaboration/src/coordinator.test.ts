@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2500,6 +2501,81 @@ test("runner cancellation before runtime start releases reservation without usag
   expect(stats.tokens).toEqual({ input: 0, output: 0 });
   expect(stats.children_cancelled).toBe(1);
   expect(stats.discarded_results).toBe(1);
+});
+
+test("runner-requested cancel releases write claims and expires pending deliveries", async () => {
+  const f = await fixture();
+  const writesRoom = await f.collaboration.host.openRoom(context, {
+    task: task("runner-cancel"),
+    idempotency_key: "runner-cancel",
+    delegation_pool: { max_tokens: 800 },
+    authority: {
+      approvals: { read: true, write: true, execute: false },
+      allow_delegation: true,
+      paid_consent: false,
+    },
+  });
+  const child = await f.collaboration.agents.delegate(
+    context,
+    writesRoom.coordinator,
+    delegation("runner-cancel-child", {
+      approvals: { read: true, write: true, execute: false },
+      write_paths: ["src/feature.ts"],
+    }),
+  );
+  await f.collaboration.agents.send(context, writesRoom.coordinator, {
+    idempotency_key: "runner-cancel-message",
+    recipients: [child.agent_id],
+    kind: "request",
+    body: "Report status before stopping.",
+  });
+  const claim = await f.collaboration.host.jobs.claim("runner-cancel");
+  if (!claim) throw new Error("Child was not claimed");
+  await f.collaboration.host.jobs.requestCancel(
+    claim.job_id,
+    "runner-cancel",
+    claim.lease_epoch,
+  );
+  await f.collaboration.host.jobs.finalize(
+    claim.job_id,
+    "runner-cancel",
+    claim.lease_epoch,
+    {
+      status: "cancelled",
+      summary: "Stopped.",
+      artifacts: [],
+      usage: { input_tokens: 1, output_tokens: 0, usd: 0, steps: 1 },
+    },
+  );
+  const db = new Database(join(f.rootDir, "collaboration.sqlite"), {
+    readonly: true,
+  });
+  try {
+    expect(
+      db
+        .query<{ agent_id: string }, [string]>(
+          "SELECT agent_id FROM write_claims WHERE agent_id = ?",
+        )
+        .all(child.agent_id),
+    ).toEqual([]);
+    expect(
+      db
+        .query<{ state: string }, [string]>(
+          "SELECT state FROM deliveries WHERE recipient_id = ?",
+        )
+        .all(child.agent_id),
+    ).toEqual([{ state: "expired" }]);
+  } finally {
+    db.close();
+  }
+  const stats = await f.collaboration.host.stats(
+    context,
+    writesRoom.room.room_id,
+  );
+  expect(stats.children_cancelled).toBe(1);
+  expect(stats.discarded_results).toBe(1);
+  expect(stats.expired).toBe(1);
+  expect(stats.reserved).toEqual({ tokens: 0, usd: 0 });
 });
 
 test("queued cancellation releases its reservation and expires descendants", async () => {

@@ -22,18 +22,15 @@ export interface ResolvedDockerConfig {
   maxFileBytes: number;
 }
 
+const PINNED_IMAGE_PATTERN = /^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/;
+const SAFE_LABEL_PATTERN = /^[A-Za-z0-9._-]+$/;
+
 export function resolveDockerConfig(
   options: DockerSandboxOptions,
 ): ResolvedDockerConfig {
-  if (!/^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/.test(options.image)) {
-    throw new TypeError("Docker image must be pinned to a sha256 digest");
-  }
-  const dockerPath = options.dockerPath ?? "/usr/bin/docker";
-  if (!isAbsolute(dockerPath))
-    throw new TypeError("dockerPath must be absolute");
   const config: ResolvedDockerConfig = {
     image: options.image,
-    dockerPath,
+    dockerPath: options.dockerPath ?? "/usr/bin/docker",
     uid: options.user?.uid ?? process.getuid?.() ?? 1000,
     gid: options.user?.gid ?? process.getgid?.() ?? 1000,
     memoryBytes: options.memoryBytes ?? 512 * 1024 * 1024,
@@ -42,30 +39,7 @@ export function resolveDockerConfig(
     tmpfsBytes: options.tmpfsBytes ?? 64 * 1024 * 1024,
     maxFileBytes: options.maxFileBytes ?? DEFAULT_WORKSPACE_LIMITS.maxFileBytes,
   };
-  if (
-    !Number.isSafeInteger(config.uid) ||
-    config.uid <= 0 ||
-    !Number.isSafeInteger(config.gid) ||
-    config.gid <= 0
-  ) {
-    throw new TypeError(
-      "Docker uid and gid must be positive non-root integers",
-    );
-  }
-  for (const [name, value] of Object.entries({
-    memoryBytes: config.memoryBytes,
-    pids: config.pids,
-    tmpfsBytes: config.tmpfsBytes,
-    maxFileBytes: config.maxFileBytes,
-  })) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new TypeError(`${name} must be a positive safe integer`);
-    }
-  }
-  for (const [name, value] of Object.entries({ cpus: config.cpus })) {
-    if (!Number.isFinite(value) || value <= 0)
-      throw new TypeError(`${name} must be a positive finite number`);
-  }
+  validateResolvedConfig(config);
   return config;
 }
 
@@ -114,9 +88,7 @@ export function buildDockerRunArgs(
   for (const [key, value] of Object.entries(request.labels).sort(([a], [b]) =>
     compareStrings(a, b),
   )) {
-    if (!/^[A-Za-z0-9._-]+$/.test(key) || !/^[A-Za-z0-9._-]+$/.test(value)) {
-      throw new TypeError("Invalid Docker label");
-    }
+    assertSafeLabel(key, value);
     args.push("--label", `${key}=${value}`);
   }
   args.push(
@@ -159,7 +131,7 @@ export function buildDockerRunArgs(
 }
 
 function validateResolvedConfig(config: ResolvedDockerConfig): void {
-  if (!/^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/.test(config.image)) {
+  if (!PINNED_IMAGE_PATTERN.test(config.image)) {
     throw new TypeError("Docker image must be pinned to a sha256 digest");
   }
   if (!isAbsolute(config.dockerPath))
@@ -174,20 +146,24 @@ function validateResolvedConfig(config: ResolvedDockerConfig): void {
       "Docker uid and gid must be positive non-root integers",
     );
   }
-  for (const value of [
-    config.memoryBytes,
-    config.pids,
-    config.tmpfsBytes,
-    config.maxFileBytes,
-  ]) {
+  for (const [name, value] of Object.entries({
+    memoryBytes: config.memoryBytes,
+    pids: config.pids,
+    tmpfsBytes: config.tmpfsBytes,
+    maxFileBytes: config.maxFileBytes,
+  })) {
     if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new TypeError(
-        "Docker integer limits must be positive safe integers",
-      );
+      throw new TypeError(`${name} must be a positive safe integer`);
     }
   }
   if (!Number.isFinite(config.cpus) || config.cpus <= 0) {
-    throw new TypeError("Docker CPU limit must be positive and finite");
+    throw new TypeError("cpus must be a positive finite number");
+  }
+}
+
+function assertSafeLabel(key: string, value: string): void {
+  if (!SAFE_LABEL_PATTERN.test(key) || !SAFE_LABEL_PATTERN.test(value)) {
+    throw new TypeError("Invalid Docker label");
   }
 }
 
@@ -330,12 +306,7 @@ export function createDockerSandbox(
       for (const [key, value] of Object.entries(labels).sort(([a], [b]) =>
         compareStrings(a, b),
       )) {
-        if (
-          !/^[A-Za-z0-9._-]+$/.test(key) ||
-          !/^[A-Za-z0-9._-]+$/.test(value)
-        ) {
-          throw new TypeError("Invalid Docker label");
-        }
+        assertSafeLabel(key, value);
         args.push("--filter", `label=${key}=${value}`);
       }
       const list = await invoke(resolved, args, 5000);
