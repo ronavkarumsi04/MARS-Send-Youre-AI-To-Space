@@ -507,6 +507,19 @@ export async function createWorkbenchHost(
     const watch = watchFor(taskId, cwd, approvals);
     return watch ? { watch } : {};
   };
+  // Optional launch context is best-effort: a failed block is omitted and
+  // recorded as reviewable evidence, and a failing sink never fails launch.
+  const recordContextUnavailable = (
+    taskId: string,
+    operation: "context.map" | "context.graph",
+  ) =>
+    options.store
+      .appendEvent(
+        internalContext(options.scope),
+        taskId,
+        workbenchEvent({ operation, status: "unavailable" }),
+      )
+      .catch(() => undefined);
   // Graph tools are host-bound and revision-fenced: the artifact is a derived,
   // rebuildable cache next to the repository map, never a memory owner, and
   // build attempts land in the task's events.
@@ -2364,13 +2377,7 @@ export async function createWorkbenchHost(
         ),
       };
     } catch {
-      await options.store
-        .appendEvent(
-          internalContext(options.scope),
-          task.task_id,
-          workbenchEvent({ operation: "context.map", status: "unavailable" }),
-        )
-        .catch(() => undefined);
+      await recordContextUnavailable(task.task_id, "context.map");
       return { frozen: undefined, prompt };
     }
   };
@@ -2409,6 +2416,7 @@ export async function createWorkbenchHost(
         ),
       };
     } catch {
+      await recordContextUnavailable(taskId, "context.graph");
       return { frozen: undefined, prompt };
     }
   };

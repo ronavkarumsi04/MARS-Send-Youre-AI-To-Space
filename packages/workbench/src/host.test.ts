@@ -787,6 +787,84 @@ test.each([false, true])(
   },
 );
 
+test.each([false, true])(
+  "knowledge-graph summary failures are recorded and non-fatal (sink fails: %s)",
+  async (sinkFails) => {
+    const f = await fixture();
+    const append = f.store.appendEvent.bind(f.store);
+    f.store.appendEvent = async (ctx, id, event) => {
+      if (
+        sinkFails &&
+        event.payload &&
+        typeof event.payload === "object" &&
+        "operation" in event.payload &&
+        event.payload.operation === "context.graph"
+      )
+        throw new Error("Unavailable diagnostic sink");
+      return append(ctx, id, event);
+    };
+    const knowledgeGraph: WorkbenchKnowledgeGraph = {
+      async lookup() {
+        throw new Error(`private ${f.root}/state`);
+      },
+      toolsFor() {
+        return {
+          async build() {
+            return "unused";
+          },
+          async query() {
+            return "unused";
+          },
+        };
+      },
+    };
+    const api = await f.makeHost(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { knowledgeGraph },
+    );
+    await api.create(context(), task());
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+    });
+    const session = required(f.sessions[0]);
+    expect(session.instructions[0]).not.toContain(
+      "Code knowledge graph summary",
+    );
+    expect(session.instructions[0]).not.toContain(f.root);
+    expect(
+      JSON.parse(
+        await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+      ).knowledge_graph,
+    ).toBeUndefined();
+    session.finish("completed");
+    await session.disposed;
+    expect((await api.inspect(context(), "task")).status).toBe("completed");
+    const payloads = await Promise.all(
+      (await api.events(context(), "task")).map(async (event) =>
+        new TextDecoder().decode(
+          await f.store.artifacts.get(context(), event.payload),
+        ),
+      ),
+    );
+    expect(payloads.join("\n")).not.toContain(f.root);
+    expect(
+      payloads.some(
+        (payload) =>
+          payload.includes('"operation":"context.graph"') &&
+          payload.includes('"status":"unavailable"'),
+      ),
+    ).toBe(!sinkFails);
+    await api.close();
+  },
+);
+
 test.skipIf(process.platform !== "linux")(
   "repository map containing host-private paths is omitted rather than sent to a model",
   async () => {
