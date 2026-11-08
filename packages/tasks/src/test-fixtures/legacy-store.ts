@@ -17,6 +17,7 @@ export function writeLegacyBindEvent(
   taskId: string,
   binding: UpstreamSessionBinding,
   requestId: string,
+  payloadOverride?: Uint8Array,
 ): void {
   const scopeDigest = sha256(canonicalJson(scope));
   const db = new Database(path.join(rootDir, "tasks.sqlite"), {
@@ -41,9 +42,11 @@ export function writeLegacyBindEvent(
       throw new Error("Legacy fixture task is invalid");
     }
 
-    const payloadBytes = new TextEncoder().encode(
-      canonicalJson({ change: "upstream_session_bound", binding }),
-    );
+    const payloadBytes =
+      payloadOverride ??
+      new TextEncoder().encode(
+        canonicalJson({ change: "upstream_session_bound", binding }),
+      );
     const payloadSha = sha256(payloadBytes);
     const mediaType = "application/json";
     const artifactRef = {
