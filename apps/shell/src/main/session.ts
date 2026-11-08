@@ -1,9 +1,5 @@
-import type {
-  BridgeErrorKind,
-  BridgeResult,
-  ReadMethod,
-} from "../shared/methods";
-import { READ_METHODS } from "../shared/methods";
+import type { BridgeErrorKind, BridgeResult } from "../shared/methods";
+import { isReadMethod } from "../shared/methods";
 import { type Bridge, createBridge } from "./bridge";
 import type { ConnectionResult, LocalConnection } from "./connection";
 import type { RpcTransport } from "./transport";
@@ -18,12 +14,6 @@ const unavailable = (): BridgeResult<unknown> => ({
   ok: false,
   error: { kind: "unavailable", message: "Workbench is unavailable." },
 });
-
-function isReadMethod(value: unknown): value is ReadMethod {
-  return (
-    typeof value === "string" && READ_METHODS.includes(value as ReadMethod)
-  );
-}
 
 export function createReconnectingBridge(options: {
   resolve: () => Promise<ConnectionResult>;

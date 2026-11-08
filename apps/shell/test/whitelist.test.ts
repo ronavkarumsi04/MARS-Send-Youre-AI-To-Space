@@ -5,8 +5,29 @@ import { registerBridge } from "../src/main/ipc";
 import {
   BRIDGE_CHANNEL,
   BRIDGE_GLOBAL,
+  isReadMethod,
   READ_METHODS,
 } from "../src/shared/methods";
+
+test("isReadMethod accepts exactly the whitelisted method names", () => {
+  for (const method of READ_METHODS) expect(isReadMethod(method)).toBe(true);
+  for (const value of [
+    "tasks.start",
+    "workbench.describe ",
+    "toString",
+    "constructor",
+    "__proto__",
+    "hasOwnProperty",
+    "",
+    undefined,
+    null,
+    1,
+    {},
+    ["tasks.list"],
+    new String("tasks.list"),
+  ])
+    expect(isReadMethod(value)).toBe(false);
+});
 
 test("the preload exposes exactly the frozen read-only bridge", async () => {
   const exposed: unknown[][] = [];

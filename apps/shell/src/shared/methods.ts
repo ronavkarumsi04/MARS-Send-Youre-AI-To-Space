@@ -15,6 +15,12 @@ export const READ_METHODS = [
 
 export type ReadMethod = (typeof READ_METHODS)[number];
 
+const READ_METHOD_SET: ReadonlySet<string> = new Set(READ_METHODS);
+
+export function isReadMethod(value: unknown): value is ReadMethod {
+  return typeof value === "string" && READ_METHOD_SET.has(value);
+}
+
 export const BRIDGE_CHANNEL = "mars-shell:rpc";
 export const BRIDGE_GLOBAL = "marsWorkbench";
 
