@@ -673,7 +673,8 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           }
         } catch (auditError) {
           try {
-            options.onAuditFailure?.(auditError);
+            const reported: unknown = options.onAuditFailure?.(auditError);
+            if (reported instanceof Promise) reported.catch(() => {});
           } catch {}
         }
       }

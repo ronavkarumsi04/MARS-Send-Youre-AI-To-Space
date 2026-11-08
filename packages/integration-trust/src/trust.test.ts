@@ -789,6 +789,29 @@ test("unexpected gate errors keep their cause and audit failures are reported", 
   expect(error.cause).toBe(failure);
   expect(reported).toEqual([failure]);
 });
+test("rejecting async audit reporter does not escape the gate", async () => {
+  const inner = new MemoryTrustStore(),
+    unhandled: unknown[] = [],
+    onUnhandled = (e: unknown) => unhandled.push(e);
+  let broken = false;
+  const store: TrustStore = {
+    load: () => (broken ? Promise.reject(new TypeError("disk")) : inner.load()),
+    commit: (...args) => inner.commit(...args),
+  };
+  const f = fixture(store, {}, (async () => {
+    throw new Error("reporter");
+  }) as (error: unknown) => void);
+  await f.approved();
+  broken = true;
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await denied(f, "permission_denied");
+    await new Promise((r) => setTimeout(r, 10));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  expect(unhandled).toEqual([]);
+});
 test("file store I/O errors keep their cause", async () => {
   const directory = await mkdtemp(join(tmpdir(), "trust-")),
     s = new FileTrustStore({ directory, workspaceRoots: [] });
