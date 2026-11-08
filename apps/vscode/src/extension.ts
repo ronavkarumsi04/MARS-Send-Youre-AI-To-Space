@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { basename } from "node:path";
+import { readConnectionFile } from "@mars/contracts/connection-file";
 import * as vscode from "vscode";
 import { decodeArtifactText } from "./artifactText";
 import { MarsClient, type VerifiedArtifact } from "./client";
-import { importConnection, readConnectionFile } from "./connectionFile";
+import { importConnection } from "./connectionFile";
 import {
   type ConnectResult,
   WorkbenchController,

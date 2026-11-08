@@ -19,7 +19,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { renderTranscript } from "./cards";
 import { httpTransport, SessionClient, type SessionTransport } from "./client";
-import { readConnectionFile } from "./connection";
+import { readConnectionFileOrThrow } from "./connection";
 import { SessionController } from "./controller";
 import { fixtureWorkbench } from "./fixture";
 import {
@@ -260,7 +260,7 @@ export async function runSession(args: string[]): Promise<void> {
     const path =
       values.connection ??
       (await defaultConnectionPath(values.project, values.source));
-    transport = httpTransport(await readConnectionFile(path));
+    transport = httpTransport(await readConnectionFileOrThrow(path));
   }
   const state = initialState({
     theme,

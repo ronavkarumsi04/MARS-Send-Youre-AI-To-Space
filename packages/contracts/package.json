@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./canonical": "./src/canonical.ts",
+    "./connection-file": "./src/connection-file.ts",
     "./path-containment": "./src/path-containment.ts"
   },
   "dependencies": {

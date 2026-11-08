@@ -1,5 +1,5 @@
+import { isLoopbackHost } from "@mars/contracts/connection-file";
 import type { BridgeErrorKind } from "../shared/methods";
-import { isLoopbackHost } from "./connection";
 
 export type RequestContext = {
   schema_version: 1;

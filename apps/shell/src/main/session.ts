@@ -1,11 +1,14 @@
 import type {
+  ConnectionResult,
+  LocalConnection,
+} from "@mars/contracts/connection-file";
+import type {
   BridgeErrorKind,
   BridgeResult,
   ReadMethod,
 } from "../shared/methods";
 import { READ_METHODS } from "../shared/methods";
 import { type Bridge, createBridge } from "./bridge";
-import type { ConnectionResult, LocalConnection } from "./connection";
 import type { RpcTransport } from "./transport";
 
 const RETRYABLE_ERRORS = new Set<BridgeErrorKind>([
