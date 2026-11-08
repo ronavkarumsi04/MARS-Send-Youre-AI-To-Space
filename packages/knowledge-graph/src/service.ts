@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DerivedArtifactStore } from "@mars/context";
+import { EVENT_OPERATIONS } from "@mars/contracts";
 import { canonicalJson } from "@mars/contracts/canonical";
 import type { RuntimeKnowledgeGraph } from "@mars/execution";
 import { z } from "zod";
@@ -413,7 +414,7 @@ export function createKnowledgeGraphService(
     summary: string,
   ): GraphBuildRecord => ({
     schema_version: 1,
-    operation: "graph.build",
+    operation: EVENT_OPERATIONS.graphBuild,
     status,
     workspace_id: binding.workspace_id,
     revision: binding.revision,

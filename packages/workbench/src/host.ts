@@ -35,6 +35,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  EVENT_OPERATIONS,
   isTerminalTaskStatus,
   JournalEntryIdsSchema,
   REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
@@ -849,7 +850,7 @@ export async function createWorkbenchHost(
         queued.set(event.event_id, steering.data.instruction);
       const result = z
         .object({
-          operation: z.literal("runtime.result"),
+          operation: z.literal(EVENT_OPERATIONS.runtimeResult),
           steering_event_ids: z.array(z.string()),
         })
         .safeParse(payload);
@@ -878,7 +879,7 @@ export async function createWorkbenchHost(
       task.task_id,
       workbenchEvent(
         {
-          operation: "runtime.result",
+          operation: EVENT_OPERATIONS.runtimeResult,
           status: outcome.status,
           steering_event_ids: steeringEventIds,
         },
@@ -918,7 +919,7 @@ export async function createWorkbenchHost(
       const bytes = await options.store.artifacts.get(context, event.payload);
       const payload = z
         .object({
-          operation: z.literal("child.result"),
+          operation: z.literal(EVENT_OPERATIONS.childResult),
           child_agent_id: z.string(),
           status: z.string(),
         })
@@ -1120,7 +1121,7 @@ export async function createWorkbenchHost(
             taskId,
             workbenchEvent(
               {
-                operation: "child.result",
+                operation: EVENT_OPERATIONS.childResult,
                 child_task_id: childTaskId,
                 child_agent_id: child.agent_id,
                 role_label: child.role_label,
@@ -1735,7 +1736,7 @@ export async function createWorkbenchHost(
           context,
           taskId,
           workbenchEvent({
-            operation: "hook.completed",
+            operation: EVENT_OPERATIONS.hookCompleted,
             event,
             ...(hookContext.tool ? { tool: hookContext.tool } : {}),
             results: results.map(hookResultRecord),
