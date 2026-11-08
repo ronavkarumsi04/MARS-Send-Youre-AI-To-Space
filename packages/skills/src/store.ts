@@ -179,11 +179,21 @@ const ChangeSchema = z
       ...(draftsAfter === undefined ? {} : { draftsAfter }),
     }),
   );
+// z.record drops a "__proto__" key while parsing; reject it instead of losing the entry.
+const recordOf = <S extends z.ZodTypeAny>(value: S) =>
+  z
+    .custom<unknown>(
+      (input) =>
+        !input ||
+        typeof input !== "object" ||
+        !Object.hasOwn(input, "__proto__"),
+    )
+    .pipe(z.record(value));
 const stateShape = <S extends z.ZodTypeAny>(skill: S) =>
   z
     .object({
-      skills: z.record(skill),
-      versions: z.record(
+      skills: recordOf(skill),
+      versions: recordOf(
         z.array(
           z
             .object({

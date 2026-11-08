@@ -474,7 +474,14 @@ describe("persisted state validation", () => {
   it("reports malformed lifecycle, transaction and journal files as corrupt", async () => {
     await store.create("test", content("test"), { ...options, reviewId: "r" });
     const lifecycle = await read(".lifecycle.json");
-    for (const text of ["{", JSON.stringify({ skills: [] })]) {
+    for (const text of [
+      "{",
+      JSON.stringify({ skills: [] }),
+      lifecycle.replace(
+        '"skills":{',
+        `"skills":{"__proto__":${JSON.stringify(JSON.parse(lifecycle).skills.test)},`,
+      ),
+    ]) {
       await writeFile(join(root, ".lifecycle.json"), text);
       await expect(store.list()).rejects.toMatchObject({
         name: "SkillError",
