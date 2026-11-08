@@ -137,6 +137,8 @@ export function createOptimizationService(
   const artifacts =
     options.artifacts ?? createFileArtifactStore(options.rootDir);
   const running = new Map<string, RunningJob>();
+  /** Jobs whose failure could not be written, so their record on disk is stale. */
+  const unrecorded = new Map<string, AggregateError>();
   const maxFeedbackChars = options.maxFeedbackChars ?? 1500;
   const maxRecords = options.maxRecordsPerComponent ?? 6;
   let launcher: WorkerLauncher | undefined = options.launcher;
@@ -762,17 +764,37 @@ export function createOptimizationService(
     const abort = new AbortController();
     const done = body(abort)
       .catch(async (error) => {
-        await finishJob(
-          context,
-          job,
-          null,
-          "failed",
-          "worker_error",
-          error instanceof Error ? error.message : String(error),
-        ).catch(() => undefined);
+        try {
+          await finishJob(
+            context,
+            job,
+            null,
+            "failed",
+            "worker_error",
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch (writeError) {
+          unrecorded.set(
+            job.job_id,
+            new AggregateError(
+              [error, writeError],
+              `${job.job_id} failed and its failed record could not be written`,
+            ),
+          );
+        }
       })
       .finally(() => running.delete(job.job_id));
     running.set(job.job_id, { abort, done });
+  }
+
+  async function readJob(
+    context: RequestContext,
+    jobId: string,
+  ): Promise<JobRecord> {
+    const job = await store.readJob(context, jobId);
+    const lost = unrecorded.get(jobId);
+    if (lost) throw lost;
+    return job;
   }
 
   function newJob(
@@ -1092,7 +1114,7 @@ export function createOptimizationService(
 
     async inspect(context, jobId) {
       checkContext(context);
-      const job = await store.readJob(context, jobId);
+      const job = await readJob(context, jobId);
       return {
         job: { job_id: job.job_id, input_manifest: job.input_manifest },
         status: jobResultStatus(job),
@@ -1106,7 +1128,7 @@ export function createOptimizationService(
 
     async cancel(context, jobId) {
       checkContext(context);
-      const job = await store.readJob(context, jobId);
+      const job = await readJob(context, jobId);
       const active = running.get(jobId);
       if (active) {
         active.abort.abort();
@@ -1127,13 +1149,13 @@ export function createOptimizationService(
 
     async job(context, jobId) {
       checkContext(context);
-      return store.readJob(context, jobId);
+      return readJob(context, jobId);
     },
 
     async waitForJob(context, jobId) {
       checkContext(context);
       await running.get(jobId)?.done;
-      return store.readJob(context, jobId);
+      return readJob(context, jobId);
     },
 
     async target(context, targetId) {

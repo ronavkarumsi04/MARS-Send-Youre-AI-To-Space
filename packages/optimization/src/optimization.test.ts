@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -925,6 +925,73 @@ describe("evaluate bounds", () => {
     expect(signals).toHaveLength(2);
     expect(signals[1]?.aborted).toBe(true);
   }, 20_000);
+
+  test("a job whose failure cannot be written reports the errors instead of claiming to run", async () => {
+    const root = await newRoot();
+    const artifacts = createMemoryArtifactStore();
+    let jobsDir = "";
+    const backend: PromptScoringBackend = {
+      async score() {
+        const [scope] = await readdir(root);
+        jobsDir = path.join(root, scope ?? "", "jobs");
+        await chmod(jobsDir, 0o500);
+        throw new Error("backend exploded");
+      },
+    };
+    const service = createOptimizationService({
+      rootDir: root,
+      backend,
+      backendId: "unwritable",
+      reflection: createScriptedReflectionResponder(() => REFLECTION_TEXT),
+      artifacts,
+    });
+    const put = (value: unknown) =>
+      artifacts.put(
+        context,
+        new TextEncoder().encode(JSON.stringify(value)),
+        "application/json",
+      );
+    const targetId = await service.registerTarget(
+      context,
+      await put(registration()),
+    );
+    const target = await service.target(context, targetId);
+    const components = { system_prompt: `${SEED} v4` };
+    const job = await service.evaluate(
+      context,
+      await put({
+        schema: EVALUATE_REQUEST_SCHEMA,
+        target_id: targetId,
+        candidate: {
+          candidate_id: candidateId(components),
+          components,
+          parent_candidate_id: target.seed_candidate_id,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+        budget,
+      }),
+    );
+    try {
+      const error = await service
+        .waitForJob(context, job.job_id)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).message).toContain(job.job_id);
+      expect((error as AggregateError).errors).toHaveLength(2);
+      await expect(service.job(context, job.job_id)).rejects.toBe(error);
+      await expect(service.inspect(context, job.job_id)).rejects.toBe(error);
+      await chmod(jobsDir, 0o700);
+      await expect(service.cancel(context, job.job_id)).rejects.toBe(error);
+      // Nothing is running it, and cancel did not relabel the crash.
+      const onDisk = JSON.parse(
+        await Bun.file(path.join(jobsDir, `${job.job_id}.json`)).text(),
+      ) as { status: string; error: string | null };
+      expect(onDisk.status).toBe("running");
+      expect(onDisk.error).toBeNull();
+    } finally {
+      if (jobsDir) await chmod(jobsDir, 0o700);
+    }
+  });
 
   test("the seed is re-scored under every evaluate request instead of reusing a stale baseline", async () => {
     const { service, targetId, put, readJson } = await setup({
