@@ -100,9 +100,10 @@ export interface ChildRunnerOptions {
   runnerId?: string;
   heartbeatMs?: number;
   /**
-   * Called when the runner cannot record a job's failure. The run waits for
-   * the report; the job stays leased and is closed by `recover()` once its
-   * lease expires.
+   * Called with the original error when a run fails outside the adapter's
+   * outcome, and again when the runner cannot record that failure. The run
+   * waits for each report; an unrecorded job stays leased and is closed by
+   * `recover()` once its lease expires.
    */
   onError?: (
     error: unknown,
@@ -114,6 +115,12 @@ interface LocalRun {
   promise: Promise<void>;
   cancel(): Promise<void>;
 }
+
+const FAILURE_SUMMARY = {
+  starting: "Child runtime could not be started.",
+  running: "Child runtime failed after it started.",
+  finalizing: "Child result could not be recorded.",
+} as const;
 
 function isLeaseLost(error: unknown): boolean {
   return error instanceof CollaborationError && error.code === "lease_lost";
@@ -267,6 +274,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
     let leaseLost = false;
     let stopReason: "budget" | "cancelled" | null = null;
     let adapterCalled = false;
+    let stage: "starting" | "running" | "finalizing" = "starting";
     let heartbeatBusy = false;
     let timer: ReturnType<typeof setInterval> | undefined;
     let disarmDeadline: (() => void) | undefined;
@@ -276,6 +284,13 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
       output_tokens: 0,
       usd: 0,
       steps: 0,
+    };
+    const reportError = async (error: unknown) => {
+      try {
+        await options.onError?.(error, { job_id: jobId });
+      } catch {
+        // A failing reporter must not change how the run settles.
+      }
     };
     const cancelRun = async (reason: "budget" | "cancelled" | "lease_lost") => {
       if (reason !== "lease_lost") stopReason ??= reason;
@@ -414,6 +429,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
           signal: controller.signal,
           onProgress,
         });
+        stage = "running";
         latest = {
           ...latest,
           ...(childRun.session_ref
@@ -426,7 +442,10 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
         try {
           await onProgress(latest);
         } catch (error) {
-          if (!isLeaseLost(error)) throw error;
+          if (!isLeaseLost(error)) {
+            await cancelRun("cancelled");
+            throw error;
+          }
           leaseLost = true;
           await cancelRun("lease_lost");
         }
@@ -476,6 +495,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
               steps: usageBaseline.steps + outcome.usage.steps,
             },
           };
+        stage = "finalizing";
         await options.collaboration.host.jobs.finalize(
           jobId,
           runnerId,
@@ -488,6 +508,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
       } catch (error) {
         markReady();
         if (leaseLost) return;
+        await reportError(error);
         const zeroUsageStartFailure =
           childRun === undefined &&
           adapterCalled &&
@@ -512,20 +533,17 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
             claimed.lease_epoch,
             {
               status: "failed",
-              summary: budgetBeforeOpen
-                ? "Child budget expired before execution."
-                : "Child runtime could not be started.",
+              summary:
+                budgetBeforeOpen && stage === "starting"
+                  ? "Child budget expired before execution."
+                  : FAILURE_SUMMARY[stage],
               artifacts: [],
               usage,
               ...(errorCode ? { errorCode } : {}),
             },
           );
         } catch (finalizeError) {
-          try {
-            await options.onError?.(finalizeError, { job_id: jobId });
-          } catch {
-            // A failing reporter must not change how the run settles.
-          }
+          await reportError(finalizeError);
           return;
         }
       } finally {
