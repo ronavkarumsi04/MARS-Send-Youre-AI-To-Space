@@ -12,7 +12,7 @@ import {
   probeOmniRoute,
 } from "@mars/providers-omniroute";
 import type { WorkbenchOmniRouteOptions } from "@mars/workbench";
-import { ServeUsageError } from "./serve-errors";
+import { ServeUsageError } from "./cli-errors";
 
 /** `--omniroute-allow` values; everything is excluded unless listed. */
 export const OMNIROUTE_ALLOW_VALUES = [
