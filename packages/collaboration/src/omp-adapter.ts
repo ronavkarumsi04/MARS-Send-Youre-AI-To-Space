@@ -105,6 +105,20 @@ export function childAdapterErrorNotice(
   };
 }
 
+/** A throwing reporter must not change a child's outcome or usage accounting. */
+function reportSafely(
+  reporter: ErrorReporter | undefined,
+): ErrorReporter | undefined {
+  if (!reporter) return undefined;
+  return (notice) => {
+    try {
+      reporter(notice);
+    } catch {
+      // The notice is diagnostic only; dropping it keeps accounting intact.
+    }
+  };
+}
+
 function errorCode(error: unknown): unknown {
   return error && typeof error === "object" && "code" in error
     ? (error as { code?: unknown }).code
@@ -307,7 +321,7 @@ export function createOhMyPiChildAdapter(
   options: OhMyPiAdapterOptions,
 ): ChildRuntimeAdapter {
   const runtimeFactory = options.runtimeFactory ?? openRuntimeSession;
-  const onError = options.onError;
+  const onError = reportSafely(options.onError);
   return {
     async start(launch, hooks) {
       const cancelledAt = (baseRevision: string | null) =>

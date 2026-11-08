@@ -537,3 +537,38 @@ test("childAdapterErrorNotice drops non-identifier names and codes", () => {
     "string",
   );
 });
+
+test("a throwing onError reporter does not change outcomes or reconciled usage", async () => {
+  const f = await fixture();
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: async (options) => {
+      const session = await f.runtimeFactory(options);
+      return {
+        ...session,
+        journalPath: session.journalPath,
+        async run() {
+          throw new TypeError("Runtime fixture failure.");
+        },
+        cancel: () => session.cancel(),
+        dispose: () => session.dispose(),
+      };
+    },
+    onError() {
+      throw new Error("Reporter failure.");
+    },
+  });
+  const run = await adapter.start(f.launch, {
+    signal: new AbortController().signal,
+    async onProgress() {},
+  });
+  expect(await run.outcome).toMatchObject({
+    status: "failed",
+    summary: "Runtime failed before a result could be produced (TypeError).",
+  });
+  const unreadable = join(f.stateRoot, "unreadable.jsonl");
+  await mkdir(unreadable, { recursive: true });
+  expect(await adapter.reconcile?.(unreadable)).toBe(null);
+});
