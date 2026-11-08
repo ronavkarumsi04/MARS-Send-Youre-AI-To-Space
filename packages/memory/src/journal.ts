@@ -1,14 +1,17 @@
 import { z } from "zod";
 
-export interface JournalMessage {
-  session_id: string;
-  entry_id: string;
-  parent_id: string | null;
-  timestamp: string;
-  seq: number;
-  role: "user" | "assistant" | "toolResult";
-  text: string;
-}
+export const JournalMessageSchema = z
+  .object({
+    session_id: z.string().min(1),
+    entry_id: z.string().min(1),
+    parent_id: z.string().min(1).nullable(),
+    timestamp: z.string().datetime({ offset: true }),
+    seq: z.number().int().nonnegative(),
+    role: z.enum(["user", "assistant", "toolResult"]),
+    text: z.string(),
+  })
+  .strict();
+export type JournalMessage = z.infer<typeof JournalMessageSchema>;
 
 export interface JournalInput {
   session_id: string;

@@ -27,6 +27,7 @@ import { z } from "zod";
 import {
   type JournalInput,
   type JournalMessage,
+  JournalMessageSchema,
   parseJournal,
 } from "./journal";
 import { scanThreat } from "./threats";
@@ -779,14 +780,16 @@ export class DurableMemoryStore
   }
   private decodeJournal(row: JournalRow): JournalMessage {
     try {
-      const record = JSON.parse(row.record) as JournalMessage;
+      const record: unknown = JSON.parse(row.record);
+      if (hash(canonicalJson(record)) !== row.row_hash) fail("corrupt_record");
+      const parsed = JournalMessageSchema.safeParse(record);
       if (
-        hash(canonicalJson(record)) !== row.row_hash ||
-        record.entry_id !== row.entry_id ||
-        record.session_id !== row.session_id
+        !parsed.success ||
+        parsed.data.entry_id !== row.entry_id ||
+        parsed.data.session_id !== row.session_id
       )
         fail("corrupt_record");
-      return record;
+      return parsed.data;
     } catch {
       fail("corrupt_record");
     }
