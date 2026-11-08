@@ -9,11 +9,18 @@ import { loadModelRegistry } from "@mars/providers";
 import {
   type ClaimedAgentRequest,
   createTeamStore,
+  DEFAULT_TEAM_LIMITS,
+  TEAM_MAX_AGENT_CONTEXT_BYTES,
   type TeamActor,
   type TeamReferenceAccess,
   type TeamStore,
 } from "@mars/team";
-import { buildTeamContext, extractCitations, runTeamAgentRequest } from "./run";
+import {
+  buildTeamContext,
+  DEFAULT_TEAM_AGENT_POLICY,
+  extractCitations,
+  runTeamAgentRequest,
+} from "./run";
 import { createTeamAgentWorker } from "./worker";
 
 /**
@@ -483,4 +490,14 @@ test("context building bounds bytes and quoted lines, labels everything untruste
   ]);
   expect(cited.dropped).toBe(2);
   expect(cited.body).toBe("see [1](msg:a@1) and x and j");
+});
+
+test("the runner's default context cap matches the store's frozen-context cap", () => {
+  expect(DEFAULT_TEAM_AGENT_POLICY.max_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(DEFAULT_TEAM_LIMITS.max_agent_context_bytes).toBe(
+    TEAM_MAX_AGENT_CONTEXT_BYTES,
+  );
+  expect(TEAM_MAX_AGENT_CONTEXT_BYTES).toBe(64 * 1024);
 });

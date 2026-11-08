@@ -15,7 +15,10 @@ import {
 import { scanThreat } from "@mars/memory";
 import { parseOutput } from "@mars/output-format";
 import type { ModelProviderRegistry } from "@mars/providers";
-import type { AgentFrozenInput } from "@mars/team";
+import {
+  type AgentFrozenInput,
+  TEAM_MAX_AGENT_CONTEXT_BYTES,
+} from "@mars/team";
 import { z } from "zod";
 
 /**
@@ -52,7 +55,7 @@ export type TeamAgentPolicy = z.infer<typeof TeamAgentPolicySchema>;
 export const DEFAULT_TEAM_AGENT_POLICY: TeamAgentPolicy = {
   max_tokens: 32_000,
   max_duration_ms: 120_000,
-  max_context_bytes: 64 * 1024,
+  max_context_bytes: TEAM_MAX_AGENT_CONTEXT_BYTES,
   max_quoted_lines: 120,
 };
 
