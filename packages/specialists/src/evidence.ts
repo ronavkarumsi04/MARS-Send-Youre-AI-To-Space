@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { RequestContext, VersionRef } from "@mars/contracts";
+import type { z } from "zod";
 import {
   canonicalJson,
   sameJson,
@@ -10,8 +11,10 @@ import {
   DatasetLineageSchema,
   type EvaluationReport,
   EvaluationReportSchema,
+  type EvidenceVerdictSchema,
   type ReasonCode,
   type SpecialistRegistration,
+  type TripleGateSchema,
 } from "./schemas";
 
 export interface ArtifactLoader {
@@ -52,34 +55,9 @@ export interface EvidenceVerifier {
 
 type zInferDatasetLineage = ReturnType<typeof DatasetLineageSchema.parse>;
 
-export interface TripleGate {
-  domain: string;
-  role: SpecialistRegistration["profile"]["roles"][number];
-  complexity: SpecialistRegistration["profile"]["complexity"][number];
-  pass_rate: number;
-  base_pass_rate: number;
-  delta_vs_base: number;
-  prompt_optimized_pass_rate: number;
-  delta_vs_prompt_optimized: number;
-  current_pass_rate: number | null;
-  delta_vs_current: number | null;
-  cost_usd_per_task: number | null;
-  runtime_ms_p95: number | null;
-  passed: boolean;
-}
+export type TripleGate = z.infer<typeof TripleGateSchema>;
 
-export interface EvidenceVerdict {
-  status: "proposed" | "evaluated" | "rejected";
-  codes: ReasonCode[];
-  covered_triples: TripleGate[];
-  report_id: string | null;
-  report_sha256: string | null;
-  synthetic_fixture: boolean;
-  evidence_artifacts: string[];
-  lineage_dataset_sha256s: string[];
-  current_specialist_revision: string | null;
-  note: string;
-}
+export type EvidenceVerdict = z.infer<typeof EvidenceVerdictSchema>;
 
 export interface VerifyEvidenceOptions {
   artifacts: ArtifactLoader;
