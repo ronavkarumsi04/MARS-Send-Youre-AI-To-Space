@@ -67,6 +67,48 @@ export interface OhMyPiAdapterOptions {
   runtimeFactory?: (options: RuntimeSessionOptions) => Promise<RuntimeSession>;
   /** Host-bound watch-skill tools for a child, bound to the parent task's evidence. */
   watchFor?(launch: ChildLaunch, cwd: string): RuntimeWatch | undefined;
+  /** Operational notice for a caught failure. Carries no message, stack or path: see `childAdapterErrorNotice`. */
+  onError?(notice: ChildAdapterErrorNotice): void;
+}
+
+export interface ChildAdapterErrorNotice {
+  /** `runtime_failed`: `session.run()` rejected. `journal_unreadable`: the journal exists but could not be read or parsed. */
+  reason_code: "runtime_failed" | "journal_unreadable";
+  /** Constructor name of the thrown value (`TypeError`, `CollaborationError`, …) or its `typeof`. */
+  error_name: string;
+  /** Symbolic error code (`EACCES`, `forbidden`, …) when the error carries one. */
+  error_code: string | null;
+}
+
+type ErrorReporter = (notice: ChildAdapterErrorNotice) => void;
+
+const ERROR_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * Reduces a caught error to identifiers only. Messages and stacks can quote
+ * prompts, model output or host-private paths, so they never leave here.
+ */
+export function childAdapterErrorNotice(
+  error: unknown,
+  reason_code: ChildAdapterErrorNotice["reason_code"],
+): ChildAdapterErrorNotice {
+  const name =
+    error instanceof Error
+      ? error.constructor?.name || error.name
+      : typeof error;
+  const code = errorCode(error);
+  return {
+    reason_code,
+    error_name: ERROR_IDENTIFIER.test(name) ? name : "Error",
+    error_code:
+      typeof code === "string" && ERROR_IDENTIFIER.test(code) ? code : null,
+  };
+}
+
+function errorCode(error: unknown): unknown {
+  return error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
 }
 
 function secureModelCheck(
@@ -142,13 +184,7 @@ async function loadBinding(
   try {
     return bindingSchema.parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "ENOENT"
-    )
-      return null;
+    if (errorCode(error) === "ENOENT") return null;
     throw new CollaborationError(
       "forbidden",
       "Persisted runtime binding is invalid",
@@ -164,9 +200,15 @@ async function saveBinding(
   await chmod(path, 0o600);
 }
 
+/**
+ * `null` means no accountable usage: the journal is missing, outside the
+ * state root, or has no valid budget entry yet. Any other read or parse
+ * failure is reported through `onError` before it also yields `null`.
+ */
 async function usageFromJournal(
   sessionRef: string,
   stateRoot: string,
+  onError: ErrorReporter | undefined,
 ): Promise<ChildUsage | null> {
   let manager: SessionManager | undefined;
   try {
@@ -195,7 +237,9 @@ async function usageFromJournal(
       usd: ledger.data.reserved_usd,
       steps,
     };
-  } catch {
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT")
+      onError?.(childAdapterErrorNotice(error, "journal_unreadable"));
     return null;
   } finally {
     await manager?.close().catch(() => undefined);
@@ -247,10 +291,14 @@ async function cancelledBeforeRuntime(
   launch: ChildLaunch,
   stateRoot: string,
   baseRevision: string | null,
+  onError: ErrorReporter | undefined,
 ): Promise<ChildRun> {
   const sessionRef = launch.session_ref || null;
   const usage = sessionRef
-    ? withAttemptSteps(await usageFromJournal(sessionRef, stateRoot), 0)
+    ? withAttemptSteps(
+        await usageFromJournal(sessionRef, stateRoot, onError),
+        0,
+      )
     : zeroUsage;
   return cancelledRun(sessionRef, baseRevision, usage);
 }
@@ -259,11 +307,17 @@ export function createOhMyPiChildAdapter(
   options: OhMyPiAdapterOptions,
 ): ChildRuntimeAdapter {
   const runtimeFactory = options.runtimeFactory ?? openRuntimeSession;
+  const onError = options.onError;
   return {
     async start(launch, hooks) {
       const cancelledAt = (baseRevision: string | null) =>
         hooks.signal.aborted
-          ? cancelledBeforeRuntime(launch, options.stateRoot, baseRevision)
+          ? cancelledBeforeRuntime(
+              launch,
+              options.stateRoot,
+              baseRevision,
+              onError,
+            )
           : null;
       let cancelled = cancelledAt(null);
       if (cancelled) return cancelled;
@@ -394,7 +448,7 @@ export function createOhMyPiChildAdapter(
         const usage = launch.session_ref
           ? sessionRef
             ? withAttemptSteps(
-                await usageFromJournal(sessionRef, state.root),
+                await usageFromJournal(sessionRef, state.root, onError),
                 0,
               )
             : null
@@ -414,7 +468,7 @@ export function createOhMyPiChildAdapter(
           if (hooks.signal.aborted) {
             const usage = launch.session_ref
               ? withAttemptSteps(
-                  await usageFromJournal(sessionRef, state.root),
+                  await usageFromJournal(sessionRef, state.root, onError),
                   0,
                 )
               : zeroUsage;
@@ -434,13 +488,15 @@ export function createOhMyPiChildAdapter(
             artifacts: [],
             usage,
           };
-        } catch {
+        } catch (error) {
+          const notice = childAdapterErrorNotice(error, "runtime_failed");
+          onError?.(notice);
           return {
             status: "failed" as const,
-            summary: "Runtime failed before a result could be produced.",
+            summary: `Runtime failed before a result could be produced (${notice.error_code ?? notice.error_name}).`,
             artifacts: [],
             usage: withAttemptSteps(
-              await usageFromJournal(sessionRef, state.root),
+              await usageFromJournal(sessionRef, state.root, onError),
               steps,
             ),
           };
@@ -459,7 +515,7 @@ export function createOhMyPiChildAdapter(
       };
     },
     async reconcile(sessionRef) {
-      return usageFromJournal(sessionRef, options.stateRoot);
+      return usageFromJournal(sessionRef, options.stateRoot, onError);
     },
   };
 }

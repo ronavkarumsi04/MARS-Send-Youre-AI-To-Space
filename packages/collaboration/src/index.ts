@@ -18,6 +18,8 @@ export {
   collaborationError,
 } from "./errors";
 export {
+  type ChildAdapterErrorNotice,
+  childAdapterErrorNotice,
   createOhMyPiChildAdapter,
   type OhMyPiAdapterOptions,
 } from "./omp-adapter";
