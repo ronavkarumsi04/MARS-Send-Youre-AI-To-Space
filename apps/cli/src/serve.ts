@@ -13,6 +13,7 @@ import {
 } from "@mars/research-worker";
 import {
   createWorkbenchService,
+  DEFAULT_WORKBENCH_PORT,
   loadWorkbenchConventions,
   type WorkbenchResearchOptions,
 } from "@mars/workbench";
@@ -167,7 +168,7 @@ export async function runServer(args: string[]): Promise<void> {
   if (values.help) {
     console.log(
       [
-        "Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port 7331] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--trust-project] [--no-conventions]",
+        `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--trust-project] [--no-conventions]`,
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
         "Without a pre-pulled digest-pinned image, command execution is disabled. No model request is made at startup. Connection credentials are written only to the private connection file.",
@@ -233,7 +234,8 @@ export async function runServer(args: string[]): Promise<void> {
     sourceRoot: source,
     stateRoot: state,
     scope: { owner_id: values.owner ?? "local", project_id: project },
-    port: values.port === undefined ? 7331 : Number(values.port),
+    port:
+      values.port === undefined ? DEFAULT_WORKBENCH_PORT : Number(values.port),
     ...(values.image ? { image: values.image } : {}),
     ...(research ? { research } : {}),
     ...(values.graphify?.length

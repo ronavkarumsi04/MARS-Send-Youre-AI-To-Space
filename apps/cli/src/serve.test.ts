@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_WORKBENCH_PORT } from "@mars/workbench";
 
 const entrypoint = join(import.meta.dir, "main.ts");
 test("mars serve starts without model credentials, keeps its token private and closes cleanly", async () => {
@@ -268,4 +269,5 @@ test("mars serve --help documents the research flags without making requests", a
   expect(error).toBe("");
   expect(output).toContain("--research-search brave|searxng|tavily");
   expect(output).toContain("BRAVE_SEARCH_API_KEY");
+  expect(output).toContain(`[--port ${DEFAULT_WORKBENCH_PORT}]`);
 }, 30000);
