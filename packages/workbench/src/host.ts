@@ -18,6 +18,7 @@ import {
   CollaborationError,
   createChildRunner,
   createOhMyPiChildAdapter,
+  isTerminalChildState,
 } from "@mars/collaboration";
 import type { RepositoryMapProvider } from "@mars/context";
 import type {
@@ -34,6 +35,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  isTerminalTaskStatus,
   JournalEntryIdsSchema,
   REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
   RequiredCheckSchema,
@@ -1007,12 +1009,6 @@ export async function createWorkbenchHost(
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
   const sweepRooms = new Map<string, FrozenCollaboration>();
-  const TERMINAL_CHILD_STATES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "expired",
-  ]);
   /**
    * Mirrors the room's children into the parent task's durable timeline from
    * the collaboration store's charged usage (the authority for budgets, which
@@ -1058,7 +1054,7 @@ export async function createWorkbenchHost(
             ),
             cost_usd: Math.max(0, child.usage.usd - previous.usd),
           };
-          const final = TERMINAL_CHILD_STATES.has(child.state);
+          const final = isTerminalChildState(child.state);
           if (!final) settled = false;
           const terminal = final && previous.state !== child.state;
           if (
@@ -1105,11 +1101,7 @@ export async function createWorkbenchHost(
           .inspect(context, taskId)
           .then((task) => task.status)
           .catch(() => null);
-        if (
-          status === "completed" ||
-          status === "failed" ||
-          status === "cancelled"
-        )
+        if (status !== null && isTerminalTaskStatus(status))
           await forgetTaskModels(taskId);
       }
     };

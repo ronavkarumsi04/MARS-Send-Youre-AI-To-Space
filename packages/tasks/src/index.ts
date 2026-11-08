@@ -25,6 +25,7 @@ import {
   canTransition,
   type EventEnvelope,
   EventEnvelopeSchema,
+  isTerminalTaskStatus,
   type RequestContext,
   SCHEMA_VERSION,
   type Scope,
@@ -208,6 +209,16 @@ interface InstanceRow {
   hostname: string;
   started_at: string;
   closed_at: string | null;
+}
+
+/** A task's runner row; the instance columns are null once the instance row is gone. */
+type RunnerRow = Omit<InstanceRow, "instance_id"> & {
+  instance_id: string | null;
+};
+
+/** Cancelling an already-cancelled task is an idempotent no-op. */
+function isCancellable(status: TaskStatus): boolean {
+  return status === "cancelled" || !isTerminalTaskStatus(status);
 }
 
 const NOT_FOUND_MESSAGE = "Task or artifact not found";
@@ -1190,6 +1201,12 @@ export async function createTaskStore(
       "INSERT INTO task_runners (scope_key, task_id, instance_id) VALUES (?, ?, ?) ON CONFLICT(scope_key, task_id) DO UPDATE SET instance_id = excluded.instance_id",
     ).run(key, taskId, instanceId);
   };
+  const readRunner = (key: string, taskId: string): RunnerRow | null =>
+    db
+      .query(
+        "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
+      )
+      .get(key, taskId) as RunnerRow | null;
   const clearRunner = (key: string, taskId: string): void => {
     db.query(
       "DELETE FROM task_runners WHERE scope_key = ? AND task_id = ?",
@@ -1716,7 +1733,7 @@ export async function createTaskStore(
       const inputHash = idemKeyInput({});
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const snapshot = readTask(key, taskId);
-        if (snapshot.status === "completed" || snapshot.status === "failed") {
+        if (!isCancellable(snapshot.status)) {
           throw new TaskStoreError(
             "invalid_transition",
             "Terminal tasks cannot be cancelled",
@@ -1754,7 +1771,7 @@ export async function createTaskStore(
           }
           const current = readTask(key, taskId);
           if (current.revision !== snapshot.revision) return "retry";
-          if (current.status === "completed" || current.status === "failed") {
+          if (!isCancellable(current.status)) {
             fail("invalid_transition", "Terminal tasks cannot be cancelled");
           }
           if (current.status !== "cancelled") {
@@ -1809,7 +1826,7 @@ export async function createTaskStore(
       if (replay !== null) return;
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const snapshot = readTask(key, taskId);
-        if (["completed", "cancelled", "failed"].includes(snapshot.status)) {
+        if (isTerminalTaskStatus(snapshot.status)) {
           fail("invalid_transition", "Terminal tasks cannot be steered");
         }
         const payload = {
@@ -1830,7 +1847,7 @@ export async function createTaskStore(
           if (replay !== null) return "replay";
           const current = readTask(key, taskId);
           if (current.revision !== snapshot.revision) return "retry";
-          if (["completed", "cancelled", "failed"].includes(current.status)) {
+          if (isTerminalTaskStatus(current.status)) {
             fail("invalid_transition", "Terminal tasks cannot be steered");
           }
           assertNoHostPathLeak(key, instruction);
@@ -2067,7 +2084,7 @@ export async function createTaskStore(
           );
           return;
         }
-        if (["completed", "cancelled", "failed"].includes(task.status)) {
+        if (isTerminalTaskStatus(task.status)) {
           fail(
             "invalid_transition",
             "Terminal tasks cannot bind an upstream session",
@@ -2120,20 +2137,8 @@ export async function createTaskStore(
       const recovered: Task[] = [];
       for (const candidate of tasks) {
         if (candidate.status !== "running") continue;
-        const runner = db
-          .query(
-            "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
-          )
-          .get(key, candidate.task_id) as
-          | (Omit<InstanceRow, "instance_id"> & { instance_id: string | null })
-          | null;
-        const shouldRecover = (
-          instance:
-            | (Omit<InstanceRow, "instance_id"> & {
-                instance_id: string | null;
-              })
-            | null,
-        ): boolean => {
+        const runner = readRunner(key, candidate.task_id);
+        const shouldRecover = (instance: RunnerRow | null): boolean => {
           if (!instance || !instance.instance_id || instance.closed_at !== null)
             return true;
           if (instance.hostname !== hostname()) return false;
@@ -2162,15 +2167,7 @@ export async function createTaskStore(
             current.revision !== candidate.revision
           )
             return null;
-          const currentRunner = db
-            .query(
-              "SELECT i.instance_id, i.pid, i.hostname, i.started_at, i.closed_at FROM task_runners r LEFT JOIN instances i ON i.instance_id = r.instance_id WHERE r.scope_key = ? AND r.task_id = ?",
-            )
-            .get(key, candidate.task_id) as
-            | (Omit<InstanceRow, "instance_id"> & {
-                instance_id: string | null;
-              })
-            | null;
+          const currentRunner = readRunner(key, candidate.task_id);
           if (
             !shouldRecover(currentRunner) ||
             (currentRunner?.instance_id ?? null) !==

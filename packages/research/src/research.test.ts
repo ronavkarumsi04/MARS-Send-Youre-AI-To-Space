@@ -25,6 +25,7 @@ import {
   createResearchService,
   type DurableResearchService,
   type FindingProposal,
+  isTerminalResearchStatus,
   RESEARCH_STORE_FORMAT_VERSION,
   type ResearchWorker,
   type ResearchWorkerContext,
@@ -2486,4 +2487,11 @@ describe("@mars/research durable control plane", () => {
     }
     expect(exitCode).toBe(0);
   });
+});
+
+test("classifies finished research jobs as terminal", () => {
+  for (const status of ["queued", "running"] as const)
+    expect(isTerminalResearchStatus(status)).toBe(false);
+  for (const status of ["completed", "failed", "cancelled", "expired"] as const)
+    expect(isTerminalResearchStatus(status)).toBe(true);
 });

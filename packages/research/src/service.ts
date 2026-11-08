@@ -6,6 +6,7 @@ import {
   type ArtifactRef,
   ArtifactRefSchema,
   type Budget,
+  isTerminalTaskStatus,
   type RequestContext,
   type ResearchFinding,
   type ResearchRequest,
@@ -276,13 +277,18 @@ interface ParsedContext {
 }
 
 const ACTIVE_STATUSES = ["queued", "running"] as const;
-const TERMINAL_TASK_STATUSES = new Set(["completed", "cancelled", "failed"]);
-const TERMINAL_JOB_STATUSES = new Set<ResearchJobStatus>([
-  "completed",
-  "failed",
-  "cancelled",
-  "expired",
-]);
+const TERMINAL_JOB_STATUS: Record<ResearchJobStatus, boolean> = {
+  queued: false,
+  running: false,
+  completed: true,
+  failed: true,
+  cancelled: true,
+  expired: true,
+};
+
+export function isTerminalResearchStatus(status: ResearchJobStatus): boolean {
+  return TERMINAL_JOB_STATUS[status];
+}
 const NOT_FOUND_MESSAGE = "Research request or task not found";
 const CLOSED_MESSAGE = "Research service is closed";
 const INVALID_CONTEXT_MESSAGE = "Invalid request context";
@@ -661,7 +667,7 @@ function updateFindingRecord(
 }
 
 function isTerminalTask(task: Task): boolean {
-  return TERMINAL_TASK_STATUSES.has(task.status);
+  return isTerminalTaskStatus(task.status);
 }
 
 export async function createResearchService(
@@ -2009,7 +2015,7 @@ export async function createResearchService(
         const row = findRequest(db, parsedContext.scopeKey, requestId);
         if (
           state !== "open" ||
-          (TERMINAL_JOB_STATUSES.has(row.status) &&
+          (isTerminalResearchStatus(row.status) &&
             allFindings(parsedContext.scopeKey, requestId, cursor).length === 0)
         ) {
           return;
@@ -2022,7 +2028,7 @@ export async function createResearchService(
       const parsedContext = parseContext(contextInput);
       const changed = immediate(db, () => {
         const row = findRequest(db, parsedContext.scopeKey, requestId);
-        if (TERMINAL_JOB_STATUSES.has(row.status)) return false;
+        if (isTerminalResearchStatus(row.status)) return false;
         db.query(
           `UPDATE requests SET cancel_requested = 1, status = 'cancelled',
              error_code = 'cancelled', finished_at = ?, lease_owner = NULL,
