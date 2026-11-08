@@ -1561,7 +1561,10 @@ test("in-process rollback failure retains journal and backup for later recovery 
     const digestBefore = await hashDirectory(tree);
     await expect(
       fixture.provider.restore(context, baseline, changed.revision),
-    ).rejects.toThrow("rollback hook failure");
+    ).rejects.toMatchObject({
+      message: "restore hook failure",
+      cause: { message: "rollback hook failure" },
+    });
     await expect(
       fixture.provider.inspect(context, fixture.workspace.workspace_id),
     ).rejects.toBeInstanceOf(IntegrityError);
@@ -2235,7 +2238,10 @@ test("remove rolls back a failed transaction and keeps the staged copy when even
     try {
       await expect(
         fixture.provider.remove(context, rolledBack, "nested/doomed.txt"),
-      ).rejects.toThrow("failed at after-remove");
+      ).rejects.toMatchObject({
+        message: "failed at after-remove",
+        cause: { code: "EACCES" },
+      });
     } finally {
       await chmod(lockedDir, 0o755);
     }

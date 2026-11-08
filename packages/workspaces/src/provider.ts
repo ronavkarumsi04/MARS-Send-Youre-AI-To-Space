@@ -247,6 +247,14 @@ export async function createLocalWorkspaceProvider(
     if (lostWorkspaces.has(workspaceId))
       throw new IntegrityError("workspace state lost");
   };
+  const markUndoFailed = (
+    workspaceId: string,
+    error: unknown,
+    undoError: unknown,
+  ): unknown => {
+    lostWorkspaces.add(workspaceId);
+    return withUndoFailure(error, undoError);
+  };
   const assertNoUnreadableMetadata = (): void => {
     if (unreadableWorkspaces.size > 0)
       throw new IntegrityError("workspace state lost");
@@ -415,9 +423,8 @@ export async function createLocalWorkspaceProvider(
         try {
           await mutation.undo(priorPath);
           applied = false;
-        } catch {
-          lostWorkspaces.add(current.workspace_id);
-          throw error;
+        } catch (undoError) {
+          throw markUndoFailed(current.workspace_id, error, undoError);
         }
       }
       if (markerSaved) {
@@ -428,11 +435,11 @@ export async function createLocalWorkspaceProvider(
         delete current.write_in_progress;
         try {
           await saveMeta(rootDir, current);
-        } catch {
+        } catch (undoError) {
           current.write_in_progress = {
             started_at: now().toISOString(),
           };
-          lostWorkspaces.add(current.workspace_id);
+          throw markUndoFailed(current.workspace_id, error, undoError);
         }
       }
       throw error;
@@ -1175,14 +1182,18 @@ export async function createLocalWorkspaceProvider(
           return currentRef(current);
         } catch (error) {
           if ((error as Error)?.name !== "SimulatedCrash") {
-            const latest = await loadMeta(rootDir, current.workspace_id);
-            await rollbackRestoreJournal(
-              rootDir,
-              latest,
-              limits,
-              extraIgnores,
-              options.testHooks,
-            );
+            try {
+              const latest = await loadMeta(rootDir, current.workspace_id);
+              await rollbackRestoreJournal(
+                rootDir,
+                latest,
+                limits,
+                extraIgnores,
+                options.testHooks,
+              );
+            } catch (rollbackError) {
+              throw markUndoFailed(current.workspace_id, error, rollbackError);
+            }
           }
           throw error;
         }
@@ -1595,6 +1606,26 @@ async function recoverProviderState(
   return { lostWorkspaces, unreadableWorkspaces };
 }
 
+/**
+ * Keeps the original failure as the thrown error and records the failed undo
+ * as its `cause`, alongside any cause the original already carried.
+ */
+function withUndoFailure(error: unknown, undoError: unknown): unknown {
+  if (!(error instanceof Error))
+    return new AggregateError(
+      [error, undoError],
+      "Operation failed and its undo also failed",
+    );
+  error.cause =
+    error.cause === undefined
+      ? undoError
+      : new AggregateError(
+          [error.cause, undoError],
+          "Original cause and undo failure",
+        );
+  return error;
+}
+
 async function rollbackRestoreJournal(
   rootDir: string,
   meta: WorkspaceMeta,
@@ -1655,11 +1686,14 @@ async function rollbackRestoreJournal(
     delete meta.restore_journal;
     committed = true;
   } catch (error) {
+    const undoFailures: unknown[] = [];
     if (!committed && backupMoved) {
       try {
         if (!(await pathExists(backup)) && (await pathExists(workspace)))
           await rename(workspace, backup);
-      } catch {}
+      } catch (undoError) {
+        undoFailures.push(undoError);
+      }
     }
     if (!committed && aside && !digestMismatch) {
       try {
@@ -1667,8 +1701,17 @@ async function rollbackRestoreJournal(
           await mkdir(dirname(workspace), { recursive: true, mode: 0o700 });
           await rename(aside, workspace);
         }
-      } catch {}
+      } catch (undoError) {
+        undoFailures.push(undoError);
+      }
     }
+    if (undoFailures.length > 0)
+      throw withUndoFailure(
+        error,
+        undoFailures.length === 1
+          ? undoFailures[0]
+          : new AggregateError(undoFailures, "Restore rollback undo failed"),
+      );
     throw error;
   }
 
