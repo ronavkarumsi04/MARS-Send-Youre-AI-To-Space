@@ -1557,7 +1557,10 @@ describe("@mars/research durable control plane", () => {
     const env = await setup({
       worker,
       service: {
-        onInternalError: (where, error) => reports.push({ where, error }),
+        onInternalError: async (where, error) => {
+          reports.push({ where, error });
+          throw new Error("async reporter failures are contained");
+        },
       },
     });
     researchRoot = env.researchRoot;

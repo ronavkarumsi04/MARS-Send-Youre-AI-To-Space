@@ -743,11 +743,11 @@ export async function createResearchService(
     error: unknown,
   ): void => {
     lastInternalError = { where, error, at: new Date().toISOString() };
+    // A failing reporter must not break scheduling; the error stays recorded.
     try {
-      options.onInternalError?.(where, error);
-    } catch {
-      // A failing reporter must not break scheduling; the error stays recorded.
-    }
+      const reported: unknown = options.onInternalError?.(where, error);
+      if (reported instanceof Promise) reported.catch(() => {});
+    } catch {}
   };
   const checkOpen = (): void => {
     if (state !== "open") throw new ResearchError("closed", CLOSED_MESSAGE);
