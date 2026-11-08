@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -36,6 +35,10 @@ import {
   TaskStatusSchema,
   VersionRefSchema,
 } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { z } from "zod";
 
 export const TASK_STORE_FORMAT_VERSION = 1;
@@ -222,65 +225,18 @@ function fail(code: TaskStoreErrorCode, message: string): never {
   throw new TaskStoreError(code, message);
 }
 
-function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function canonicalValue(value: unknown, seen = new Set<object>()): unknown {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw invalidInput("Value is not JSON-serializable");
-    return Object.is(value, -0) ? 0 : value;
-  }
-  if (typeof value !== "object")
-    throw invalidInput("Value is not JSON-serializable");
-  if (seen.has(value)) throw invalidInput("Cyclic JSON value");
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const entries: unknown[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index))
-          throw invalidInput("Value is not JSON-serializable");
-        entries.push(canonicalValue(value[index], seen));
-      }
-      return entries;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw invalidInput("Value is not a plain JSON object");
-    }
-    const record = value as Record<string, unknown>;
-    const output: Record<string, unknown> = Object.create(null) as Record<
-      string,
-      unknown
-    >;
-    for (const key of Object.keys(record).sort()) {
-      output[key] = canonicalValue(record[key], seen);
-    }
-    return output;
-  } finally {
-    seen.delete(value);
-  }
-}
-
 export function canonicalJson(value: unknown): string {
-  try {
-    const serialized = JSON.stringify(canonicalValue(value));
-    if (typeof serialized !== "string")
-      throw invalidInput("Value is not JSON-serializable");
-    return serialized;
-  } catch (error) {
-    if (error instanceof TaskStoreError) throw error;
-    throw invalidInput("Value is not JSON-serializable");
-  }
+  return sharedCanonicalJson(value, {
+    keyOrder: "integer-keys-first",
+    error: (failure) =>
+      invalidInput(
+        failure === "cycle"
+          ? "Cyclic JSON value"
+          : failure === "non_plain_object"
+            ? "Value is not a plain JSON object"
+            : "Value is not JSON-serializable",
+      ),
+  });
 }
 
 function parseJson<T>(text: string, schema: z.ZodType<T>, label: string): T {

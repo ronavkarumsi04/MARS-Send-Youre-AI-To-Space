@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -61,6 +60,10 @@ import {
   TeamMembershipSchema,
   type TeamRole,
 } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { z } from "zod";
 import {
   AGENT_REASON_CODE,
@@ -686,23 +689,12 @@ export function assessVerification(
   };
 }
 
-export function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
+export { sha256 };
 
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) throw invalidInput("Value is not JSON data");
-    return serialized;
-  }
-  if (Array.isArray(value))
-    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
+  return sharedCanonicalJson(value, {
+    error: () => invalidInput("Value is not JSON data"),
+  });
 }
 
 /**
