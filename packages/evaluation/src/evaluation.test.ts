@@ -864,6 +864,83 @@ test("harbor scoring backend scores the MARS arm only and refuses holdout instan
   }
 }, 30_000);
 
+test("harbor scoring backend reports unreadable Harbor records instead of a missing trial", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-eval-score-unreadable-"));
+  const bundleDir = join(root, "bundle");
+  await mkdir(bundleDir);
+  await writeFile(join(bundleDir, "mars-agent"), "#!/bin/sh\nexit 0\n");
+  const manifest = await sampleManifest(
+    {},
+    {
+      path: bundleDir,
+      sha256: sha256Hex(
+        new Uint8Array(await readFile(join(bundleDir, "mars-agent"))),
+      ),
+    },
+  );
+  const fixture = join(root, "fixture");
+  await cp(join(HARBOR_FIXTURES, "synthetic-candidate"), fixture, {
+    recursive: true,
+  });
+  const scoreWith = (name: string) =>
+    createHarborScoringBackend({
+      manifest,
+      runner: createHarborRunner({
+        pythonPath: join(root, "python"),
+        harborPath: FAKE_HARBOR,
+        agentPythonPath: join(FIXTURES, "..", "python"),
+        jobsDir: join(root, name),
+        dockerPath: null,
+        env: {
+          PATH: process.env.PATH,
+          FAKE_HARBOR_FIXTURE: fixture,
+          FAKE_HARBOR_MARKER: join(root, "argv.log"),
+        },
+      }),
+      artifacts: new MemoryArtifacts(),
+      candidateDir: join(root, "cands"),
+      splits: { train: ["regex-log"], validation: ["chess-best-move"] },
+    }).score(context, {
+      candidate: manifest.arms.candidate.candidate,
+      split: "train",
+      instance_ids: ["regex-log"],
+      repeats: 2,
+      budget: manifest.budget,
+    });
+  try {
+    await fakeVenv(root, GOOD_PROBE);
+    for (const trial of ["regex-log__c1", "regex-log__c2"])
+      await writeFile(join(fixture, trial, "result.json"), "{ truncated");
+    const trials = await scoreWith("jobs-trials");
+    expect(trials.scores[0]).toMatchObject({
+      instance_id: "regex-log",
+      score: 0,
+      reward_valid: false,
+      trajectory: null,
+    });
+    expect(trials.scores[0]?.error).toContain(
+      "Unreadable trial record for regex-log",
+    );
+    expect(trials.scores[0]?.error).toContain("regex-log__c1: ");
+    expect(trials.scores[0]?.feedback).toContain("regex-log__c2: ");
+    expect(trials.scores[0]?.feedback).not.toContain(
+      "No Harbor trial record was produced",
+    );
+
+    await writeFile(join(fixture, "result.json"), "not json");
+    const job = await scoreWith("jobs-job");
+    expect(job.scores[0]).toMatchObject({ score: 0, reward_valid: false });
+    expect(job.scores[0]?.error).toContain(
+      "Unreadable Harbor job record for regex-log",
+    );
+    expect(job.scores[0]?.feedback).toContain(
+      "The Harbor job result.json could not be read",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("fixture scoring backend is deterministic, simulated and respects holdout", async () => {
   const manifest = await sampleManifest();
   const backend = createFixtureScoringBackend(
