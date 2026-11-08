@@ -13,6 +13,7 @@ import {
   verificationStateFor,
 } from "@mars/contracts";
 import { DEFAULT_MAX_REVIEW_LINES } from "@mars/output-format";
+import { decodeArtifactText } from "./artifactText";
 import type { MarsClient, VerifiedArtifact } from "./client";
 import type { OpenOutcome } from "./diffOpener";
 import type {
@@ -70,8 +71,6 @@ export interface ControllerOptions {
 const TERMINAL: readonly TaskStatus[] = ["completed", "cancelled", "failed"];
 export const MAX_EVENTS = 1000;
 const MAX_ARTIFACT_TEXT = 256 * 1024;
-const TEXT_TYPES =
-  /^(text\/|application\/(json|x-ndjson|xml|yaml|x-yaml|javascript|x-diff|x-patch)\b)/i;
 
 interface Selection {
   generation: number;
@@ -1133,32 +1132,25 @@ export function artifactView(
     byte_length: artifact.bytes.byteLength,
     final_text: finalText,
   };
-  if (!TEXT_TYPES.test(artifact.media_type))
+  const decoded = decodeArtifactText(artifact, MAX_ARTIFACT_TEXT);
+  if (decoded.kind === "binary")
     return {
       ...base,
       text: null,
       truncated: false,
       note: "Binary artifact; content not displayed.",
     };
-  const slice = artifact.bytes.subarray(0, MAX_ARTIFACT_TEXT);
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(slice);
-  } catch {
-    if (artifact.bytes.byteLength <= MAX_ARTIFACT_TEXT)
-      return {
-        ...base,
-        text: null,
-        truncated: false,
-        note: "Artifact is not valid UTF-8.",
-      };
-    text = new TextDecoder("utf-8").decode(slice);
-  }
-  const truncated = artifact.bytes.byteLength > MAX_ARTIFACT_TEXT;
+  if (decoded.kind === "invalid_utf8")
+    return {
+      ...base,
+      text: null,
+      truncated: false,
+      note: "Artifact is not valid UTF-8.",
+    };
   return {
     ...base,
-    text,
-    truncated,
-    note: truncated ? "Showing the first 256 KiB." : null,
+    text: decoded.text,
+    truncated: decoded.truncated,
+    note: decoded.truncated ? "Showing the first 256 KiB." : null,
   };
 }
