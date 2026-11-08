@@ -283,6 +283,19 @@ export function canonicalJson(value: unknown): string {
   }
 }
 
+function changedFields(
+  from: Task,
+  to: Task,
+  keys: readonly (keyof Task)[],
+): Record<string, { from: unknown; to: unknown }> {
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const field of keys) {
+    if (canonicalJson(from[field]) !== canonicalJson(to[field]))
+      changes[field] = { from: from[field], to: to[field] };
+  }
+  return changes;
+}
+
 function parseJson<T>(text: string, schema: z.ZodType<T>, label: string): T {
   try {
     const value: unknown = JSON.parse(text);
@@ -1598,7 +1611,7 @@ export async function createTaskStore(
         throw invalidInput("Invalid task patch");
       }
       const patch = patchInput as Record<string, unknown>;
-      const keys = Object.keys(patch);
+      const keys = Object.keys(patch) as (keyof Task)[];
       if (
         keys.length === 0 ||
         keys.some(
@@ -1635,13 +1648,7 @@ export async function createTaskStore(
         { ...snapshot, ...patch, revision: snapshot.revision + 1 },
         "Invalid task patch",
       );
-      const changed: Record<string, unknown> = {};
-      for (const field of keys) {
-        const from = (snapshot as unknown as Record<string, unknown>)[field];
-        const to = (prospective as unknown as Record<string, unknown>)[field];
-        if (canonicalJson(from) !== canonicalJson(to))
-          changed[field] = { from, to };
-      }
+      const changed = changedFields(snapshot, prospective, keys);
       if (Object.keys(changed).length === 0)
         throw invalidInput("Task patch makes no changes");
       const payload = {
@@ -1668,13 +1675,7 @@ export async function createTaskStore(
           { ...current, ...patch, revision: current.revision + 1 },
           "Invalid task patch",
         );
-        const actualChanges: Record<string, unknown> = {};
-        for (const field of keys) {
-          const from = (current as unknown as Record<string, unknown>)[field];
-          const to = (next as unknown as Record<string, unknown>)[field];
-          if (canonicalJson(from) !== canonicalJson(to))
-            actualChanges[field] = { from, to };
-        }
+        const actualChanges = changedFields(current, next, keys);
         if (Object.keys(actualChanges).length === 0)
           throw invalidInput("Task patch makes no changes");
         if (
