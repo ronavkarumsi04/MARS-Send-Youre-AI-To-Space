@@ -2079,14 +2079,15 @@ test("a failed finalize after a start failure is reported and left to lease reco
         },
       },
       async onError(_error, { job_id }) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
         asyncReported.push(job_id);
         throw new Error("Async reporter failure must not escape the run.");
       },
     });
     expect(await asyncRunner.tick()).toBe(1);
     await asyncRunner.idle();
-    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(asyncReported).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(unhandled).toEqual([]);
   } finally {
     process.off("unhandledRejection", onUnhandled);

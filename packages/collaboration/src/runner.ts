@@ -100,8 +100,9 @@ export interface ChildRunnerOptions {
   runnerId?: string;
   heartbeatMs?: number;
   /**
-   * Called when the runner cannot record a job's failure. The job stays
-   * leased and is closed by `recover()` once its lease expires.
+   * Called when the runner cannot record a job's failure. The run waits for
+   * the report; the job stays leased and is closed by `recover()` once its
+   * lease expires.
    */
   onError?: (
     error: unknown,
@@ -520,13 +521,11 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
             },
           );
         } catch (finalizeError) {
-          // A failing reporter must not change how the run settles.
           try {
-            const reported = options.onError?.(finalizeError, {
-              job_id: jobId,
-            });
-            void Promise.resolve(reported).catch(() => undefined);
-          } catch {}
+            await options.onError?.(finalizeError, { job_id: jobId });
+          } catch {
+            // A failing reporter must not change how the run settles.
+          }
           return;
         }
       } finally {
