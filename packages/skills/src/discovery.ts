@@ -8,7 +8,6 @@
  * conventions; no upstream source is used. Discovery is read-only, offline,
  * bounded (skill count and bytes per file) and never executes anything.
  */
-import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { SkillRecord } from "@mars/contracts";
 import type {
@@ -17,6 +16,7 @@ import type {
   SkillSource,
 } from "./conventions-types";
 import { parseFrontmatter } from "./frontmatter";
+import { entryKind, readBoundedUtf8, sortedEntries } from "./fs";
 
 export interface SkillDiscoveryOptions {
   /** Absolute path of the trusted checkout. */
@@ -55,31 +55,6 @@ export function isValidSkillName(name: string): boolean {
 }
 
 const posix = (...parts: string[]) => parts.join("/");
-
-async function entryKind(
-  path: string,
-): Promise<"file" | "directory" | "symlink" | "other" | null> {
-  try {
-    const stats = await lstat(path);
-    if (stats.isSymbolicLink()) return "symlink";
-    if (stats.isDirectory()) return "directory";
-    if (stats.isFile()) return "file";
-    return "other";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function sortedEntries(path: string): Promise<string[]> {
-  try {
-    return (await readdir(path)).sort();
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return [];
-    throw error;
-  }
-}
 
 /** Candidate skill folders for one source: `[relative folder, folder name]`, deterministic. */
 async function candidateFolders(
@@ -133,7 +108,6 @@ export async function discoverSkills(
     warnings: [],
   };
   const byName = new Map<string, DiscoveredSkill>();
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   for (const source of SKILL_SOURCES) {
     for (const { relative, folder } of await candidateFolders(root, source)) {
       const path = posix(relative, SKILL_FILE);
@@ -148,18 +122,12 @@ export async function discoverSkills(
         report.skipped.push({ path, reason: "limit" });
         continue;
       }
-      const stats = await lstat(absolute);
-      if (stats.size > maxBytes) {
-        report.skipped.push({ path, reason: "oversize" });
+      const read = await readBoundedUtf8(absolute, maxBytes);
+      if ("reason" in read) {
+        report.skipped.push({ path, reason: read.reason });
         continue;
       }
-      let content: string;
-      try {
-        content = decoder.decode(await readFile(absolute));
-      } catch {
-        report.skipped.push({ path, reason: "encoding" });
-        continue;
-      }
+      const { text: content, bytes } = read;
       const frontmatter = parseFrontmatter(content);
       if (!frontmatter) {
         report.skipped.push({ path, reason: "frontmatter" });
@@ -191,7 +159,7 @@ export async function discoverSkills(
         path,
         source,
         content,
-        bytes: stats.size,
+        bytes,
         frontmatter: { ...frontmatter },
       };
       byName.set(name, skill);

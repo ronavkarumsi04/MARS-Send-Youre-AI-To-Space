@@ -7,10 +7,15 @@
  * upstream source is used. Shell inclusion (`` !`cmd` ``) is never executed:
  * it is recorded as unsupported and left verbatim.
  */
-import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExpandedCommand, SlashCommand } from "./conventions-types";
 import { parseFrontmatter } from "./frontmatter";
+import {
+  type EntryKind,
+  entryKind,
+  readBoundedUtf8,
+  sortedEntries,
+} from "./fs";
 
 export type CommandSource = SlashCommand["source"];
 export const COMMAND_SOURCES: readonly CommandSource[] = [
@@ -89,36 +94,11 @@ export class CommandRegistry {
   }
 }
 
-async function entryKind(
-  path: string,
-): Promise<"file" | "directory" | "symlink" | "other" | null> {
-  try {
-    const stats = await lstat(path);
-    if (stats.isSymbolicLink()) return "symlink";
-    if (stats.isDirectory()) return "directory";
-    if (stats.isFile()) return "file";
-    return "other";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function sortedEntries(path: string): Promise<string[]> {
-  try {
-    return (await readdir(path)).sort();
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return [];
-    throw error;
-  }
-}
-
 interface Candidate {
   name: string;
   relative: string;
   absolute: string;
-  kind: Awaited<ReturnType<typeof entryKind>>;
+  kind: EntryKind | null;
 }
 
 async function candidates(
@@ -159,7 +139,6 @@ export async function loadCommands(root: string): Promise<CommandRegistry> {
     [];
   const skipped: Array<{ path: string; reason: string }> = [];
   const byName = new Map<string, LoadedSlashCommand>();
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   for (const source of COMMAND_SOURCES) {
     for (const candidate of await candidates(absoluteRoot, source)) {
       const { name, relative: path, absolute, kind } = candidate;
@@ -175,18 +154,12 @@ export async function loadCommands(root: string): Promise<CommandRegistry> {
         skipped.push({ path, reason: "limit" });
         continue;
       }
-      const stats = await lstat(absolute);
-      if (stats.size > MAX_COMMAND_BODY_BYTES) {
-        skipped.push({ path, reason: "oversize" });
+      const read = await readBoundedUtf8(absolute, MAX_COMMAND_BODY_BYTES);
+      if ("reason" in read) {
+        skipped.push({ path, reason: read.reason });
         continue;
       }
-      let text: string;
-      try {
-        text = decoder.decode(await readFile(absolute));
-      } catch {
-        skipped.push({ path, reason: "encoding" });
-        continue;
-      }
+      const { text } = read;
       let frontmatter: Record<string, string | undefined> = {};
       let body = text;
       if (text.startsWith("---")) {
