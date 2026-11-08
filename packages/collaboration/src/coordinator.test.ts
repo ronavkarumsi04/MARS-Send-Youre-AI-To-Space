@@ -2018,6 +2018,83 @@ test("pre-run forbidden and invalid-input failures charge zero usage", async () 
   }
 });
 
+test("a failed finalize after a start failure is reported and left to lease recovery", async () => {
+  const f = await fixture({ leaseMs: 300 });
+  await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("finalize-fails"),
+  );
+  const finalizeError = new Error("database is locked");
+  const jobs = Object.assign(Object.create(f.collaboration.host.jobs), {
+    async finalize() {
+      throw finalizeError;
+    },
+  });
+  const reported: { error: unknown; job_id: string }[] = [];
+  const runner = createChildRunner({
+    collaboration: {
+      ...f.collaboration,
+      host: { ...f.collaboration.host, jobs },
+    },
+    runnerId: "finalize-fails",
+    adapter: {
+      async start() {
+        throw new CollaborationError("forbidden", "Pre-run failure.");
+      },
+    },
+    onError(error, { job_id }) {
+      reported.push({ error, job_id });
+      throw new Error("Reporter failure must not escape the run.");
+    },
+  });
+  expect(await runner.tick()).toBe(1);
+  await runner.idle();
+  const [report] = reported;
+  if (!report) throw new Error("Finalize failure was not reported");
+  expect(reported).toHaveLength(1);
+  expect(report.error).toBe(finalizeError);
+  f.advance(301);
+  const expired = await f.collaboration.host.jobs.recoverExpired();
+  expect(expired.map((job) => job.job_id)).toEqual([report.job_id]);
+
+  await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("finalize-fails-async"),
+  );
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const asyncReported: string[] = [];
+    const asyncRunner = createChildRunner({
+      collaboration: {
+        ...f.collaboration,
+        host: { ...f.collaboration.host, jobs },
+      },
+      runnerId: "finalize-fails-async",
+      adapter: {
+        async start() {
+          throw new CollaborationError("forbidden", "Pre-run failure.");
+        },
+      },
+      async onError(_error, { job_id }) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        asyncReported.push(job_id);
+        throw new Error("Async reporter failure must not escape the run.");
+      },
+    });
+    expect(await asyncRunner.tick()).toBe(1);
+    await asyncRunner.idle();
+    expect(asyncReported).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("runtime caps stop exhausted starts and finalize token or step overruns", async () => {
   const f = await fixture({ leaseMs: 300 });
   await f.collaboration.agents.delegate(

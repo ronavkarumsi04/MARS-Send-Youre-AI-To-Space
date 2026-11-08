@@ -20,6 +20,7 @@ import {
   TeamStoreSnapshotSchema,
 } from "@mars/team";
 import { z } from "zod";
+import { CliUsageError } from "./cli-errors";
 
 /**
  * `mars team`: the pilot operator entry point for the Team Chat service
@@ -50,7 +51,7 @@ export const TEAM_USAGE = [
   "  The dev authenticator is for the pilot only; tokens are never printed.",
 ].join("\n");
 
-export class TeamUsageError extends Error {}
+export class TeamUsageError extends CliUsageError {}
 
 export const DEV_TOKENS_FILE = "team-dev-tokens.json";
 export const CONNECTION_FILE = "team-connection.json";

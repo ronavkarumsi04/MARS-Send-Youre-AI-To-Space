@@ -786,6 +786,31 @@ describe("specialist evidence and persistence", () => {
     expect(decision.fallback?.chain[0]?.ref).toBe("baseline:baseline@1");
   });
 
+  test("records rejected fallback refs in both the chain and the rejected list", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    await registry.registerBaseline(
+      context,
+      makeBaseline(context.scope, { baseline_id: "baseline-2", priority: 2 }),
+    );
+    const fixture = await makeSpecialistFixture(artifacts);
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    artifacts.delete(fixture.registration.evaluation);
+    const decision = await registry.route(
+      context,
+      routingRequest({ exclude_refs: ["baseline:baseline@1"] }),
+    );
+    expect(decision.outcome).toBe("baseline");
+    expect(decision.selected?.ref).toBe("baseline:baseline-2@1");
+    expect(decision.fallback?.chain).toEqual([
+      { ref: "baseline:baseline@1", reasons: ["excluded"] },
+      { ref: "baseline:baseline-2@1", reasons: [] },
+    ]);
+    expect(
+      decision.rejected.filter((item) => item.ref.startsWith("baseline:")),
+    ).toEqual([{ ref: "baseline:baseline@1", reasons: ["excluded"] }]);
+  });
+
   test("rejects stale current-specialist evidence at promotion", async () => {
     const { registry, artifacts } = await setupRegistry();
     const first = await makeSpecialistFixture(artifacts, {

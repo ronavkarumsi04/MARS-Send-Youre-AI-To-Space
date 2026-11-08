@@ -1,55 +1,18 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { containsSecretToken } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { SpecialistRegistryError } from "./errors";
 
-function canonicalValue(value: unknown, seen = new Set<object>()): unknown {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) {
-    if (seen.has(value)) throw new Error("invalid_json");
-    seen.add(value);
-    const result = value.map((item) => canonicalValue(item, seen));
-    seen.delete(value);
-    return result;
-  }
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    Object.getPrototypeOf(value) === Object.prototype
-  ) {
-    if (seen.has(value)) throw new Error("invalid_json");
-    seen.add(value);
-    const record = value as Record<string, unknown>;
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      if (record[key] === undefined) throw new Error("invalid_json");
-      result[key] = canonicalValue(record[key], seen);
-    }
-    seen.delete(value);
-    return result;
-  }
-  throw new Error("invalid_json");
-}
+export { sha256 };
 
 export function canonicalJson(value: unknown): string {
-  try {
-    const serialized = JSON.stringify(canonicalValue(value));
-    if (typeof serialized !== "string") throw new Error("invalid_json");
-    return serialized;
-  } catch {
-    throw new SpecialistRegistryError("invalid_input", "invalid_json");
-  }
-}
-
-export function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
+  return sharedCanonicalJson(value, {
+    keyOrder: "integer-keys-first",
+    error: () => new SpecialistRegistryError("invalid_input", "invalid_json"),
+  });
 }
 
 export function scopeKey(scope: {

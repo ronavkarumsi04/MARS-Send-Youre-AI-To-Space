@@ -16,10 +16,8 @@ import {
   loadWorkbenchConventions,
   type WorkbenchResearchOptions,
 } from "@mars/workbench";
-
-/** A configuration mistake whose message is safe to print: it names flags and environment variable names only. */
+import { ServeUsageError } from "./cli-errors";
 import { omnirouteFromFlags } from "./omniroute";
-import { ServeUsageError } from "./serve-errors";
 
 export { ServeUsageError };
 

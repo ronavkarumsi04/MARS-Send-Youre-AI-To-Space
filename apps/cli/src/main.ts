@@ -6,13 +6,14 @@ import {
   loadModelRegistry,
   ModelRouter,
 } from "@mars/providers";
+import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
 import { omnirouteDoctorReport } from "./omniroute";
 import { runRender } from "./render";
-import { RESEARCH_SEARCH_PROVIDERS, runServer, ServeUsageError } from "./serve";
+import { RESEARCH_SEARCH_PROVIDERS, runServer } from "./serve";
 import { runSession } from "./session/app";
-import { runTeam, TeamUsageError, teamDoctorReport } from "./team";
-import { runVault, VaultUsageError } from "./vault";
+import { runTeam, teamDoctorReport } from "./team";
+import { runVault } from "./vault";
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -222,6 +223,18 @@ async function runModels(args: string[]): Promise<void> {
   throw new Error(`Unknown models command "${subcommand}".`);
 }
 
+/** Commands whose non-usage errors may carry paths or configuration, so they print this instead. */
+const REDACTED_FAILURES = new Map<string | undefined, string>([
+  [
+    "serve",
+    "MARS workbench could not start or stop safely. Check the source, private state directory, port, optional pinned local image, and research model/search configuration.",
+  ],
+  [
+    "team",
+    "MARS team service could not complete the command safely. Check the state directory, port, identity option and repo mappings.",
+  ],
+]);
+
 const command = process.argv[2];
 try {
   if (command === "doctor") {
@@ -281,29 +294,11 @@ try {
   } else if (command === "commands") {
     await runCommands(process.argv.slice(3));
   } else if (command === "serve") {
-    try {
-      await runServer(process.argv.slice(3));
-    } catch (error) {
-      console.error(
-        error instanceof ServeUsageError
-          ? error.message
-          : "MARS workbench could not start or stop safely. Check the source, private state directory, port, optional pinned local image, and research model/search configuration.",
-      );
-      process.exitCode = 1;
-    }
+    await runServer(process.argv.slice(3));
   } else if (command === "vault") {
     await runVault(process.argv.slice(3));
   } else if (command === "team") {
-    try {
-      await runTeam(process.argv.slice(3));
-    } catch (error) {
-      console.error(
-        error instanceof TeamUsageError
-          ? error.message
-          : "MARS team service could not complete the command safely. Check the state directory, port, identity option and repo mappings.",
-      );
-      process.exitCode = 1;
-    }
+    await runTeam(process.argv.slice(3));
   } else {
     console.error(
       "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|team>",
@@ -311,10 +306,6 @@ try {
     process.exitCode = 2;
   }
 } catch (error) {
-  console.error(
-    error instanceof VaultUsageError || error instanceof Error
-      ? error.message
-      : "MARS command failed",
-  );
+  console.error(cliErrorMessage(error, REDACTED_FAILURES.get(command)));
   process.exitCode = 1;
 }
