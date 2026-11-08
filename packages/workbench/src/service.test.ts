@@ -1178,3 +1178,28 @@ test.skipIf(process.env.MARS_WORKSPACES_DOCKER_TEST !== "1")(
   },
   30000,
 );
+
+test("a startup failure after resources open surfaces the original error and releases the state root", async () => {
+  const f = await fixture();
+  const occupied = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("busy"),
+  });
+  cleanup.push(async () => occupied.stop(true));
+  const options = {
+    sourceRoot: f.source,
+    stateRoot: f.root,
+    scope,
+    registry: f.registry,
+  };
+  const failure = await createWorkbenchService({
+    ...options,
+    port: occupied.port as number,
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as NodeJS.ErrnoException).code).toBe("EADDRINUSE");
+  expect(await Bun.file(join(f.root, "connection.json")).exists()).toBe(false);
+  const service = await createWorkbenchService({ ...options, port: 0 });
+  await service.close();
+});
