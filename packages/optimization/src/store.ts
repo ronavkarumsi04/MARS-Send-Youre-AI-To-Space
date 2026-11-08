@@ -104,10 +104,17 @@ async function readJson<T>(
   let text: string;
   try {
     text = await readFile(file, "utf8");
-  } catch {
-    throw missing;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw missing;
+    throw error;
   }
-  const parsed = schema.safeParse(JSON.parse(text));
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new OptimizationError("record_malformed", path.basename(file));
+  }
+  const parsed = schema.safeParse(value);
   if (!parsed.success) {
     throw new OptimizationError("record_malformed", path.basename(file));
   }
@@ -174,8 +181,13 @@ export class OptimizationStore {
     try {
       await this.readTarget(context, targetId);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (
+        error instanceof OptimizationError &&
+        error.code === "target_not_found"
+      )
+        return false;
+      throw error;
     }
   }
 

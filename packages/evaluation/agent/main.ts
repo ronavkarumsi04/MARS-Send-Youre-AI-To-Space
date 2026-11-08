@@ -14,15 +14,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { openRuntimeSession, type RuntimeTools } from "@mars/execution";
 import { loadModelRegistry } from "@mars/providers";
 import { z } from "zod";
@@ -76,14 +69,6 @@ interface Usage {
 /** Only `system_prompt` is applied today; other component keys are reported but inert. */
 const APPLIED_COMPONENTS = ["system_prompt"] as const;
 
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel === "" ||
-    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
-  );
-}
-
 function localTools(
   root: string,
   timeoutMs: number,
@@ -95,14 +80,14 @@ function localTools(
   // workspace cannot point file tools outside `root` (which is a realpath).
   const resolveInside = async (path: string) => {
     const target = resolve(root, path);
-    if (!inside(root, target)) throw escapeError(path);
+    if (!isInsideOrEqual(root, target)) throw escapeError(path);
     let probe = target;
     const missing: string[] = [];
     for (;;) {
       try {
         const real = await realpath(probe);
         const resolved = join(real, ...[...missing].reverse());
-        if (!inside(root, resolved)) throw escapeError(path);
+        if (!isInsideOrEqual(root, resolved)) throw escapeError(path);
         return resolved;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

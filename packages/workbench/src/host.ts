@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   type ChildLaunch,
   type ChildRunner,
@@ -18,6 +18,7 @@ import {
   CollaborationError,
   createChildRunner,
   createOhMyPiChildAdapter,
+  isTerminalChildState,
 } from "@mars/collaboration";
 import type { RepositoryMapProvider } from "@mars/context";
 import type {
@@ -34,6 +35,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  isTerminalTaskStatus,
   JournalEntryIdsSchema,
   REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
   RequiredCheckSchema,
@@ -44,6 +46,7 @@ import {
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
 } from "@mars/contracts";
+import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import {
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
@@ -394,14 +397,6 @@ function scopeKey(scope: Scope, taskId: string): string {
     .digest("hex");
 }
 
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return (
-    rel === "" ||
-    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
-  );
-}
-
 export async function createWorkbenchHost(
   options: WorkbenchHostOptions,
 ): Promise<WorkbenchHostApi> {
@@ -599,7 +594,7 @@ export async function createWorkbenchHost(
   };
   const readLaunch = async (task: Task): Promise<Launch> => {
     const dir = taskState(task);
-    if (!inside(root, dir) || (await realpath(dir)) !== dir)
+    if (!isInsideOrEqual(root, dir) || (await realpath(dir)) !== dir)
       throw new WorkbenchError("not_found");
     const file = await open(
       join(dir, "launch.json"),
@@ -1007,12 +1002,6 @@ export async function createWorkbenchHost(
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
   const sweepRooms = new Map<string, FrozenCollaboration>();
-  const TERMINAL_CHILD_STATES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "expired",
-  ]);
   /**
    * Mirrors the room's children into the parent task's durable timeline from
    * the collaboration store's charged usage (the authority for budgets, which
@@ -1058,7 +1047,7 @@ export async function createWorkbenchHost(
             ),
             cost_usd: Math.max(0, child.usage.usd - previous.usd),
           };
-          const final = TERMINAL_CHILD_STATES.has(child.state);
+          const final = isTerminalChildState(child.state);
           if (!final) settled = false;
           const terminal = final && previous.state !== child.state;
           if (
@@ -1105,11 +1094,7 @@ export async function createWorkbenchHost(
           .inspect(context, taskId)
           .then((task) => task.status)
           .catch(() => null);
-        if (
-          status === "completed" ||
-          status === "failed" ||
-          status === "cancelled"
-        )
+        if (status !== null && isTerminalTaskStatus(status))
           await forgetTaskModels(taskId);
       }
     };

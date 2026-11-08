@@ -12,6 +12,7 @@ import {
   createChildRunner,
 } from "./runner";
 import type { CollaborationLimits } from "./schemas";
+import { ChildViewSchema, isTerminalChildState } from "./schemas";
 
 const scope: Scope = {
   owner_id: "owner",
@@ -639,4 +640,12 @@ test("stored JSON with the wrong shape is reported as corrupt_record", async () 
       }),
     "corrupt_record",
   );
+});
+
+test("classifies settled child states as terminal", () => {
+  expect(
+    ChildViewSchema.shape.state.options.filter((state) =>
+      isTerminalChildState(state),
+    ),
+  ).toEqual(["completed", "failed", "cancelled", "expired"]);
 });
