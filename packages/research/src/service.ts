@@ -161,6 +161,19 @@ export interface ResearchEventSink {
   ): Promise<unknown>;
 }
 
+// Names the background operation that failed, not the handler that caught it.
+export type ResearchInternalErrorSite =
+  | "run_settled"
+  | "flush_events"
+  | "execute_claim"
+  | "pump";
+
+export interface ResearchInternalError {
+  where: ResearchInternalErrorSite;
+  error: unknown;
+  at: string;
+}
+
 export interface ResearchServiceOptions {
   rootDir: string;
   tasks: ResearchTaskReader;
@@ -179,6 +192,7 @@ export interface ResearchServiceOptions {
   pollMs?: number;
   autoStart?: boolean;
   now?: () => number;
+  onInternalError?: (where: ResearchInternalErrorSite, error: unknown) => void;
 }
 
 export interface DurableResearchService extends ResearchService {
@@ -201,6 +215,7 @@ export interface DurableResearchService extends ResearchService {
     taskId: string,
   ): Promise<{ task_revision: number; stale_request_ids: string[] }>;
   pump(): Promise<void>;
+  lastInternalError(): ResearchInternalError | undefined;
   close(options?: { drainMs?: number }): Promise<void>;
 }
 
@@ -689,6 +704,12 @@ export async function createResearchService(
       "Invalid research service options",
     );
   }
+  if (
+    options.onInternalError !== undefined &&
+    typeof options.onInternalError !== "function"
+  ) {
+    throw new ResearchError("invalid_input", "Invalid research service option");
+  }
   const configured = validateOptions(options);
   const requestedMaxTimerMs = (
     options as ResearchServiceOptions & { __maxTimerMs?: number }
@@ -722,8 +743,19 @@ export async function createResearchService(
   let flushInFlight: Promise<void> | null = null;
   let flushRequested = false;
   let closePromise: Promise<void> | undefined;
+  let lastInternalError: ResearchInternalError | undefined;
 
   const currentTime = (): number => configured.now();
+  const reportInternalError = (
+    where: ResearchInternalErrorSite,
+    error: unknown,
+  ): void => {
+    lastInternalError = { where, error, at: new Date().toISOString() };
+    // A failing reporter must not break scheduling; the error stays recorded.
+    try {
+      Promise.resolve(options.onInternalError?.(where, error)).catch(() => {});
+    } catch {}
+  };
   const checkOpen = (): void => {
     if (state !== "open") throw new ResearchError("closed", CLOSED_MESSAGE);
   };
@@ -1656,25 +1688,40 @@ export async function createResearchService(
     const task = Promise.resolve().then(() =>
       options.worker.run(input, workerContext(entry, context, claim.request)),
     );
+    const release = (): void => {
+      clearInterval(entry.heartbeat);
+      clearTimeout(entry.deadlineTimer);
+      localRuns.delete(key);
+      wake();
+    };
+    const afterRun = async (): Promise<void> => {
+      try {
+        await flushEvents();
+      } catch (error) {
+        reportInternalError("flush_events", error);
+        return;
+      }
+      if (state === "open" && configured.autoStart) {
+        await pump().catch((error: unknown) =>
+          reportInternalError("pump", error),
+        );
+      }
+    };
     entry.settled = task
       .then(
         () => finishSuccess(entry),
         (error: unknown) => finishFailure(entry, error),
       )
-      .then(async () => {
-        clearInterval(entry.heartbeat);
-        clearTimeout(entry.deadlineTimer);
-        localRuns.delete(key);
-        wake();
-        await flushEvents();
-        if (state === "open" && configured.autoStart) await pump();
-      })
-      .catch(() => {
-        clearInterval(entry.heartbeat);
-        clearTimeout(entry.deadlineTimer);
-        localRuns.delete(key);
-        wake();
-      });
+      .then(
+        async () => {
+          release();
+          await afterRun();
+        },
+        (error: unknown) => {
+          reportInternalError("run_settled", error);
+          release();
+        },
+      );
     void entry.settled;
   };
 
@@ -1696,7 +1743,9 @@ export async function createResearchService(
       while (localRuns.size < configured.maxConcurrency && state === "open") {
         const claim = claimNext();
         if (!claim) break;
-        void executeClaim(claim).catch(() => {});
+        void executeClaim(claim).catch((error: unknown) =>
+          reportInternalError("execute_claim", error),
+        );
       }
       wake();
     } finally {
@@ -1707,7 +1756,9 @@ export async function createResearchService(
   const schedulePump = (): void => {
     if (configured.autoStart && state === "open") {
       queueMicrotask(() => {
-        void pump().catch(() => {});
+        void pump().catch((error: unknown) =>
+          reportInternalError("pump", error),
+        );
       });
     }
   };
@@ -2141,6 +2192,9 @@ export async function createResearchService(
         stale_request_ids: staleRequestIds,
       };
     },
+    lastInternalError() {
+      return lastInternalError;
+    },
     async pump() {
       checkOpen();
       await pump();
@@ -2225,11 +2279,11 @@ export async function createResearchService(
 
   if (configured.autoStart) {
     autoPump = setInterval(() => {
-      void pump().catch(() => {});
+      void pump().catch((error: unknown) => reportInternalError("pump", error));
     }, configured.pollMs);
     autoPump.unref?.();
     schedulePump();
-    void pump().catch(() => {});
+    void pump().catch((error: unknown) => reportInternalError("pump", error));
   }
 
   return api;
