@@ -213,8 +213,42 @@ export interface RunTeamAgentRequestOptions {
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   /** Test seam only: observe the session (its tool allow-list) before it runs. */
   onSession?: (session: RuntimeSession) => void;
-  /** Operational notice for a caught failure, with the reason code it maps to: never a body, a prompt or a path. */
-  onError?(error: unknown, reason_code: string): void;
+  /** Operational notice for a caught failure. Carries no message, stack, body, prompt or path: see `teamAgentErrorNotice`. */
+  onError?(notice: TeamAgentErrorNotice): void;
+}
+
+export interface TeamAgentErrorNotice {
+  reason_code: string;
+  /** Constructor name of the thrown value (`TypeError`, `ProviderError`, …) or its `typeof`. */
+  error_name: string;
+  /** Symbolic error code (`ENOTDIR`, `ERR_INVALID_URL`, …) when the error carries one. */
+  error_code: string | null;
+}
+
+const ERROR_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * Reduces a caught error to identifiers only. Messages and stacks can quote
+ * conversation text, prompts or provider responses, so they never leave here.
+ */
+export function teamAgentErrorNotice(
+  error: unknown,
+  reason_code: string,
+): TeamAgentErrorNotice {
+  const name =
+    error instanceof Error
+      ? error.constructor?.name || error.name
+      : typeof error;
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return {
+    reason_code,
+    error_name: ERROR_IDENTIFIER.test(name) ? name : "Error",
+    error_code:
+      typeof code === "string" && ERROR_IDENTIFIER.test(code) ? code : null,
+  };
 }
 
 export interface TeamAgentRunResult {
@@ -329,7 +363,7 @@ export async function runTeamAgentRequest(
       ...(options.env ? { env: options.env } : {}),
     });
   } catch (error) {
-    options.onError?.(error, "session_unavailable");
+    options.onError?.(teamAgentErrorNotice(error, "session_unavailable"));
     return { ...base, reason_code: "session_unavailable" };
   }
   const result: TeamAgentRunResult = {
@@ -366,7 +400,7 @@ export async function runTeamAgentRequest(
   } catch (error) {
     result.model_requests = modelRequests;
     const reason_code = options.signal?.aborted ? "cancelled" : "model_failed";
-    options.onError?.(error, reason_code);
+    options.onError?.(teamAgentErrorNotice(error, reason_code));
     return reason_code === "cancelled"
       ? { ...result, status: "cancelled", reason_code }
       : { ...result, reason_code };
