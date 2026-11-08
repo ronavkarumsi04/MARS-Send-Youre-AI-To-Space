@@ -80,6 +80,18 @@ describe("readBoundedUtf8", () => {
     expect(await failureOf(readBoundedUtf8(buffered, 64))).toBe("malformed");
   });
 
+  test("cancels the stream when a chunk is not valid UTF-8", async () => {
+    let cancelled = false;
+    const response = streamed(
+      [new Uint8Array([0x7b, 0xff]), new Uint8Array(16).fill(0x20)],
+      () => {
+        cancelled = true;
+      },
+    );
+    expect(await failureOf(readBoundedUtf8(response, 64))).toBe("malformed");
+    expect(cancelled).toBe(true);
+  });
+
   test("bounds buffered and text-only bodies by UTF-8 bytes, not characters", async () => {
     const text = "é".repeat(40);
     const bytes = new TextEncoder().encode(text);

@@ -70,13 +70,13 @@ export async function readBoundedUtf8(
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new BoundedReadError("too_large");
-      }
+      if (total > maxBytes) throw new BoundedReadError("too_large");
       text += decodeStrict(decoder, value, true);
     }
     return text + decodeStrict(decoder);
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
   } finally {
     reader.releaseLock();
   }
