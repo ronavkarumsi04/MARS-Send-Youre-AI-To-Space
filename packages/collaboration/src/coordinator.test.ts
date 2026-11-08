@@ -1355,6 +1355,44 @@ test("room and task scopes fence capabilities, results, children, and cursors", 
   expect(otherRoom.room.scope).toEqual(otherScope);
 });
 
+test("blank delegation instructions are invalid input before other policy checks", async () => {
+  const f = await fixture();
+  await expectCode(
+    () =>
+      f.collaboration.agents.delegate(
+        context,
+        f.coordinator,
+        delegation("blank-instruction", { instruction: "   " }),
+      ),
+    "invalid_input",
+  );
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("non-delegating-blank-parent"),
+  );
+  const childCapability = child.capability;
+  if (!childCapability) throw new Error("Child capability was not issued");
+  await expectCode(
+    () =>
+      f.collaboration.agents.delegate(
+        context,
+        childCapability,
+        delegation("blank-grandchild"),
+      ),
+    "forbidden",
+  );
+  await expectCode(
+    () =>
+      f.collaboration.agents.delegate(
+        context,
+        childCapability,
+        delegation("blank-grandchild", { instruction: "\t\n " }),
+      ),
+    "invalid_input",
+  );
+});
+
 test("inherited limits reject excess authority, depth, children, and write claims", async () => {
   const f = await fixture();
   const child = await f.collaboration.agents.delegate(
