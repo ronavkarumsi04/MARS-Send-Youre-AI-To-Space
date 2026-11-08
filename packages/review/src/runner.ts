@@ -94,6 +94,22 @@ export const REVIEW_LIMITS = {
   backoff_max_ms: 60 * 60_000,
 } as const;
 
+const ERROR_MESSAGE_CHARS = 200;
+/**
+ * Log-safe cause of a failure: error name plus a truncated message. JSON
+ * `SyntaxError` messages quote the model reply, so only their name is kept.
+ */
+const describeError = (error: unknown) => ({
+  errorName: error instanceof Error ? error.name : typeof error,
+  ...(error instanceof SyntaxError
+    ? {}
+    : {
+        errorMessage: (error instanceof Error
+          ? error.message
+          : String(error)
+        ).slice(0, ERROR_MESSAGE_CHARS),
+      }),
+});
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const EXCLUDED =
@@ -318,6 +334,7 @@ export class ReviewRunner {
     signal: AbortSignal,
   ): Promise<ReviewResult> {
     let outputHash: string | undefined;
+    let failure: ReturnType<typeof describeError> | undefined;
     const context = this.deps.context;
     try {
       await this.log(turn, result, "started", {
@@ -440,6 +457,7 @@ export class ReviewRunner {
       this.backoff = 0;
       result.status = "completed";
     } catch (error) {
+      failure = describeError(error);
       if (result.proposals.length) await this.withdraw(turn, result, error);
       if (signal.aborted) result.status = "cancelled";
       else if (error instanceof ReviewRateLimit) {
@@ -463,6 +481,7 @@ export class ReviewRunner {
       proposals: result.proposals,
       outputHash,
       cooldownUntil: this.cooldown || undefined,
+      ...failure,
     });
     return result;
   }
@@ -480,6 +499,9 @@ export class ReviewRunner {
       cause instanceof Error ? cause.name : "failed"
     }`;
     const withdrawn: ReviewResult["proposals"] = [];
+    const failed: ({
+      proposal: ReviewResult["proposals"][number];
+    } & ReturnType<typeof describeError>)[] = [];
     for (const proposal of result.proposals.splice(0)) {
       try {
         if (proposal.store === "memory") {
@@ -498,13 +520,14 @@ export class ReviewRunner {
           });
         }
         withdrawn.push(proposal);
-      } catch {
+      } catch (error) {
         result.proposals.push(proposal);
+        failed.push({ proposal, ...describeError(error) });
       }
     }
     await this.log(turn, result, "withdrawn", {
       withdrawn,
-      remaining: result.proposals,
+      remaining: failed,
     });
   }
   /** Clears pending work, aborts in-flight review and drains it. */

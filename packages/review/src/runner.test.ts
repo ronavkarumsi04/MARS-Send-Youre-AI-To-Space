@@ -336,7 +336,7 @@ test("malformed, over-scoped, tool-calling or threatening output is rejected bef
 });
 
 test("snapshot fencing: stores that change mid-review get no proposals", async () => {
-  const { memory, skills, runner } = setup(
+  const { memory, skills, runner, log } = setup(
     fakeModel(async () => {
       await skills.create("fresh", skillContent("fresh"), {
         actor: "user",
@@ -349,6 +349,11 @@ test("snapshot fencing: stores that change mid-review get no proposals", async (
   expect(result.status).toBe("error");
   expect(result.proposals).toEqual([]);
   expect(await memory.listProposals(context)).toEqual([]);
+  expect(log().at(-1)).toMatchObject({
+    event: "error",
+    errorName: "Error",
+    errorMessage: "Snapshot changed",
+  });
 });
 
 test("add-only review proposals rebase onto later user writes instead of clobbering them", async () => {
@@ -472,6 +477,68 @@ test("a review is all-or-nothing: earlier proposals are withdrawn when a later o
     "proposal",
     "withdrawn",
     "rejected",
+  ]);
+  expect(log().at(-2)?.remaining).toEqual([]);
+  expect(log().at(-1)).toMatchObject({
+    errorName: "SkillError",
+    errorMessage: expect.any(String),
+  });
+});
+
+test("failure logs name the cause: provider errors and failed withdrawals", async () => {
+  const provider = setup(
+    fakeModel(() => {
+      throw new TypeError("x".repeat(500));
+    }),
+  );
+  expect((await provider.runner.reviewNow(turn())).status).toBe("error");
+  expect(provider.log().at(-1)).toMatchObject({
+    event: "error",
+    errorName: "TypeError",
+    errorMessage: "x".repeat(200),
+  });
+
+  const unparsable = setup(fakeModel(() => '{"proposals": secretReplyText}'));
+  expect((await unparsable.runner.reviewNow(turn())).status).toBe("rejected");
+  const parseFailure = unparsable.log().at(-1);
+  expect(parseFailure?.errorName).toBe("InvalidOutput");
+  expect(JSON.stringify(parseFailure)).not.toContain("secretReplyText");
+
+  const model = fakeModel(() =>
+    output([memoryProposal("Run tests"), skillProposal("taken")]),
+  );
+  const { dir, memory, skills, log } = setup(model);
+  await skills.create("taken", skillContent("taken"), {
+    actor: "user",
+    source: "interactive",
+  });
+  const runner = new ReviewRunner({
+    context,
+    memory: {
+      snapshot: (ctx) => memory.snapshot(ctx),
+      submitProposal: (ctx, input) => memory.submitProposal(ctx, input),
+      rejectProposal: async () => {
+        throw new Error("store offline");
+      },
+    },
+    skills,
+    model,
+    logRoot: join(dir, "review"),
+    idleMs: 0,
+    timeoutMs: 5_000,
+  });
+  runners.push(runner);
+  const result = await runner.reviewNow(turn());
+  expect(result.status).toBe("rejected");
+  expect(result.proposals).toHaveLength(1);
+  const withdrawn = log().find((r) => r.event === "withdrawn");
+  expect(withdrawn?.withdrawn).toEqual([]);
+  expect(withdrawn?.remaining).toEqual([
+    {
+      proposal: result.proposals[0],
+      errorName: "Error",
+      errorMessage: "store offline",
+    },
   ]);
 });
 
