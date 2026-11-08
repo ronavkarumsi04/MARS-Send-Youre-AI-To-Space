@@ -18,6 +18,7 @@ import {
   candidateDigest,
   canonicalJson,
   checkSpecialistBindings,
+  evaluateTriple,
   formatRef,
   type ModelCatalog,
   type ReasonCode,
@@ -2022,5 +2023,83 @@ describe("routing utilities and provider structural compatibility", () => {
     expect(sha256("synthetic")).toHaveLength(64);
     expect(candidateDigest(changedEvaluation)).toBe(fixture.candidateSha256);
     expect(formatRef("specialist", "x", "1")).toBe("specialist:x@1");
+  });
+
+  test("evaluates one coverage triple as a pure acceptance gate", async () => {
+    const artifacts = new MemoryArtifacts();
+    const triple = {
+      domain: "coding/mechanical-edit",
+      role: "worker",
+      complexity: "medium",
+    } as const;
+    const passing = await makeSpecialistFixture(artifacts);
+    expect(
+      evaluateTriple(passing.report, passing.registration, triple, null),
+    ).toEqual({
+      codes: [],
+      gate: {
+        ...triple,
+        pass_rate: 1,
+        base_pass_rate: 0,
+        delta_vs_base: 1,
+        prompt_optimized_pass_rate: 0,
+        delta_vs_prompt_optimized: 1,
+        current_pass_rate: null,
+        delta_vs_current: null,
+        cost_usd_per_task: 0.01,
+        runtime_ms_p95: 100,
+        passed: true,
+      },
+    });
+    expect(
+      evaluateTriple(
+        passing.report,
+        passing.registration,
+        { ...triple, complexity: "heavy" },
+        null,
+      ),
+    ).toEqual({ codes: [] });
+    const withoutCurrent = {
+      ...passing.report,
+      results: passing.report.results.filter(
+        (result) => result.arm !== "current_specialist",
+      ),
+    };
+    expect(
+      evaluateTriple(withoutCurrent, passing.registration, triple, "0"),
+    ).toEqual({ codes: [] });
+
+    const unmeasured = await makeSpecialistFixture(artifacts, {
+      specialistId: "unmeasured",
+      costUsdTotal: null,
+      runtimeMsP95: null,
+      acceptance: { max_cost_usd_per_task: 1, max_runtime_ms_p95: 1000 },
+    });
+    const unmeasuredResult = evaluateTriple(
+      unmeasured.report,
+      unmeasured.registration,
+      triple,
+      null,
+    );
+    expect(unmeasuredResult.codes).toEqual([
+      "cost_unmeasured",
+      "runtime_unmeasured",
+    ]);
+    expect(unmeasuredResult.gate?.passed).toBe(false);
+
+    const overBudget = await makeSpecialistFixture(artifacts, {
+      specialistId: "over-budget",
+      costUsdTotal: 5,
+      runtimeMsP95: 5000,
+      acceptance: { max_cost_usd_per_task: 1, max_runtime_ms_p95: 1000 },
+    });
+    const overBudgetResult = evaluateTriple(
+      overBudget.report,
+      overBudget.registration,
+      triple,
+      null,
+    );
+    expect(overBudgetResult.codes).toEqual([]);
+    expect(overBudgetResult.gate?.passed).toBe(false);
   });
 });
