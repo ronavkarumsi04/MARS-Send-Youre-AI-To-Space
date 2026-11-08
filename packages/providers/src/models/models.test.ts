@@ -10,12 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type ChatRequest,
+  type ChatResponse,
   type ModelConfig,
   ModelConfigSchema,
   type ProviderConfig,
   ProviderConfigSchema,
   type StreamEvent,
 } from "@mars/contracts";
+import type { ProviderAdapter } from "./adapter-types";
 import { createAnthropicAdapter } from "./anthropic";
 import { discoverModels } from "./discovery";
 import { ProviderError } from "./errors";
@@ -269,21 +271,6 @@ test("OpenAI-compatible completion accepts only valid content and tool-call shap
     [{ message: {}, finish_reason: "stop" }],
     [{ message: { content: 42 }, finish_reason: "stop" }],
     [{ message: { content: null }, finish_reason: "stop" }],
-    [
-      {
-        message: {
-          content: null,
-          tool_calls: [
-            {
-              id: "call1",
-              type: "function",
-              function: { arguments: "{}" },
-            },
-          ],
-        },
-        finish_reason: "tool_calls",
-      },
-    ],
   ];
   for (const choices of invalidChoices) {
     const error = await rejectedValue(completeWith({ choices }));
@@ -1529,5 +1516,271 @@ test("both adapters keep a transport failure before any text retryable", async (
       message: "Provider stream failed or timed out.",
       retryable: true,
     });
+  }
+});
+
+function jsonBody(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200 });
+}
+
+function sseResponse(frames: string[]): Response {
+  return new Response(frames.join(""), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+async function streamResult(adapter: ProviderAdapter): Promise<ChatResponse> {
+  let response: ChatResponse | undefined;
+  for await (const event of adapter.stream(
+    request,
+    model("upstream", "stub"),
+  )) {
+    if (event.type === "done") response = event.response;
+  }
+  if (!response) throw new Error("stream ended without a done event");
+  return response;
+}
+
+interface ToolCallFixture {
+  id?: string;
+  name?: string;
+  /** Raw JSON argument text as the provider sends it. */
+  args: string;
+}
+
+/** Runs one tool call through all four adapter paths (complete and stream). */
+function toolCallPaths(call: ToolCallFixture) {
+  const openaiTool = {
+    ...(call.id !== undefined ? { id: call.id } : {}),
+    type: "function",
+    function: {
+      ...(call.name !== undefined ? { name: call.name } : {}),
+      arguments: call.args,
+    },
+  };
+  const anthropicBlock = {
+    type: "tool_use",
+    ...(call.id !== undefined ? { id: call.id } : {}),
+    ...(call.name !== undefined ? { name: call.name } : {}),
+    input: {},
+  };
+  const openai = (fetcher: () => Promise<Response>) =>
+    createOpenAICompatibleAdapter(
+      provider("stub", "https://models.example/v1"),
+      { fetch: fetcher },
+    );
+  const anthropic = (fetcher: () => Promise<Response>) =>
+    createAnthropicAdapter(
+      provider("anthropic", "https://models.example", { kind: "anthropic" }),
+      { fetch: fetcher },
+    );
+  return {
+    "openai complete": () =>
+      openai(async () =>
+        jsonBody({
+          choices: [
+            {
+              message: { content: null, tool_calls: [openaiTool] },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+      ).complete(request, model("upstream", "stub")),
+    "openai stream": () =>
+      streamResult(
+        openai(async () =>
+          sseResponse([
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: { tool_calls: [{ index: 0, ...openaiTool }] },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            })}\n\n`,
+            "data: [DONE]\n\n",
+          ]),
+        ),
+      ),
+    "anthropic complete": () => {
+      let input: unknown;
+      try {
+        input = JSON.parse(call.args);
+      } catch {
+        input = call.args;
+      }
+      return anthropic(async () =>
+        jsonBody({
+          type: "message",
+          content: [{ ...anthropicBlock, input }],
+          stop_reason: "tool_use",
+        }),
+      ).complete(request, model("upstream", "stub"));
+    },
+    "anthropic stream": () =>
+      streamResult(
+        anthropic(async () =>
+          sseResponse([
+            `event: content_block_start\ndata: ${JSON.stringify({
+              type: "content_block_start",
+              index: 0,
+              content_block: anthropicBlock,
+            })}\n\n`,
+            `event: content_block_delta\ndata: ${JSON.stringify({
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "input_json_delta", partial_json: call.args },
+            })}\n\n`,
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ]),
+        ),
+      ),
+  };
+}
+
+test("all four adapter paths accept a well-formed tool call identically", async () => {
+  for (const [path, run] of Object.entries(
+    toolCallPaths({ id: "call1", name: "weather", args: '{"city":"Paris"}' }),
+  )) {
+    const response = await run();
+    expect({ path, toolCalls: response.toolCalls }).toEqual({
+      path,
+      toolCalls: [
+        { id: "call1", name: "weather", arguments: { city: "Paris" } },
+      ],
+    });
+  }
+});
+
+test("all four adapter paths reject a tool call without an id or name", async () => {
+  const fixtures: ToolCallFixture[] = [
+    { name: "weather", args: "{}" },
+    { id: "", name: "weather", args: "{}" },
+    { id: "call1", args: "{}" },
+    { id: "call1", name: "", args: "{}" },
+  ];
+  for (const fixture of fixtures) {
+    for (const [path, run] of Object.entries(toolCallPaths(fixture))) {
+      const error = await rejectedValue(run());
+      expect({ path, error }).toMatchObject({
+        path,
+        error: {
+          name: "ProviderError",
+          message: "Provider returned a tool call without an id or name.",
+          retryable: false,
+        },
+      });
+    }
+  }
+});
+
+test("all four adapter paths reject tool arguments that are not a JSON object", async () => {
+  for (const args of ["[1,2]", '"text"', "null", "42"]) {
+    for (const [path, run] of Object.entries(
+      toolCallPaths({ id: "call1", name: "weather", args }),
+    )) {
+      const error = await rejectedValue(run());
+      expect({ path, error }).toMatchObject({
+        path,
+        error: {
+          name: "ProviderError",
+          message: "Provider returned invalid tool arguments.",
+          retryable: false,
+        },
+      });
+    }
+  }
+});
+
+test("both adapters report malformed tool-argument JSON with the same error in both modes", async () => {
+  const paths = toolCallPaths({ id: "call1", name: "weather", args: "{oops" });
+  for (const path of [
+    "openai complete",
+    "openai stream",
+    "anthropic stream",
+  ] as const) {
+    const error = await rejectedValue(paths[path]());
+    expect({ path, error }).toMatchObject({
+      path,
+      error: {
+        message: "Provider returned invalid tool arguments.",
+        retryable: false,
+      },
+    });
+  }
+});
+
+test("all four adapter paths report usage only for integer token counts", async () => {
+  const openai = (usage: unknown, stream: boolean) => {
+    const adapter = createOpenAICompatibleAdapter(
+      provider("stub", "https://models.example/v1"),
+      {
+        fetch: async () =>
+          stream
+            ? sseResponse([
+                `data: ${JSON.stringify({
+                  choices: [
+                    { delta: { content: "hi" }, finish_reason: "stop" },
+                  ],
+                  usage,
+                })}\n\n`,
+                "data: [DONE]\n\n",
+              ])
+            : jsonBody({
+                choices: [
+                  { message: { content: "hi" }, finish_reason: "stop" },
+                ],
+                usage,
+              }),
+      },
+    );
+    return stream
+      ? streamResult(adapter)
+      : adapter.complete(request, model("upstream", "stub"));
+  };
+  const anthropic = (input: unknown, output: unknown, stream: boolean) => {
+    const adapter = createAnthropicAdapter(
+      provider("anthropic", "https://models.example", { kind: "anthropic" }),
+      {
+        fetch: async () =>
+          stream
+            ? sseResponse([
+                `event: message_start\ndata: ${JSON.stringify({
+                  type: "message_start",
+                  message: { usage: { input_tokens: input } },
+                })}\n\n`,
+                `event: message_delta\ndata: ${JSON.stringify({
+                  type: "message_delta",
+                  delta: { stop_reason: "end_turn" },
+                  usage: { output_tokens: output },
+                })}\n\n`,
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+              ])
+            : jsonBody({
+                type: "message",
+                content: [{ type: "text", text: "hi" }],
+                stop_reason: "end_turn",
+                usage: { input_tokens: input, output_tokens: output },
+              }),
+      },
+    );
+    return stream
+      ? streamResult(adapter)
+      : adapter.complete(request, model("upstream", "stub"));
+  };
+  for (const stream of [false, true]) {
+    expect(
+      (await openai({ prompt_tokens: 3, completion_tokens: 2 }, stream)).usage,
+    ).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(
+      (await openai({ prompt_tokens: 3.5, completion_tokens: 2 }, stream))
+        .usage,
+    ).toBeUndefined();
+    expect((await anthropic(3, 2, stream)).usage).toEqual({
+      inputTokens: 3,
+      outputTokens: 2,
+    });
+    expect((await anthropic(3, 2.5, stream)).usage).toBeUndefined();
   }
 });

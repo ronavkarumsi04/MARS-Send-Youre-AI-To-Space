@@ -15,12 +15,16 @@ import {
   hasErrorEnvelope,
   type JsonObject,
   parseSseJson,
+  parseToolArguments,
   providerEnvelopeError,
   readJson,
   readSseFrames,
+  requireToolCall,
   sendProviderRequest,
   streamBody,
   streamFailure,
+  unexpectedResponseShape,
+  usageFrom,
 } from "./http";
 
 function isObject(value: unknown): value is JsonObject {
@@ -29,53 +33,6 @@ function isObject(value: unknown): value is JsonObject {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function usageFrom(value: unknown): ChatResponse["usage"] {
-  const usage = asObject(value);
-  const inputTokens = usage.prompt_tokens;
-  const outputTokens = usage.completion_tokens;
-  if (
-    typeof inputTokens !== "number" ||
-    typeof outputTokens !== "number" ||
-    !Number.isInteger(inputTokens) ||
-    !Number.isInteger(outputTokens)
-  ) {
-    return undefined;
-  }
-  return { inputTokens, outputTokens };
-}
-
-function parseToolArguments(
-  value: unknown,
-  providerId: string,
-): Record<string, unknown> {
-  if (typeof value !== "string") return {};
-  try {
-    const parsed: unknown = JSON.parse(value || "{}");
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    throw new ProviderError(
-      providerId,
-      "Provider returned invalid tool arguments.",
-      {
-        retryable: false,
-      },
-    );
-  }
-  throw new ProviderError(
-    providerId,
-    "Provider returned invalid tool arguments.",
-    {
-      retryable: false,
-    },
-  );
 }
 
 function openaiMessages(messages: ChatMessage[]): unknown[] {
@@ -174,24 +131,13 @@ export function createOpenAICompatibleAdapter(
       const choice = choices[0];
       const message = isObject(choice) ? choice.message : undefined;
       if (choices.length === 0 || !isObject(choice) || !isObject(message)) {
-        throw new ProviderError(
-          provider.id,
-          "Provider returned an unexpected response shape.",
-          { retryable: false },
-        );
+        throw unexpectedResponseShape(provider.id);
       }
-      const throwUnexpectedShape = (): never => {
-        throw new ProviderError(
-          provider.id,
-          "Provider returned an unexpected response shape.",
-          { retryable: false },
-        );
-      };
       const rawContent = message.content;
       const hasContent = Object.hasOwn(message, "content");
       const rawTools = message.tool_calls;
       if (Object.hasOwn(message, "tool_calls") && !Array.isArray(rawTools)) {
-        throwUnexpectedShape();
+        throw unexpectedResponseShape(provider.id);
       }
       const toolCalls: ChatToolCall[] = (
         Array.isArray(rawTools) ? rawTools : []
@@ -199,27 +145,22 @@ export function createOpenAICompatibleAdapter(
         if (
           !isObject(rawTool) ||
           rawTool.type !== "function" ||
-          typeof rawTool.id !== "string" ||
-          rawTool.id.length === 0 ||
           !isObject(rawTool.function) ||
-          typeof rawTool.function.name !== "string" ||
-          rawTool.function.name.length === 0 ||
           typeof rawTool.function.arguments !== "string"
         ) {
-          throwUnexpectedShape();
+          throw unexpectedResponseShape(provider.id);
         }
-        const args = (() => {
-          try {
-            return parseToolArguments(rawTool.function.arguments, provider.id);
-          } catch {
-            return throwUnexpectedShape();
-          }
-        })();
-        return {
-          id: rawTool.id,
-          name: rawTool.function.name,
-          arguments: args,
-        };
+        return requireToolCall(
+          {
+            id: rawTool.id,
+            name: rawTool.function.name,
+            arguments: parseToolArguments(
+              rawTool.function.arguments,
+              provider.id,
+            ),
+          },
+          provider.id,
+        );
       });
       let content = "";
       let validContent = false;
@@ -246,8 +187,12 @@ export function createOpenAICompatibleAdapter(
       } else if ((rawContent === null || !hasContent) && toolCalls.length > 0) {
         validContent = true;
       }
-      if (!validContent) throwUnexpectedShape();
-      const usage = usageFrom(payload.usage);
+      if (!validContent) throw unexpectedResponseShape(provider.id);
+      const usage = usageFrom(
+        payload.usage,
+        "prompt_tokens",
+        "completion_tokens",
+      );
       return {
         content,
         toolCalls,
@@ -303,7 +248,9 @@ export function createOpenAICompatibleAdapter(
           }
           if (typeof choice.finish_reason === "string")
             finishReason = choice.finish_reason;
-          usage = usageFrom(payload.usage) ?? usage;
+          usage =
+            usageFrom(payload.usage, "prompt_tokens", "completion_tokens") ??
+            usage;
 
           if (Array.isArray(delta.tool_calls)) {
             for (const rawTool of delta.tool_calls) {
@@ -335,20 +282,16 @@ export function createOpenAICompatibleAdapter(
 
       const toolCalls = [...partialTools.entries()]
         .sort(([left], [right]) => left - right)
-        .map(([index, partial]) => ({
-          id: partial.id || `tool-${index}`,
-          name: partial.name,
-          arguments: parseToolArguments(partial.args, provider.id),
-        }));
-      if (toolCalls.some(({ name }) => !name)) {
-        throw new ProviderError(
-          provider.id,
-          "Provider returned a tool call without a name.",
-          {
-            retryable: false,
-          },
+        .map(([, partial]) =>
+          requireToolCall(
+            {
+              id: partial.id,
+              name: partial.name,
+              arguments: parseToolArguments(partial.args, provider.id),
+            },
+            provider.id,
+          ),
         );
-      }
       for (const toolCall of toolCalls) yield { type: "tool-call", toolCall };
       yield {
         type: "done",
