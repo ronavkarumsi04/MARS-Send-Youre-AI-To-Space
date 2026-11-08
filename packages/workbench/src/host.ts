@@ -589,13 +589,20 @@ export async function createWorkbenchHost(
           ),
         }
       : {};
+  // Stale-marking failures are recorded as reviewable evidence; a failing
+  // sink never fails the steer.
   const staleResearch = async (taskId: string) => {
     if (!options.research) return;
-    await staleTaskResearch(
-      options.research,
-      internalContext(options.scope),
-      taskId,
-    ).catch(() => undefined);
+    const context = internalContext(options.scope);
+    const failures = await staleTaskResearch(options.research, context, taskId);
+    if (failures.length === 0) return;
+    await options.store
+      .appendEvent(
+        context,
+        taskId,
+        workbenchEvent({ operation: "research.stale_failed", failures }),
+      )
+      .catch(() => undefined);
   };
   const reconcileResearch = async (taskId: string) => {
     if (!options.research) return;

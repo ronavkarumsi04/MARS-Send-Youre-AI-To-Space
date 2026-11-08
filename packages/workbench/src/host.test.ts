@@ -38,6 +38,7 @@ import {
 import { createMemoryStore } from "@mars/memory";
 import type { ModelProviderRegistry } from "@mars/providers";
 import { loadModelRegistry } from "@mars/providers";
+import { ResearchError } from "@mars/research";
 import type { Turn } from "@mars/review";
 import { CommandError } from "@mars/skills";
 import type { RoutingRequest } from "@mars/specialists";
@@ -3152,6 +3153,91 @@ test("research tools are host-bound to the task revision and budget, render untr
   await api.close();
   expect(reconciled.length).toBeGreaterThanOrEqual(2);
 });
+
+test.each(["markStale", "list"] as const)(
+  "research stale-marking failures on steer are recorded and non-fatal (%s fails)",
+  async (failing) => {
+    const f = await fixture();
+    const staled: string[] = [];
+    const cancelled: string[] = [];
+    const job = (requestId: string) =>
+      ({
+        request_id: requestId,
+        task_id: "task",
+        status: "running",
+        stale: false,
+      }) as Awaited<ReturnType<WorkbenchResearch["inspect"]>>;
+    const research = {
+      async submit() {
+        return "rr_unused";
+      },
+      async inspect() {
+        throw new Error("unused");
+      },
+      async readFindings() {
+        return [];
+      },
+      async list() {
+        if (failing === "list") throw new Error(`private ${f.root}/state`);
+        return [job("rr_broken"), job("rr_ok")];
+      },
+      async markStale(_context: unknown, requestId: string) {
+        if (requestId === "rr_broken")
+          throw new ResearchError("closed", `private ${f.root}/state`);
+        staled.push(requestId);
+      },
+      async cancel(_context: unknown, requestId: string) {
+        cancelled.push(requestId);
+      },
+      async reconcileTask() {
+        return { task_revision: 1, stale_request_ids: [] };
+      },
+    } as unknown as WorkbenchResearch;
+    const api = await f.makeHost(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      research,
+    );
+    await api.create(context(), task());
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: false, write: false, execute: false },
+    });
+    const session = required(f.sessions[0]);
+    await api.steer(context(), "task", "narrow the question");
+    if (failing === "markStale") {
+      expect(staled).toEqual(["rr_ok"]);
+      expect(cancelled).toEqual(["rr_broken", "rr_ok"]);
+    }
+    const payloads = await Promise.all(
+      (await api.events(context(), "task")).map(async (event) =>
+        new TextDecoder().decode(
+          await f.store.artifacts.get(context(), event.payload),
+        ),
+      ),
+    );
+    const recorded = payloads
+      .map((payload) => JSON.parse(payload) as Record<string, unknown>)
+      .filter((payload) => payload.operation === "research.stale_failed");
+    expect(recorded).toEqual([
+      {
+        operation: "research.stale_failed",
+        failures:
+          failing === "markStale"
+            ? [{ request_id: "rr_broken", code: "closed" }]
+            : [{ request_id: null, code: "unknown" }],
+      },
+    ]);
+    expect(payloads.join("\n")).not.toContain(f.root);
+    session.finish("completed");
+    await session.disposed;
+    await api.close();
+  },
+);
 
 test("research deadlines never exceed the task's remaining duration, also after a resume", async () => {
   const f = await fixture();
