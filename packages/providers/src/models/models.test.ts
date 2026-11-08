@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -1529,5 +1529,62 @@ test("both adapters keep a transport failure before any text retryable", async (
       message: "Provider stream failed or timed out.",
       retryable: true,
     });
+  }
+});
+
+test("addProvider and addModel write only user additions and reload the registry", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const marsHome = join(root, "mars-home");
+    const userFile = join(marsHome, "models.json");
+    const registry = await loadModelRegistry({
+      cwd: join(root, "project"),
+      home: root,
+      env: { MARS_HOME: marsHome },
+    });
+    await registry.addProvider(provider("custom", "https://one.example/v1"));
+    await registry.addModel(model("custom/example", "custom"));
+    expect(JSON.parse(await readFile(userFile, "utf8"))).toEqual({
+      version: 1,
+      providers: [
+        ProviderConfigSchema.parse(
+          provider("custom", "https://one.example/v1"),
+        ),
+      ],
+      models: [ModelConfigSchema.parse(model("custom/example", "custom"))],
+      routes: {},
+      policy: { allowPaid: false },
+    });
+    expect(registry.getProvider("custom")?.baseUrl).toBe(
+      "https://one.example/v1",
+    );
+    expect(registry.getModel("custom/example")?.providerId).toBe("custom");
+
+    await expect(
+      registry.addProvider(provider("custom", "https://two.example/v1")),
+    ).rejects.toThrow('Provider "custom" already exists');
+    await expect(
+      registry.addModel(model("custom/example", "custom")),
+    ).rejects.toThrow('Model "custom/example" already exists');
+    await expect(registry.addModel(model("orphan", "missing"))).rejects.toThrow(
+      'Provider "missing" is not configured.',
+    );
+
+    await registry.addProvider(provider("custom", "https://two.example/v1"), {
+      force: true,
+    });
+    await registry.addModel(
+      model("custom/example", "custom", { model: "replaced" }),
+      { force: true },
+    );
+    const written = JSON.parse(await readFile(userFile, "utf8"));
+    expect(written.providers).toHaveLength(1);
+    expect(written.models).toHaveLength(1);
+    expect(registry.getProvider("custom")?.baseUrl).toBe(
+      "https://two.example/v1",
+    );
+    expect(registry.getModel("custom/example")?.model).toBe("replaced");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
