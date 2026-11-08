@@ -719,21 +719,13 @@ function cancelSubtree(
   const job = store.db
     .query<JobRow, [string]>("SELECT * FROM jobs WHERE agent_id = ?")
     .get(agentId);
-  if (job?.state === "running") {
+  if (job?.state === "running")
     store.db
       .query("UPDATE jobs SET cancel_requested = 1 WHERE job_id = ?")
       .run(job.job_id);
-  } else if (job && job.state === "queued") {
-    store.db
-      .query("UPDATE jobs SET state = 'cancelled' WHERE job_id = ?")
-      .run(job.job_id);
-    releaseReservation(store, member);
-  }
-  store.db
-    .query("UPDATE members SET status = 'cancelled' WHERE agent_id = ?")
-    .run(agentId);
-  releaseClaims(store, agentId);
-  expireMemberDeliveries(store, agentId);
+  const queued = job?.state === "queued" ? job : null;
+  terminateMember(store, member, "cancelled", { jobId: queued?.job_id });
+  if (queued) releaseReservation(store, member);
 }
 
 function activeJobs(store: CollaborationStore, roomId: string): number {
@@ -2224,22 +2216,49 @@ function closeDrainedRoom(store: CollaborationStore, roomId: string): void {
       .run(roomId);
 }
 
+type TerminalMemberStatus = "completed" | "failed" | "expired" | "cancelled";
+
+/**
+ * The one terminal transition for a member: sets its status (and its job's
+ * state when `jobId` is given), then drops its write claims and undelivered
+ * messages. `releaseReservation` releases the envelope after the job is
+ * terminal; paths that must release while the job is still running do so
+ * themselves before calling this.
+ */
+function terminateMember(
+  store: CollaborationStore,
+  member: MemberRow,
+  status: TerminalMemberStatus,
+  options: {
+    jobId?: string | undefined;
+    releaseReservation?: boolean;
+    stats?: ((stats: RoomStats) => void) | undefined;
+  } = {},
+): void {
+  if (options.jobId !== undefined)
+    store.db
+      .query("UPDATE jobs SET state = ?, lease_owner = NULL WHERE job_id = ?")
+      .run(status, options.jobId);
+  store.db
+    .query("UPDATE members SET status = ? WHERE agent_id = ?")
+    .run(status, member.agent_id);
+  if (options.releaseReservation) releaseChildReservation(store, member);
+  releaseClaims(store, member.agent_id);
+  expireMemberDeliveries(store, member.agent_id);
+  if (options.stats) updateStats(store, member.room_id, options.stats);
+}
+
 function expireJob(
   store: CollaborationStore,
   job: JobRow,
   member: MemberRow,
 ): void {
-  store.db
-    .query("UPDATE jobs SET state = 'expired' WHERE job_id = ?")
-    .run(job.job_id);
-  store.db
-    .query("UPDATE members SET status = 'expired' WHERE agent_id = ?")
-    .run(member.agent_id);
-  releaseChildReservation(store, member);
-  releaseClaims(store, member.agent_id);
-  expireMemberDeliveries(store, member.agent_id);
-  updateStats(store, job.room_id, (stats) => {
-    stats.children_expired += 1;
+  terminateMember(store, member, "expired", {
+    jobId: job.job_id,
+    releaseReservation: true,
+    stats: (stats) => {
+      stats.children_expired += 1;
+    },
   });
 }
 
@@ -2266,16 +2285,15 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             member.status !== "active" ||
             job.cancel_requested
           ) {
-            if (job.cancel_requested || member.status !== "active") {
+            if (member.status === "active" && job.cancel_requested) {
+              terminateMember(store, member, "cancelled", {
+                jobId: job.job_id,
+                releaseReservation: true,
+              });
+            } else if (member.status !== "active") {
               store.db
                 .query("UPDATE jobs SET state = 'cancelled' WHERE job_id = ?")
                 .run(job.job_id);
-              if (member.status === "active")
-                store.db
-                  .query(
-                    "UPDATE members SET status = 'cancelled' WHERE agent_id = ?",
-                  )
-                  .run(member.agent_id);
               releaseChildReservation(store, member);
             }
             continue;
@@ -2442,21 +2460,12 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           };
           chargeUsage(store, member, fullUsage);
           releaseChildReservation(store, member);
-          store.db
-            .query(
-              "UPDATE jobs SET state = 'failed', lease_owner = NULL WHERE job_id = ?",
-            )
-            .run(jobId);
-          store.db
-            .query("UPDATE members SET status = 'failed' WHERE agent_id = ?")
-            .run(member.agent_id);
-          releaseClaims(store, member.agent_id);
-          expireMemberDeliveries(store, member.agent_id);
-          updateStats(store, room.room_id, (stats) => {
-            stats.usage_unaccounted += 1;
-          });
-          updateStats(store, room.room_id, (stats) => {
-            stats.children_failed += 1;
+          terminateMember(store, member, "failed", {
+            jobId,
+            stats: (stats) => {
+              stats.usage_unaccounted += 1;
+              stats.children_failed += 1;
+            },
           });
           closeDrainedRoom(store, room.room_id);
           return;
@@ -2483,17 +2492,12 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
         const cancelled =
           Boolean(job.cancel_requested) || member.status === "cancelled";
         if (cancelled) {
-          store.db
-            .query(
-              "UPDATE jobs SET state = 'cancelled', lease_owner = NULL WHERE job_id = ?",
-            )
-            .run(jobId);
-          store.db
-            .query("UPDATE members SET status = 'cancelled' WHERE agent_id = ?")
-            .run(member.agent_id);
-          updateStats(store, room.room_id, (stats) => {
-            stats.children_cancelled += 1;
-            stats.discarded_results += 1;
+          terminateMember(store, member, "cancelled", {
+            jobId,
+            stats: (stats) => {
+              stats.children_cancelled += 1;
+              stats.discarded_results += 1;
+            },
           });
         } else {
           const freshRoom = store.getRoomRow(room.room_id);
@@ -2502,24 +2506,19 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             effectiveOutcome.status === "paused"
               ? "completed"
               : effectiveOutcome.status;
-          store.db
-            .query("UPDATE members SET status = ? WHERE agent_id = ?")
-            .run(status, member.agent_id);
-          store.db
-            .query(
-              "UPDATE jobs SET state = ?, lease_owner = NULL WHERE job_id = ?",
-            )
-            .run(status, jobId);
-          releaseClaims(store, member.agent_id);
-          expireMemberDeliveries(store, member.agent_id);
-          if (status === "completed")
-            updateStats(store, room.room_id, (stats) => {
-              stats.children_completed += 1;
-            });
-          else if (status === "failed")
-            updateStats(store, room.room_id, (stats) => {
-              stats.children_failed += 1;
-            });
+          terminateMember(store, member, status, {
+            jobId,
+            stats:
+              status === "completed"
+                ? (stats) => {
+                    stats.children_completed += 1;
+                  }
+                : status === "failed"
+                  ? (stats) => {
+                      stats.children_failed += 1;
+                    }
+                  : undefined,
+          });
           const summaryLimit = parseJson(
             freshRoom.limits_json,
             CollaborationLimitsSchema,
@@ -2657,19 +2656,12 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
             steps: 0,
           });
           releaseChildReservation(store, member);
-          store.db
-            .query(
-              "UPDATE jobs SET state = 'failed', lease_owner = NULL WHERE job_id = ?",
-            )
-            .run(jobId);
-          store.db
-            .query("UPDATE members SET status = 'failed' WHERE agent_id = ?")
-            .run(member.agent_id);
-          releaseClaims(store, member.agent_id);
-          expireMemberDeliveries(store, member.agent_id);
-          updateStats(store, room.room_id, (stats) => {
-            stats.usage_unaccounted += 1;
-            stats.children_failed += 1;
+          terminateMember(store, member, "failed", {
+            jobId,
+            stats: (stats) => {
+              stats.usage_unaccounted += 1;
+              stats.children_failed += 1;
+            },
           });
           closeDrainedRoom(store, room.room_id);
           return "failed" as const;
@@ -2683,19 +2675,12 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           usage.steps > (member.max_steps ?? Number.MAX_SAFE_INTEGER)
         ) {
           releaseChildReservation(store, member);
-          store.db
-            .query(
-              "UPDATE jobs SET state = 'failed', lease_owner = NULL WHERE job_id = ?",
-            )
-            .run(jobId);
-          store.db
-            .query("UPDATE members SET status = 'failed' WHERE agent_id = ?")
-            .run(member.agent_id);
-          releaseClaims(store, member.agent_id);
-          expireMemberDeliveries(store, member.agent_id);
-          updateStats(store, room.room_id, (stats) => {
-            stats.over_budget += 1;
-            stats.children_failed += 1;
+          terminateMember(store, member, "failed", {
+            jobId,
+            stats: (stats) => {
+              stats.over_budget += 1;
+              stats.children_failed += 1;
+            },
           });
           closeDrainedRoom(store, room.room_id);
           return "failed" as const;
@@ -2715,18 +2700,11 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           return "requeued" as const;
         }
         releaseChildReservation(store, member);
-        store.db
-          .query(
-            "UPDATE jobs SET state = 'failed', lease_owner = NULL WHERE job_id = ?",
-          )
-          .run(jobId);
-        store.db
-          .query("UPDATE members SET status = 'failed' WHERE agent_id = ?")
-          .run(member.agent_id);
-        releaseClaims(store, member.agent_id);
-        expireMemberDeliveries(store, member.agent_id);
-        updateStats(store, room.room_id, (stats) => {
-          stats.children_failed += 1;
+        terminateMember(store, member, "failed", {
+          jobId,
+          stats: (stats) => {
+            stats.children_failed += 1;
+          },
         });
         closeDrainedRoom(store, room.room_id);
         return "failed" as const;

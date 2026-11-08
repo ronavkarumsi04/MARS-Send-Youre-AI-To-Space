@@ -111,6 +111,11 @@ export const EvidenceRecordSchema = z
     diff_sha256: sha256Hex.nullable(),
     /** True unless both stamps equal the current workspace revision and digest. */
     stale: z.boolean(),
+    /** Error class that kept the host from binding the record; present only when binding failed. */
+    binding_error: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]{1,64}$/)
+      .optional(),
   })
   .strict()
   .refine((record) => !record.verified || record.verdict === "pass", {
