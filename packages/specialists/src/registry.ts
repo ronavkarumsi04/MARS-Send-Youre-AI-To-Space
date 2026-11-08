@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type {
-  ArtifactRef,
-  Budget,
-  EvaluationService,
-  JobRef,
-  ModelRegistry,
-  RequestContext,
-  SpecialistManifest,
-  Task,
-  VersionRef,
+import {
+  type ArtifactRef,
+  ArtifactRefSchema,
+  type Budget,
+  type EvaluationService,
+  type JobRef,
+  type ModelRegistry,
+  type RequestContext,
+  type SpecialistManifest,
+  type Task,
+  type VersionRef,
 } from "@mars/contracts";
+import type { z } from "zod";
 import {
   assertPublishable,
   candidateDigest,
@@ -49,6 +51,7 @@ import {
   type BaselineProfile,
   BaselineProfileSchema,
   type Complexity,
+  EvidenceVerdictSchema,
   type ReasonCode,
   RequestContextSchema,
   type RoutingDecision,
@@ -215,12 +218,23 @@ function assertContext(context: RequestContext): RequestContext {
   return parsed.data;
 }
 
-function parseVerdict(value: string): EvidenceVerdict {
+function parseStored<S extends z.ZodTypeAny>(
+  json: string,
+  schema: S,
+): z.output<S> {
+  let value: unknown;
   try {
-    return JSON.parse(value) as EvidenceVerdict;
+    value = JSON.parse(json);
   } catch {
     throw new SpecialistRegistryError("corrupt_record");
   }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new SpecialistRegistryError("corrupt_record");
+  return parsed.data;
+}
+
+function parseVerdict(value: string): EvidenceVerdict {
+  return parseStored(value, EvidenceVerdictSchema);
 }
 
 function parseHistory(value: string): string[] {
@@ -1231,7 +1245,7 @@ export class SpecialistRegistry implements ModelRegistry {
       invalidated_reason: row.invalidated_reason,
       evaluation_jobs: jobs.map((job) => ({
         job_id: job.job_id,
-        input_manifest: JSON.parse(job.input_manifest_json) as ArtifactRef,
+        input_manifest: parseStored(job.input_manifest_json, ArtifactRefSchema),
       })),
     } satisfies SpecialistRevisionView;
     this.publish(view);
@@ -1628,7 +1642,7 @@ export class SpecialistRegistry implements ModelRegistry {
     }>;
     return rows.map((row) => ({
       job_id: row.job_id,
-      input_manifest: JSON.parse(row.input_manifest_json) as ArtifactRef,
+      input_manifest: parseStored(row.input_manifest_json, ArtifactRefSchema),
     }));
   }
 
@@ -2740,23 +2754,16 @@ export class SpecialistRegistry implements ModelRegistry {
     if (!row || row.scope_key !== scopeKey(ctx.scope)) {
       throw new SpecialistRegistryError("not_found");
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(row.decision_json) as unknown;
-    } catch {
-      throw new SpecialistRegistryError("corrupt_record");
-    }
-    const parsed = RoutingDecisionSchema.safeParse(value);
+    const decision = parseStored(row.decision_json, RoutingDecisionSchema);
     if (
-      !parsed.success ||
-      parsed.data.decision_sha256 !== row.decision_sha256 ||
-      decisionDigest(parsed.data as unknown as Record<string, unknown>) !==
+      decision.decision_sha256 !== row.decision_sha256 ||
+      decisionDigest(decision as unknown as Record<string, unknown>) !==
         row.decision_sha256
     ) {
       throw new SpecialistRegistryError("corrupt_record");
     }
-    this.publish(parsed.data);
-    return parsed.data;
+    this.publish(decision);
+    return decision;
   }
 
   async fallbackAfterFailure(
@@ -2803,7 +2810,7 @@ export class SpecialistRegistry implements ModelRegistry {
         decision_json: string;
       } | null;
       if (!row) break;
-      const decision = JSON.parse(row.decision_json) as RoutingDecision;
+      const decision = parseStored(row.decision_json, RoutingDecisionSchema);
       lineage.push({
         decision_id: row.decision_id,
         request_json: row.request_json,
@@ -2825,14 +2832,10 @@ export class SpecialistRegistry implements ModelRegistry {
       attempt: number;
     } | null;
     if (!requestRow) throw new SpecialistRegistryError("not_found");
-    let storedRequest: RoutingRequest;
-    try {
-      storedRequest = RoutingRequestSchema.parse(
-        JSON.parse(requestRow.request_json) as unknown,
-      );
-    } catch {
-      throw new SpecialistRegistryError("corrupt_record");
-    }
+    const storedRequest = parseStored(
+      requestRow.request_json,
+      RoutingRequestSchema,
+    );
     const exclusions = new Set(storedRequest.exclude_refs ?? []);
     for (const item of lineage) {
       if (item.selected_ref) exclusions.add(item.selected_ref);
