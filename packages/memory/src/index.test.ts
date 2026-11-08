@@ -1,5 +1,6 @@
 import { Database, SQLiteError } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import {
+  canonicalJson,
   createMemoryStore,
   DEFAULT_BUDGETS,
   type DurableMemoryStore,
@@ -897,6 +899,34 @@ test("corrupt hashes and unknown format fail closed", async () => {
   expect(() => open(dir)).toThrow(
     expect.objectContaining({ code: "unknown_format" }),
   );
+});
+
+test("journal rows with a valid hash but an unknown shape fail closed", async () => {
+  const dir = root(),
+    s = open(dir);
+  await s.indexJournal(c, journal("shape", "shapemarker"));
+  expect(await s.searchHistory(c, "shapemarker")).toHaveLength(1);
+  await s.close();
+  const db = new Database(join(dir, "memory.sqlite"));
+  const row = db.query("SELECT record FROM journal").get() as {
+    record: string;
+  };
+  for (const record of [
+    { ...JSON.parse(row.record), role: "system" },
+    { ...JSON.parse(row.record), extra: true },
+  ]) {
+    const json = canonicalJson(record);
+    db.query("UPDATE journal SET record=?, row_hash=?").run(
+      json,
+      createHash("sha256").update(json).digest("hex"),
+    );
+    const reopened = open(dir);
+    await expect(
+      reopened.searchHistory(c, "shapemarker"),
+    ).rejects.toMatchObject({ code: "corrupt_record" });
+    await reopened.close();
+  }
+  db.close();
 });
 
 test("soft removal reports affected manifests and alias IDs cannot leak other scopes", async () => {
