@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { expandCommand, loadCommands } from "@mars/skills";
+import { CliUsageError } from "./cli-errors";
 
 const USAGE = [
   "Usage: mars commands [--source DIR] list",
@@ -10,7 +11,7 @@ const USAGE = [
   "expand prints the prompt the workbench would send for that request; nothing is executed and no model is called.",
 ].join("\n");
 
-export class CommandsUsageError extends Error {}
+export class CommandsUsageError extends CliUsageError {}
 
 /** `mars commands`: list the repository's slash commands or expand one to its prompt. */
 export async function runCommands(
