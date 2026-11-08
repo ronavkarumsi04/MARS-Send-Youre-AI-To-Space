@@ -72,8 +72,16 @@ export type JobRecord = z.infer<typeof JobRecordSchema>;
 
 const JOB_ID_PATTERN = /^[a-f0-9]{32}$/;
 
-function scopeKey(context: RequestContext): string {
-  return `${context.scope.owner_id}/${context.scope.project_id}`;
+function scopeKey(scope: JobRecord["scope"]): string {
+  return `${scope.owner_id}/${scope.project_id}`;
+}
+
+/** Thrown inside `execute` when Harbor reports the run was killed by cancellation. */
+class JobCancelledError extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "JobCancelledError";
+  }
 }
 
 export class EvaluationJobStore {
@@ -160,11 +168,7 @@ export function createEvaluationService(
     jobId: string,
   ): Promise<JobRecord> {
     const record = await store.read(jobId);
-    if (
-      !record ||
-      scopeKey(context) !==
-        `${record.scope.owner_id}/${record.scope.project_id}`
-    )
+    if (!record || scopeKey(context.scope) !== scopeKey(record.scope))
       throw new Error(`Unknown evaluation job ${jobId}`);
     return record;
   }
@@ -217,7 +221,7 @@ export function createEvaluationService(
         record.active_pids = [];
         record.runs.push({ arm, job_name: jobName, outcome, error: null });
         await update({});
-        if (outcome.killed === "cancelled") throw new Error("cancelled");
+        if (outcome.killed === "cancelled") throw new JobCancelledError();
         if (outcome.killed === "deadline")
           throw new Error(
             "Budget max_duration_ms exceeded; Harbor was killed.",
@@ -284,11 +288,15 @@ export function createEvaluationService(
           : costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const cancelled = controller.signal.aborted || message === "cancelled";
+      const cancelled =
+        controller.signal.aborted || error instanceof JobCancelledError;
       await update({
         status: cancelled ? "cancelled" : "failed",
-        error: cancelled ? "cancelled" : message,
+        error: cancelled
+          ? "cancelled"
+          : error instanceof Error
+            ? error.message
+            : String(error),
       });
     } finally {
       controllers.delete(record.job_id);
@@ -328,7 +336,7 @@ export function createEvaluationService(
       const jobId = sha256Hex(
         new TextEncoder().encode(
           canonicalJson([
-            scopeKey(context),
+            scopeKey(context.scope),
             context.request_id,
             immutableManifest.sha256,
             createdAt,
