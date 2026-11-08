@@ -14,6 +14,8 @@ import {
 export type WorkbenchWatch = Pick<WatchService, "toolsFor">;
 
 const MAX_LISTED_RECORDS = 50;
+/** `WatchEvidenceRecordSchema` caps `limitations` at 32 entries. */
+const MAX_LIMITATIONS = 32;
 
 /**
  * Persists watch-skill evidence as `tool.completed` task events so loop and
@@ -41,10 +43,7 @@ export function watchEvidence(
         diff_sha256: _digest,
         ...unbound
       } = record;
-      const bound = binding ? await binding().catch(() => null) : null;
-      const payload: WatchEvidenceRecord = bound
-        ? { ...unbound, ...bound }
-        : unbound;
+      const payload = binding ? await bindRecord(unbound, binding) : unbound;
       await store.appendEvent(context(), taskId, {
         event_type: "tool.completed",
         run_id: crypto.randomUUID(),
@@ -69,12 +68,42 @@ export function watchEvidence(
         )
           continue;
         const bytes = await store.artifacts.get(current, event.payload);
-        const parsed = WatchEvidenceRecordSchema.safeParse(
-          JSON.parse(new TextDecoder().decode(bytes)),
-        );
+        const parsed = WatchEvidenceRecordSchema.safeParse(parseJson(bytes));
         if (parsed.success) records.push(parsed.data);
       }
       return records.slice(-MAX_LISTED_RECORDS);
     },
   };
+}
+
+/**
+ * Stamps the host binding onto a record. When the binding cannot be resolved
+ * the record is still persisted, but unbound and carrying a limitation that
+ * says why, so a later "stale" verdict is traceable to the failure.
+ */
+async function bindRecord(
+  record: WatchEvidenceRecord,
+  binding: () => Promise<EvidenceBinding>,
+): Promise<WatchEvidenceRecord> {
+  try {
+    return { ...record, ...(await binding()) };
+  } catch (error) {
+    const reason = error instanceof Error ? error.name : "unknown error";
+    const limitation = `workspace binding unavailable (${reason}): evidence is not bound to a workspace revision or diff and reads as stale`;
+    return {
+      ...record,
+      limitations: [
+        ...record.limitations.slice(0, MAX_LIMITATIONS - 1),
+        limitation,
+      ],
+    };
+  }
+}
+
+function parseJson(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
 }
