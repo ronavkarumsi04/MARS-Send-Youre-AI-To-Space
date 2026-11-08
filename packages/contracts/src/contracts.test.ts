@@ -8,8 +8,10 @@ import {
   isTerminalTaskStatus,
   ScopeSchema,
   type Task,
+  TaskLinkWorkbenchSchema,
   TaskSchema,
   TaskStatusSchema,
+  TeamContextSchema,
 } from "./index";
 
 const scope = { owner_id: "owner-1", project_id: "project-1" };
@@ -131,5 +133,19 @@ describe("versioned transport contracts", () => {
     expect(
       TaskStatusSchema.options.filter((status) => isTerminalTaskStatus(status)),
     ).toEqual(["completed", "cancelled", "failed"]);
+  });
+});
+
+describe("shared primitives", () => {
+  test("team contracts compose the shared schemas eagerly", () => {
+    expect(TaskLinkWorkbenchSchema.shape.scope).toBe(ScopeSchema);
+    expect(TeamContextSchema.shape.schema_version.value).toBe(1);
+    expect(
+      TaskLinkWorkbenchSchema.safeParse({
+        scope,
+        task_id: "task-1",
+        request_id: "request-1",
+      }).success,
+    ).toBe(true);
   });
 });
