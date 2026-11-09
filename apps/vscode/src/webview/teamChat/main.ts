@@ -76,9 +76,15 @@ announcer.setAttribute("aria-atomic", "true");
 let announcedSeq = 0;
 
 let lastViewport: { focused: boolean; atBottom: boolean } | null = null;
-/** Tells the host where the viewport is; it advances the read cursor only when focused and at the bottom. */
+/**
+ * Tells the host where the viewport is; it advances the read cursor only when focused and at the bottom.
+ * The narrow drawer covers the newest messages, so the bottom never counts as seen while it is open.
+ */
 function reportViewport(): void {
-  const next = { focused: document.hasFocus(), atBottom: stickToBottom };
+  const next = {
+    focused: document.hasFocus(),
+    atBottom: stickToBottom && drawerPanel === null,
+  };
   if (
     lastViewport &&
     lastViewport.focused === next.focused &&
