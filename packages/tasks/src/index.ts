@@ -2430,6 +2430,8 @@ export async function createTaskStore(
           tokens: Math.max(held?.tokens ?? 0, Math.ceil(amount.tokens)),
           usd: Math.max(held?.usd ?? 0, amount.usd),
         };
+        // Every successful reservation reopens a settled hold, including one
+        // the hold already covers: its next settle sets the hold again.
         db.query(
           "DELETE FROM budget_settlements WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
         ).run(key, taskId, holdKey);
