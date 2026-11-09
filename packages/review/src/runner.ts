@@ -38,6 +38,8 @@ export interface TranscriptMessage {
 }
 export interface Turn {
   sessionId: string;
+  /** Host task the turn belongs to; memory proposals it yields are linked to it. */
+  taskId?: string;
   origin: TurnOrigin;
   iterations: number;
   transcript: readonly TranscriptMessage[];
@@ -427,6 +429,7 @@ export class ReviewRunner {
               source,
               rationale: proposal.rationale,
               expected_revision: memory.revision,
+              ...(turn.taskId ? { task_id: turn.taskId } : {}),
               operations: memoryEntries(
                 context,
                 result.reviewId,

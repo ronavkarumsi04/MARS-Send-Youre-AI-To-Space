@@ -698,3 +698,118 @@ test("the actual VS Code typed client interoperates with every RPC over loopback
     "restore",
   ]);
 });
+
+test("memory proposal RPC methods are additive, validated and scope-checked", async () => {
+  const proposal = {
+    proposal_id: "p1",
+    scope,
+    source: "background_review:s:r",
+    operations: [
+      {
+        operation: "add" as const,
+        entry: {
+          entry_id: "e1",
+          scope,
+          target: "project" as const,
+          fact: "Run bun test",
+          revision: 0,
+          source_event_ids: ["review:r"],
+          observed_at: "2026-01-01T00:00:00.000Z",
+          verified_at: null,
+          supersedes: null,
+          deleted: false,
+        },
+      },
+    ],
+    rationale: "Lesson",
+    expected_revision: 0,
+    status: "pending" as const,
+    task_id: "task",
+    submitted_at: "2026-01-01T00:00:00.000Z",
+  };
+  const seen: unknown[] = [];
+  const { send } = fixture({
+    async memoryProposals(_, params) {
+      seen.push(["list", params]);
+      return [proposal];
+    },
+    async acceptMemoryProposal(_, params) {
+      seen.push(["accept", params]);
+      return { ...proposal, status: "accepted", resolved_by: "alice" };
+    },
+    async rejectMemoryProposal(_, params) {
+      seen.push(["reject", params]);
+      return { ...proposal, status: "rejected", reason: params.reason };
+    },
+    async revertMemoryProposal(_, params) {
+      seen.push(["revert", params]);
+      // A host answering for the wrong proposal is an internal error, never relayed.
+      return params.proposal_id === "p1"
+        ? { ...proposal, status: "reverted", reverted_revision: 2 }
+        : proposal;
+    },
+  });
+  const call = async (method: string, params: unknown) => {
+    const response = await send({ method, context, params });
+    return { status: response.status, body: await response.json() };
+  };
+  expect(await call("memory.proposals.list", { task_id: "task" })).toEqual({
+    status: 200,
+    body: { result: [proposal] },
+  });
+  expect(
+    (
+      await call("memory.proposals.accept", {
+        proposal_id: "p1",
+        resolved_by: "alice",
+      })
+    ).body.result.status,
+  ).toBe("accepted");
+  expect(
+    (
+      await call("memory.proposals.reject", {
+        proposal_id: "p1",
+        reason: "noise",
+      })
+    ).body.result.reason,
+  ).toBe("noise");
+  expect(
+    (
+      await call("memory.proposals.revert", {
+        proposal_id: "p1",
+        expected_revision: 1,
+      })
+    ).body.result.reverted_revision,
+  ).toBe(2);
+  expect(
+    (
+      await call("memory.proposals.revert", {
+        proposal_id: "p2",
+        expected_revision: 1,
+      })
+    ).status,
+  ).toBe(500);
+  // The list filter is enforced on the way out too.
+  expect(
+    (await call("memory.proposals.list", { status: "accepted" })).status,
+  ).toBe(500);
+  for (const [method, params] of [
+    ["memory.proposals.list", { status: "maybe" }],
+    ["memory.proposals.accept", { proposal_id: "p1", extra: true }],
+    ["memory.proposals.reject", { proposal_id: "p1" }],
+    ["memory.proposals.revert", { proposal_id: "p1" }],
+    ["memory.proposals.revert", { proposal_id: "p1", expected_revision: -1 }],
+  ] as const)
+    expect((await call(method, params)).status).toBe(400);
+  expect(seen).toHaveLength(6);
+});
+
+test("memory proposal RPC methods answer unavailable when the host has no memory owner", async () => {
+  const { send } = fixture();
+  const response = await send({
+    method: "memory.proposals.list",
+    context,
+    params: {},
+  });
+  expect(response.status).toBe(503);
+});

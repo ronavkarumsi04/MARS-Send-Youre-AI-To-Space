@@ -126,6 +126,7 @@ import {
   recallHistory,
   serializedBytes,
   type WorkbenchMemory,
+  type WorkbenchMemoryProposals,
   withFrozenMemory,
 } from "./memory-context";
 import { proposalTools, type WorkbenchOptimization } from "./proposal-context";
@@ -240,6 +241,8 @@ export interface WorkbenchHostOptions {
   /** Host-defined protected checks a client may select at Start by id. */
   checks?: readonly HostCheckDefinition[];
   memory?: WorkbenchMemory;
+  /** Operator surface for reviewed memory proposals (list/accept/reject/revert). */
+  memoryProposals?: WorkbenchMemoryProposals;
   skills?: WorkbenchSkills;
   review?: WorkbenchReview;
   repositoryMap?: Pick<RepositoryMapProvider, "map">;
@@ -258,9 +261,18 @@ export interface WorkbenchHostOptions {
   runtimeFactory?: (options: RuntimeSessionOptions) => Promise<RuntimeSession>;
 }
 
-export interface WorkbenchHostApi extends WorkbenchOperations {
-  close(): Promise<void>;
-}
+export type WorkbenchHostApi = WorkbenchOperations &
+  Required<
+    Pick<
+      WorkbenchOperations,
+      | "memoryProposals"
+      | "acceptMemoryProposal"
+      | "rejectMemoryProposal"
+      | "revertMemoryProposal"
+    >
+  > & {
+    close(): Promise<void>;
+  };
 
 function normalizeClaimedPath(path: string): string | null {
   if (path.startsWith("/") || path.startsWith("\\")) return null;
@@ -1087,6 +1099,7 @@ export async function createWorkbenchHost(
     }
   };
   const recordReviewTurn = (
+    taskId: string,
     runtime: RuntimeSession,
     instruction: string,
     content: string,
@@ -1097,6 +1110,7 @@ export async function createWorkbenchHost(
     try {
       options.review.recordTurn({
         sessionId: runtime.sessionId,
+        taskId,
         origin: "foreground",
         iterations: Math.max(1, modelIterations(runtime) - iterationsBefore),
         transcript: [
@@ -1225,6 +1239,7 @@ export async function createWorkbenchHost(
         // (no required checks) never reach the positive path.
         if (status === "completed" && reviewable && verdict)
           recordReviewTurn(
+            task.task_id,
             runtime,
             instruction,
             outcome.content,
@@ -2169,9 +2184,61 @@ export async function createWorkbenchHost(
     );
   };
 
+  const proposals = (context: RequestContext) => {
+    checkContext(context);
+    if (!options.memoryProposals) throw new WorkbenchError("unavailable");
+    return options.memoryProposals;
+  };
+  /** Decisions are attributed to the named actor, else the scope owner making the request. */
+  const resolver = (context: RequestContext, actor?: string) => ({
+    resolved_by: actor ?? context.scope.owner_id,
+  });
+
   const api: WorkbenchOperations &
-    Required<Pick<WorkbenchOperations, "journal">> = {
+    Required<
+      Pick<
+        WorkbenchOperations,
+        | "journal"
+        | "memoryProposals"
+        | "acceptMemoryProposal"
+        | "rejectMemoryProposal"
+        | "revertMemoryProposal"
+      >
+    > = {
     scope: options.scope,
+    async memoryProposals(context, params) {
+      return proposals(context).listProposals(
+        context,
+        params.status,
+        params.task_id === undefined ? undefined : { task_id: params.task_id },
+      );
+    },
+    async acceptMemoryProposal(context, params) {
+      return proposals(context).acceptProposal(
+        context,
+        params.proposal_id,
+        resolver(context, params.resolved_by),
+      );
+    },
+    async rejectMemoryProposal(context, params) {
+      return proposals(context).rejectProposal(
+        context,
+        params.proposal_id,
+        params.reason,
+        resolver(context, params.resolved_by),
+      );
+    },
+    async revertMemoryProposal(context, params) {
+      return proposals(context).revertProposal(
+        context,
+        params.proposal_id,
+        params.expected_revision,
+        {
+          ...resolver(context, params.resolved_by),
+          ...(params.reason === undefined ? {} : { reason: params.reason }),
+        },
+      );
+    },
     async describe() {
       if (closing) throw new WorkbenchError("unavailable");
       let vault = null;
@@ -2925,6 +2992,10 @@ export async function createWorkbenchHost(
     verification: track(api.verification),
     export: track(api.export),
     restore: serialize((_, taskId) => taskId, api.restore),
+    memoryProposals: track(api.memoryProposals),
+    acceptMemoryProposal: track(api.acceptMemoryProposal),
+    rejectMemoryProposal: track(api.rejectMemoryProposal),
+    revertMemoryProposal: track(api.revertMemoryProposal),
     async close() {
       closing = true;
       if (runnerTimer) clearInterval(runnerTimer);
