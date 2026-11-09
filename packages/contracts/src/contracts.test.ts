@@ -5,7 +5,9 @@ import {
   canTransition,
   type EventEnvelope,
   EventEnvelopeSchema,
+  exceedsUsd,
   isTerminalTaskStatus,
+  remainingUsd,
   ScopeSchema,
   type Task,
   TaskLinkWorkbenchSchema,
@@ -148,4 +150,18 @@ describe("shared primitives", () => {
       }).success,
     ).toBe(true);
   });
+});
+
+test("exceedsUsd allows exact decimal fits and refuses any real overrun", () => {
+  expect(0.1 + 0.2 > 0.3).toBe(true);
+  expect(exceedsUsd(0.1 + 0.2, 0.3)).toBe(false);
+  expect(exceedsUsd(0.3, 0.3)).toBe(false);
+  expect(exceedsUsd(0, 0)).toBe(false);
+  expect(exceedsUsd(0.0000004, 0)).toBe(true);
+  expect(exceedsUsd(0.0000004 * 3, 0.000001)).toBe(true);
+  expect(exceedsUsd(0.3000001, 0.3)).toBe(true);
+  expect(remainingUsd(0.3, 0.1)).toBe(0.2);
+  expect(remainingUsd(0.3, 0.1 + 0.2)).toBe(0);
+  expect(remainingUsd(0.000001, 0.0000004)).toBe(0.0000006);
+  expect(remainingUsd(0.1, 0.2)).toBe(0);
 });

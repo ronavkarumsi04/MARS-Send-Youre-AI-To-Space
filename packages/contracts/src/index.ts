@@ -33,6 +33,21 @@ export const BudgetSchema = z
   .strict();
 export type Budget = z.infer<typeof BudgetSchema>;
 
+/**
+ * Whether a dollar total exceeds a limit by more than floating-point summation
+ * error. Exact decimal fits ($0.10 + $0.20 against $0.30) are allowed, while
+ * any real overrun, however small (even $0.0000001 against $0), is not.
+ */
+export function exceedsUsd(total: number, limit: number): boolean {
+  return total - limit > 1e-12 * Math.max(Math.abs(total), Math.abs(limit));
+}
+
+/** Dollars left under a limit, without summation noise (0.3 − 0.1 is 0.2). */
+export function remainingUsd(limit: number, spent: number): number {
+  if (!exceedsUsd(limit, spent)) return 0;
+  return Number((limit - spent).toPrecision(12));
+}
+
 export const EventEnvelopeSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),

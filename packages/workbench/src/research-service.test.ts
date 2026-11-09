@@ -13,6 +13,7 @@ import {
 } from "@mars/research-worker";
 import { MarsClient } from "../../../apps/vscode/src/client";
 import { HttpRpcTransport } from "../../../apps/vscode/src/rpc";
+import { researchTools, type WorkbenchResearch } from "./research-context";
 import { createWorkbenchService } from "./service";
 
 /**
@@ -372,4 +373,39 @@ test("without a research option no research store is created and sessions get no
   cleanup.push(() => service.close());
   expect(await Bun.file(join(f.root, "research")).exists()).toBe(false);
   await expect(stat(join(f.root, "research"))).rejects.toThrow();
+});
+
+test("mars_research sizes each job to the task's remaining research allowance", async () => {
+  const budget = {
+    max_tokens: 100,
+    max_usd: 1,
+    max_duration_ms: 60_000,
+    max_depth: 2,
+    max_concurrency: 2,
+  };
+  const task = { task_id: "task-1", revision: 3, budget } as unknown as Task;
+  let left = { max_tokens: 40, max_usd: 2 };
+  const submitted: Task["budget"][] = [];
+  const service = {
+    async allowance() {
+      return left;
+    },
+    async submit(_context: unknown, request: { budget: Task["budget"] }) {
+      submitted.push(request.budget);
+      return "rr_1";
+    },
+  } as unknown as WorkbenchResearch;
+  const tools = researchTools(
+    service,
+    () => ({ request_id: "r", scope }) as never,
+    async () => task,
+    () => Date.now() + 60_000,
+  );
+  expect(await tools.submit({ question: "q" })).toContain("rr_1");
+  expect(submitted[0]).toEqual({ ...budget, max_tokens: 40, max_usd: 1 });
+  left = { max_tokens: 0, max_usd: 1 };
+  await expect(tools.submit({ question: "q" })).rejects.toThrow(
+    "research allowance is used up",
+  );
+  expect(submitted).toHaveLength(1);
 });

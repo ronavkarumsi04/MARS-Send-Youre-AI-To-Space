@@ -1488,6 +1488,131 @@ describe("@mars/research durable control plane", () => {
     ).toBe("queued");
   });
 
+  test("research jobs share one task allowance across concurrent admission and finished work", async () => {
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "usage-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        await workerContext.reportUsage({
+          input_tokens: 10,
+          output_tokens: 10,
+          cost_usd: 0.01,
+        });
+      },
+    };
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      worker,
+      task: { ...base, budget: { ...base.budget, max_tokens: 100 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const tokens = (max_tokens: number) => ({
+      budget: { ...makeRequest(now).budget, max_tokens },
+    });
+    const first = await request(env.service, now, "share-a", tokens(60));
+    // The reviewed defect: a second 60-token job fit "under" the 100-token task.
+    expect(
+      await errorCode(() => request(env.service, now, "share-b", tokens(60))),
+    ).toBe("budget_exceeded");
+    const raced = await Promise.allSettled([
+      request(env.service, now, "share-c", tokens(30)),
+      request(env.service, now, "share-d", tokens(30)),
+    ]);
+    expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const second = raced.find((r) => r.status === "fulfilled") as
+      | PromiseFulfilledResult<string>
+      | undefined;
+    await env.service.pump();
+    for (const id of [first, second?.value ?? ""])
+      await waitFor(
+        async () =>
+          (await env.service.inspect(context(), id)).status === "completed",
+      );
+    // Finished jobs release unused budget: 2 × 20 used, so 60 more fits and 61 does not.
+    expect(
+      await errorCode(() => request(env.service, now, "share-e", tokens(61))),
+    ).toBe("budget_exceeded");
+    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
+      60,
+    );
+    await request(env.service, now, "share-f", tokens(60));
+    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
+      0,
+    );
+  });
+
+  test("exact decimal dollar amounts fit the task allowance and a job's own budget", async () => {
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "cents-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        for (const cost_usd of [0.1, 0.2])
+          await workerContext.reportUsage({
+            input_tokens: 1,
+            output_tokens: 1,
+            cost_usd,
+          });
+      },
+    };
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      worker,
+      task: { ...base, budget: { ...base.budget, max_usd: 0.6 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const usd = (max_usd: number) => ({
+      budget: { ...makeRequest(now).budget, max_usd },
+    });
+    // 0.1 + 0.2 reported against a $0.30 job budget is an exact fit, not an overrun.
+    const spent = await request(env.service, now, "cents-a", usd(0.3));
+    await env.service.pump();
+    await waitFor(
+      async () =>
+        (await env.service.inspect(context(), spent)).status === "completed",
+    );
+    expect(await env.service.inspect(context(), spent)).toMatchObject({
+      error_code: null,
+    });
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.3,
+    );
+    await request(env.service, now, "cents-b", usd(0.1));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.2,
+    );
+    await request(env.service, now, "cents-c", usd(0.2));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(0);
+    expect(
+      await errorCode(() =>
+        request(env.service, now, "cents-d", usd(0.000001)),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
+  test("sub-micro-dollar research budgets still add up against the task", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_usd: 0.000001 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const usd = (max_usd: number) => ({
+      budget: { ...makeRequest(now).budget, max_usd },
+    });
+    await request(env.service, now, "tiny-a", usd(0.0000004));
+    await request(env.service, now, "tiny-b", usd(0.0000004));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.0000002,
+    );
+    expect(
+      await errorCode(() =>
+        request(env.service, now, "tiny-c", usd(0.0000004)),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
   test("autoStart false only claims queued work on an explicit pump", async () => {
     let runCount = 0;
     const now = Date.now;

@@ -1,8 +1,9 @@
-import type {
-  Budget,
-  ChatMessage,
-  ChatRequest,
-  ModelConfig,
+import {
+  type Budget,
+  type ChatMessage,
+  type ChatRequest,
+  exceedsUsd,
+  type ModelConfig,
 } from "@mars/contracts";
 import {
   type ModelProviderRegistry,
@@ -197,7 +198,7 @@ export function createModelBridge(options: ModelBridgeOptions) {
           throw new ExecutionLimitError();
         const reservedCost =
           (inputAllowance * inputRate + maxTokens * outputRate) / 1_000_000;
-        if (ledger.reserved_usd + reservedCost > budget.max_usd)
+        if (exceedsUsd(ledger.reserved_usd + reservedCost, budget.max_usd))
           throw new ExecutionLimitError();
         const before = { ...ledger };
         ledger.reserved_tokens += inputAllowance + maxTokens;

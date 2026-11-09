@@ -942,6 +942,69 @@ describe("review regressions", () => {
     expect(reported).toEqual([600]);
   });
 
+  test("ledger reserves an exact decimal dollar fit", () => {
+    const ledger = new UsageLedger(
+      {
+        max_tokens: 10_000,
+        max_usd: 0.3,
+        max_duration_ms: 60_000,
+        max_depth: 1,
+        max_concurrency: 2,
+      },
+      Date.now() + 60_000,
+      0,
+      Date.now,
+      async () => {},
+      new AbortController().signal,
+    );
+    expect(ledger.reserve(10, 10, 0.1)).toBeDefined();
+    expect(ledger.reserve(10, 10, 0.2)).toBeDefined();
+    expect(ledger.reserve(10, 10, 0.000001)).toBeUndefined();
+  });
+
+  test("ledger refuses a sub-micro-dollar paid call on a zero budget", () => {
+    const ledger = new UsageLedger(
+      {
+        max_tokens: 10_000,
+        max_usd: 0,
+        max_duration_ms: 60_000,
+        max_depth: 1,
+        max_concurrency: 2,
+      },
+      Date.now() + 60_000,
+      0,
+      Date.now,
+      async () => {},
+      new AbortController().signal,
+    );
+    expect(ledger.reserve(10, 10, 0.0000004)).toBeUndefined();
+    expect(ledger.reserve(10, 10, 0)).toBeDefined();
+  });
+
+  test("ledger stops at or over the dollar budget, but not below it", () => {
+    const stopAt = (max_usd: number, cost_usd: number) =>
+      new UsageLedger(
+        {
+          max_tokens: 10_000,
+          max_usd,
+          max_duration_ms: 60_000,
+          max_depth: 1,
+          max_concurrency: 2,
+        },
+        Date.now() + 60_000,
+        0,
+        Date.now,
+        async () => {},
+        new AbortController().signal,
+        { input_tokens: 0, output_tokens: 0, cost_usd },
+      ).stopReason();
+    expect(stopAt(0.01, 0.02)).toBe("budget_usd");
+    expect(stopAt(0, 0.0000004)).toBe("budget_usd");
+    expect(stopAt(0.3, 0.1 + 0.2)).toBe("budget_usd");
+    expect(stopAt(0.3, 0.2)).toBeUndefined();
+    expect(stopAt(0.3, 0)).toBeUndefined();
+  });
+
   test("an unknown model cost is refused before the call, not treated as free", async () => {
     const model = fakeModel({ plan: PLAN, extracts: EXTRACTS });
     const { instance, logs } = worker({

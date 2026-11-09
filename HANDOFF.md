@@ -25,6 +25,11 @@ Gate: one bug report → one verified, exportable patch. State: **deterministic 
 - Done after #190: `tasks.evidence` takes `include_host_verification: true` and returns `host_verification` beside the Watch `verify_records` (separate fields, so assurance never mixes); per-model `requestTimeoutMs` in `models.json` (default 60 s, bounded by the task deadline); runtime `failure_code` (`provider_timeout`, `deadline_exceeded`, `budget_exhausted`, `provider_error`, `no_response`) in `RuntimeOutcome` and the `runtime.result` event; export and restore of one task are mutually exclusive and an export whose candidate moves is refused (`restore never overlaps verification or export of the same candidate`).
 - Not done: live model through real structured tool calls + full real VS Code window flow (blocked on a model key). VS Code now loads the host verdict and Watch records from one `tasks.evidence` read (falling back to `tasks.verification` on older hosts) and lists the newest Watch records as advisory beside the badge.
 
+## Milestone 2: shared research allowance (first offline slice)
+
+- Research admission (`packages/research/src/service.ts`, `taskResearchCommitment`) now checks the sum across a task's jobs, not each job alone: queued/running jobs hold their whole `max_tokens`/`max_usd`, finished jobs count reported usage (or their whole budget when usage was never reported), never-started jobs count nothing. The check runs inside the same immediate SQLite transaction as the insert, so concurrent submits cannot both fit, and it is derived from durable rows, so retries, lease handovers and restarts neither double-count nor refill. A job that would exceed the task allowance is refused with `budget_exceeded`.
+- Still open for Milestone 2 budgets: foreground runtime spend and delegated jobs do not yet draw from the same ledger as research (research only sees `task.budget`); per-job `max_concurrency`/`max_depth`/`max_duration_ms` remain per-job caps.
+
 ## Status (2026-11-03)
 
 Merged since the recovery started (2026-11-02): #42 HANDOFF, #43 research worker in `mars serve`, #44 MARS Output Format, #48 Milestone 3 skills/review/threat scanner, #49 `@mars/watch`, #52 Milestone 4 evaluation + GEPA; `MARS` #24 `/how` landscape. CI green on `main` here (`Foundation checks`) and in `mars-platform` (`CI`). `MARS` builds on Vercel only.

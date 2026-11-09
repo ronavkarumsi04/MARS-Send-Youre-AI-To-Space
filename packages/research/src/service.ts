@@ -6,11 +6,13 @@ import {
   type ArtifactRef,
   ArtifactRefSchema,
   type Budget,
+  exceedsUsd,
   isTerminalTaskStatus,
   type RequestContext,
   type ResearchFinding,
   type ResearchRequest,
   type ResearchService,
+  remainingUsd,
   ScopeSchema,
   type Task,
 } from "@mars/contracts";
@@ -213,6 +215,11 @@ export interface DurableResearchService extends ResearchService {
     findingId: string,
     expectedTaskRevision: number,
   ): Promise<ResearchFinding>;
+  /** Tokens and USD a new research job for the task may still reserve. */
+  allowance(
+    context: RequestContext,
+    taskId: string,
+  ): Promise<{ max_tokens: number; max_usd: number }>;
   reconcileTask(
     context: RequestContext,
     taskId: string,
@@ -560,6 +567,35 @@ function findFindingById(
     .get(scopeKey, findingId) as FindingRow | null;
   if (!row) throw new ResearchError("not_found", NOT_FOUND_MESSAGE);
   return row;
+}
+
+/**
+ * What a task's research jobs have spent or may still spend. Active jobs hold
+ * their whole budget; finished jobs count reported usage, or their whole
+ * budget when usage is unknown; jobs that never started count nothing.
+ */
+function taskResearchCommitment(rows: readonly RequestRow[]): {
+  tokens: number;
+  usd: number;
+} {
+  let tokens = 0;
+  let usd = 0;
+  for (const row of rows) {
+    const { budget } = verifiedRequest(row);
+    const usage = usageFromJson(row.usage_json);
+    const used = usage.input_tokens + usage.output_tokens;
+    if (row.status === "queued" || row.status === "running") {
+      tokens += Math.max(budget.max_tokens, used);
+      usd += Math.max(budget.max_usd, usage.cost_usd ?? 0);
+    } else if (row.attempts > 0 || usage.reported) {
+      tokens += usage.reported ? used : budget.max_tokens;
+      usd +=
+        usage.reported && usage.cost_usd !== null
+          ? usage.cost_usd
+          : budget.max_usd;
+    }
+  }
+  return { tokens, usd };
 }
 
 function verifiedRequest(row: RequestRow): ResearchRequest {
@@ -1567,7 +1603,8 @@ export async function createResearchService(
           };
           exceeded =
             inputTokens + outputTokens > request.budget.max_tokens ||
-            (reportedCost !== null && reportedCost > request.budget.max_usd);
+            (reportedCost !== null &&
+              exceedsUsd(reportedCost, request.budget.max_usd));
           if (exceeded) {
             db.query(
               `UPDATE requests SET usage_json = ?, status = 'failed',
@@ -1937,6 +1974,24 @@ export async function createResearchService(
         ) {
           throw new ResearchError("backpressure", "Research queue is full");
         }
+        const committed = taskResearchCommitment(
+          db
+            .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+            .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
+        );
+        if (
+          committed.tokens + request.budget.max_tokens >
+            task.budget.max_tokens ||
+          exceedsUsd(
+            committed.usd + request.budget.max_usd,
+            task.budget.max_usd,
+          )
+        ) {
+          throw new ResearchError(
+            "budget_exceeded",
+            "Research budget exceeds the task's remaining research allowance",
+          );
+        }
         db.query(
           `INSERT INTO requests
            (scope_key, request_id, scope_json, idem_request_id, input_sha256,
@@ -1984,6 +2039,28 @@ export async function createResearchService(
       }
       return toJob(findRequest(db, parsedContext.scopeKey, requestId));
     },
+    async allowance(contextInput, taskId) {
+      checkOpen();
+      const parsedContext = parseContext(contextInput);
+      if (typeof taskId !== "string" || taskId.length === 0)
+        throw new ResearchError("invalid_input", "Invalid task id");
+      let task: Task;
+      try {
+        task = await options.tasks.inspect(parsedContext.context, taskId);
+      } catch (error) {
+        throw mapTaskError(error);
+      }
+      const committed = taskResearchCommitment(
+        db
+          .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+          .all(parsedContext.scopeKey, taskId) as RequestRow[],
+      );
+      return {
+        max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
+        max_usd: remainingUsd(task.budget.max_usd, committed.usd),
+      };
+    },
+
     async list(contextInput, filter) {
       checkOpen();
       const parsedContext = parseContext(contextInput);

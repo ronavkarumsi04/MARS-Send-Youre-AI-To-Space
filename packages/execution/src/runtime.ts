@@ -3,6 +3,7 @@ import { mkdir, realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type Budget,
+  exceedsUsd,
   type ModelConfig,
   type Task,
   TaskSchema,
@@ -771,7 +772,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
           };
     if (
       ledger.reserved_tokens > task.budget.max_tokens ||
-      ledger.reserved_usd > task.budget.max_usd ||
+      exceedsUsd(ledger.reserved_usd, task.budget.max_usd) ||
       Date.now() >= ledger.deadline
     )
       throw new ExecutionLimitError();
