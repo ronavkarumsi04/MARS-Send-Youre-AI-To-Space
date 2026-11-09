@@ -8,7 +8,12 @@ import {
   type RuntimeTools,
 } from "@mars/execution";
 import { loadModelRegistry } from "@mars/providers";
-import { CollaborationError, createOhMyPiChildAdapter } from "./index";
+import {
+  type ChildAdapterErrorNotice,
+  CollaborationError,
+  childAdapterErrorNotice,
+  createOhMyPiChildAdapter,
+} from "./index";
 import type { ChildLaunch } from "./runner";
 
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -441,4 +446,154 @@ test("children receive the host-bound watch tools bound to the parent task", asy
   expect(seen).toEqual([{ task_id: f.launch.task_id, cwd: f.cwd }]);
   expect(factoryOptions).toHaveLength(1);
   expect(factoryOptions[0]?.watch).toBeDefined();
+});
+
+test("runtime failures keep the failed outcome and report an identifier-only notice", async () => {
+  const f = await fixture();
+  const notices: ChildAdapterErrorNotice[] = [];
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: async (options) => {
+      const session = await f.runtimeFactory(options);
+      return {
+        ...session,
+        journalPath: session.journalPath,
+        async run() {
+          throw new TypeError(`Leaked prompt text at ${f.stateRoot}`);
+        },
+        cancel: () => session.cancel(),
+        dispose: () => session.dispose(),
+      };
+    },
+    onError: (notice) => notices.push(notice),
+  });
+  const run = await adapter.start(f.launch, {
+    signal: new AbortController().signal,
+    async onProgress() {},
+  });
+  const outcome = await run.outcome;
+  expect(outcome).toMatchObject({
+    status: "failed",
+    summary: "Runtime failed before a result could be produced (TypeError).",
+    artifacts: [],
+  });
+  expect(notices).toEqual([
+    {
+      reason_code: "runtime_failed",
+      error_name: "TypeError",
+      error_code: null,
+    },
+  ]);
+  expect(JSON.stringify([outcome, notices])).not.toContain(f.stateRoot);
+  expect(JSON.stringify(notices)).not.toContain("prompt");
+  expect(f.fetchCalls).toHaveLength(0);
+});
+
+test("reconcile reports unreadable journals but not absent ones", async () => {
+  const f = await fixture();
+  const notices: ChildAdapterErrorNotice[] = [];
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: f.runtimeFactory,
+    onError: (notice) => notices.push(notice),
+  });
+  await mkdir(f.stateRoot, { recursive: true });
+  expect(await adapter.reconcile?.(join(f.stateRoot, "missing.jsonl"))).toBe(
+    null,
+  );
+  expect(notices).toEqual([]);
+  const unreadable = join(f.stateRoot, "unreadable.jsonl");
+  await mkdir(unreadable);
+  expect(await adapter.reconcile?.(unreadable)).toBe(null);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ reason_code: "journal_unreadable" });
+  expect(JSON.stringify(notices)).not.toContain(f.stateRoot);
+});
+
+test("childAdapterErrorNotice drops non-identifier names and codes", () => {
+  const error = Object.assign(new Error("secret message"), {
+    code: "has spaces /tmp/x",
+  });
+  expect(childAdapterErrorNotice(error, "journal_unreadable")).toEqual({
+    reason_code: "journal_unreadable",
+    error_name: "Error",
+    error_code: null,
+  });
+  expect(
+    childAdapterErrorNotice(
+      new CollaborationError("forbidden", "x"),
+      "runtime_failed",
+    ),
+  ).toEqual({
+    reason_code: "runtime_failed",
+    error_name: "CollaborationError",
+    error_code: "forbidden",
+  });
+  expect(childAdapterErrorNotice("boom", "runtime_failed").error_name).toBe(
+    "string",
+  );
+});
+
+test("a throwing onError reporter does not change outcomes or reconciled usage", async () => {
+  const f = await fixture();
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: async (options) => {
+      const session = await f.runtimeFactory(options);
+      return {
+        ...session,
+        journalPath: session.journalPath,
+        async run() {
+          throw new TypeError("Runtime fixture failure.");
+        },
+        cancel: () => session.cancel(),
+        dispose: () => session.dispose(),
+      };
+    },
+    onError() {
+      throw new Error("Reporter failure.");
+    },
+  });
+  const run = await adapter.start(f.launch, {
+    signal: new AbortController().signal,
+    async onProgress() {},
+  });
+  expect(await run.outcome).toMatchObject({
+    status: "failed",
+    summary: "Runtime failed before a result could be produced (TypeError).",
+  });
+  const unreadable = join(f.stateRoot, "unreadable.jsonl");
+  await mkdir(unreadable, { recursive: true });
+  expect(await adapter.reconcile?.(unreadable)).toBe(null);
+});
+
+test("a rejecting async onError reporter leaves no unhandled rejection", async () => {
+  const f = await fixture();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  cleanup.push(async () => process.off("unhandledRejection", onUnhandled));
+  let reports = 0;
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: f.runtimeFactory,
+    async onError() {
+      reports += 1;
+      throw new Error("Async reporter failure.");
+    },
+  });
+  const unreadable = join(f.stateRoot, "unreadable.jsonl");
+  await mkdir(unreadable, { recursive: true });
+  expect(await adapter.reconcile?.(unreadable)).toBe(null);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(reports).toBe(1);
+  expect(unhandled).toEqual([]);
 });
