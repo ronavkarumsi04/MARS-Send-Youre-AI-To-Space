@@ -1682,6 +1682,57 @@ describe("@mars/research durable control plane", () => {
     ).toBe("budget_exceeded");
   });
 
+  test("late usage over budget fails a request requeued after a lost slot", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_concurrency: 3 } },
+      service: { autoStart: false },
+    });
+    let acquired = 0;
+    const slots: ResearchConcurrencySlots = {
+      acquire: async () => ++acquired === 1,
+      release: async () => undefined,
+    };
+    let reported: unknown = "pending";
+    const service = await createResearchService({
+      rootDir: path.join(env.root, "research"),
+      tasks: env.tasks,
+      artifacts: env.tasks.artifacts,
+      worker: {
+        id: "late-over-budget",
+        version: "1",
+        async run(_input, workerContext) {
+          await new Promise<void>((resolve) => {
+            if (workerContext.signal.aborted) resolve();
+            workerContext.signal.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+          reported = await workerContext
+            .reportUsage({ input_tokens: 500, output_tokens: 500 })
+            .then(
+              () => "ok",
+              (error: unknown) => error,
+            );
+        },
+      },
+      leaseMs: 60,
+      pollMs: 10,
+      slots,
+    });
+    services.push(service);
+    const id = await request(service, now, "late-over", {
+      budget: { ...makeRequest(now).budget, max_tokens: 100 },
+    });
+    await waitFor(() => reported !== "pending");
+    expect(reported).toBe("ok");
+    const job = await service.inspect(context(), id);
+    expect(job.status).toBe("failed");
+    expect(job.error_code).toBe("budget_exceeded");
+    expect(job.usage).toMatchObject({ input_tokens: 500, output_tokens: 500 });
+  });
+
   test("research holds share the task ledger across instances and restarts", async () => {
     const now = Date.now;
     const base = makeTask("task-1", scope);

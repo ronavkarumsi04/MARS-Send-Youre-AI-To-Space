@@ -1722,6 +1722,7 @@ export async function createResearchService(
         }
         let exceeded = false;
         let late: RequestRow | undefined;
+        let lateExceeded = false;
         immediate(db, () => {
           let row: RequestRow;
           try {
@@ -1770,8 +1771,10 @@ export async function createResearchService(
                 `UPDATE requests SET status = 'failed',
                    error_code = 'budget_exceeded', finished_at = ?,
                    lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-                 WHERE scope_key = ? AND request_id = ? AND status = 'running'`,
+                 WHERE scope_key = ? AND request_id = ?
+                   AND status IN ('queued', 'running')`,
               ).run(timestamp(currentTime()), entry.scopeKey, entry.requestId);
+            lateExceeded = exceeded;
             exceeded = false;
           } else if (exceeded) {
             db.query(
@@ -1806,6 +1809,10 @@ export async function createResearchService(
             )
             .get(entry.scopeKey, entry.requestId) as RequestRow | null;
           if (stored) await syncResearchHolds([stored]);
+          // A replacement attempt running here stops now, not at its next heartbeat.
+          const replacement = localRuns.get(entry.key);
+          if (lateExceeded && replacement && replacement !== entry)
+            replacement.controller.abort("budget_exceeded");
           wake();
           return;
         }
