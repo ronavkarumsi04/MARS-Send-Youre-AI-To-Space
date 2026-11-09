@@ -77,7 +77,11 @@ export interface WorkbenchOperations {
     ref: ArtifactRef,
   ): Promise<ArtifactData>;
   diff(context: RequestContext, taskId: string): Promise<DiffResult>;
-  evidence(context: RequestContext, taskId: string): Promise<EvidenceResult>;
+  evidence(
+    context: RequestContext,
+    taskId: string,
+    includeHostVerification?: boolean,
+  ): Promise<EvidenceResult>;
   checkpoint(context: RequestContext, taskId: string): Promise<CheckpointRef>;
   /** The host-owned verification verdict for the task's current candidate revision. */
   verification(
@@ -289,7 +293,11 @@ async function dispatch(
       );
     case "tasks.evidence":
       return EvidenceResultSchema.parse(
-        await api.evidence(context, request.params.task_id),
+        await api.evidence(
+          context,
+          request.params.task_id,
+          request.params.include_host_verification === true,
+        ),
       );
     case "tasks.checkpoint":
       return CheckpointRefSchema.parse(

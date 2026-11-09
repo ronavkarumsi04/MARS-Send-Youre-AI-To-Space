@@ -162,6 +162,11 @@ qwen3-coder:30b on CPU does not finish a ~2k-token TB2 request in that time,
 so both live MARS trials failed before any tool call. A real-model comparison
 therefore needs a faster endpoint (GPU) or a configurable per-request timeout,
 plus an accepted prompt proposal or a different model; all remain unverified.
+The per-request timeout is now configurable per model with `requestTimeoutMs`
+in `models.json` (1 000 ms to 1 h; default 60 000 ms, always bounded by the
+task deadline), and a failed run reports a `failure_code` (`provider_timeout`,
+`deadline_exceeded`, `budget_exhausted`, `provider_error`, `no_response`) in its
+error and in the workbench `runtime.result` event.
 
 ## What is verified and what is not (this increment)
 

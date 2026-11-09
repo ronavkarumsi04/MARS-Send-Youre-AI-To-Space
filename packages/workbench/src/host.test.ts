@@ -5371,3 +5371,17 @@ test("export serves any patch whose tasks.artifact response fits the server cap 
   });
   await api.close();
 });
+
+test("evidence keeps Watch records apart and adds the host verdict only when asked", async () => {
+  const { f, host } = await hostCheckFixture();
+  const api = await host();
+  await runHostCheckTask(f, api, "task", 0);
+  const plain = await api.evidence(context(), "task");
+  expect("host_verification" in plain).toBe(false);
+  const both = await api.evidence(context(), "task", true);
+  expect(both.host_verification).toEqual(
+    await api.verification(context(), "task"),
+  );
+  expect(both.verify_records).toEqual(plain.verify_records);
+  await api.close();
+});

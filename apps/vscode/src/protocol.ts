@@ -6,6 +6,7 @@ import {
   type Scope,
   ScopeSchema,
   TaskSchema,
+  VerificationViewSchema,
   WorkbenchDescribeFields,
   WorkbenchInspectFields,
 } from "@mars/contracts";
@@ -120,6 +121,7 @@ export const EvidenceResultSchema = z
     workspace: WorkspaceRefSchema,
     diff_sha256: sha256Hex,
     verify_records: z.array(EvidenceRecordSchema).max(1000),
+    host_verification: VerificationViewSchema.optional(),
   })
   .strict();
 export type EvidenceResult = z.infer<typeof EvidenceResultSchema>;

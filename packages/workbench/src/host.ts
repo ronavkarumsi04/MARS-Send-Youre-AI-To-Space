@@ -559,6 +559,47 @@ export async function createWorkbenchHost(
     )
       throw new WorkbenchError("forbidden");
   };
+  const verificationView = async (
+    context: RequestContext,
+    taskId: string,
+  ): Promise<VerificationView> => {
+    await options.store.inspect(context, taskId);
+    const records = await verificationRecords(
+      verificationHost,
+      context,
+      taskId,
+    );
+    let candidate: WorkspaceRef | null = null;
+    let patch: string | null = null;
+    try {
+      candidate = WorkspaceRefSchema.parse(
+        await options.workspace.reopen(context, taskId),
+      );
+      patch = patchSha256(await options.workspace.diff(context, candidate));
+    } catch {
+      patch = null;
+    }
+    const presentation = verificationStateFor(
+      candidate?.revision ?? null,
+      records,
+      patch,
+    );
+    const view: VerificationView = {
+      candidate,
+      state: presentation.state,
+      record: presentation.record,
+      reasons: presentation.reasons,
+      records,
+      patch_sha256: patch,
+    };
+    // Same guard as artifacts and diffs: nothing host-private leaves the
+    // service, even when a client named such a path in a required check.
+    assertPublicBytes(
+      new TextEncoder().encode(JSON.stringify(view)),
+      await privatePatterns(context, taskId),
+    );
+    return view;
+  };
   const ownedArtifact = async (
     context: RequestContext,
     taskId: string,
@@ -2622,7 +2663,7 @@ export async function createWorkbenchHost(
       );
       return { ...diff, digest: diffDigest(diff) };
     },
-    async evidence(context, taskId) {
+    async evidence(context, taskId, includeHostVerification = false) {
       checkContext(context);
       const task = await options.store.inspect(context, taskId);
       const workspace = await options.workspace.reopen(context, taskId);
@@ -2674,6 +2715,9 @@ export async function createWorkbenchHost(
         workspace,
         diff_sha256: digest,
         verify_records: records,
+        ...(includeHostVerification
+          ? { host_verification: await verificationView(context, taskId) }
+          : {}),
       };
     },
     async checkpoint(context, taskId) {
@@ -2693,42 +2737,7 @@ export async function createWorkbenchHost(
     },
     async verification(context, taskId): Promise<VerificationView> {
       checkContext(context);
-      await options.store.inspect(context, taskId);
-      const records = await verificationRecords(
-        verificationHost,
-        context,
-        taskId,
-      );
-      let candidate: WorkspaceRef | null = null;
-      let patch: string | null = null;
-      try {
-        candidate = WorkspaceRefSchema.parse(
-          await options.workspace.reopen(context, taskId),
-        );
-        patch = patchSha256(await options.workspace.diff(context, candidate));
-      } catch {
-        patch = null;
-      }
-      const presentation = verificationStateFor(
-        candidate?.revision ?? null,
-        records,
-        patch,
-      );
-      const view: VerificationView = {
-        candidate,
-        state: presentation.state,
-        record: presentation.record,
-        reasons: presentation.reasons,
-        records,
-        patch_sha256: patch,
-      };
-      // Same guard as artifacts and diffs: nothing host-private leaves the
-      // service, even when a client named such a path in a required check.
-      assertPublicBytes(
-        new TextEncoder().encode(JSON.stringify(view)),
-        await privatePatterns(context, taskId),
-      );
-      return view;
+      return verificationView(context, taskId);
     },
     async export(context, params): Promise<PatchExport> {
       checkContext(context);
