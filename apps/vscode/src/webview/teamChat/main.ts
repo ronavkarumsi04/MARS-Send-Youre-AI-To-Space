@@ -500,6 +500,10 @@ function renderChips(
   return row;
 }
 
+function messageFocusKey(messageId: string): string {
+  return `message-${messageId}`;
+}
+
 function renderMessage(
   s: TeamChatViewState,
   message: MessageView,
@@ -516,6 +520,7 @@ function renderMessage(
           );
           target?.scrollIntoView({ block: "center" });
           target?.classList.add("flash");
+          target?.focus({ preventScroll: true });
         },
         { secondary: true, title: "Jump to the replied message" },
       )
@@ -525,6 +530,7 @@ function renderMessage(
     "li",
     {
       class: `message ${mine ? "mine" : ""} ${s.selected?.highlight_message_id === message.message_id ? "highlight" : ""}`,
+      key: messageFocusKey(message.message_id),
     },
     h(
       "div",
@@ -559,6 +565,8 @@ function renderMessage(
     renderReactions(s, message),
   );
   item.dataset.messageId = message.message_id;
+  // Jump targets (reply quote, search hit) receive focus programmatically.
+  item.tabIndex = -1;
   return item;
 }
 
@@ -979,6 +987,7 @@ function render(): void {
       scrolledToHit = highlightId;
       target.scrollIntoView({ block: "center" });
       stickToBottom = false;
+      returnFocusTo = messageFocusKey(highlightId);
     }
   } else if (!highlightId) scrolledToHit = null;
   jumpButton.hidden = stickToBottom;
