@@ -4,4 +4,6 @@ export * from "./discovery";
 export * from "./frontmatter";
 export * from "./hooks";
 export * from "./lock";
+export * from "./outcomes";
+export * from "./selection";
 export * from "./store";

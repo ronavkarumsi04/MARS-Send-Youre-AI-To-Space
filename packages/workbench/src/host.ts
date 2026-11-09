@@ -168,6 +168,7 @@ import {
 import {
   type FrozenSkills,
   freezeCurrentSkills,
+  type WorkbenchSkillOutcomes,
   type WorkbenchSkills,
   withFrozenSkills,
 } from "./skills-context";
@@ -257,6 +258,8 @@ export interface WorkbenchHostOptions {
   /** Operator surface for reviewed memory proposals (list/accept/reject/revert). */
   memoryProposals?: WorkbenchMemoryProposals;
   skills?: WorkbenchSkills;
+  /** Verified-outcome credit for the skill versions each task loaded; ranks future launches. */
+  skillOutcomes?: WorkbenchSkillOutcomes;
   review?: WorkbenchReview;
   repositoryMap?: Pick<RepositoryMapProvider, "map">;
   specialists?: WorkbenchSpecialists;
@@ -1171,6 +1174,26 @@ export async function createWorkbenchHost(
       return 0;
     }
   };
+  // Every host verdict on a task that froze skills is credited, including tasks
+  // that loaded none: those are the baseline each skill is compared against.
+  const creditSkills = async (task: Task, verified: boolean) => {
+    if (!options.skillOutcomes) return;
+    try {
+      const launch = await readLaunchIfPresent(launchLocation, task);
+      if (!launch?.skills) return;
+      await options.skillOutcomes.record({
+        task_id: task.task_id,
+        skills: (launch.skills.selection ?? []).map(({ name, sha256 }) => ({
+          name,
+          sha256,
+        })),
+        verified,
+        recorded_at: Date.now(),
+      });
+    } catch {
+      // Outcome credit is advisory; it never affects the task.
+    }
+  };
   const recordReviewTurn = (
     taskId: string,
     runtime: RuntimeSession,
@@ -1310,6 +1333,8 @@ export async function createWorkbenchHost(
         // Only a persisted verdict for this exact candidate feeds review: a
         // passing one as a success, any other as a failure. Unverified runs
         // (no required checks) never reach the positive path.
+        if (status === "completed" && verdict)
+          await creditSkills(current, verdict.verified);
         if (status === "completed" && reviewable && verdict)
           recordReviewTurn(
             task.task_id,
@@ -2028,6 +2053,7 @@ export async function createWorkbenchHost(
   const freezeLaunchSkills = async (
     approvals: Approvals,
     prompt: LaunchPrompt,
+    query: string,
   ): Promise<LaunchStage<FrozenSkills>> => {
     const source = repositorySkillsSource(
       options.skills,
@@ -2036,10 +2062,15 @@ export async function createWorkbenchHost(
     if (!source || !approvals.read) return { frozen: undefined, prompt };
     let skills: FrozenSkills | undefined;
     try {
+      // Outcome evidence only reorders skills; without it ranking is relevance-only.
+      const stats = await Promise.resolve()
+        .then(() => options.skillOutcomes?.stats())
+        .catch(() => undefined);
       skills = await freezeCurrentSkills(
         source,
         prompt.instruction,
         prompt.remainingCapacity,
+        { query, ...(stats ? { stats } : {}) },
       );
     } catch {
       throw new WorkbenchError("unavailable");
@@ -2622,7 +2653,11 @@ export async function createWorkbenchHost(
         instruction: baseInstruction,
         remainingCapacity: capacity,
       });
-      const skills = await freezeLaunchSkills(params.approvals, memory.prompt);
+      const skills = await freezeLaunchSkills(
+        params.approvals,
+        memory.prompt,
+        baseInstruction,
+      );
       const foundInstructions = options.conventions?.instructions;
       const instructions = freezeLaunchInstructions(
         foundInstructions,

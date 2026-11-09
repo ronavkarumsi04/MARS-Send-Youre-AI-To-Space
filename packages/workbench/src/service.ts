@@ -64,7 +64,7 @@ import {
   type WorkerLogEvent,
 } from "@mars/research-worker";
 import { createRegistryReviewGateway, ReviewRunner } from "@mars/review";
-import { SkillStore } from "@mars/skills";
+import { SkillOutcomeLedger, SkillStore } from "@mars/skills";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import {
   createDockerSandbox,
@@ -339,6 +339,7 @@ export async function createWorkbenchService(
     ? await privateSubdirectory(root, "knowledge-graph")
     : undefined;
   const skillsRoot = await privateSubdirectory(root, "skills");
+  const outcomesRoot = await privateSubdirectory(root, "skill-outcomes");
   const reviewRoot = await privateSubdirectory(root, "review");
   const hostRoot = join(root, "sessions");
   await mkdir(hostRoot, { recursive: true, mode: 0o700 });
@@ -362,7 +363,13 @@ export async function createWorkbenchService(
     store = await createTaskStore({
       rootDir: join(root, "tasks"),
       workspaceRoots: [source],
-      hostPrivateRoots: [root, memoryRoot, skillsRoot, reviewRoot],
+      hostPrivateRoots: [
+        root,
+        memoryRoot,
+        skillsRoot,
+        outcomesRoot,
+        reviewRoot,
+      ],
     });
   } catch (error) {
     await omniroute?.stop().catch(() => undefined);
@@ -374,6 +381,7 @@ export async function createWorkbenchService(
   let host: Awaited<ReturnType<typeof createWorkbenchHost>> | undefined;
   let memory: DurableMemoryStore | undefined;
   let review: ReviewRunner | undefined;
+  let skillOutcomes: SkillOutcomeLedger | undefined;
   let repositoryMap: RepositoryMapProvider | undefined;
   let research: DurableResearchService | undefined;
   let browser: DurableBrowserService | undefined;
@@ -400,6 +408,7 @@ export async function createWorkbenchService(
       () => omniroute?.stop(),
       () => repositoryMap?.close(),
       () => memory?.close(),
+      () => skillOutcomes?.close(),
       () => workspace?.close(),
       () => store.close(),
     ];
@@ -501,9 +510,19 @@ export async function createWorkbenchService(
     }
     memory = createMemoryStore({
       rootDir: memoryRoot,
-      hostPrivateRoots: [source, root, memoryRoot, skillsRoot, reviewRoot],
+      hostPrivateRoots: [
+        source,
+        root,
+        memoryRoot,
+        skillsRoot,
+        outcomesRoot,
+        reviewRoot,
+      ],
     });
     const skills = new SkillStore(skillsRoot);
+    skillOutcomes = new SkillOutcomeLedger(
+      join(outcomesRoot, "outcomes.sqlite"),
+    );
     // Background review is proposal-only and free-model-only; without an
     // eligible free model the workbench simply runs without it.
     try {
@@ -589,6 +608,7 @@ export async function createWorkbenchService(
       memory,
       memoryProposals: memory,
       skills,
+      skillOutcomes,
       ...(review ? { review } : {}),
       repositoryMap,
       ...(options.specialists ? { specialists: options.specialists } : {}),

@@ -3653,6 +3653,84 @@ test("a completed foreground task is recorded for review exactly once, bracketed
   expect(calls.filter((call) => call.kind === "record")).toHaveLength(1);
 });
 
+test("host verdicts credit the exact skill versions a task loaded, ranked by relevance to the task", async () => {
+  const f = await fixture();
+  const recorded: SkillOutcome[] = [];
+  const skills: WorkbenchSkills = {
+    getRevision: async () => "skills-1",
+    list: async () => [
+      skillRecord({
+        name: "release-notes",
+        content: "Collect merged pull requests since the last tag.",
+      }),
+      skillRecord({
+        name: "fixture-writing",
+        content: "Write a fixture file and check its content.",
+      }),
+    ],
+  };
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      skills,
+      skillOutcomes: {
+        stats: () => new Map(),
+        record: (outcome) => {
+          recorded.push(structuredClone(outcome));
+        },
+      },
+    },
+  );
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("checkpoint"),
+      "application/octet-stream",
+    ),
+  );
+  for (const [id, content] of [
+    ["task", "checkpoint"],
+    ["task-2", "different"],
+  ] as const) {
+    await api.create(context(), task(id));
+    await api.start(context(), {
+      task_id: id,
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+      required_checks: [{ kind: "file_content", path: "ok.txt", content }],
+    });
+    const session = required(f.sessions.at(-1));
+    const frozen = JSON.parse(
+      await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+    ).skills;
+    expect(frozen.skills).toEqual(["fixture-writing", "release-notes"]);
+    expect(frozen.selection[0]).toMatchObject({
+      name: "fixture-writing",
+      relevance: 1,
+      sha256: createHash("sha256")
+        .update("Write a fixture file and check its content.")
+        .digest("hex"),
+    });
+    session.finish("completed");
+    await session.disposed;
+  }
+  expect(recorded.map((r) => [r.task_id, r.verified])).toEqual([
+    ["task", true],
+    ["task-2", false],
+  ]);
+  expect(recorded[0]?.skills.map((s) => s.name)).toEqual([
+    "fixture-writing",
+    "release-notes",
+  ]);
+  await api.close();
+});
+
 test("cancelled, failed and paused turns are never recorded as review successes", async () => {
   for (const outcome of ["cancelled", "failed", "paused"] as const) {
     const f = await fixture();
