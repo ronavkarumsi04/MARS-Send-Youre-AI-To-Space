@@ -3631,6 +3631,53 @@ test("cancelled, failed and paused turns are never recorded as review successes"
   }
 });
 
+test("a verdict that cannot be stored never feeds review", async () => {
+  const f = await fixture();
+  const { review, calls } = fakeReview();
+  const append = f.store.appendEvent.bind(f.store);
+  f.store.appendEvent = async (ctx, id, event) => {
+    if (
+      event.payload &&
+      typeof event.payload === "object" &&
+      "operation" in event.payload &&
+      event.payload.operation === "verification.verdict"
+    )
+      throw new Error("store unavailable");
+    return append(ctx, id, event);
+  };
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { review },
+  );
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("checkpoint"),
+      "application/octet-stream",
+    ),
+  );
+  await api.create(context(), task());
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+    required_checks: [
+      { kind: "file_content", path: "ok.txt", content: "checkpoint" },
+    ],
+  });
+  required(f.sessions[0]).finish("completed");
+  await required(f.sessions[0]).disposed;
+  expect((await api.verification(context(), "task")).state).toBe("unverified");
+  expect(calls.filter((call) => call.kind === "record")).toHaveLength(0);
+  await api.close();
+});
+
 test("only a persisted verdict feeds review: a failed check records a failure and an unverified run records nothing", async () => {
   const f = await fixture();
   const { review, calls } = fakeReview();
@@ -5276,5 +5323,36 @@ test("export returns the exact verified patch bytes and refuses a moved revision
       await f.store.artifacts.get(context(), exported.artifact),
     ),
   ).toBe(patchText());
+  // The client downloads the export through `tasks.artifact`.
+  const served = await api.artifact(context(), "task", exported.artifact);
+  expect(
+    Buffer.from(served.data_base64, "base64").equals(
+      Buffer.from(patchText(), "utf8"),
+    ),
+  ).toBe(true);
+  await api.close();
+});
+
+test("export refuses a patch too large to download through tasks.artifact", async () => {
+  const { f, host } = await hostCheckFixture();
+  const api = await host({
+    async exportPatch(_context, workspace) {
+      return {
+        workspace,
+        patch: new Uint8Array(2 * 1024 * 1024 + 1),
+        files: 1,
+        round_trip: { status: "passed", reason: null },
+        unsupported: [],
+      };
+    },
+  });
+  await runHostCheckTask(f, api, "task", 0);
+  await expect(
+    api.export(context(), {
+      task_id: "task",
+      expected_revision: "r1",
+      expected_patch_sha256: "0".repeat(64),
+    }),
+  ).rejects.toMatchObject({ code: "too_large" });
   await api.close();
 });

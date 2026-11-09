@@ -165,6 +165,8 @@ import {
   watchEvidence,
 } from "./watch-context";
 
+const MAX_EXPORT_PATCH_BYTES = 2 * 1024 * 1024;
+
 export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
 export interface WorkspaceHost extends ExecutionProvider {
@@ -2714,6 +2716,9 @@ export async function createWorkbenchHost(
       if (candidate.revision !== params.expected_revision)
         throw new WorkbenchError("conflict");
       const exported = await options.workspace.exportPatch(context, candidate);
+      // Base64 in `tasks.artifact` must still fit the response cap.
+      if (exported.patch.byteLength > MAX_EXPORT_PATCH_BYTES)
+        throw new WorkbenchError("too_large");
       const sha256 = createHash("sha256").update(exported.patch).digest("hex");
       if (sha256 !== params.expected_patch_sha256)
         throw new WorkbenchError("conflict");
@@ -2736,6 +2741,14 @@ export async function createWorkbenchHost(
         exported.patch,
         "text/x-diff",
       );
+      // Task-owned, so `tasks.artifact` serves the exported bytes.
+      const owner = await options.store.inspect(context, params.task_id);
+      if (
+        !owner.artifacts.some((ref) => ref.artifact_id === artifact.artifact_id)
+      )
+        await options.store.update(context, params.task_id, owner.revision, {
+          artifacts: [...owner.artifacts, artifact],
+        });
       return PatchExportSchema.parse({
         candidate: {
           workspace_id: candidate.workspace_id,
