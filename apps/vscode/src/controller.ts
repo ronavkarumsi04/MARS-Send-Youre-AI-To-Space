@@ -26,6 +26,7 @@ import type {
   SelectedView,
   VerificationBadge,
   ViewState,
+  WatchRecordView,
   WebviewMessage,
 } from "./messages";
 import { WebviewMessageSchema } from "./messages";
@@ -36,6 +37,7 @@ import {
   type Approvals,
   type DescribeResult,
   type DiffFile,
+  type EvidenceRecord,
   sameScope,
 } from "./protocol";
 import type { ReviewOutcome, ReviewTarget } from "./reviewOpener";
@@ -86,7 +88,24 @@ interface Selection {
   workspace: WorkspaceRef | null;
   artifact: ArtifactView | null;
   verification: VerificationBadge | null;
+  watch: WatchRecordView[];
   refreshing: boolean;
+}
+
+const MAX_WATCH_RECORDS = 5;
+
+function watchRecords(records: readonly EvidenceRecord[]): WatchRecordView[] {
+  return records
+    .slice(-MAX_WATCH_RECORDS)
+    .reverse()
+    .map((record) => ({
+      verdict: record.verdict,
+      assurance: record.assurance,
+      verified: record.verified,
+      revision: record.workspace_revision,
+      stale: record.stale,
+      recorded_at: record.recorded_at,
+    }));
 }
 
 /** Every "Verified" word the client shows comes from the shared presentation rule. */
@@ -265,6 +284,7 @@ export class WorkbenchController {
         workspace: selected.workspace,
         artifact: selected.artifact,
         verification: selected.verification,
+        watch: selected.watch,
       };
     }
     return {
@@ -527,20 +547,31 @@ export class WorkbenchController {
   private async loadVerification(taskId: string): Promise<void> {
     const generation = this.generation;
     const seq = ++this.verificationSeq;
-    const view = await this.request(null, (client, signal) =>
-      client.verification(taskId, signal),
-    );
+    // One evidence read binds the host verdict and Watch records to the same
+    // candidate; hosts without that parameter fall back to two reads.
+    const loaded = await this.request(null, async (client, signal) => {
+      const evidence = await client
+        .evidence(taskId, signal, true)
+        .catch(() => null);
+      return {
+        view:
+          evidence?.host_verification ??
+          (await client.verification(taskId, signal)),
+        watch: evidence ? watchRecords(evidence.verify_records) : [],
+      };
+    });
     const selected = this.current(taskId);
     // Only the newest answer may paint the badge; an older reply can speak
     // about a candidate that has since moved.
     if (
-      !view ||
+      !loaded ||
       !selected ||
       generation !== this.generation ||
       seq !== this.verificationSeq
     )
       return;
-    selected.verification = verificationBadge(view);
+    selected.verification = verificationBadge(loaded.view);
+    selected.watch = loaded.watch;
     this.emit();
   }
 
@@ -575,6 +606,7 @@ export class WorkbenchController {
       workspace: cached?.workspace ?? null,
       artifact: null,
       verification: null,
+      watch: [],
       refreshing: false,
     };
     this.startPolling(generation, taskId);
@@ -1224,6 +1256,7 @@ export class WorkbenchController {
     const after = this.current(taskId);
     if (after && TERMINAL.includes(after.task.status)) {
       after.verification = null;
+      after.watch = [];
       this.emit();
       await this.loadVerification(taskId);
     }
