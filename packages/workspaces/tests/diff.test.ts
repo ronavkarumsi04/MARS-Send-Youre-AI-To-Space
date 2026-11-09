@@ -58,10 +58,11 @@ async function gitApplyRoundTrip(
       .join("");
     await writeFile(join(dir, "change.patch"), patch);
     for (const args of [["--check"], []]) {
-      const proc = Bun.spawnSync(
-        ["git", "apply", ...args, "change.patch"],
-        { cwd: dir, stdout: "pipe", stderr: "pipe" },
-      );
+      const proc = Bun.spawnSync(["git", "apply", ...args, "change.patch"], {
+        cwd: dir,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       expect(proc.stderr.toString()).toBe("");
       expect(proc.exitCode).toBe(0);
     }
