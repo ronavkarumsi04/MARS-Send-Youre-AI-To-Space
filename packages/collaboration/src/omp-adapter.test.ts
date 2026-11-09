@@ -572,3 +572,28 @@ test("a throwing onError reporter does not change outcomes or reconciled usage",
   await mkdir(unreadable, { recursive: true });
   expect(await adapter.reconcile?.(unreadable)).toBe(null);
 });
+
+test("a rejecting async onError reporter leaves no unhandled rejection", async () => {
+  const f = await fixture();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  cleanup.push(async () => process.off("unhandledRejection", onUnhandled));
+  let reports = 0;
+  const adapter = createOhMyPiChildAdapter({
+    registry: f.registry,
+    stateRoot: f.stateRoot,
+    workspaceFor: f.workspaceFor,
+    runtimeFactory: f.runtimeFactory,
+    async onError() {
+      reports += 1;
+      throw new Error("Async reporter failure.");
+    },
+  });
+  const unreadable = join(f.stateRoot, "unreadable.jsonl");
+  await mkdir(unreadable, { recursive: true });
+  expect(await adapter.reconcile?.(unreadable)).toBe(null);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(reports).toBe(1);
+  expect(unhandled).toEqual([]);
+});

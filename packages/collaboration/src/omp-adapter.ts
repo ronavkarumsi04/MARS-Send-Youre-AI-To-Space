@@ -67,7 +67,7 @@ export interface OhMyPiAdapterOptions {
   runtimeFactory?: (options: RuntimeSessionOptions) => Promise<RuntimeSession>;
   /** Host-bound watch-skill tools for a child, bound to the parent task's evidence. */
   watchFor?(launch: ChildLaunch, cwd: string): RuntimeWatch | undefined;
-  /** Operational notice for a caught failure. Carries no message, stack or path: see `childAdapterErrorNotice`. */
+  /** Operational notice for a caught failure. Carries no message, stack or path: see `childAdapterErrorNotice`. May be async; it is not awaited and its rejections are dropped. */
   onError?(notice: ChildAdapterErrorNotice): void;
 }
 
@@ -105,16 +105,22 @@ export function childAdapterErrorNotice(
   };
 }
 
-/** A throwing reporter must not change a child's outcome or usage accounting. */
+/**
+ * A throwing or rejecting reporter must not change a child's outcome or usage
+ * accounting. Async reporters are not awaited.
+ */
 function reportSafely(
-  reporter: ErrorReporter | undefined,
+  reporter: OhMyPiAdapterOptions["onError"],
 ): ErrorReporter | undefined {
   if (!reporter) return undefined;
+  const drop = () => {
+    // The notice is diagnostic only; dropping it keeps accounting intact.
+  };
   return (notice) => {
     try {
-      reporter(notice);
+      Promise.resolve(reporter(notice)).catch(drop);
     } catch {
-      // The notice is diagnostic only; dropping it keeps accounting intact.
+      drop();
     }
   };
 }
