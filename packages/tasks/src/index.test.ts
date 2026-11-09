@@ -2307,9 +2307,9 @@ test("a task's deadline is fixed the first time it is asked for", async () => {
   expect(first).toBe(1_000 + task.budget.max_duration_ms);
   // A later resume or room never moves it.
   expect(await fix(context(), task.task_id, 5_000_000)).toBe(first);
-  await expect(fix(context(), task.task_id, Number.NaN)).rejects.toMatchObject(
-    { code: "invalid_input" },
-  );
+  await expect(fix(context(), task.task_id, Number.NaN)).rejects.toMatchObject({
+    code: "invalid_input",
+  });
   await expect(fix(context(), "missing", 1_000)).rejects.toBeDefined();
   await store.close();
 });
