@@ -291,6 +291,19 @@ test("a child whose task slot lapsed and was taken stops", async () => {
     children.children.find((member) => member.agent_id === child.agent_id)
       ?.state,
   ).not.toBe("completed");
+  // The lease then lapses and recovery fails the child closed, charging its
+  // remaining budget because the adapter cannot reconcile usage.
+  f.advance(f.collaboration.host.jobs.leaseMs + 1);
+  expect(await runner.recover()).toMatchObject({
+    examined: 1,
+    failed_closed: 1,
+  });
+  const after = await f.collaboration.agents.children(context, f.coordinator);
+  expect(
+    after.children.find((member) => member.agent_id === child.agent_id),
+  ).toMatchObject({ state: "failed" });
+  const stats = await f.collaboration.host.stats(context, f.room.room_id);
+  expect(stats.usage_unaccounted).toBe(1);
 });
 
 test("long child deadlines do not expire after a clamped timer chunk", async () => {
