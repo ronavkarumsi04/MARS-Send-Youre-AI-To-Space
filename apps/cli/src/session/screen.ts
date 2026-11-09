@@ -15,6 +15,7 @@ import {
 import { padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import {
   type CardContext,
+  compact,
   money,
   renderTranscriptTail,
   sanitize,
@@ -84,13 +85,6 @@ function fit(line: string, width: number): string {
   const cut = truncateToWidth(line, width);
   return `${cut}${padding(width - visibleWidth(cut))}`;
 }
-
-const compact = (n: number) =>
-  n >= 1_000_000
-    ? `${(n / 1_000_000).toFixed(1)}M`
-    : n >= 1_000
-      ? `${(n / 1_000).toFixed(1)}k`
-      : String(n);
 
 /** §2.3 segments, most important first; narrow terminals drop them from the right. */
 export function statusSegments(state: SessionState): string[] {

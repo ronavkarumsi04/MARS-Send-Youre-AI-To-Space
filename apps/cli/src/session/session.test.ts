@@ -10,6 +10,7 @@ import { DescribeResultSchema, InspectResultSchema } from "@mars/workbench";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { z } from "zod";
 import { SessionView } from "./app";
+import { compact } from "./cards";
 import { READ_METHODS, SessionClient, SessionRpcError } from "./client";
 import { SessionController } from "./controller";
 import {
@@ -357,6 +358,12 @@ describe("§8.1 budgets (fixture, 10,000 events)", () => {
     expect(result.idle_cpu_ratio).toBeLessThan(0.01);
     expect(result.rss_delta_mb).toBeLessThanOrEqual(150);
   }, 30_000);
+});
+
+test("token counts share one compact formatter", () => {
+  expect(compact(999)).toBe("999");
+  expect(compact(1_500)).toBe("1.5k");
+  expect(compact(1_500_000)).toBe("1.5M");
 });
 
 test("platform fixtures parse with the host's own strict schemas", async () => {
