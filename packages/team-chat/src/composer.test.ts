@@ -6,6 +6,7 @@ import {
   composerProblem,
   EMPTY_COMPOSER,
   keyIntent,
+  pickerAnnouncement,
   reduceComposer,
 } from "./composer";
 import { FIXTURE_REPOS as R, SITE_SHA, FIXTURE_USERS as U } from "./fixture";
@@ -210,6 +211,30 @@ describe("composer reducer", () => {
       env,
     );
     expect(buildSend(chipsOnly, "conv", "cm")?.body).toBe("");
+  });
+});
+
+describe("picker announcement", () => {
+  test("announces the result count on open, not on arrow moves, and the no-match state", () => {
+    expect(pickerAnnouncement(EMPTY_COMPOSER.picker)).toBe("");
+    const open = type(EMPTY_COMPOSER, "@");
+    const count = open.picker?.candidates.length ?? 0;
+    expect(count).toBeGreaterThan(1);
+    const text = pickerAnnouncement(open.picker);
+    expect(text).toBe(
+      `${count} suggestions, use Up and Down arrows to choose, Enter or Tab to attach.`,
+    );
+    const moved = reduceComposer(open, { type: "pickerMove", delta: 1 }, env);
+    expect(pickerAnnouncement(moved.picker)).toBe(text);
+    const none = type(EMPTY_COMPOSER, "@zzzz-no-such-thing");
+    expect(none.picker?.candidates).toEqual([]);
+    expect(pickerAnnouncement(none.picker)).toBe(
+      "No matching file, symbol or range.",
+    );
+    const one = open.picker
+      ? { ...open.picker, candidates: open.picker.candidates.slice(0, 1) }
+      : null;
+    expect(pickerAnnouncement(one)).toMatch(/^1 suggestion, /);
   });
 });
 

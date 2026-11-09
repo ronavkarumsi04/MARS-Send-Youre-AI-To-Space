@@ -10,6 +10,7 @@ export {
   type KeyIntent,
   keyIntent,
   type PickerState,
+  pickerAnnouncement,
   type ReplyContext,
   reduceComposer,
 } from "./composer";

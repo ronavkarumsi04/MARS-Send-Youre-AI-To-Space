@@ -10,6 +10,7 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
+  pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
   reduceComposer,
@@ -87,7 +88,9 @@ function reportViewport(): void {
 window.addEventListener("focus", reportViewport);
 window.addEventListener("blur", reportViewport);
 
-const textarea = h("textarea", { label: "Message" });
+const textarea = h("textarea", { label: "Message", role: "combobox" });
+textarea.setAttribute("aria-haspopup", "listbox");
+textarea.setAttribute("aria-autocomplete", "list");
 textarea.rows = 3;
 textarea.placeholder =
   "Message… type @ to reference a file, symbol or line range";
@@ -744,6 +747,10 @@ const picker = h("ul", {
   label: "Mention picker",
 });
 picker.id = "mention-picker";
+/** Polite status for picker result counts; separate from the message announcer. */
+const pickerStatus = h("div", { class: "announcer", role: "status" });
+pickerStatus.setAttribute("aria-live", "polite");
+pickerStatus.setAttribute("aria-atomic", "true");
 const sendButton = button("Send", "send", () => send());
 const composerAlert = h("p", {
   class: "notice error composer-error",
@@ -760,6 +767,7 @@ composerRoot.append(
   h("div", { class: "composer-input" }, picker, textarea, sendButton),
   composerAlert,
   hint,
+  pickerStatus,
 );
 
 function renderComposerParts(): void {
@@ -802,7 +810,11 @@ function renderComposerParts(): void {
     const { candidates, selected } = composer.picker;
     if (candidates.length === 0)
       picker.append(
-        h("li", { class: "muted small" }, "No matching file, symbol or range."),
+        h(
+          "li",
+          { class: "muted small", role: "presentation" },
+          "No matching file, symbol or range.",
+        ),
       );
     candidates.forEach((candidate, index) => {
       const option = h(
@@ -833,7 +845,9 @@ function renderComposerParts(): void {
       });
       picker.append(option);
     });
-    textarea.setAttribute("aria-activedescendant", `mention-${selected}`);
+    if (candidates.length > 0)
+      textarea.setAttribute("aria-activedescendant", `mention-${selected}`);
+    else textarea.removeAttribute("aria-activedescendant");
     textarea.setAttribute("aria-expanded", "true");
   } else {
     textarea.removeAttribute("aria-activedescendant");
@@ -841,6 +855,8 @@ function renderComposerParts(): void {
   }
   textarea.setAttribute("aria-controls", picker.id);
   picker.hidden = !composer.picker;
+  const status = pickerAnnouncement(composer.picker);
+  if (pickerStatus.textContent !== status) pickerStatus.textContent = status;
   composerAlert.textContent = composerError ?? "";
   composerAlert.hidden = composerError === null;
   sendButton.disabled =

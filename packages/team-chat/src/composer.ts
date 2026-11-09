@@ -165,6 +165,14 @@ export function keyIntent(
   return "none";
 }
 
+/** Polite status text for the open picker; empty when closed. Does not change on arrow moves. */
+export function pickerAnnouncement(picker: PickerState | null): string {
+  if (!picker) return "";
+  const n = picker.candidates.length;
+  if (n === 0) return "No matching file, symbol or range.";
+  return `${n} ${n === 1 ? "suggestion" : "suggestions"}, use Up and Down arrows to choose, Enter or Tab to attach.`;
+}
+
 export type ComposerProblem = "empty" | "too_long";
 
 /** Why the draft cannot be sent as-is, or null. Checked before the draft is cleared. */
