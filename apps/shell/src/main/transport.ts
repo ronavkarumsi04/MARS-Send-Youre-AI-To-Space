@@ -1,3 +1,4 @@
+import { readBoundedUtf8 } from "@mars/contracts/bounded-read";
 import { BRIDGE_ERROR_MESSAGES, type BridgeErrorKind } from "../shared/methods";
 import { isLoopbackHost } from "./connection";
 
@@ -52,39 +53,10 @@ async function readBounded(
   response: Response,
   maxBytes: number,
 ): Promise<string> {
-  const declared = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > maxBytes)
-    throw new TransportError("protocol");
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes) throw new TransportError("protocol");
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      throw new TransportError("protocol");
-    }
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let total = 0;
-  let text = "";
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new TransportError("protocol");
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    return text + decoder.decode();
-  } catch (error) {
-    if (error instanceof TransportError) throw error;
+    return await readBoundedUtf8(response, maxBytes);
+  } catch {
     throw new TransportError("protocol");
-  } finally {
-    reader.releaseLock();
   }
 }
 

@@ -22,6 +22,7 @@ import type {
   Task,
 } from "@mars/contracts";
 import { createTaskStore, TaskStoreError } from "@mars/tasks";
+import { proposedEventInput, staleEventInput } from "./events";
 import {
   createResearchService,
   type DurableResearchService,
@@ -32,7 +33,8 @@ import {
   type ResearchWorkerContext,
   RetryableResearchError,
 } from "./index";
-import { canonicalRecord, sha256 } from "./store";
+import { ResearchUsageSchema, StoredResearchEventInputSchema } from "./schemas";
+import { canonicalRecord, parseWorkerJson, sha256 } from "./store";
 
 const roots: string[] = [];
 const services: DurableResearchService[] = [];
@@ -2736,4 +2738,111 @@ test("classifies finished research jobs as terminal", () => {
     expect(isTerminalResearchStatus(status)).toBe(false);
   for (const status of ["completed", "failed", "cancelled", "expired"] as const)
     expect(isTerminalResearchStatus(status)).toBe(true);
+});
+
+describe("stored research JSON schemas", () => {
+  const syncErrorCode = (operation: () => unknown): string => {
+    try {
+      operation();
+    } catch (error) {
+      return (error as { code?: string }).code ?? "other";
+    }
+    return "none";
+  };
+
+  test("parseWorkerJson accepts configured worker records only", () => {
+    expect(parseWorkerJson(null)).toBeNull();
+    expect(
+      parseWorkerJson('{"id":"worker","version":"1","extra":true}'),
+    ).toEqual({ id: "worker", version: "1" });
+    for (const value of [
+      "not json",
+      "null",
+      "[]",
+      '{"id":"worker"}',
+      '{"id":"","version":"1"}',
+      '{"id":"worker","version":""}',
+      '{"id":1,"version":"1"}',
+    ]) {
+      expect(syncErrorCode(() => parseWorkerJson(value))).toBe(
+        "corrupt_record",
+      );
+    }
+  });
+
+  test("ResearchUsageSchema pins the persisted usage shape", () => {
+    const usage = {
+      input_tokens: 3,
+      output_tokens: 4,
+      cost_usd: null,
+      reported: false,
+    };
+    expect(ResearchUsageSchema.safeParse(usage).success).toBe(true);
+    expect(
+      ResearchUsageSchema.safeParse({ ...usage, cost_usd: 0.25 }).success,
+    ).toBe(true);
+    for (const corrupt of [
+      { ...usage, input_tokens: 1.5 },
+      { ...usage, output_tokens: Number.MAX_SAFE_INTEGER + 1 },
+      { ...usage, cost_usd: undefined },
+      { ...usage, reported: "yes" },
+      [],
+    ]) {
+      expect(ResearchUsageSchema.safeParse(corrupt).success).toBe(false);
+    }
+  });
+
+  test("StoredResearchEventInputSchema accepts exactly the events research writes", () => {
+    const worker = { id: "worker", version: "7" };
+    const proposed = proposedEventInput(
+      "request-1",
+      {
+        finding_id: "finding-1",
+        request_id: "request-1",
+        task_revision: 2,
+        claim: "claim",
+        sources: [],
+        recommendation: "recommendation",
+        confidence: "high",
+        remaining_uncertainty: [],
+        status: "proposed",
+      },
+      worker,
+      RESEARCH_STORE_FORMAT_VERSION,
+    );
+    const stale = staleEventInput(
+      "request-1",
+      2,
+      ["finding-1"],
+      null,
+      RESEARCH_STORE_FORMAT_VERSION,
+    );
+    for (const { eventJson } of [proposed, stale]) {
+      const parsed = StoredResearchEventInputSchema.safeParse(
+        JSON.parse(eventJson),
+      );
+      expect(parsed.success).toBe(true);
+    }
+    const event = JSON.parse(proposed.eventJson) as Record<string, unknown>;
+    for (const corrupt of [
+      { ...event, usage: { input_tokens: 1 } },
+      { ...event, extra: true },
+      { ...event, event_type: "research.stale" },
+      { ...event, producer: "other" },
+      { ...event, run_id: "" },
+      { ...event, versions: [] },
+      { ...event, source_event_ids: undefined },
+      {
+        ...event,
+        payload: {
+          ...(event.payload as Record<string, unknown>),
+          source_count: 1.5,
+        },
+      },
+    ]) {
+      expect(StoredResearchEventInputSchema.safeParse(corrupt).success).toBe(
+        false,
+      );
+    }
+  });
 });
