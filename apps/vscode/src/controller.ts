@@ -144,6 +144,7 @@ export class WorkbenchController {
   private generation = 0;
   private busy: string | null = null;
   private notice: Notice | null = null;
+  private noticeSeq = 0;
   private readonly inflight = new Set<AbortController>();
   private disposedFlag = false;
   /** Server identity of the last successful describe; a change drops all task state. */
@@ -278,7 +279,7 @@ export class WorkbenchController {
   }
 
   private setNotice(kind: Notice["kind"], text: string): void {
-    this.notice = { kind, text };
+    this.notice = { kind, text, seq: ++this.noticeSeq };
   }
 
   // ---------------------------------------------------------- requests

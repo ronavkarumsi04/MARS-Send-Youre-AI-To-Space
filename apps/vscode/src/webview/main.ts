@@ -21,6 +21,38 @@ declare function acquireVsCodeApi(): VsCodeApi;
 const vscode = acquireVsCodeApi();
 const app = document.getElementById("app") as HTMLElement;
 let state: ViewState | null = null;
+
+/** Persistent live regions outside the re-rendered `#app`; only their text changes. */
+function liveRegion(role: "status" | "alert"): HTMLElement {
+  const region = h("div", { class: "announcer", role });
+  region.setAttribute("aria-atomic", "true");
+  return region;
+}
+const connectionRegion = liveRegion("status");
+const statusRegion = liveRegion("status");
+const alertRegion = liveRegion("alert");
+document.body.append(connectionRegion, statusRegion, alertRegion);
+const repeatTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+let announcedNoticeSeq: number | null = null;
+
+/** Updates a region only when its text changes, or when `repeat` re-announces identical text. */
+function announce(region: HTMLElement, text: string, repeat = false): void {
+  clearTimeout(repeatTimers.get(region));
+  repeatTimers.delete(region);
+  if (region.textContent === text && !repeat) return;
+  if (region.textContent !== text || !text) {
+    region.textContent = text;
+    return;
+  }
+  region.textContent = "";
+  repeatTimers.set(
+    region,
+    setTimeout(() => {
+      repeatTimers.delete(region);
+      region.textContent = text;
+    }, 100),
+  );
+}
 let approvalTask: string | null = null;
 
 function field(
@@ -709,20 +741,32 @@ function render(): void {
   const focused = captureFocus();
   const s = state;
   const notice = s.notice
-    ? h(
-        "div",
-        {
-          class: `notice ${s.notice.kind}`,
-          role: s.notice.kind === "info" ? "status" : "alert",
-        },
-        s.notice.text,
-      )
+    ? h("div", { class: `notice ${s.notice.kind}` }, s.notice.text)
     : null;
+  const busyText = s.busy ? `${s.busy}…` : "";
+  const infoText = s.notice?.kind === "info" ? s.notice.text : "";
+  const newNotice = s.notice !== null && s.notice.seq !== announcedNoticeSeq;
+  announcedNoticeSeq = s.notice?.seq ?? null;
+  const c = s.connection;
+  announce(
+    connectionRegion,
+    [STATUS_TEXT[c.status] ?? c.status, c.message].filter(Boolean).join(": "),
+  );
+  announce(
+    statusRegion,
+    [busyText, infoText].filter(Boolean).join(" · "),
+    newNotice && s.notice?.kind === "info",
+  );
+  announce(
+    alertRegion,
+    s.notice && s.notice.kind !== "info" ? s.notice.text : "",
+    newNotice && s.notice?.kind !== "info",
+  );
   const connected = s.connection.status === "connected";
   newTask.create.disabled = !connected || s.busy !== null;
   app.replaceChildren(
     renderHeader(s),
-    s.busy ? h("div", { class: "busy", role: "status" }, `${s.busy}…`) : "",
+    busyText ? h("div", { class: "busy" }, busyText) : "",
     notice ?? "",
     connected ? newTask.details : "",
     connected ? renderTasks(s) : "",

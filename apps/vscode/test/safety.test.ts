@@ -382,6 +382,8 @@ describe("webview boundary", () => {
     expect(html).not.toContain("unsafe-inline");
     expect(html).not.toContain("unsafe-eval");
     expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain('<main id="app"></main>');
+    expect(html).not.toContain("aria-live");
     expect(isValidNonce("short")).toBe(false);
     expect(() =>
       buildWebviewHtml({
