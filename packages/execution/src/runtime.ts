@@ -1025,9 +1025,13 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
             : last.stopReason === "length"
               ? "paused"
               : "completed";
+        // The runtime deadline aborts the session, so the bridge sees a cancel, not a failure.
         const failureCode: RuntimeFailureCode =
-          modelFailure ??
-          (last?.role === "assistant" ? "provider_error" : "no_response");
+          controller.signal.reason instanceof ExecutionLimitError ||
+          Date.now() >= ledger.deadline
+            ? "deadline_exceeded"
+            : (modelFailure ??
+              (last?.role === "assistant" ? "provider_error" : "no_response"));
         return {
           status,
           content,

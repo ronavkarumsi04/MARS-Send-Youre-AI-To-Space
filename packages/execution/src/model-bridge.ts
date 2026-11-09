@@ -170,8 +170,6 @@ export function createModelBridge(options: ModelBridgeOptions) {
     };
     void (async () => {
       let ownsReservation = false;
-      let requestTimeoutMs = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
-      let dispatchedAt: number | undefined;
       try {
         if (busy || Date.now() >= ledger.deadline)
           throw new ExecutionLimitError();
@@ -212,11 +210,10 @@ export function createModelBridge(options: ModelBridgeOptions) {
         if (streamOptions?.signal) signals.push(streamOptions.signal);
         const signal = AbortSignal.any(signals);
         signal.throwIfAborted();
-        requestTimeoutMs = Math.min(
+        const requestTimeoutMs = Math.min(
           selected.requestTimeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
           Math.max(1, ledger.deadline - Date.now()),
         );
-        dispatchedAt = Date.now();
         const router = new ModelRouter(options.registry, {
           adapterOptions: {
             ...(options.env ? { env: options.env } : {}),
@@ -353,12 +350,11 @@ export function createModelBridge(options: ModelBridgeOptions) {
             : "error";
         if (output.stopReason === "error")
           options.onFailure?.(
-            error instanceof ExecutionLimitError
-              ? "budget_exhausted"
-              : Date.now() >= ledger.deadline
-                ? "deadline_exceeded"
-                : dispatchedAt !== undefined &&
-                    Date.now() - dispatchedAt >= requestTimeoutMs
+            Date.now() >= ledger.deadline
+              ? "deadline_exceeded"
+              : error instanceof ExecutionLimitError
+                ? "budget_exhausted"
+                : (error as { timedOut?: unknown } | null)?.timedOut === true
                   ? "provider_timeout"
                   : "provider_error",
           );

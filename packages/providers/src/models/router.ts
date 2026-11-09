@@ -185,6 +185,7 @@ export class ModelRouter {
   private noModelAvailable(
     skipped: SkippedModel[],
     attempts: RoutingAttempt[],
+    timedOut = false,
   ): NoModelAvailableError {
     return new NoModelAvailableError(
       [
@@ -195,6 +196,7 @@ export class ModelRouter {
         })),
       ],
       attempts,
+      timedOut,
     );
   }
 
@@ -206,6 +208,7 @@ export class ModelRouter {
     if (!models.length) throw this.noModelAvailable(skipped, []);
 
     const attempts: RoutingAttempt[] = [];
+    let timedOut = false;
     for (const model of models) {
       const cooling = this.cooldownSkip(model);
       if (cooling) {
@@ -220,10 +223,11 @@ export class ModelRouter {
         };
       } catch (error) {
         const providerError = this.handleProviderError(model, error, attempts);
+        timedOut = providerError.timedOut;
         if (!providerError.retryable) throw providerError;
       }
     }
-    throw this.noModelAvailable(skipped, attempts);
+    throw this.noModelAvailable(skipped, attempts, timedOut);
   }
 
   async *stream(
@@ -234,6 +238,7 @@ export class ModelRouter {
     if (!models.length) throw this.noModelAvailable(skipped, []);
 
     const attempts: RoutingAttempt[] = [];
+    let timedOut = false;
     for (const model of models) {
       const cooling = this.cooldownSkip(model);
       if (cooling) {
@@ -259,9 +264,10 @@ export class ModelRouter {
         return;
       } catch (error) {
         const providerError = this.handleProviderError(model, error, attempts);
+        timedOut = providerError.timedOut;
         if (!providerError.retryable || emitted) throw providerError;
       }
     }
-    throw this.noModelAvailable(skipped, attempts);
+    throw this.noModelAvailable(skipped, attempts, timedOut);
   }
 }

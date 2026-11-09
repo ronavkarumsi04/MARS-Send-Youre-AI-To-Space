@@ -1115,6 +1115,42 @@ test("a model request past the model's requestTimeoutMs fails as provider_timeou
       messages: [{ role: "user", content: "Hello", timestamp: 1 }],
     }).result();
     expect(failures).toEqual(["provider_timeout", "budget_exhausted"]);
+
+    // An HTTP error that merely arrives late is still a provider error.
+    const late = createModelBridge({
+      registry: f.registry,
+      selected,
+      budget: f.task.budget,
+      ledger,
+      signal: new AbortController().signal,
+      persistLedger: async () => undefined,
+      onFailure: (code) => failures.push(code),
+      fetch: async () => {
+        await Bun.sleep(1_200);
+        return new Response("bad request", { status: 400 });
+      },
+      env: f.env,
+    });
+    await late(model, {
+      messages: [{ role: "user", content: "Hello", timestamp: 1 }],
+    }).result();
+    expect(failures.at(-1)).toBe("provider_error");
+
+    const expired = createModelBridge({
+      registry: f.registry,
+      selected,
+      budget: f.task.budget,
+      ledger: { ...ledger, deadline: Date.now() - 1 },
+      signal: new AbortController().signal,
+      persistLedger: async () => undefined,
+      onFailure: (code) => failures.push(code),
+      fetch: async () => sse({ content: "Should not run" }),
+      env: f.env,
+    });
+    await expired(model, {
+      messages: [{ role: "user", content: "Hello", timestamp: 1 }],
+    }).result();
+    expect(failures.at(-1)).toBe("deadline_exceeded");
   } finally {
     await f.cleanup();
   }

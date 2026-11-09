@@ -210,7 +210,7 @@ export function createOpenAICompatibleAdapter(
     requestData: ChatRequest,
     model: ModelConfig,
   ): AsyncGenerator<StreamEvent> {
-    const { response, cleanup } = await request(
+    const { response, cleanup, signal } = await request(
       "/chat/completions",
       requestBody(requestData, model, true),
     );
@@ -277,7 +277,7 @@ export function createOpenAICompatibleAdapter(
           );
         }
       } catch (cause) {
-        throw streamFailure(provider.id, cause, emittedContent);
+        throw streamFailure(provider.id, cause, emittedContent, signal.aborted);
       }
 
       const toolCalls = [...partialTools.entries()]
