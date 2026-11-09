@@ -7,7 +7,6 @@ import {
   excerpt,
   fail,
   MAX_SEARCH_HITS,
-  MAX_SEARCH_QUERY_CHARS,
   type MentionIndex,
   type MessageView,
   type ReactionEmoji,
@@ -29,6 +28,7 @@ import type { TeamClient } from "./client";
 import {
   type ConversationListItem,
   type ConversationView,
+  MAX_SEARCH_QUERY_CHARS,
   MIN_SEARCH_QUERY_CHARS,
   type ReactionSummary,
   type SearchHit,

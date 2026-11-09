@@ -811,6 +811,43 @@ describe("specialist evidence and persistence", () => {
     ).toEqual([{ ref: "baseline:baseline@1", reasons: ["excluded"] }]);
   });
 
+  test("walks a declared fallback chain through specialist and baseline targets", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    const target = await makeSpecialistFixture(artifacts, {
+      specialistId: "chain-target",
+    });
+    await registry.registerSpecialist(context, target.registration);
+    const fixture = await makeSpecialistFixture(artifacts, {
+      fallbackRef: "specialist:chain-target@1",
+    });
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    artifacts.delete(fixture.registration.evaluation);
+    const toSpecialist = await registry.route(context, routingRequest());
+    expect(toSpecialist.outcome).toBe("specialist");
+    expect(toSpecialist.selected?.ref).toBe("specialist:chain-target@1");
+    expect(toSpecialist.fallback).toEqual({
+      reason_code: "intended_specialist_ineligible",
+      from: "specialist:specialist-1@1",
+      chain: [{ ref: "specialist:chain-target@1", reasons: [] }],
+    });
+
+    artifacts.delete(target.registration.evaluation);
+    const toBaseline = await registry.route(context, routingRequest());
+    expect(toBaseline.outcome).toBe("baseline");
+    expect(toBaseline.selected?.ref).toBe("baseline:baseline@1");
+    expect(toBaseline.fallback?.from).toBe("specialist:specialist-1@1");
+    expect(toBaseline.fallback?.chain).toEqual([
+      { ref: "specialist:chain-target@1", reasons: ["evidence_missing"] },
+      { ref: "baseline:baseline@1", reasons: [] },
+    ]);
+    expect(
+      toBaseline.rejected.find(
+        (item) => item.ref === "specialist:chain-target@1",
+      )?.reasons,
+    ).toEqual(["evidence_missing"]);
+  });
+
   test("rejects stale current-specialist evidence at promotion", async () => {
     const { registry, artifacts } = await setupRegistry();
     const first = await makeSpecialistFixture(artifacts, {

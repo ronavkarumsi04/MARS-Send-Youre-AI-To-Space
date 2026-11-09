@@ -40,6 +40,10 @@ import {
   sha256,
   canonicalJson as sharedCanonicalJson,
 } from "@mars/contracts/canonical";
+import {
+  isInsideOrEqual,
+  resolveForSafety,
+} from "@mars/contracts/path-containment";
 import { z } from "zod";
 
 export const TASK_STORE_FORMAT_VERSION = 1;
@@ -275,33 +279,6 @@ function parseJson<T>(text: string, schema: z.ZodType<T>, label: string): T {
   }
 }
 
-function pathContains(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
-  );
-}
-
-function resolveForSafety(value: string): string {
-  const absolute = path.resolve(value);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const suffix: string[] = [];
-    let existing = absolute;
-    while (!existsSync(existing)) {
-      const parent = path.dirname(existing);
-      if (parent === existing) return absolute;
-      suffix.unshift(path.basename(existing));
-      existing = parent;
-    }
-    return path.resolve(realpathSync(existing), ...suffix);
-  }
-}
-
 const forbiddenHostPrivateKeys = new Set([
   "session_file",
   "sessionFile",
@@ -478,7 +455,10 @@ function prepareRoot(options: TaskStoreOptions): string {
       throw invalidInput("workspaceRoots must be absolute");
     }
     const workspace = resolveForSafety(workspaceRoot);
-    if (pathContains(workspace, rootDir) || pathContains(rootDir, workspace)) {
+    if (
+      isInsideOrEqual(workspace, rootDir) ||
+      isInsideOrEqual(rootDir, workspace)
+    ) {
       throw unsafePath("Task store root overlaps a workspace root");
     }
   }
@@ -1997,8 +1977,8 @@ export async function createTaskStore(
       const lexicalBindingPath = path.resolve(binding.session_file);
       const bindingPath = resolveForSafety(binding.session_file);
       if (
-        pathContains(rootDir, lexicalBindingPath) ||
-        pathContains(rootDir, bindingPath)
+        isInsideOrEqual(rootDir, lexicalBindingPath) ||
+        isInsideOrEqual(rootDir, bindingPath)
       ) {
         throw invalidInput("Upstream session file cannot be inside task store");
       }
@@ -2179,7 +2159,7 @@ export async function createTaskStore(
           try {
             payload = JSON.parse(text);
           } catch {
-            fail("corrupt_record", "Event history contains host-private data");
+            fail("corrupt_record", "Corrupt task.updated payload");
           }
           if (
             containsForbiddenHostPrivateKey(payload) ||

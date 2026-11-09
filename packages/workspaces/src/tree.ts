@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import { sha256 } from "@mars/contracts/canonical";
 import {
   IntegrityError,
   LimitExceededError,
@@ -67,10 +68,6 @@ export interface TreeOptions {
     path: string;
     reason: "symlink" | "special" | "ignored-secret" | "unsupported-name";
   }>;
-}
-
-export function sha256(data: Uint8Array | string): string {
-  return createHash("sha256").update(data).digest("hex");
 }
 
 export function compareStrings(left: string, right: string): number {

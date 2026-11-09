@@ -470,6 +470,86 @@ describe("skill lifecycle owner", () => {
   });
 });
 
+describe("persisted state validation", () => {
+  it("reports malformed lifecycle, transaction and journal files as corrupt", async () => {
+    await store.create("test", content("test"), { ...options, reviewId: "r" });
+    const lifecycle = await read(".lifecycle.json");
+    for (const text of [
+      "{",
+      JSON.stringify({ skills: [] }),
+      lifecycle.replace(
+        '"skills":{',
+        `"skills":{"__proto__":${JSON.stringify(JSON.parse(lifecycle).skills.test)},`,
+      ),
+    ]) {
+      await writeFile(join(root, ".lifecycle.json"), text);
+      await expect(store.list()).rejects.toMatchObject({
+        name: "SkillError",
+        code: "corrupt",
+      });
+    }
+    await writeFile(join(root, ".lifecycle.json"), lifecycle);
+
+    await writeFile(
+      join(root, ".skills-transaction.json"),
+      JSON.stringify({ state: { skills: {} }, journal: "" }),
+    );
+    await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+    await rm(join(root, ".skills-transaction.json"));
+
+    const journal = await read("changes.jsonl");
+    await writeFile(join(root, "changes.jsonl"), `${journal}{"ts":1}\n`);
+    await expect(store.undoReview("r", options)).rejects.toMatchObject({
+      code: "corrupt",
+    });
+    await writeFile(join(root, "changes.jsonl"), journal);
+    expect(await store.undoReview("r", options)).toHaveLength(1);
+  });
+  it("refuses to publish a pending transaction whose journal is malformed", async () => {
+    await store.create("test", content("test"), options);
+    const lifecycle = await read(".lifecycle.json");
+    const journal = await read("changes.jsonl");
+    const state = JSON.parse(lifecycle);
+    state.skills.test.content = content("test", "Changed");
+    await writeFile(
+      join(root, ".skills-transaction.json"),
+      JSON.stringify({ state, journal: `${journal}not json\n` }),
+    );
+    await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+    expect(await read("changes.jsonl")).toBe(journal);
+    expect(await read(".lifecycle.json")).toBe(lifecycle);
+    expect(await read("skills/test/SKILL.md")).toBe(content("test"));
+  });
+
+  it("appends after a journal whose last entry has no trailing newline", async () => {
+    await store.create("test", content("test"), options);
+    await writeFile(
+      join(root, "changes.jsonl"),
+      (await read("changes.jsonl")).trimEnd(),
+    );
+    await store.pin("test", true, options);
+    expect((await store.get("test"))?.pinned).toBe(true);
+    expect((await read("changes.jsonl")).trim().split("\n")).toHaveLength(2);
+    await expect(read(".skills-transaction.json")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("does not append new changes to a malformed journal", async () => {
+    await store.create("test", content("test"), options);
+    const corrupt = `${await read("changes.jsonl")}{"ts":1}\n`;
+    await writeFile(join(root, "changes.jsonl"), corrupt);
+    await expect(store.pin("test", true, options)).rejects.toMatchObject({
+      code: "corrupt",
+    });
+    expect(await read("changes.jsonl")).toBe(corrupt);
+    await expect(read(".skills-transaction.json")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await store.get("test"))?.pinned).toBe(false);
+  });
+});
+
 describe("writer lock recovery", () => {
   it("reclaims an aged ownerless lock directory but not a fresh one", async () => {
     const lock = join(root, ".writer.lock");

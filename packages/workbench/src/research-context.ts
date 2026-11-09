@@ -3,6 +3,7 @@ import type { RuntimeResearch } from "@mars/execution";
 import {
   type DurableResearchService,
   isTerminalResearchStatus,
+  ResearchError,
 } from "@mars/research";
 import { untrustedText } from "./untrusted-render";
 
@@ -45,19 +46,50 @@ export function renderUntrustedFinding(finding: ResearchFinding): string {
   ].join("\n");
 }
 
-/** Supersedes every research request of a task after its instructions change. */
+/** A research request (or the listing, when `null`) that could not be marked stale. */
+export interface StaleResearchFailure {
+  request_id: string | null;
+  code: string;
+}
+
+function staleFailure(
+  requestId: string | null,
+  error: unknown,
+): StaleResearchFailure {
+  return {
+    request_id: requestId,
+    code: error instanceof ResearchError ? error.code : "unknown",
+  };
+}
+
+/**
+ * Supersedes every research request of a task after its instructions change.
+ * Cancelling is best-effort; failures to mark a request stale are returned,
+ * since an unmarked request would render as current evidence.
+ */
 export async function staleTaskResearch(
   service: WorkbenchResearch,
   context: RequestContext,
   taskId: string,
-): Promise<void> {
-  const jobs = await service.list(context, { task_id: taskId });
+): Promise<StaleResearchFailure[]> {
+  let jobs: Awaited<ReturnType<WorkbenchResearch["list"]>>;
+  try {
+    jobs = await service.list(context, { task_id: taskId });
+  } catch (error) {
+    return [staleFailure(null, error)];
+  }
+  const failures: StaleResearchFailure[] = [];
   for (const job of jobs) {
     if (job.task_id !== taskId || job.stale) continue;
-    await service.markStale(context, job.request_id).catch(() => undefined);
+    try {
+      await service.markStale(context, job.request_id);
+    } catch (error) {
+      failures.push(staleFailure(job.request_id, error));
+    }
     if (!isTerminalResearchStatus(job.status))
       await service.cancel(context, job.request_id).catch(() => undefined);
   }
+  return failures;
 }
 
 /**

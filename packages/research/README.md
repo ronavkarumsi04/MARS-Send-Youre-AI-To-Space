@@ -4,7 +4,7 @@
 
 ## API
 
-Create the service with a `rootDir`, a `ResearchTaskReader`, an artifact store, and a `ResearchWorker`. The returned service implements the contracts `ResearchService` methods and adds `inspect`, `list`, `readFindings`, `markUsed`, `reconcileTask`, `pump`, and `close`. Worker input intentionally omits caller scope, request context, and filesystem paths. Worker writes are guarded by the durable request lease and abort signal. Background failures that have no caller to reject are passed to the optional `onInternalError(where, error)` callback and the most recent one is kept for `lastInternalError()`; scheduling continues as before. `where` names the operation that failed: `run_settled` (a run's terminal state write), `flush_events` (the post-run outbox flush), `pump` (a timer-, submit- or post-run-triggered pump) or `execute_claim` (starting a claimed run). Reporter throws, rejected promises and rejected thenables are contained.
+Create the service with a `rootDir`, a `ResearchTaskReader`, an artifact store, and a `ResearchWorker`. The returned service implements the contracts `ResearchService` methods and adds `inspect`, `list`, `readFindings`, `markUsed`, `reconcileTask`, `pump`, and `close`. Worker input intentionally omits caller scope, request context, and filesystem paths. Worker writes are guarded by the durable request lease and abort signal. Background failures that have no caller to reject are passed to the optional `onInternalError(where, error)` callback and the most recent one is kept for `lastInternalError()`; scheduling continues as before. `where` names the operation that failed: `run_settled` (a run's terminal state write), `flush_events` (the post-run outbox flush, or delivering or decoding one outbox entry), `pump` (a timer-, submit- or post-run-triggered pump) or `execute_claim` (starting a claimed run). Reporter throws, rejected promises and rejected thenables are contained.
 
 ## Persistence and enforcement
 
@@ -12,7 +12,7 @@ Requests and findings survive restarts in `research.sqlite`. SQLite transactions
 
 The current `RESEARCH_STORE_FORMAT_VERSION` is 2. Version 1 stores are migrated atomically on open, including pending event-outbox entries.
 
-Workers receive the request's accumulated usage in `ResearchWorkerInput.usage` and report each new delta through `reportUsage`. Evidence is stored through the configured artifact store, and finding records refer to those captured artifacts. The optional event sink is an outbox: event failures are retained as pending and retried on later pumps.
+Workers receive the request's accumulated usage in `ResearchWorkerInput.usage` and report each new delta through `reportUsage`. Evidence is stored through the configured artifact store, and finding records refer to those captured artifacts. The optional event sink is an outbox: event failures are reported as `flush_events`, retained as pending and retried on later pumps. An entry whose stored event or record cannot be decoded (`corrupt_record`) is reported once and parked as `failed` instead of being retried.
 
 ## Citations and privacy
 
@@ -60,5 +60,5 @@ Exports: `createResearchService`, `RetryableResearchError`, `ResearchError`, `Re
 - Token and USD ceilings depend on truthful worker-reported usage.
 - Citation capture records provenance, not source authenticity or truth.
 - Parent lifecycle wiring, task-revision reconciliation, and RPC privacy boundaries remain the host's responsibility.
-- Outbox entries rejected by the task store (for example, for a terminal task or payload conflict) remain pending and are retried on every pump, with no retry cap.
+- Outbox entries rejected by the task store (for example, for a terminal task or payload conflict) remain pending and are retried (and reported as `flush_events`) on every pump, with no retry cap.
 - Evidence bytes stored before a lease-loss check fails remain as unreferenced content-addressed artifacts.

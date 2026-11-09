@@ -7,8 +7,11 @@ import {
   TaskSchema,
   WorkbenchDescribeFields,
   WorkbenchInspectFields,
+  WorkspaceRefSchema,
 } from "@mars/contracts";
 import { z } from "zod";
+
+export { WorkspaceRefSchema };
 
 const id = z.string().min(1).max(256);
 const revision = z.number().int().nonnegative();
@@ -40,9 +43,6 @@ export const ApprovalsSchema = z
   .object({ read: z.boolean(), write: z.boolean(), execute: z.boolean() })
   .strict();
 export type Approvals = z.infer<typeof ApprovalsSchema>;
-export const WorkspaceRefSchema = z
-  .object({ workspace_id: id, provider: id, revision: id })
-  .strict();
 export const CheckpointRefSchema = z
   .object({
     checkpoint_id: id,

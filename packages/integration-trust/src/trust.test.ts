@@ -815,6 +815,47 @@ test("rejecting async audit reporter does not escape the gate", async () => {
   }
   expect(unhandled).toEqual([]);
 });
+test("probe and authorizer failures keep their cause", async () => {
+  const probeFailure = new Error("probe crashed"),
+    authorizerFailure = new TypeError("authorizer crashed");
+  const f = fixture(),
+    r = await f.submit();
+  f.probe.mockImplementation(async () => {
+    throw probeFailure;
+  });
+  const probeError = await f.admin
+    .approve(ctx, {
+      review_id: r.review_id,
+      expected_revision: r.revision,
+      proof: proof(r),
+    })
+    .catch((e) => e);
+  expect(probeError).toMatchObject({ code: "evidence_unavailable" });
+  expect(probeError.cause).toBe(probeFailure);
+  const { admin } = createIntegrationTrust({
+    store: new MemoryTrustStore(),
+    authorizer: {
+      verify: async () => {
+        throw authorizerFailure;
+      },
+    },
+    probe: { observe: async () => evidence() },
+  });
+  const pending = await admin.submitCandidate(ctx, {
+    evidence: evidence(),
+    permissions,
+    credential_bindings: [],
+  });
+  const authorizerError = await admin
+    .approve(ctx, {
+      review_id: pending.review_id,
+      expected_revision: pending.revision,
+      proof: proof(pending),
+    })
+    .catch((e) => e);
+  expect(authorizerError).toMatchObject({ code: "approval_invalid" });
+  expect(authorizerError.cause).toBe(authorizerFailure);
+});
 test("file store I/O errors keep their cause", async () => {
   const directory = await mkdtemp(join(tmpdir(), "trust-")),
     s = new FileTrustStore({ directory, workspaceRoots: [] });
@@ -851,6 +892,81 @@ for (const file of ["state.json", "audit.jsonl"])
       f = fixture(s);
     await f.approved();
     await writeFile(join(directory, file), "garbage");
+    await expect(s.load()).rejects.toMatchObject({ code: "store_corrupt" });
+    await denied(f, "store_corrupt");
+  });
+async function rewriteStore(
+  directory: string,
+  edit: (state: Record<string, unknown[]>) => void,
+) {
+  const path = join(directory, "state.json"),
+    record = JSON.parse(await readFile(path, "utf8")),
+    state = record.state;
+  edit(state);
+  let previous = "0".repeat(64);
+  state.events = state.events.map(
+    (event: Record<string, unknown>, index: number) => {
+      const { sha256: _, ...rest } = event,
+        next = { ...rest, seq: index + 1, prev_sha256: previous };
+      previous = sha256(canonicalJSON(next));
+      return { ...next, sha256: previous };
+    },
+  );
+  await writeFile(
+    join(directory, "audit.jsonl"),
+    state.events.map((e: unknown) => `${canonicalJSON(e)}\n`).join(""),
+  );
+  await writeFile(
+    path,
+    canonicalJSON({
+      ...record,
+      state,
+      last_audit_sha256: previous,
+      state_sha256: sha256(canonicalJSON(state)),
+    }),
+  );
+}
+test("self-consistent file store with valid shape loads unchanged", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "trust-")),
+    s = new FileTrustStore({ directory, workspaceRoots: [] }),
+    f = fixture(s);
+  await f.approved();
+  const before = await s.load();
+  await rewriteStore(directory, () => undefined);
+  expect(await s.load()).toEqual(before);
+});
+for (const [name, edit] of [
+  [
+    "grant expires_at",
+    (state: Record<string, unknown[]>) => {
+      (state.grants?.[0] as Record<string, unknown>).expires_at = 0;
+    },
+  ],
+  [
+    "review state",
+    (state: Record<string, unknown[]>) => {
+      (state.reviews?.[0] as Record<string, unknown>).state = "trusted";
+    },
+  ],
+  [
+    "audit event kind",
+    (state: Record<string, unknown[]>) => {
+      (state.events?.[0] as Record<string, unknown>).kind = "bogus";
+    },
+  ],
+  [
+    "unknown state field",
+    (state: Record<string, unknown[]>) => {
+      state.extra = [];
+    },
+  ],
+] as const)
+  test(`self-consistent file store with malformed ${name} fails closed`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "trust-")),
+      s = new FileTrustStore({ directory, workspaceRoots: [] }),
+      f = fixture(s);
+    await f.approved();
+    await rewriteStore(directory, edit);
     await expect(s.load()).rejects.toMatchObject({ code: "store_corrupt" });
     await denied(f, "store_corrupt");
   });

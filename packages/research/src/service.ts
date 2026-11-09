@@ -24,12 +24,15 @@ import {
   ResearchFindingSchema,
   ResearchRequestSchema,
   ResearchTimestampSchema,
+  ResearchUsageSchema,
+  StoredResearchEventInputSchema,
 } from "./schemas";
 import {
   canonicalRecord,
   type OpenResearchStore,
   openResearchStore,
   type PrivateNeedles,
+  parseWorkerJson,
   RESEARCH_STORE_FORMAT_VERSION,
   sha256,
   timestamp,
@@ -245,10 +248,18 @@ interface RequestRow {
   error_code: ResearchJob["error_code"];
   worker_json: string | null;
   finished_at: string | null;
-  stale_event_state: "none" | "pending" | "sent";
+  stale_event_state: OutboxState;
   stale_event_request_id: string | null;
   stale_event_json: string | null;
   seq: number;
+}
+
+type OutboxState = "none" | "pending" | "sent" | "failed";
+
+interface OutboxDelivery {
+  context: RequestContext;
+  taskId: string;
+  input: AppendEventInput;
 }
 
 interface FindingRow {
@@ -261,7 +272,7 @@ interface FindingRow {
   record_sha256: string;
   status: ResearchFinding["status"];
   attempt: number;
-  event_state: "none" | "pending" | "sent";
+  event_state: OutboxState;
   event_request_id: string | null;
   event_json: string | null;
 }
@@ -491,118 +502,40 @@ function mapKnownContextError(error: unknown): unknown {
 }
 
 function usageFromJson(value: string): ResearchUsage {
-  let parsed: unknown;
+  let decoded: unknown;
   try {
-    parsed = JSON.parse(value);
+    decoded = JSON.parse(value);
   } catch {
     throw new ResearchError("corrupt_record", "Corrupt usage record");
   }
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    !Number.isSafeInteger((parsed as ResearchUsage).input_tokens) ||
-    !Number.isSafeInteger((parsed as ResearchUsage).output_tokens) ||
-    typeof (parsed as ResearchUsage).reported !== "boolean" ||
-    !(
-      (parsed as ResearchUsage).cost_usd === null ||
-      (typeof (parsed as ResearchUsage).cost_usd === "number" &&
-        Number.isFinite((parsed as ResearchUsage).cost_usd))
-    )
-  ) {
+  const parsed = ResearchUsageSchema.safeParse(decoded);
+  if (!parsed.success) {
     throw new ResearchError("corrupt_record", "Corrupt usage record");
   }
-  return parsed as ResearchUsage;
-}
-
-function rowWorker(row: RequestRow): { id: string; version: string } | null {
-  if (row.worker_json === null) return null;
-  try {
-    const value: unknown = JSON.parse(row.worker_json);
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      typeof (value as { id?: unknown }).id === "string" &&
-      typeof (value as { version?: unknown }).version === "string"
-    ) {
-      return {
-        id: (value as { id: string }).id,
-        version: (value as { version: string }).version,
-      };
-    }
-  } catch {
-    // Treat malformed worker metadata as corrupt persisted state.
-  }
-  throw new ResearchError("corrupt_record", "Corrupt worker record");
+  return parsed.data;
 }
 
 function parseStoredEventInput(value: string | null): AppendEventInput | null {
   if (value === null) return null;
+  let decoded: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      return null;
-    }
-    const event = parsed as Record<string, unknown>;
-    if (
-      (event.event_type !== "research.proposed" &&
-        event.event_type !== "research.stale") ||
-      typeof event.run_id !== "string" ||
-      event.run_id.length === 0 ||
-      event.producer !== "mars-research" ||
-      !Array.isArray(event.versions) ||
-      event.versions.length === 0 ||
-      event.versions.some(
-        (version) =>
-          version === null ||
-          typeof version !== "object" ||
-          typeof (version as { component?: unknown }).component !== "string" ||
-          typeof (version as { revision?: unknown }).revision !== "string",
-      ) ||
-      !Array.isArray(event.source_event_ids) ||
-      event.source_event_ids.some((id) => typeof id !== "string")
-    ) {
-      return null;
-    }
-    if (
-      event.payload === null ||
-      typeof event.payload !== "object" ||
-      Array.isArray(event.payload)
-    ) {
-      return null;
-    }
-    const payload = event.payload as Record<string, unknown>;
-    if (
-      typeof payload.request_id !== "string" ||
-      !Number.isSafeInteger(payload.task_revision)
-    ) {
-      return null;
-    }
-    if (
-      event.event_type === "research.proposed" &&
-      (typeof payload.finding_id !== "string" ||
-        typeof payload.confidence !== "string" ||
-        !Number.isSafeInteger(payload.source_count))
-    ) {
-      return null;
-    }
-    if (
-      event.event_type === "research.stale" &&
-      (!Array.isArray(payload.stale_finding_ids) ||
-        payload.stale_finding_ids.some((id) => typeof id !== "string"))
-    ) {
-      return null;
-    }
-    if (event.usage !== undefined || canonicalJson(parsed) !== value) {
-      return null;
-    }
-    return parsed as AppendEventInput;
+    decoded = JSON.parse(value);
   } catch {
     return null;
   }
+  const parsed = StoredResearchEventInputSchema.safeParse(decoded);
+  if (!parsed.success || canonicalJson(parsed.data) !== value) return null;
+  return parsed.data;
+}
+
+function corruptOutboxEvent(): ResearchError {
+  return new ResearchError("corrupt_record", "Corrupt outbox event");
+}
+
+function decodeStoredEventInput(value: string | null): AppendEventInput {
+  const input = parseStoredEventInput(value);
+  if (!input) throw corruptOutboxEvent();
+  return input;
 }
 
 function findRequest(
@@ -832,7 +765,7 @@ export async function createResearchService(
         tokens: "reported_usage_only",
         usd: "reported_usage_only",
       },
-      worker: rowWorker(row),
+      worker: parseWorkerJson(row.worker_json),
       finding_count: count.count,
     };
   };
@@ -850,8 +783,42 @@ export async function createResearchService(
       )
       .all(scopeKey, requestId, afterSeq) as FindingRow[];
 
+  // Decoding failures are permanent (the stored row is corrupt) and park the
+  // row as 'failed'; delivery failures keep it 'pending' for a later pump.
+  const deliverOutboxRow = async (
+    events: ResearchEventSink,
+    decode: () => OutboxDelivery,
+    markState: (state: "sent" | "failed") => void,
+  ): Promise<void> => {
+    let delivery: OutboxDelivery;
+    try {
+      delivery = decode();
+    } catch (error) {
+      reportInternalError("flush_events", error);
+      if (!dbOpen || !isErrorCode(error, "corrupt_record")) return;
+      try {
+        immediate(db, () => markState("failed"));
+      } catch (markError) {
+        reportInternalError("flush_events", markError);
+      }
+      return;
+    }
+    try {
+      await events.appendEvent(
+        delivery.context,
+        delivery.taskId,
+        delivery.input,
+      );
+      if (!dbOpen) return;
+      immediate(db, () => markState("sent"));
+    } catch (error) {
+      reportInternalError("flush_events", error);
+    }
+  };
+
   const flushEventsWork = async (): Promise<void> => {
-    if (!options.events || !dbOpen) return;
+    const events = options.events;
+    if (!events || !dbOpen) return;
     const pending = db
       .query(
         `SELECT * FROM findings WHERE event_state = 'pending'
@@ -860,31 +827,30 @@ export async function createResearchService(
       .all() as FindingRow[];
     for (const row of pending) {
       if (!dbOpen) return;
-      try {
-        const eventInput = parseStoredEventInput(row.event_json);
-        if (!eventInput || row.event_request_id === null) continue;
-        verifiedFinding(row);
-        const request = findRequest(db, row.scope_key, row.request_id);
-        const scopeContext = scopeCanonicalContext(
-          request.scope_json,
-          row.event_request_id,
-        );
-        await options.events.appendEvent(
-          scopeContext,
-          request.task_id,
-          eventInput,
-        );
-        if (!dbOpen) return;
-        immediate(db, () => {
+      await deliverOutboxRow(
+        events,
+        () => {
+          const input = decodeStoredEventInput(row.event_json);
+          if (row.event_request_id === null) throw corruptOutboxEvent();
+          verifiedFinding(row);
+          const request = findRequest(db, row.scope_key, row.request_id);
+          return {
+            context: scopeCanonicalContext(
+              request.scope_json,
+              row.event_request_id,
+            ),
+            taskId: request.task_id,
+            input,
+          };
+        },
+        (state) => {
           db.query(
-            `UPDATE findings SET event_state = 'sent'
+            `UPDATE findings SET event_state = ?
              WHERE scope_key = ? AND request_id = ? AND seq = ?
                AND event_state = 'pending'`,
-          ).run(row.scope_key, row.request_id, row.seq);
-        });
-      } catch {
-        // Pending outbox records are retried on a later pump.
-      }
+          ).run(state, row.scope_key, row.request_id, row.seq);
+        },
+      );
     }
 
     if (!dbOpen) return;
@@ -896,25 +862,28 @@ export async function createResearchService(
       .all() as RequestRow[];
     for (const row of staleRows) {
       if (!dbOpen) return;
-      try {
-        const eventInput = parseStoredEventInput(row.stale_event_json);
-        if (!eventInput || row.stale_event_request_id === null) continue;
-        const context = scopeCanonicalContext(
-          row.scope_json,
-          row.stale_event_request_id,
-        );
-        await options.events.appendEvent(context, row.task_id, eventInput);
-        if (!dbOpen) return;
-        immediate(db, () => {
+      await deliverOutboxRow(
+        events,
+        () => {
+          const input = decodeStoredEventInput(row.stale_event_json);
+          if (row.stale_event_request_id === null) throw corruptOutboxEvent();
+          return {
+            context: scopeCanonicalContext(
+              row.scope_json,
+              row.stale_event_request_id,
+            ),
+            taskId: row.task_id,
+            input,
+          };
+        },
+        (state) => {
           db.query(
-            `UPDATE requests SET stale_event_state = 'sent'
+            `UPDATE requests SET stale_event_state = ?
              WHERE scope_key = ? AND request_id = ?
                AND stale_event_state = 'pending'`,
-          ).run(row.scope_key, row.request_id);
-        });
-      } catch {
-        // Pending outbox records are retried on a later pump.
-      }
+          ).run(state, row.scope_key, row.request_id);
+        },
+      );
     }
   };
 
@@ -1531,7 +1500,7 @@ export async function createResearchService(
           let eventRequestId: string | null = null;
           let eventJson: string | null = null;
           if (options.events) {
-            const worker = rowWorker(row) ?? {
+            const worker = parseWorkerJson(row.worker_json) ?? {
               id: options.worker.id,
               version: options.worker.version,
             };
@@ -1787,7 +1756,7 @@ export async function createResearchService(
       let staleEventRequestId: string | null = null;
       let staleEventJson: string | null = null;
       if (options.events) {
-        const worker = rowWorker(row);
+        const worker = parseWorkerJson(row.worker_json);
         const staleFindingIds = db
           .query(
             `SELECT finding_id FROM findings

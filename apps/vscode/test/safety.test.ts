@@ -20,9 +20,9 @@ import {
 } from "../src/diffOpener";
 import { buildWebviewHtml, isValidNonce } from "../src/html";
 import { WebviewMessageSchema } from "../src/messages";
-import { patchStats, reconstructOriginal, removedText } from "../src/patch";
+import { patchStats } from "../src/patch";
 import { checkRelativePath, resolveInsideRoot } from "../src/pathSafety";
-import { describeResult } from "./fixtures";
+import { applyPatchText, describeResult } from "./fixtures";
 
 const base = mkdtempSync(join(tmpdir(), "mars-vscode-"));
 const root = join(base, "demo");
@@ -101,12 +101,16 @@ describe("resolveInsideRoot", () => {
 describe("patch helpers", () => {
   test("stats and reverse application", () => {
     expect(patchStats(patch)).toEqual({ additions: 1, deletions: 1 });
-    expect(reconstructOriginal("one\nTWO\nthree\n", patch)).toBe(
+    expect(applyPatchText("one\nTWO\nthree\n", patch, true)).toBe(
       "one\ntwo\nthree\n",
     );
-    expect(reconstructOriginal("changed locally\n", patch)).toBeNull();
+    expect(applyPatchText("changed locally\n", patch, true)).toBeNull();
     expect(
-      removedText("--- a/x\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n"),
+      applyPatchText(
+        "",
+        "--- a/x\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n",
+        true,
+      ),
     ).toBe("a\nb\n");
   });
 });

@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { ResearchFinding } from "@mars/contracts";
+import {
+  isInsideOrEqual,
+  resolveForSafety,
+} from "@mars/contracts/path-containment";
 import { canonicalJson } from "@mars/tasks";
 import { ResearchError, throwResearchError } from "./errors";
 import {
@@ -17,7 +21,7 @@ import {
   type ResearchWorkerVersion,
   staleEventInput,
 } from "./events";
-import { ResearchFindingSchema } from "./schemas";
+import { ResearchFindingSchema, ResearchWorkerVersionSchema } from "./schemas";
 
 export const RESEARCH_STORE_FORMAT_VERSION = 2;
 
@@ -48,33 +52,6 @@ export function timestamp(now: number): string {
   return new Date(now).toISOString();
 }
 
-function pathContains(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
-  );
-}
-
-function resolveForSafety(value: string): string {
-  const absolute = path.resolve(value);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const suffix: string[] = [];
-    let existing = absolute;
-    while (!existsSync(existing)) {
-      const parent = path.dirname(existing);
-      if (parent === existing) return absolute;
-      suffix.unshift(path.basename(existing));
-      existing = parent;
-    }
-    return path.resolve(realpathSync(existing), ...suffix);
-  }
-}
-
 function prepareRoot(options: StoreOptions): {
   rootDir: string;
   privateNeedles: PrivateNeedles;
@@ -102,8 +79,8 @@ function prepareRoot(options: StoreOptions): {
   const rootDir = resolveForSafety(requestedRoot);
   for (const privateRoot of privateRoots) {
     if (
-      pathContains(rootDir, privateRoot) ||
-      pathContains(privateRoot, rootDir)
+      isInsideOrEqual(rootDir, privateRoot) ||
+      isInsideOrEqual(privateRoot, rootDir)
     ) {
       throw new ResearchError(
         "unsafe_path",
@@ -154,8 +131,8 @@ function prepareRoot(options: StoreOptions): {
   const realRoot = realpathSync(requestedRoot);
   for (const privateRoot of privateRoots) {
     if (
-      pathContains(realRoot, privateRoot) ||
-      pathContains(privateRoot, realRoot)
+      isInsideOrEqual(realRoot, privateRoot) ||
+      isInsideOrEqual(privateRoot, realRoot)
     ) {
       throw new ResearchError(
         "unsafe_path",
@@ -241,28 +218,21 @@ const CREATE_V2_SCHEMA = `
   );
 `;
 
-function workerFromJson(value: string | null): ResearchWorkerVersion | null {
+export function parseWorkerJson(
+  value: string | null,
+): ResearchWorkerVersion | null {
   if (value === null) return null;
+  let decoded: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      typeof (parsed as { id?: unknown }).id === "string" &&
-      (parsed as { id: string }).id.length > 0 &&
-      typeof (parsed as { version?: unknown }).version === "string" &&
-      (parsed as { version: string }).version.length > 0
-    ) {
-      return {
-        id: (parsed as { id: string }).id,
-        version: (parsed as { version: string }).version,
-      };
-    }
+    decoded = JSON.parse(value);
   } catch {
-    // Invalid persisted worker metadata is corrupt state.
+    throw new ResearchError("corrupt_record", "Corrupt worker record");
   }
-  throw new ResearchError("corrupt_record", "Corrupt worker record");
+  const parsed = ResearchWorkerVersionSchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new ResearchError("corrupt_record", "Corrupt worker record");
+  }
+  return parsed.data;
 }
 
 function verifiedFindingForMigration(row: {
@@ -339,7 +309,7 @@ function backfillV1Events(db: Database): void {
     const event = proposedEventInput(
       row.request_id,
       finding,
-      workerFromJson(row.worker_json),
+      parseWorkerJson(row.worker_json),
       V1_STORE_FORMAT_VERSION,
     );
     db.query(
@@ -380,7 +350,7 @@ function backfillV1Events(db: Database): void {
       row.request_id,
       row.task_revision,
       staleFindingIds.map((finding) => finding.finding_id),
-      workerFromJson(row.worker_json),
+      parseWorkerJson(row.worker_json),
       V1_STORE_FORMAT_VERSION,
     );
     db.query(

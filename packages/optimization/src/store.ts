@@ -1,4 +1,12 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactRef, RequestContext } from "@mars/contracts";
 import { ArtifactRefSchema } from "@mars/contracts";
@@ -79,8 +87,10 @@ export function createFileArtifactStore(rootDir: string): ArtifactStore {
         bytes = new Uint8Array(
           await readFile(path.join(dirFor(context), `${ref.sha256}.bin`)),
         );
-      } catch {
-        throw new OptimizationError("artifact_missing", ref.artifact_id);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          throw new OptimizationError("artifact_missing", ref.artifact_id);
+        throw error;
       }
       return verify(ref, bytes);
     },
@@ -91,9 +101,14 @@ async function writeAtomic(
   file: string,
   data: Uint8Array | string,
 ): Promise<void> {
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, data, { mode: 0o600 });
-  await rename(temp, file);
+  const temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, data, { flag: "wx", mode: 0o600 });
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readJson<T>(
@@ -251,8 +266,9 @@ export class OptimizationStore {
     let names: string[];
     try {
       names = await readdir(dir);
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
     }
     const records = await Promise.all(
       names

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { sha256 } from "@mars/contracts/canonical";
 import { createWorkspaceDiff } from "../src/diff";
-import { sha256, type TreeFile } from "../src/tree";
+import type { TreeFile } from "../src/tree";
 
 const file = (
   path: string,

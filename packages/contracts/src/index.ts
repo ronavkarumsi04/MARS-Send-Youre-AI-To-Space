@@ -1,32 +1,23 @@
 import { z } from "zod";
+import {
+  type ArtifactRef,
+  ArtifactRefSchema,
+  SCHEMA_VERSION,
+  type Scope,
+  ScopeSchema,
+  type TaskStatus,
+  TaskStatusSchema,
+} from "./core";
 
+export * from "./core";
+export * from "./event-operations";
 export * from "./invisible";
 export * from "./path-policy";
 export * from "./workbench-read";
 
-export const SCHEMA_VERSION = 1;
 const id = z.string().min(1);
 const revision = z.string().min(1);
 const timestamp = z.string().datetime({ offset: true });
-
-export const ScopeSchema = z
-  .object({
-    owner_id: id,
-    project_id: id,
-    workspace_id: id.optional(),
-  })
-  .strict();
-export type Scope = z.infer<typeof ScopeSchema>;
-
-export const ArtifactRefSchema = z
-  .object({
-    artifact_id: id,
-    sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    media_type: id,
-    byte_length: z.number().int().nonnegative(),
-  })
-  .strict();
-export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 
 export const VersionRefSchema = z.object({ component: id, revision }).strict();
 export type VersionRef = z.infer<typeof VersionRefSchema>;
@@ -81,16 +72,6 @@ export const EventEnvelopeSchema = z
   })
   .strict();
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
-
-export const TaskStatusSchema = z.enum([
-  "pending",
-  "running",
-  "paused",
-  "completed",
-  "cancelled",
-  "failed",
-]);
-export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
 /**
  * Where a task was launched from, as opaque ids only (never bodies or

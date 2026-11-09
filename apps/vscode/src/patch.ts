@@ -179,34 +179,6 @@ export function applyParsed(
   return endsWithNewline ? `${text}\n` : text;
 }
 
-function apply(source: string, patch: string, reverse: boolean): string | null {
-  const parsed = parsePatch(patch);
-  return parsed.ok ? applyParsed(source, parsed.patch, reverse) : null;
-}
-
-/** BEFORE -> AFTER: the task's version derived from the local baseline. */
-export function applyPatch(before: string, patch: string): string | null {
-  return apply(before, patch, false);
-}
-
-/** AFTER -> BEFORE: the original derived from a file that already has the change. */
-export function reconstructOriginal(
-  current: string,
-  patch: string,
-): string | null {
-  return apply(current, patch, true);
-}
-
-/** Full content of an added file; only a pure-addition patch onto an empty file qualifies. */
-export function addedContent(patch: string): string | null {
-  return apply("", patch, false);
-}
-
-/** Full content of a deleted file; only a pure-removal patch to an empty file qualifies. */
-export function removedText(patch: string): string | null {
-  return apply("", patch, true);
-}
-
 export function patchStats(patch: string): PatchStats {
   let additions = 0;
   let deletions = 0;

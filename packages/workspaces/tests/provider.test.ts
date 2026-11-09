@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmod,
   cp,
@@ -36,6 +37,11 @@ import {
   WorkspacePolicyError,
 } from "../src";
 import { isIgnored, isSecret } from "../src/paths";
+import {
+  isValidArgv,
+  MAX_COMMAND_ARG_BYTES,
+  MAX_COMMAND_ARGS,
+} from "../src/sandbox";
 import { DEFAULT_WORKSPACE_LIMITS, snapshotTree } from "../src/tree";
 import {
   artifactText,
@@ -122,6 +128,47 @@ test("close holds the provider lock until in-flight prepare drains [stub runner 
     }
   } finally {
     release();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("startup cleanup targets the same mars.root label stamped on run containers [stub runner — not isolation evidence]", async () => {
+  const base = await mkdtemp(join(tmpdir(), "mars-workspaces-labels-"));
+  const sourceRoot = join(base, "source");
+  const rootDir = join(base, "provider");
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(join(sourceRoot, "file.txt"), "content\n");
+  const cleanupLabels: Readonly<Record<string, string>>[] = [];
+  const runLabels: Readonly<Record<string, string>>[] = [];
+  const stub = createStubRunner(async (request) => {
+    runLabels.push(request.labels);
+    return undefined;
+  });
+  const provider = await createLocalWorkspaceProvider({
+    rootDir,
+    sourceRoot,
+    artifacts: createInMemoryArtifactStore(),
+    sandbox: {
+      ...stub,
+      async cleanup(labels) {
+        cleanupLabels.push(labels);
+      },
+    },
+    approveCommand: () => true,
+  });
+  try {
+    const workspace = await provider.prepare(context, "labels-task");
+    await provider.execute(context, workspace, ["noop"], budget);
+    const expectedRoot = createHash("sha256")
+      .update(await realpath(rootDir))
+      .digest("hex")
+      .slice(0, 16);
+    expect(cleanupLabels).toEqual([{ "mars.root": expectedRoot }]);
+    expect(runLabels).toEqual([
+      { "mars.workspace": workspace.workspace_id, "mars.root": expectedRoot },
+    ]);
+  } finally {
     await provider.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -1528,6 +1575,68 @@ test("failed startup rollback retains A's backup while healthy B recovers and cl
   }
 });
 
+test("restore reports success when post-commit cleanup fails and recovery sweeps the leftovers [stub runner — not isolation evidence]", async () => {
+  // Root ignores directory permissions, so the cleanup cannot be made to fail there.
+  if (process.getuid?.() === 0) return;
+  let trash = "";
+  const fixture = await makeFixture({
+    testHooks: {
+      async restorePhase(phase) {
+        if (phase === "committed") await chmod(trash, 0o500);
+      },
+    },
+  });
+  trash = join(fixture.rootDir, "trash");
+  try {
+    const baseline = first(
+      await fixture.provider.checkpoints(context, fixture.workspace),
+    );
+    const artifact = await putText(fixture, "pre-restore contents\n");
+    await fixture.provider.write(
+      context,
+      fixture.workspace,
+      "tracked.txt",
+      artifact,
+    );
+    const changed = await fixture.provider.inspect(
+      context,
+      fixture.workspace.workspace_id,
+    );
+    let restored: Awaited<ReturnType<typeof fixture.provider.restore>>;
+    try {
+      restored = await fixture.provider.restore(
+        context,
+        baseline,
+        changed.revision,
+      );
+    } finally {
+      await chmod(trash, 0o700);
+    }
+    expect(
+      (await fixture.provider.inspect(context, fixture.workspace.workspace_id))
+        .revision,
+    ).toBe(restored.revision);
+    expect(await readdir(trash)).toHaveLength(1);
+    await fixture.provider.close();
+    const recovered = await createLocalWorkspaceProvider({
+      rootDir: fixture.rootDir,
+      sourceRoot: fixture.sourceRoot,
+      artifacts: fixture.artifacts,
+    });
+    try {
+      expect(await readdir(trash)).toEqual([]);
+      expect(
+        (await recovered.inspect(context, fixture.workspace.workspace_id))
+          .revision,
+      ).toBe(restored.revision);
+    } finally {
+      await recovered.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("in-process rollback failure retains journal and backup for later recovery [stub runner — not isolation evidence]", async () => {
   const fixture = await makeFixture({
     testHooks: {
@@ -1561,7 +1670,10 @@ test("in-process rollback failure retains journal and backup for later recovery 
     const digestBefore = await hashDirectory(tree);
     await expect(
       fixture.provider.restore(context, baseline, changed.revision),
-    ).rejects.toThrow("rollback hook failure");
+    ).rejects.toMatchObject({
+      message: "restore hook failure",
+      cause: { message: "rollback hook failure" },
+    });
     await expect(
       fixture.provider.inspect(context, fixture.workspace.workspace_id),
     ).rejects.toBeInstanceOf(IntegrityError);
@@ -2132,6 +2244,68 @@ test("Docker config is validated by one rule set at resolve and build time [stub
   ).toThrow("Invalid Docker label");
 });
 
+test("provider and Docker sandbox share one argv policy [stub runner — not isolation evidence]", async () => {
+  const atLimit = [
+    Array.from({ length: MAX_COMMAND_ARGS }, () => "a"),
+    ["a".repeat(MAX_COMMAND_ARG_BYTES)],
+  ];
+  const overLimit: unknown[] = [
+    [],
+    "true",
+    Array.from({ length: MAX_COMMAND_ARGS + 1 }, () => "a"),
+    ["a".repeat(MAX_COMMAND_ARG_BYTES + 1)],
+    ["é".repeat(MAX_COMMAND_ARG_BYTES / 2 + 1)],
+    ["bad\0arg"],
+    ["ok", 1],
+  ];
+  for (const argv of atLimit) expect(isValidArgv(argv)).toBe(true);
+  for (const argv of overLimit) expect(isValidArgv(argv)).toBe(false);
+
+  const resolved = resolveDockerConfig({
+    image: `mirror.gcr.io/library/busybox@sha256:${digest}`,
+    user: { uid: 1000, gid: 1000 },
+  });
+  const request: SandboxRunRequest = {
+    workspaceDir: "/tmp/workspaces/ws_abc/tree",
+    argv: ["true"],
+    timeoutMs: 1000,
+    maxOutputBytes: 1000,
+    signal: new AbortController().signal,
+    runId: "run-1",
+    labels: {},
+  };
+  for (const argv of atLimit) {
+    expect(() =>
+      buildDockerRunArgs(resolved, { ...request, argv }, "mars-ws-run-1"),
+    ).not.toThrow();
+  }
+  for (const argv of overLimit) {
+    expect(() =>
+      buildDockerRunArgs(
+        resolved,
+        { ...request, argv: argv as readonly string[] },
+        "mars-ws-run-1",
+      ),
+    ).toThrow(new TypeError("Invalid command arguments"));
+  }
+
+  const fixture = await makeFixture({ runner: false });
+  try {
+    for (const argv of overLimit) {
+      await expect(
+        fixture.provider.execute(
+          context,
+          fixture.workspace,
+          argv as readonly string[],
+          budget,
+        ),
+      ).rejects.toThrow(new WorkspacePolicyError("Invalid command arguments"));
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("remove deletes one regular file through the provider, advances the revision and refuses directories, symlinks and missing paths [stub runner — not isolation evidence]", async () => {
   const fixture = await makeFixture();
   try {
@@ -2235,7 +2409,10 @@ test("remove rolls back a failed transaction and keeps the staged copy when even
     try {
       await expect(
         fixture.provider.remove(context, rolledBack, "nested/doomed.txt"),
-      ).rejects.toThrow("failed at after-remove");
+      ).rejects.toMatchObject({
+        message: "failed at after-remove",
+        cause: { code: "EACCES" },
+      });
     } finally {
       await chmod(lockedDir, 0o755);
     }
@@ -2312,6 +2489,88 @@ test("close waits for an in-flight remove before releasing the provider [stub ru
     }
   } finally {
     release();
+    await fixture.close();
+  }
+});
+
+test("every workspace-scoped method enforces scope, lost-state, and closed checks [stub runner — not isolation evidence]", async () => {
+  const fixture = await makeFixture();
+  const checkpoint = await fixture.provider.checkpoint(
+    context,
+    fixture.workspace,
+  );
+  const artifact = await fixture.artifacts.put(
+    context,
+    new TextEncoder().encode("new\n"),
+    "text/plain",
+  );
+  const calls = (
+    provider: typeof fixture.provider,
+    ctx: RequestContext,
+    workspace = fixture.workspace,
+  ): Record<string, () => Promise<unknown>> => ({
+    read: () => provider.read(ctx, workspace, "tracked.txt"),
+    write: () => provider.write(ctx, workspace, "new.txt", artifact),
+    remove: () => provider.remove(ctx, workspace, "tracked.txt"),
+    execute: () => provider.execute(ctx, workspace, ["sh", "run.sh"], budget),
+    checkpoint: () => provider.checkpoint(ctx, workspace),
+    restore: () => provider.restore(ctx, checkpoint, workspace.revision),
+    diff: () => provider.diff(ctx, workspace),
+    collect: () => provider.collect(ctx, workspace),
+    inspect: () => provider.inspect(ctx, workspace.workspace_id),
+    workspacePath: () => provider.workspacePath(ctx, workspace),
+    checkpoints: () => provider.checkpoints(ctx, workspace),
+    skipped: () => provider.skipped(ctx, workspace),
+  });
+  const expectAllReject = async (
+    entries: Record<string, () => Promise<unknown>>,
+    errorType: new (...args: never[]) => Error,
+  ): Promise<void> => {
+    for (const [name, call] of Object.entries(entries)) {
+      const error = await call().then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect({ name, ok: error instanceof errorType }).toEqual({
+        name,
+        ok: true,
+      });
+    }
+  };
+  const otherOwner: RequestContext = {
+    ...context,
+    scope: { ...context.scope, owner_id: "owner-other" },
+  };
+  const tree = join(
+    fixture.rootDir,
+    "workspaces",
+    fixture.workspace.workspace_id,
+    "tree",
+  );
+  try {
+    await expectAllReject(
+      calls(fixture.provider, otherOwner),
+      WorkspaceNotFoundError,
+    );
+    await fixture.provider.close();
+    await expectAllReject(
+      calls(fixture.provider, context),
+      SandboxUnavailableError,
+    );
+    await rm(tree, { recursive: true, force: true });
+    const reopened = await createLocalWorkspaceProvider({
+      rootDir: fixture.rootDir,
+      sourceRoot: fixture.sourceRoot,
+      artifacts: fixture.artifacts,
+      sandbox: createStubRunner(),
+      approveCommand: () => true,
+    });
+    try {
+      await expectAllReject(calls(reopened, context), IntegrityError);
+    } finally {
+      await reopened.close();
+    }
+  } finally {
     await fixture.close();
   }
 });

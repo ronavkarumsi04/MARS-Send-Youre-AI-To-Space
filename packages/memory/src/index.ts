@@ -1,5 +1,4 @@
 import { Database, SQLiteError } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   closeSync,
   fsyncSync,
@@ -23,6 +22,10 @@ import {
   type RequestContext,
   ScopeSchema,
 } from "@mars/contracts";
+import {
+  sha256,
+  canonicalJson as sharedCanonicalJson,
+} from "@mars/contracts/canonical";
 import { z } from "zod";
 import {
   type JournalInput,
@@ -125,33 +128,8 @@ const validate = <S extends z.ZodTypeAny>(
   return result.success ? result.data : fail("invalid_input");
 };
 export function canonicalJson(value: unknown): string {
-  const seen = new Set<object>();
-  const encode = (v: unknown): string => {
-    if (v === null || typeof v === "string" || typeof v === "boolean")
-      return JSON.stringify(v);
-    if (typeof v === "number" && Number.isFinite(v)) return JSON.stringify(v);
-    if (typeof v !== "object" || seen.has(v)) fail("invalid_input");
-    seen.add(v);
-    try {
-      if (Array.isArray(v)) return `[${Array.from(v, encode).join(",")}]`;
-      if (
-        Object.getPrototypeOf(v) !== Object.prototype &&
-        Object.getPrototypeOf(v) !== null
-      )
-        fail("invalid_input");
-      const record = v as Record<string, unknown>;
-      return `{${Object.keys(record)
-        .sort()
-        .map((key) => `${JSON.stringify(key)}:${encode(record[key])}`)
-        .join(",")}}`;
-    } finally {
-      seen.delete(v);
-    }
-  };
-  return encode(value);
+  return sharedCanonicalJson(value, { error: () => fail("invalid_input") });
 }
-const hash = (value: string | Uint8Array): string =>
-  createHash("sha256").update(value).digest("hex");
 /** Assumes `scanThreat` already rejected invisible code points; facts also refuse `\r`. */
 const fact = (value: string): string => {
   if (value.includes("\r")) fail("invalid_input");
@@ -218,9 +196,9 @@ const args = (ctx: RequestContext): [string, string, string] => [
   ctx.scope.workspace_id ?? "",
 ];
 const scopeKey = (ctx: RequestContext): string =>
-  hash(canonicalJson(ctx.scope));
+  sha256(canonicalJson(ctx.scope));
 const streamKey = (entry: MemoryEntry): string =>
-  hash(
+  sha256(
     canonicalJson(
       entry.target === "profile"
         ? ["profile", entry.scope.owner_id]
@@ -414,7 +392,7 @@ export class DurableMemoryStore
     try {
       const record: unknown = JSON.parse(row.record);
       if (
-        hash(
+        sha256(
           canonicalJson({
             record,
             commit_seq: row.commit_seq,
@@ -481,7 +459,7 @@ export class DurableMemoryStore
       entry.revision,
       seq,
       record,
-      hash(
+      sha256(
         canonicalJson({
           record: entry,
           commit_seq: seq,
@@ -770,10 +748,12 @@ export class DurableMemoryStore
   private excluded(key: string): boolean {
     return !!this.db
       .query("SELECT 1 FROM exclusions WHERE digest=?")
-      .get(hash(key));
+      .get(sha256(key));
   }
   private exclude(key: string): void {
-    this.db.query("INSERT OR IGNORE INTO exclusions VALUES(?)").run(hash(key));
+    this.db
+      .query("INSERT OR IGNORE INTO exclusions VALUES(?)")
+      .run(sha256(key));
   }
   private journalRows(ctx: RequestContext): JournalRow[] {
     return this.db
@@ -785,7 +765,8 @@ export class DurableMemoryStore
   private decodeJournal(row: JournalRow): JournalMessage {
     try {
       const record: unknown = JSON.parse(row.record);
-      if (hash(canonicalJson(record)) !== row.row_hash) fail("corrupt_record");
+      if (sha256(canonicalJson(record)) !== row.row_hash)
+        fail("corrupt_record");
       const parsed = JournalMessageSchema.safeParse(record);
       if (
         !parsed.success ||
@@ -813,14 +794,14 @@ export class DurableMemoryStore
     return this.write(() => {
       const existing = this.db
         .query("SELECT scope_key FROM session_claims WHERE session_digest=?")
-        .get(hash(input.session_id)) as { scope_key: string } | null;
+        .get(sha256(input.session_id)) as { scope_key: string } | null;
       if (existing && existing.scope_key !== scopeKey(ctx))
         fail("scope_denied");
       if (this.excluded(canonicalJson([scopeKey(ctx), input.session_id])))
         return;
       this.db
         .query("INSERT OR IGNORE INTO session_claims VALUES(?,?)")
-        .run(hash(input.session_id), scopeKey(ctx));
+        .run(sha256(input.session_id), scopeKey(ctx));
       this.db
         .query("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?)")
         .run(input.session_id, scopeKey(ctx), ...args(ctx));
@@ -840,7 +821,7 @@ export class DurableMemoryStore
             message.entry_id,
             scopeKey(ctx),
             record,
-            hash(record),
+            sha256(record),
           );
         this.db
           .query(
@@ -859,7 +840,7 @@ export class DurableMemoryStore
         sessionId,
         ...args(ctx),
         scopeKey(ctx),
-        hash(sessionId),
+        sha256(sessionId),
         scopeKey(ctx),
       );
   }
@@ -1195,7 +1176,7 @@ export class DurableMemoryStore
           disclosure: DISCLOSURE,
         }),
       );
-      const digest = hash(data),
+      const digest = sha256(data),
         dir = path.join(this.options.rootDir, "exports", scopeKey(ctx));
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const file = path.join(dir, `${digest}.json`);
@@ -1243,7 +1224,7 @@ export class DurableMemoryStore
           `${ref.sha256}.json`,
         ),
       );
-      if (hash(data) !== ref.sha256 || data.length !== ref.byte_length)
+      if (sha256(data) !== ref.sha256 || data.length !== ref.byte_length)
         fail("corrupt_record");
       return data;
     } catch (e) {
@@ -1393,7 +1374,7 @@ export class DurableMemoryStore
         this.db.exec("RELEASE proposal_dry_run");
       }
       const record: MemoryProposal = {
-        proposal_id: hash(
+        proposal_id: sha256(
           canonicalJson([
             scopeKey(ctx),
             ctx.request_id,

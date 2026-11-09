@@ -54,6 +54,17 @@ export class SessionRpcError extends Error {
   }
 }
 
+/** The answers of a host that lacks a read method; callers degrade instead of failing. */
+export function isUnsupported(error: unknown): error is SessionRpcError {
+  return (
+    error instanceof SessionRpcError &&
+    (error.code === "invalid_request" ||
+      error.code === "method_not_found" ||
+      error.code === "not_implemented" ||
+      error.status === 404)
+  );
+}
+
 export interface RpcBody {
   method: ReadMethod;
   context?: {
@@ -288,9 +299,12 @@ export class SessionClient {
 
   async json(taskId: string, ref: ArtifactRef): Promise<unknown> {
     if (ref.byte_length > LIMITS.artifactPreviewBytes) return undefined;
-    return JSON.parse(
-      new TextDecoder().decode(await this.artifact(taskId, ref)),
-    );
+    const text = new TextDecoder().decode(await this.artifact(taskId, ref));
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new SessionRpcError("protocol", "Artifact is not valid JSON.");
+    }
   }
 
   async diff(taskId: string): Promise<DiffResult> {
@@ -329,14 +343,7 @@ export class SessionClient {
         entries: validate(JournalReplySchema, raw, "journal"),
       };
     } catch (error) {
-      if (
-        error instanceof SessionRpcError &&
-        (error.code === "invalid_request" ||
-          error.code === "method_not_found" ||
-          error.code === "not_implemented" ||
-          error.status === 404)
-      )
-        return { available: false };
+      if (isUnsupported(error)) return { available: false };
       throw error;
     }
   }

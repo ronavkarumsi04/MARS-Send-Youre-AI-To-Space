@@ -28,8 +28,11 @@ import {
   renderTrialFeedback,
   requestSha256,
   sha256Hex,
+  strictMean,
   type TrialRecord,
   toTrialRecord,
+  trialRejectionReason,
+  validTrials,
 } from "./index";
 import { EvaluationJobStore, type JobRecord } from "./service";
 import {
@@ -301,6 +304,45 @@ test("report computes per-arm aggregates, regressions, repeatability and holdout
     },
   ]);
   expect(mixed.arms.baseline.n_trials).toBe(6);
+});
+
+test("trial acceptance and strict mean are the shared rules for reports and scoring", async () => {
+  const manifest = await sampleManifest();
+  const { trials } = await readHarborJob(
+    join(HARBOR_FIXTURES, "synthetic-candidate"),
+  );
+  const trial = trials[0] as TrialRecord;
+  const tasks = new Set([trial.task_id]);
+  const agent = { name: trial.agent.name, arm: "candidate" as const };
+  expect(trialRejectionReason(manifest, tasks, agent, trial)).toBeNull();
+  expect(trialRejectionReason(manifest, new Set<string>(), agent, trial)).toBe(
+    `task ${trial.task_id} is not in the manifest`,
+  );
+  expect(
+    trialRejectionReason(manifest, tasks, agent, {
+      ...trial,
+      task_source: { ...trial.task_source, git_url: null },
+    }),
+  ).toBe("git_url null differs from the pinned dataset");
+  expect(
+    trialRejectionReason(manifest, tasks, agent, {
+      ...trial,
+      task_source: { ...trial.task_source, git_commit_id: "f".repeat(40) },
+    }),
+  ).toBe(`git_commit_id ${"f".repeat(40)} differs from the pinned dataset`);
+  expect(
+    trialRejectionReason(manifest, tasks, { ...agent, name: "other" }, trial),
+  ).toBe(`agent ${trial.agent.name} is not the candidate agent`);
+  expect(
+    validTrials([
+      { ...trial, reward_valid: true, reward: 1 },
+      { ...trial, reward_valid: false, reward: 1 },
+      { ...trial, reward_valid: true, reward: null },
+    ]).map((entry) => entry.reward),
+  ).toEqual([1]);
+  expect(strictMean([1, 0.5], 4, 2)).toBe(1.5 / 4);
+  expect(strictMean([1, 1], 1, 3)).toBe(2 / 3);
+  expect(strictMean([], 0, 0)).toBe(0);
 });
 
 // -------------------------------------------------------------- trajectory

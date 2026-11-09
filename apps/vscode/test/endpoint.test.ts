@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  checkServerUrl,
-  DEFAULT_SERVER_URL,
-  isLoopbackHost,
-} from "../src/endpoint";
+import { checkServerUrl, DEFAULT_SERVER_URL } from "../src/endpoint";
 
 describe("checkServerUrl", () => {
   test("accepts the loopback default and builds the RPC URL", () => {
@@ -43,11 +39,5 @@ describe("checkServerUrl", () => {
       "not a url",
     ])
       expect(checkServerUrl(raw, true).ok).toBe(false);
-  });
-
-  test("isLoopbackHost", () => {
-    expect(isLoopbackHost("127.10.0.1")).toBe(true);
-    expect(isLoopbackHost("127.0.0.256")).toBe(false);
-    expect(isLoopbackHost("128.0.0.1")).toBe(false);
   });
 });

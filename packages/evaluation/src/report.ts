@@ -181,16 +181,60 @@ function sumNullable(values: readonly (number | null)[]): number | null {
   return present.length ? present.reduce((sum, value) => sum + value, 0) : null;
 }
 
+/**
+ * Why a Harbor trial may not contribute a score, or null when it is accepted:
+ * it must be one of `tasks`, come from the manifest's pinned task source and
+ * have been run by `agent.name`. Shared by the evaluation report and the
+ * prompt-scoring backend so both count the same trials.
+ */
+export function trialRejectionReason(
+  manifest: ComparisonManifest,
+  tasks: ReadonlySet<string>,
+  agent: { name: string; arm: ArmName },
+  trial: TrialRecord,
+): string | null {
+  const source = manifest.dataset.tasks_source;
+  if (!tasks.has(trial.task_id))
+    return `task ${trial.task_id} is not in the manifest`;
+  if (trial.task_source.git_url !== source.git_url)
+    return `git_url ${trial.task_source.git_url ?? "null"} differs from the pinned dataset`;
+  if (trial.task_source.git_commit_id !== source.git_commit_id)
+    return `git_commit_id ${trial.task_source.git_commit_id ?? "null"} differs from the pinned dataset`;
+  if (trial.agent.name !== agent.name)
+    return `agent ${trial.agent.name} is not the ${agent.arm} agent`;
+  return null;
+}
+
+/** Trials with a valid, non-null reward. */
+export function validTrials(
+  trials: readonly TrialRecord[],
+): (TrialRecord & { reward: number })[] {
+  return trials.filter(
+    (trial): trial is TrialRecord & { reward: number } =>
+      trial.reward_valid && trial.reward !== null,
+  );
+}
+
+/**
+ * Mean that scores missing and invalid trials as 0: the sum of valid rewards
+ * over `max(expected, n, 1)`, where `n` is the number of accepted trials.
+ */
+export function strictMean(
+  rewards: readonly number[],
+  expected: number,
+  n: number,
+): number {
+  return (
+    rewards.reduce((sum, value) => sum + value, 0) / Math.max(expected, n, 1)
+  );
+}
+
 export function taskArmStats(
   trials: readonly TrialRecord[],
   expected: number,
 ): TaskArmStats {
-  const valid = trials.filter(
-    (trial) => trial.reward_valid && trial.reward !== null,
-  );
-  const rewards = valid.map((trial) => trial.reward as number);
-  const strictTotal = rewards.reduce((sum, value) => sum + value, 0);
-  const denominator = Math.max(expected, trials.length, 1);
+  const valid = validTrials(trials);
+  const rewards = valid.map((trial) => trial.reward);
   const disagree =
     trials.length > 1 &&
     (valid.length !== trials.length && valid.length !== 0
@@ -201,7 +245,7 @@ export function taskArmStats(
     n_valid: valid.length,
     rewards,
     mean_valid: mean(rewards),
-    mean_strict: strictTotal / denominator,
+    mean_strict: strictMean(rewards, expected, trials.length),
     variance: populationVariance(rewards),
     min: rewards.length ? Math.min(...rewards) : null,
     max: rewards.length ? Math.max(...rewards) : null,
@@ -216,10 +260,8 @@ function armAggregate(
   trials: readonly TrialRecord[],
   expected: number,
 ): ArmAggregate {
-  const valid = trials.filter(
-    (trial) => trial.reward_valid && trial.reward !== null,
-  );
-  const rewards = valid.map((trial) => trial.reward as number);
+  const valid = validTrials(trials);
+  const rewards = valid.map((trial) => trial.reward);
   const exceptions: Record<string, number> = {};
   for (const trial of trials)
     if (trial.exception)
@@ -231,9 +273,7 @@ function armAggregate(
     n_valid: valid.length,
     n_invalid: trials.length - valid.length,
     mean_reward_valid: mean(rewards),
-    mean_reward_strict:
-      rewards.reduce((sum, value) => sum + value, 0) /
-      Math.max(expected, trials.length, 1),
+    mean_reward_strict: strictMean(rewards, expected, trials.length),
     total_cost_usd: sumNullable(trials.map((trial) => trial.cost_usd)),
     total_runtime_ms: trials.reduce(
       (sum, trial) => sum + (trial.runtime_ms ?? 0),
@@ -263,16 +303,12 @@ export function buildEvaluationReport(
   const taskSet = new Set(manifest.tasks);
   for (const arm of ArmName.options) {
     for (const trial of arms[arm].trials) {
-      const reason = !taskSet.has(trial.task_id)
-        ? `task ${trial.task_id} is not in the manifest`
-        : trial.task_source.git_url !== manifest.dataset.tasks_source.git_url
-          ? `git_url ${trial.task_source.git_url ?? "null"} differs from the pinned dataset`
-          : trial.task_source.git_commit_id !==
-              manifest.dataset.tasks_source.git_commit_id
-            ? `git_commit_id ${trial.task_source.git_commit_id ?? "null"} differs from the pinned dataset`
-            : trial.agent.name !== arms[arm].agent.name
-              ? `agent ${trial.agent.name} is not the ${arm} agent`
-              : null;
+      const reason = trialRejectionReason(
+        manifest,
+        taskSet,
+        { name: arms[arm].agent.name, arm },
+        trial,
+      );
       if (reason)
         pinMismatches.push({ arm, trial_name: trial.trial_name, reason });
       else accepted[arm].push(trial);

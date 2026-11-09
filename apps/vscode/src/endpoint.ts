@@ -1,16 +1,10 @@
+import { isLoopbackHost } from "@mars/contracts/connection-file";
+
 export type EndpointCheck =
   | { ok: true; rpcUrl: string; origin: string; loopback: boolean }
   | { ok: false; reason: string };
 
 export const DEFAULT_SERVER_URL = "http://127.0.0.1:7331";
-
-export function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || host === "[::1]") return true;
-  const parts = host.split(".");
-  if (parts.length !== 4 || parts[0] !== "127") return false;
-  return parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
-}
 
 /**
  * Validates the configured server URL. Loopback HTTP(S) is accepted; any other
