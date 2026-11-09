@@ -1591,6 +1591,28 @@ describe("@mars/research durable control plane", () => {
     ).toBe("budget_exceeded");
   });
 
+  test("sub-micro-dollar research budgets still add up against the task", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_usd: 0.000001 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const usd = (max_usd: number) => ({
+      budget: { ...makeRequest(now).budget, max_usd },
+    });
+    await request(env.service, now, "tiny-a", usd(0.0000004));
+    await request(env.service, now, "tiny-b", usd(0.0000004));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.0000002,
+    );
+    expect(
+      await errorCode(() =>
+        request(env.service, now, "tiny-c", usd(0.0000004)),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
   test("autoStart false only claims queued work on an explicit pump", async () => {
     let runCount = 0;
     const now = Date.now;

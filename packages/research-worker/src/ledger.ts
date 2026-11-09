@@ -1,4 +1,4 @@
-import { type Budget, usdMicros } from "@mars/contracts";
+import { type Budget, exceedsUsd } from "@mars/contracts";
 
 export interface ModelUsage {
   input_tokens: number;
@@ -63,10 +63,7 @@ export class UsageLedger {
     if (this.signal.aborted) return "cancelled";
     if (this.timeRemainingMs() <= 0) return "deadline";
     if (this.total_tokens >= this.budget.max_tokens) return "budget_tokens";
-    if (
-      this.cost_usd > 0 &&
-      usdMicros(this.cost_usd) >= usdMicros(this.budget.max_usd)
-    ) {
+    if (this.cost_usd > 0 && !exceedsUsd(this.budget.max_usd, this.cost_usd)) {
       return "budget_usd";
     }
     return undefined;
@@ -87,8 +84,10 @@ export class UsageLedger {
     }
     if (estimatedCostUsd === null) return undefined;
     if (
-      usdMicros(this.cost_usd + this.reserved_usd + estimatedCostUsd) >
-      usdMicros(this.budget.max_usd)
+      exceedsUsd(
+        this.cost_usd + this.reserved_usd + estimatedCostUsd,
+        this.budget.max_usd,
+      )
     ) {
       return undefined;
     }
