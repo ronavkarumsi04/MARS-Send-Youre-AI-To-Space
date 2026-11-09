@@ -2357,3 +2357,85 @@ test("close waits for an in-flight remove before releasing the provider [stub ru
     await fixture.close();
   }
 });
+
+test("every workspace-scoped method enforces scope, lost-state, and closed checks [stub runner — not isolation evidence]", async () => {
+  const fixture = await makeFixture();
+  const checkpoint = await fixture.provider.checkpoint(
+    context,
+    fixture.workspace,
+  );
+  const artifact = await fixture.artifacts.put(
+    context,
+    new TextEncoder().encode("new\n"),
+    "text/plain",
+  );
+  const calls = (
+    provider: typeof fixture.provider,
+    ctx: RequestContext,
+    workspace = fixture.workspace,
+  ): Record<string, () => Promise<unknown>> => ({
+    read: () => provider.read(ctx, workspace, "tracked.txt"),
+    write: () => provider.write(ctx, workspace, "new.txt", artifact),
+    remove: () => provider.remove(ctx, workspace, "tracked.txt"),
+    execute: () => provider.execute(ctx, workspace, ["sh", "run.sh"], budget),
+    checkpoint: () => provider.checkpoint(ctx, workspace),
+    restore: () => provider.restore(ctx, checkpoint, workspace.revision),
+    diff: () => provider.diff(ctx, workspace),
+    collect: () => provider.collect(ctx, workspace),
+    inspect: () => provider.inspect(ctx, workspace.workspace_id),
+    workspacePath: () => provider.workspacePath(ctx, workspace),
+    checkpoints: () => provider.checkpoints(ctx, workspace),
+    skipped: () => provider.skipped(ctx, workspace),
+  });
+  const expectAllReject = async (
+    entries: Record<string, () => Promise<unknown>>,
+    errorType: new (...args: never[]) => Error,
+  ): Promise<void> => {
+    for (const [name, call] of Object.entries(entries)) {
+      const error = await call().then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect({ name, ok: error instanceof errorType }).toEqual({
+        name,
+        ok: true,
+      });
+    }
+  };
+  const otherOwner: RequestContext = {
+    ...context,
+    scope: { ...context.scope, owner_id: "owner-other" },
+  };
+  const tree = join(
+    fixture.rootDir,
+    "workspaces",
+    fixture.workspace.workspace_id,
+    "tree",
+  );
+  try {
+    await expectAllReject(
+      calls(fixture.provider, otherOwner),
+      WorkspaceNotFoundError,
+    );
+    await fixture.provider.close();
+    await expectAllReject(
+      calls(fixture.provider, context),
+      SandboxUnavailableError,
+    );
+    await rm(tree, { recursive: true, force: true });
+    const reopened = await createLocalWorkspaceProvider({
+      rootDir: fixture.rootDir,
+      sourceRoot: fixture.sourceRoot,
+      artifacts: fixture.artifacts,
+      sandbox: createStubRunner(),
+      approveCommand: () => true,
+    });
+    try {
+      await expectAllReject(calls(reopened, context), IntegrityError);
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
