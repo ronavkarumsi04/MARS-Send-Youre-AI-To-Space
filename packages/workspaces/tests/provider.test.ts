@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmod,
   cp,
@@ -127,6 +128,47 @@ test("close holds the provider lock until in-flight prepare drains [stub runner 
     }
   } finally {
     release();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("startup cleanup targets the same mars.root label stamped on run containers [stub runner — not isolation evidence]", async () => {
+  const base = await mkdtemp(join(tmpdir(), "mars-workspaces-labels-"));
+  const sourceRoot = join(base, "source");
+  const rootDir = join(base, "provider");
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(join(sourceRoot, "file.txt"), "content\n");
+  const cleanupLabels: Readonly<Record<string, string>>[] = [];
+  const runLabels: Readonly<Record<string, string>>[] = [];
+  const stub = createStubRunner(async (request) => {
+    runLabels.push(request.labels);
+    return undefined;
+  });
+  const provider = await createLocalWorkspaceProvider({
+    rootDir,
+    sourceRoot,
+    artifacts: createInMemoryArtifactStore(),
+    sandbox: {
+      ...stub,
+      async cleanup(labels) {
+        cleanupLabels.push(labels);
+      },
+    },
+    approveCommand: () => true,
+  });
+  try {
+    const workspace = await provider.prepare(context, "labels-task");
+    await provider.execute(context, workspace, ["noop"], budget);
+    const expectedRoot = createHash("sha256")
+      .update(await realpath(rootDir))
+      .digest("hex")
+      .slice(0, 16);
+    expect(cleanupLabels).toEqual([{ "mars.root": expectedRoot }]);
+    expect(runLabels).toEqual([
+      { "mars.workspace": workspace.workspace_id, "mars.root": expectedRoot },
+    ]);
+  } finally {
     await provider.close();
     await rm(base, { recursive: true, force: true });
   }
