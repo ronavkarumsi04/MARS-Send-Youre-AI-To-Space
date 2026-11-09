@@ -46,6 +46,10 @@ let composerError: string | null = null;
 /** Focus key of the chip that opened the code panel; focus returns there on close. */
 let panelOrigin: string | null = null;
 let returnFocusTo: string | null = null;
+/** Below this width the code panel is a modal drawer over the inbox and thread. */
+const narrowLayout = window.matchMedia("(max-width: 899px)");
+/** Panel the drawer showed on the last render; a change means it just opened. */
+let drawerPanel: string | null = null;
 /** Scroll bookkeeping for the message list across re-renders. */
 let anchorOlder: { height: number; top: number } | null = null;
 let stickToBottom = true;
@@ -76,9 +80,15 @@ document.body.append(announcer);
 let announcedSeq = 0;
 
 let lastViewport: { focused: boolean; atBottom: boolean } | null = null;
-/** Tells the host where the viewport is; it advances the read cursor only when focused and at the bottom. */
+/**
+ * Tells the host where the viewport is; it advances the read cursor only when focused and at the bottom.
+ * The narrow drawer covers the newest messages, so the bottom never counts as seen while it is open.
+ */
 function reportViewport(): void {
-  const next = { focused: document.hasFocus(), atBottom: stickToBottom };
+  const next = {
+    focused: document.hasFocus(),
+    atBottom: stickToBottom && drawerPanel === null,
+  };
   if (
     lastViewport &&
     lastViewport.focused === next.focused &&
@@ -885,18 +895,20 @@ function renderComposerParts(): void {
 
 // ---------------------------------------------------------------- code pane
 
-function renderCodePane(s: TeamChatViewState): HTMLElement | null {
+function closePanel(): void {
+  returnFocusTo = panelOrigin;
+  post({ type: "closeReference" });
+}
+
+function renderCodePane(
+  s: TeamChatViewState,
+  drawer: boolean,
+): HTMLElement | null {
   const panel = s.panel;
   if (!panel) return null;
-  const close = button(
-    "Close",
-    "close-panel",
-    () => {
-      returnFocusTo = panelOrigin;
-      post({ type: "closeReference" });
-    },
-    { secondary: true },
-  );
+  const close = button("Close", "close-panel", closePanel, {
+    secondary: true,
+  });
   const preview = panel.preview;
   let content: HTMLElement;
   let title = "Reference";
@@ -937,9 +949,13 @@ function renderCodePane(s: TeamChatViewState): HTMLElement | null {
       "Unavailable: the referenced revision or path cannot be resolved.",
     );
   }
-  return h(
-    "aside",
-    { class: "pane code", label: "Code panel" },
+  const pane = h(
+    drawer ? "div" : "aside",
+    {
+      class: "pane code",
+      label: "Code panel",
+      ...(drawer ? { role: "dialog" } : {}),
+    },
     h(
       "header",
       { class: "pane-header" },
@@ -958,6 +974,8 @@ function renderCodePane(s: TeamChatViewState): HTMLElement | null {
     ),
     content,
   );
+  if (drawer) pane.setAttribute("aria-modal", "true");
+  return pane;
 }
 
 // ---------------------------------------------------------------- render
@@ -975,7 +993,13 @@ function render(): void {
     anchorOlder = null;
     stickToBottom = true;
   }
-  const code = renderCodePane(s);
+  const drawer = s.panel !== null && narrowLayout.matches;
+  const panelId = s.panel
+    ? `${s.panel.message_id}:${s.panel.reference_id}`
+    : null;
+  const drawerOpened = drawer && panelId !== drawerPanel;
+  drawerPanel = drawer ? panelId : null;
+  const code = renderCodePane(s, drawer);
   const layout = h(
     "div",
     { class: `layout ${code ? "with-code" : ""}` },
@@ -993,6 +1017,10 @@ function render(): void {
         ),
     code,
   );
+  if (drawer) {
+    for (const pane of Array.from(layout.children))
+      if (pane !== code) (pane as HTMLElement).inert = true;
+  }
   app.replaceChildren(layout);
   if (s.announcement && s.announcement.seq !== announcedSeq) {
     announcedSeq = s.announcement.seq;
@@ -1024,14 +1052,18 @@ function render(): void {
   first?.scrollIntoView({ block: "center" });
   const wanted = returnFocusTo ?? focusKey;
   returnFocusTo = null;
-  if (wanted) {
-    const target = Array.from(
-      app.querySelectorAll<HTMLElement>("[data-focus-key]"),
-    ).find((element) => element.dataset.focusKey === wanted);
-    // The focused control left the DOM (e.g. a resolved pending send): land
-    // on the composer instead of letting focus fall to <body>.
-    (target ?? (textarea.isConnected ? textarea : null))?.focus();
-  }
+  const byKey = (key: string) =>
+    Array.from(app.querySelectorAll<HTMLElement>("[data-focus-key]")).find(
+      (element) => element.dataset.focusKey === key,
+    );
+  // The focused control left the DOM (e.g. a resolved pending send): land
+  // on the composer instead of letting focus fall to <body>.
+  let target = wanted
+    ? (byKey(wanted) ?? (textarea.isConnected ? textarea : undefined))
+    : undefined;
+  if (code && drawer && (drawerOpened || (target && !code.contains(target))))
+    target = byKey("close-panel");
+  target?.focus();
   if (pendingRestore === undefined) {
     // First render: read the saved selection before anything overwrites it.
     const saved = vscode.getState() as { conversationId?: unknown } | undefined;
@@ -1062,5 +1094,18 @@ window.addEventListener(
     }
   },
 );
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    !event.defaultPrevented &&
+    state?.panel &&
+    narrowLayout.matches
+  ) {
+    event.preventDefault();
+    closePanel();
+  }
+});
+narrowLayout.addEventListener("change", render);
 
 post({ type: "ready" });
