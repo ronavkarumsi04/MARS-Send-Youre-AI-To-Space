@@ -24,6 +24,7 @@ import {
   canTransition,
   type EventEnvelope,
   EventEnvelopeSchema,
+  exceedsUsd,
   isTerminalTaskStatus,
   type RequestContext,
   SCHEMA_VERSION,
@@ -161,8 +162,39 @@ export interface DurableTaskStore extends TaskService {
     context: RequestContext,
     options: { reason: string },
   ): Promise<Task[]>;
+  /**
+   * Shared per-task budget ledger. Each spender (foreground run, research,
+   * delegation pool) owns one hold `key`. `reserveBudget` raises the hold to at
+   * least `amount` only if every hold of the task still fits the task budget;
+   * `recordBudget` sets the hold to the actual amount without a check.
+   */
+  reserveBudget?(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: BudgetAmount,
+  ): Promise<void>;
+  recordBudget?(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: BudgetAmount,
+  ): Promise<void>;
+  /** Sum of the task's holds, optionally leaving out one spender's own hold. */
+  budgetCommitted?(
+    context: RequestContext,
+    taskId: string,
+    excludeKey?: string,
+  ): Promise<BudgetAmount>;
   close(): Promise<void>;
 }
+
+export interface BudgetAmount {
+  tokens: number;
+  usd: number;
+}
+
+export const BUDGET_HOLD_KEY_PATTERN = /^[A-Za-z0-9_:.-]{1,200}$/;
 
 export type TaskStoreErrorCode =
   | "invalid_input"
@@ -173,6 +205,7 @@ export type TaskStoreErrorCode =
   | "corrupt_record"
   | "unknown_cursor"
   | "unsafe_path"
+  | "budget_exceeded"
   | "closed";
 
 export class TaskStoreError extends Error {
@@ -698,6 +731,16 @@ export async function createTaskStore(
         FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id),
         FOREIGN KEY (instance_id) REFERENCES instances(instance_id)
       );
+      CREATE TABLE IF NOT EXISTS budget_holds (
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        hold_key TEXT NOT NULL,
+        tokens INTEGER NOT NULL,
+        usd REAL NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_key, task_id, hold_key),
+        FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
+      );
       CREATE TABLE IF NOT EXISTS session_bindings (
         scope_key TEXT NOT NULL,
         task_id TEXT NOT NULL,
@@ -814,6 +857,62 @@ export async function createTaskStore(
   };
   const readTask = (key: string, taskId: string): Task =>
     verifyTaskRow(taskRow(key, taskId));
+  const assertHold = (holdKey: string, amount: BudgetAmount): void => {
+    if (
+      typeof holdKey !== "string" ||
+      !BUDGET_HOLD_KEY_PATTERN.test(holdKey) ||
+      !amount ||
+      !Number.isFinite(amount.tokens) ||
+      amount.tokens < 0 ||
+      !Number.isFinite(amount.usd) ||
+      amount.usd < 0
+    )
+      throw invalidInput("Invalid budget hold");
+  };
+  const holdRow = (key: string, taskId: string, holdKey: string) =>
+    db
+      .query(
+        "SELECT tokens, usd FROM budget_holds WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
+      )
+      .get(key, taskId, holdKey) as BudgetAmount | null;
+  const sumHolds = (
+    key: string,
+    taskId: string,
+    excludeKey: string,
+  ): BudgetAmount => {
+    const rows = db
+      .query(
+        "SELECT tokens, usd FROM budget_holds WHERE scope_key = ? AND task_id = ? AND hold_key != ?",
+      )
+      .all(key, taskId, excludeKey) as BudgetAmount[];
+    let tokens = 0;
+    let usd = 0;
+    for (const row of rows) {
+      tokens += row.tokens;
+      usd += row.usd;
+    }
+    return { tokens, usd };
+  };
+  const writeHold = (
+    key: string,
+    taskId: string,
+    holdKey: string,
+    amount: BudgetAmount,
+  ): void => {
+    db.query(
+      `INSERT INTO budget_holds (scope_key, task_id, hold_key, tokens, usd, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (scope_key, task_id, hold_key)
+       DO UPDATE SET tokens = excluded.tokens, usd = excluded.usd, updated_at = excluded.updated_at`,
+    ).run(
+      key,
+      taskId,
+      holdKey,
+      amount.tokens,
+      amount.usd,
+      new Date().toISOString(),
+    );
+  };
   const insertArtifactRow = (key: string, ref: ArtifactRef): void => {
     db.query(
       "INSERT OR IGNORE INTO artifacts (scope_key, artifact_id, sha256, media_type, byte_length) VALUES (?, ?, ?, ?, ?)",
@@ -2179,6 +2278,48 @@ export async function createTaskStore(
         return events.slice(offset);
       })();
       for (const event of snapshot) yield event;
+    },
+    async reserveBudget(context, taskId, holdKey, amount) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      assertHold(holdKey, amount);
+      const transaction = db.transaction(() => {
+        const task = readTask(key, taskId);
+        const held = holdRow(key, taskId, holdKey);
+        const next = {
+          tokens: Math.max(held?.tokens ?? 0, Math.ceil(amount.tokens)),
+          usd: Math.max(held?.usd ?? 0, amount.usd),
+        };
+        if (held && next.tokens === held.tokens && next.usd === held.usd)
+          return;
+        const others = sumHolds(key, taskId, holdKey);
+        if (
+          others.tokens + next.tokens > task.budget.max_tokens ||
+          exceedsUsd(others.usd + next.usd, task.budget.max_usd)
+        )
+          fail("budget_exceeded", "Task budget is fully committed");
+        writeHold(key, taskId, holdKey, next);
+      });
+      transaction.immediate();
+    },
+    async recordBudget(context, taskId, holdKey, amount) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      assertHold(holdKey, amount);
+      const transaction = db.transaction(() => {
+        readTask(key, taskId);
+        writeHold(key, taskId, holdKey, {
+          tokens: Math.ceil(amount.tokens),
+          usd: amount.usd,
+        });
+      });
+      transaction.immediate();
+    },
+    async budgetCommitted(context, taskId, excludeKey) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      readTask(key, taskId);
+      return sumHolds(key, taskId, excludeKey ?? "");
     },
     async close() {
       if (closed) return;

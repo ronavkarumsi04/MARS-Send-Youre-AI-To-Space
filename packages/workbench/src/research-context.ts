@@ -116,14 +116,18 @@ export function researchTools(
       const deadline = new Date(
         now() + Math.min(RESEARCH_DEADLINE_MS, remaining),
       ).toISOString();
-      // Size the job to what the task's research allowance still holds, so a
-      // second job is not refused merely because the first took the whole budget.
+      // Size the job to half of what the task's shared allowance still holds:
+      // later research is not refused because one job took everything, and the
+      // foreground run keeps room for its own next model calls.
       const left = await service.allowance?.(context(), task.task_id);
       const budget = left
         ? {
             ...task.budget,
-            max_tokens: Math.min(task.budget.max_tokens, left.max_tokens),
-            max_usd: Math.min(task.budget.max_usd, left.max_usd),
+            max_tokens: Math.min(
+              task.budget.max_tokens,
+              Math.floor(left.max_tokens / 2),
+            ),
+            max_usd: Math.min(task.budget.max_usd, left.max_usd / 2),
           }
         : task.budget;
       if (budget.max_tokens < 1)

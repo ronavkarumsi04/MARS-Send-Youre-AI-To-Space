@@ -28,7 +28,9 @@ import {
   type DurableResearchService,
   type FindingProposal,
   isTerminalResearchStatus,
+  RESEARCH_BUDGET_HOLD,
   RESEARCH_STORE_FORMAT_VERSION,
+  type ResearchBudgetLedger,
   type ResearchWorker,
   type ResearchWorkerContext,
   RetryableResearchError,
@@ -1611,6 +1613,55 @@ describe("@mars/research durable control plane", () => {
         request(env.service, now, "tiny-c", usd(0.0000004)),
       ),
     ).toBe("budget_exceeded");
+  });
+
+  test("research admission counts the task's other spenders in the shared ledger", async () => {
+    const now = Date.now;
+    const holds = new Map<string, { tokens: number; usd: number }>([
+      ["foreground", { tokens: 600, usd: 0 }],
+    ]);
+    const sum = (exclude: string) => {
+      let tokens = 0;
+      let usd = 0;
+      for (const [key, hold] of holds)
+        if (key !== exclude) {
+          tokens += hold.tokens;
+          usd += hold.usd;
+        }
+      return { tokens, usd };
+    };
+    const ledger: ResearchBudgetLedger = {
+      async reserve(_context, _taskId, key, amount) {
+        if (sum(key).tokens + amount.tokens > 1000)
+          throw Object.assign(new Error("full"), { code: "budget_exceeded" });
+        holds.set(key, amount);
+      },
+      async record(_context, _taskId, key, amount) {
+        holds.set(key, amount);
+      },
+      async committed(_context, _taskId, excludeKey) {
+        return sum(excludeKey);
+      },
+    };
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_tokens: 1000 } },
+      service: { autoStart: false, maxConcurrency: 4, ledger },
+    });
+    const tokens = (max_tokens: number) => ({
+      budget: { ...makeRequest(now).budget, max_tokens },
+    });
+    await request(env.service, now, "shared-a", tokens(300));
+    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(300);
+    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
+      100,
+    );
+    expect(
+      await errorCode(() => request(env.service, now, "shared-b", tokens(300))),
+    ).toBe("budget_exceeded");
+    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(300);
+    await request(env.service, now, "shared-c", tokens(100));
+    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(400);
   });
 
   test("autoStart false only claims queued work on an explicit pump", async () => {

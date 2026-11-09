@@ -149,6 +149,29 @@ export interface ResearchTaskReader {
   inspect(context: RequestContext, taskId: string): Promise<Task>;
 }
 
+/** The task's shared budget ledger; research owns the `research` hold. */
+export interface ResearchBudgetLedger {
+  reserve(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: { tokens: number; usd: number },
+  ): Promise<void>;
+  record(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: { tokens: number; usd: number },
+  ): Promise<void>;
+  committed(
+    context: RequestContext,
+    taskId: string,
+    excludeKey: string,
+  ): Promise<{ tokens: number; usd: number }>;
+}
+
+export const RESEARCH_BUDGET_HOLD = "research";
+
 export interface ResearchArtifactStore {
   put(
     context: RequestContext,
@@ -182,6 +205,8 @@ export interface ResearchInternalError {
 export interface ResearchServiceOptions {
   rootDir: string;
   tasks: ResearchTaskReader;
+  /** When set, research admission also counts the task's other spenders. */
+  ledger?: ResearchBudgetLedger;
   artifacts: ResearchArtifactStore;
   worker: ResearchWorker;
   events?: ResearchEventSink;
@@ -483,6 +508,45 @@ function isErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+function researchCommitmentFor(
+  db: Database,
+  scopeKey: string,
+  taskId: string,
+): { tokens: number; usd: number } {
+  return taskResearchCommitment(
+    db
+      .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+      .all(scopeKey, taskId) as RequestRow[],
+  );
+}
+
+/** Runs ledger work for one task at a time so reserve, insert and record never interleave. */
+async function withTaskLock<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const current = (locks.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(run);
+  const tail = current.catch(() => undefined);
+  locks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (locks.get(key) === tail) locks.delete(key);
+  }
+}
+
+function mapLedgerError(error: unknown): ResearchError {
+  if ((error as { code?: unknown } | null)?.code === "budget_exceeded")
+    return new ResearchError(
+      "budget_exceeded",
+      "Research budget exceeds what the task has left after its other work",
+    );
+  return mapTaskError(error);
+}
+
 function mapTaskError(error: unknown): ResearchError {
   if (isErrorCode(error, "not_found")) {
     return new ResearchError("not_found", NOT_FOUND_MESSAGE);
@@ -680,6 +744,7 @@ export async function createResearchService(
     throw new ResearchError("invalid_input", "Invalid research service option");
   }
   const configured = validateOptions(options);
+  const ledgerLocks = new Map<string, Promise<unknown>>();
   const requestedMaxTimerMs = (
     options as ResearchServiceOptions & { __maxTimerMs?: number }
   ).__maxTimerMs;
@@ -1938,62 +2003,65 @@ export async function createResearchService(
         }
       }
       const record = canonicalRecord(request);
-      const insertResult = immediate(db, () => {
-        const existing = db
-          .query(
-            `SELECT request_id, input_sha256 FROM requests
+      const insert = () =>
+        immediate(db, () => {
+          const existing = db
+            .query(
+              `SELECT request_id, input_sha256 FROM requests
              WHERE scope_key = ? AND idem_request_id = ?`,
-          )
-          .get(parsedContext.scopeKey, parsedContext.context.request_id) as {
-          request_id: string;
-          input_sha256: string;
-        } | null;
-        if (existing) {
-          if (existing.input_sha256 !== inputHash) {
+            )
+            .get(parsedContext.scopeKey, parsedContext.context.request_id) as {
+            request_id: string;
+            input_sha256: string;
+          } | null;
+          if (existing) {
+            if (existing.input_sha256 !== inputHash) {
+              throw new ResearchError(
+                "conflict",
+                "Request id was already used with different input",
+              );
+            }
+            return { request_id: existing.request_id, inserted: false };
+          }
+          const scopeActive = db
+            .query(
+              `SELECT COUNT(*) AS count FROM requests
+             WHERE scope_key = ? AND status IN ('queued', 'running')`,
+            )
+            .get(parsedContext.scopeKey) as { count: number };
+          const totalActive = db
+            .query(
+              "SELECT COUNT(*) AS count FROM requests WHERE status IN ('queued', 'running')",
+            )
+            .get() as { count: number };
+          if (
+            scopeActive.count >= configured.maxActivePerScope ||
+            totalActive.count >= configured.maxActiveTotal
+          ) {
+            throw new ResearchError("backpressure", "Research queue is full");
+          }
+          const committed = taskResearchCommitment(
+            db
+              .query(
+                "SELECT * FROM requests WHERE scope_key = ? AND task_id = ?",
+              )
+              .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
+          );
+          if (
+            committed.tokens + request.budget.max_tokens >
+              task.budget.max_tokens ||
+            exceedsUsd(
+              committed.usd + request.budget.max_usd,
+              task.budget.max_usd,
+            )
+          ) {
             throw new ResearchError(
-              "conflict",
-              "Request id was already used with different input",
+              "budget_exceeded",
+              "Research budget exceeds the task's remaining research allowance",
             );
           }
-          return { request_id: existing.request_id, inserted: false };
-        }
-        const scopeActive = db
-          .query(
-            `SELECT COUNT(*) AS count FROM requests
-             WHERE scope_key = ? AND status IN ('queued', 'running')`,
-          )
-          .get(parsedContext.scopeKey) as { count: number };
-        const totalActive = db
-          .query(
-            "SELECT COUNT(*) AS count FROM requests WHERE status IN ('queued', 'running')",
-          )
-          .get() as { count: number };
-        if (
-          scopeActive.count >= configured.maxActivePerScope ||
-          totalActive.count >= configured.maxActiveTotal
-        ) {
-          throw new ResearchError("backpressure", "Research queue is full");
-        }
-        const committed = taskResearchCommitment(
-          db
-            .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
-            .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
-        );
-        if (
-          committed.tokens + request.budget.max_tokens >
-            task.budget.max_tokens ||
-          exceedsUsd(
-            committed.usd + request.budget.max_usd,
-            task.budget.max_usd,
-          )
-        ) {
-          throw new ResearchError(
-            "budget_exceeded",
-            "Research budget exceeds the task's remaining research allowance",
-          );
-        }
-        db.query(
-          `INSERT INTO requests
+          db.query(
+            `INSERT INTO requests
            (scope_key, request_id, scope_json, idem_request_id, input_sha256,
             record_json, record_sha256, task_id, task_revision, status, stale,
             cancel_requested, attempts, max_attempts, submitted_at,
@@ -2002,31 +2070,81 @@ export async function createResearchService(
             stale_event_state)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, ?, ?, ?, ?,
                    ?, NULL, NULL, NULL, ?, NULL, NULL, NULL, ?)`,
-        ).run(
-          parsedContext.scopeKey,
-          requestId,
-          parsedContext.scopeJson,
-          parsedContext.context.request_id,
-          inputHash,
-          record.record_json,
-          record.record_sha256,
-          request.task_id,
-          request.task_revision,
-          configured.maxAttempts,
-          timestamp(now),
-          request.deadline,
-          new Date(effectiveDeadline).toISOString(),
-          now,
-          JSON.stringify({
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: null,
-            reported: false,
-          } satisfies ResearchUsage),
-          "none",
-        );
-        return { request_id: requestId, inserted: true };
-      });
+          ).run(
+            parsedContext.scopeKey,
+            requestId,
+            parsedContext.scopeJson,
+            parsedContext.context.request_id,
+            inputHash,
+            record.record_json,
+            record.record_sha256,
+            request.task_id,
+            request.task_revision,
+            configured.maxAttempts,
+            timestamp(now),
+            request.deadline,
+            new Date(effectiveDeadline).toISOString(),
+            now,
+            JSON.stringify({
+              input_tokens: 0,
+              output_tokens: 0,
+              cost_usd: null,
+              reported: false,
+            } satisfies ResearchUsage),
+            "none",
+          );
+          return { request_id: requestId, inserted: true };
+        });
+      const ledger = options.ledger;
+      const insertResult = !ledger
+        ? insert()
+        : await withTaskLock(
+            ledgerLocks,
+            `${parsedContext.scopeKey}\u0000${request.task_id}`,
+            async () => {
+              const replay = db
+                .query(
+                  "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ?",
+                )
+                .get(parsedContext.scopeKey, parsedContext.context.request_id);
+              if (!replay) {
+                const committed = researchCommitmentFor(
+                  db,
+                  parsedContext.scopeKey,
+                  request.task_id,
+                );
+                try {
+                  await ledger.reserve(
+                    parsedContext.context,
+                    request.task_id,
+                    RESEARCH_BUDGET_HOLD,
+                    {
+                      tokens: committed.tokens + request.budget.max_tokens,
+                      usd: committed.usd + request.budget.max_usd,
+                    },
+                  );
+                } catch (error) {
+                  throw mapLedgerError(error);
+                }
+              }
+              try {
+                return insert();
+              } finally {
+                await ledger
+                  .record(
+                    parsedContext.context,
+                    request.task_id,
+                    RESEARCH_BUDGET_HOLD,
+                    researchCommitmentFor(
+                      db,
+                      parsedContext.scopeKey,
+                      request.task_id,
+                    ),
+                  )
+                  .catch(() => undefined);
+              }
+            },
+          );
       wake();
       if (insertResult.inserted) schedulePump();
       return insertResult.request_id;
@@ -2050,14 +2168,37 @@ export async function createResearchService(
       } catch (error) {
         throw mapTaskError(error);
       }
-      const committed = taskResearchCommitment(
-        db
-          .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
-          .all(parsedContext.scopeKey, taskId) as RequestRow[],
+      const committed = researchCommitmentFor(
+        db,
+        parsedContext.scopeKey,
+        taskId,
       );
+      let others = { tokens: 0, usd: 0 };
+      if (options.ledger) {
+        await options.ledger
+          .record(
+            parsedContext.context,
+            taskId,
+            RESEARCH_BUDGET_HOLD,
+            committed,
+          )
+          .catch(() => undefined);
+        try {
+          others = await options.ledger.committed(
+            parsedContext.context,
+            taskId,
+            RESEARCH_BUDGET_HOLD,
+          );
+        } catch (error) {
+          throw mapLedgerError(error);
+        }
+      }
       return {
-        max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
-        max_usd: remainingUsd(task.budget.max_usd, committed.usd),
+        max_tokens: Math.max(
+          0,
+          task.budget.max_tokens - committed.tokens - others.tokens,
+        ),
+        max_usd: remainingUsd(task.budget.max_usd, committed.usd + others.usd),
       };
     },
 

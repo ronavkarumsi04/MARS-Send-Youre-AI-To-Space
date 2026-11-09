@@ -26,6 +26,7 @@ import {
   createModelBridge,
   ExecutionLimitError,
   type ModelFailureCode,
+  type SharedBudget,
   selectExecutionModel,
   toChatRequest,
 } from "./model-bridge";
@@ -651,6 +652,8 @@ export interface RuntimeSessionOptions {
   /** Read-only @MARS answer sessions: binds `mars_team_context` and nothing else needs approval. */
   teamContext?: RuntimeTeamContext;
   onEvent?(observation: RuntimeObservation): Promise<void>;
+  /** The task's shared budget ledger hold for this run (foreground spend). */
+  sharedBudget?: SharedBudget;
   env?: Record<string, string | undefined>;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   /**
@@ -776,6 +779,12 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       Date.now() >= ledger.deadline
     )
       throw new ExecutionLimitError();
+    // A resumed journal re-asserts its spend so the shared ledger never undercounts it.
+    if (options.sessionFile)
+      await options.sharedBudget?.record({
+        tokens: ledger.reserved_tokens,
+        usd: ledger.reserved_usd,
+      });
   } catch (error) {
     await manager.close();
     throw error;
@@ -803,6 +812,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     budget: task.budget,
     ledger,
     persistLedger,
+    ...(options.sharedBudget ? { sharedBudget: options.sharedBudget } : {}),
     signal: controller.signal,
     onFailure: (code) => {
       modelFailure = code;

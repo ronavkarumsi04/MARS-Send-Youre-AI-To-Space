@@ -945,7 +945,11 @@ function createHost(store: CollaborationStore): CollaborationHost {
             "UPDATE deliveries SET state = 'expired' WHERE message_id IN (SELECT message_id FROM messages WHERE room_id = ?) AND state IN ('pending', 'delivered')",
           )
           .run(roomId);
-        const deadline = store.now() + task.budget.max_duration_ms;
+        // Steering never extends the task's absolute deadline.
+        const deadline = Math.min(
+          room.deadline,
+          store.now() + task.budget.max_duration_ms,
+        );
         store.db
           .query(
             "UPDATE rooms SET task_revision = ?, budget_json = ?, deadline = ? WHERE room_id = ?",
