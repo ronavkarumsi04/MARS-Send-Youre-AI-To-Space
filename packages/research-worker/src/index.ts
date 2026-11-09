@@ -18,7 +18,12 @@ export {
   ReplayMissError,
   type ResearchJournal,
 } from "./journal";
-export { type ModelUsage, type StopReason, UsageLedger } from "./ledger";
+export {
+  estimateTokens,
+  type ModelUsage,
+  type StopReason,
+  UsageLedger,
+} from "./ledger";
 export {
   createRegistryModelGateway,
   type ModelGateway,

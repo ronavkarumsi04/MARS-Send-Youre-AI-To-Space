@@ -59,6 +59,29 @@
         "@types/vscode": "1.96.0",
       },
     },
+    "packages/browser": {
+      "name": "@mars/browser",
+      "version": "0.0.1",
+      "dependencies": {
+        "@mars/contracts": "workspace:*",
+        "@mars/tasks": "workspace:*",
+        "zod": "3.25.76",
+      },
+    },
+    "packages/browser-worker": {
+      "name": "@mars/browser-worker",
+      "version": "0.0.1",
+      "dependencies": {
+        "@mars/browser": "workspace:*",
+        "@mars/contracts": "workspace:*",
+        "@mars/research-worker": "workspace:*",
+        "playwright-core": "1.58.2",
+        "zod": "3.25.76",
+      },
+      "devDependencies": {
+        "@mars/tasks": "workspace:*",
+      },
+    },
     "packages/code-refs": {
       "name": "@mars/code-refs",
       "version": "0.0.1",
@@ -435,6 +458,10 @@
 
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.35.5", "", { "os": "win32", "cpu": "x64" }, "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg=="],
 
+    "@mars/browser": ["@mars/browser@workspace:packages/browser"],
+
+    "@mars/browser-worker": ["@mars/browser-worker@workspace:packages/browser-worker"],
+
     "@mars/cli": ["@mars/cli@workspace:apps/cli"],
 
     "@mars/code-refs": ["@mars/code-refs@workspace:packages/code-refs"],
@@ -670,6 +697,8 @@
     "onnxruntime-web": ["onnxruntime-web@1.31.0-dev.20260914-8d85527a0", "", { "dependencies": { "flatbuffers": "^25.1.24", "guid-typescript": "^1.0.9", "long": "^5.2.3", "onnxruntime-common": "1.31.0-dev.20260911-2a43ec07e", "platform": "^1.3.6", "protobufjs": "^7.2.4" } }, "sha512-Iy7rtadoBgxS/LLvDr3QW38DB1PNXRnr0GJMcL0TAt7c9qjgVQl83UlGCVyeAnK2InpmW8Uc3PL8XIuqtDeF6g=="],
 
     "platform": ["platform@1.3.6", "", {}, "sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg=="],
+
+    "playwright-core": ["playwright-core@1.58.2", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-yZkEtftgwS8CsfYo7nm0KE8jsvm6i/PTgVtB8DL726wNf6H2IMsDuxCpJj59KDaxCtSnrWan2AeDqM7JBaultg=="],
 
     "progress": ["progress@2.0.3", "", {}, "sha512-7PiHtLll5LdnKIMw100I+8xJXR5gW2QwWYkT6iJva0bXitZKa/XMrSbdmg3r2Xnaidz9Qumd0VPaMrZlF9V9sA=="],
 
