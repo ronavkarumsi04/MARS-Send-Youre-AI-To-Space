@@ -66,6 +66,7 @@ import {
   type WatchEvidenceRecord,
   WatchEvidenceRecordSchema,
 } from "@mars/watch";
+import type { LocalWorkspaceProvider } from "@mars/workspaces";
 import { z } from "zod";
 import { chooseChildModel, isReviewerRole } from "./child-model";
 import {
@@ -91,6 +92,7 @@ import {
   type WorkbenchKnowledgeGraph,
   withFrozenGraphSummary,
 } from "./graph-context";
+import { type HostCheckDefinition, summarizeHostChecks } from "./host-checks";
 import { childWorkspaceTaskId, createChildRecords } from "./host-children";
 import {
   type LaunchLocation,
@@ -108,6 +110,8 @@ import {
 } from "./host-shared";
 import {
   freezeRequiredChecks,
+  patchSha256,
+  RequiredCheckRejected,
   type VerificationHost,
   verificationRecords,
   verifyCandidate,
@@ -178,6 +182,10 @@ export interface WorkspaceHost extends ExecutionProvider {
     workspace: WorkspaceRef,
     relativePath: string,
   ): Promise<void>;
+  /** Runs a host check on a disposable copy of the candidate; absent means no sandbox. */
+  runCheck?: LocalWorkspaceProvider["runCheck"];
+  /** Exact candidate patch bytes plus a reconstruction proof; absent means no export. */
+  exportPatch?: LocalWorkspaceProvider["exportPatch"];
 }
 
 /**
@@ -214,6 +222,8 @@ export interface WorkbenchHostOptions {
   workspace: WorkspaceHost;
   registry: ModelProviderRegistry;
   canExecute: boolean;
+  /** Host-defined protected checks a client may select at Start by id. */
+  checks?: readonly HostCheckDefinition[];
   memory?: WorkbenchMemory;
   skills?: WorkbenchSkills;
   review?: WorkbenchReview;
@@ -992,6 +1002,7 @@ export async function createWorkbenchHost(
     instruction: string,
     content: string,
     iterationsBefore: number,
+    success: boolean,
   ) => {
     if (!options.review) return;
     try {
@@ -1009,7 +1020,7 @@ export async function createWorkbenchHost(
             content: content.slice(0, REVIEW_TRANSCRIPT_LENGTH),
           },
         ],
-        success: true,
+        success,
       });
     } catch {
       // Review is advisory; it never affects the task.
@@ -1019,6 +1030,7 @@ export async function createWorkbenchHost(
     scope: options.scope,
     store: options.store,
     workspace: options.workspace,
+    ...(options.checks ? { checks: options.checks } : {}),
   };
   const run = (
     task: Task,
@@ -1093,14 +1105,16 @@ export async function createWorkbenchHost(
         // The verdict is recorded before the task turns `completed`, so a
         // client that sees the terminal status also sees the evidence.
         stage = "verify";
-        if (status === "completed")
-          await verifyCandidate(
-            verificationHost,
-            current,
-            runtime,
-            requiredChecks,
-            outcome.content,
-          );
+        const verdict =
+          status === "completed"
+            ? await verifyCandidate(
+                verificationHost,
+                current,
+                runtime,
+                requiredChecks,
+                outcome.content,
+              )
+            : null;
         stage = "update";
         await options.store.update(context, task.task_id, current.revision, {
           status,
@@ -1117,12 +1131,16 @@ export async function createWorkbenchHost(
           await closeRoom(status === "cancelled" ? "cancel" : "drain");
         // Read-denied tasks never feed review: the reviewer would otherwise
         // see saved memory and skills the task itself was not allowed to read.
-        if (status === "completed" && reviewable)
+        // Only a persisted verdict for this exact candidate feeds review: a
+        // passing one as a success, any other as a failure. Unverified runs
+        // (no required checks) never reach the positive path.
+        if (status === "completed" && reviewable && verdict)
           recordReviewTurn(
             runtime,
             instruction,
             outcome.content,
             iterationsBefore,
+            verdict.verified,
           );
         await reconcileResearch(task.task_id);
       } catch (error) {
@@ -2090,6 +2108,9 @@ export async function createWorkbenchHost(
         scope: options.scope,
         workspaceLabel: options.workspaceLabel,
         capabilities: { execute: options.canExecute, checkpoint: true },
+        ...(options.checks?.length
+          ? { checks: summarizeHostChecks(options.checks) }
+          : {}),
         connectors: [],
         image: digest ? { digest } : null,
         conventions: options.conventions?.summary ?? {
@@ -2232,6 +2253,20 @@ export async function createWorkbenchHost(
         throw new WorkbenchError("conflict");
       if (params.approvals.execute && !options.canExecute)
         throw new WorkbenchError("forbidden");
+      let requiredChecks: RequiredCheck[];
+      try {
+        requiredChecks = await freezeRequiredChecks(
+          params.required_checks ?? [],
+          options.checks ?? [],
+          params.approvals.execute &&
+            options.canExecute &&
+            Boolean(options.workspace.runCheck),
+        );
+      } catch (error) {
+        if (error instanceof RequiredCheckRejected)
+          throw new WorkbenchError(error.code);
+        throw error;
+      }
       // A request that names a repository slash command (`/name args`) is
       // expanded from the command file; the durable task keeps the original.
       const expanded = expandRequest(task.request);
@@ -2344,9 +2379,7 @@ export async function createWorkbenchHost(
           ...(instructions.frozen ? { instructions: instructions.frozen } : {}),
           ...(routing ? { routing } : {}),
           ...(collaboration ? { collaboration } : {}),
-          ...(params.required_checks?.length
-            ? { required_checks: freezeRequiredChecks(params.required_checks) }
-            : {}),
+          ...(requiredChecks.length ? { required_checks: requiredChecks } : {}),
         });
         await options.store.bindUpstreamSession(
           internalContext(options.scope),
@@ -2377,7 +2410,7 @@ export async function createWorkbenchHost(
           false,
           collaboration,
           params.approvals.read,
-          params.required_checks ?? [],
+          requiredChecks,
         );
         return running;
       } catch (error) {
@@ -2636,16 +2669,19 @@ export async function createWorkbenchHost(
         taskId,
       );
       let candidate: WorkspaceRef | null = null;
+      let patch: string | null = null;
       try {
         candidate = WorkspaceRefSchema.parse(
           await options.workspace.reopen(context, taskId),
         );
+        patch = patchSha256(await options.workspace.diff(context, candidate));
       } catch {
-        candidate = null;
+        patch = null;
       }
       const presentation = verificationStateFor(
         candidate?.revision ?? null,
         records,
+        patch,
       );
       const view: VerificationView = {
         candidate,
@@ -2653,6 +2689,7 @@ export async function createWorkbenchHost(
         record: presentation.record,
         reasons: presentation.reasons,
         records,
+        patch_sha256: patch,
       };
       // Same guard as artifacts and diffs: nothing host-private leaves the
       // service, even when a client named such a path in a required check.

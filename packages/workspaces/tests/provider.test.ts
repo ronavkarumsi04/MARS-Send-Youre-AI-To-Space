@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   chmod,
   cp,
@@ -2570,6 +2571,127 @@ test("every workspace-scoped method enforces scope, lost-state, and closed check
     } finally {
       await reopened.close();
     }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("runCheck runs against a disposable copy with host overlay files and never moves the candidate", async () => {
+  const seen: { dir: string; files: Record<string, string> }[] = [];
+  const fixture = await makeFixture({
+    approveCommand: false,
+    runner: createStubRunner(async (request) => {
+      const { readFile, writeFile: write } = await import("node:fs/promises");
+      seen.push({
+        dir: request.workspaceDir,
+        files: {
+          tracked: await readFile(
+            join(request.workspaceDir, "tracked.txt"),
+            "utf8",
+          ),
+          test: await readFile(
+            join(request.workspaceDir, "test/sum.test.ts"),
+            "utf8",
+          ),
+        },
+      });
+      expect(existsSync(join(request.workspaceDir, ".env"))).toBe(false);
+      await write(join(request.workspaceDir, "tracked.txt"), "check wrote\n");
+      return { exitCode: 1, stdout: new TextEncoder().encode("1 fail\n") };
+    }),
+  });
+  try {
+    const before = fixture.workspace;
+    const result = await fixture.provider.runCheck(context, before, {
+      argv: ["bun", "test"],
+      overlay: [
+        {
+          path: "test/sum.test.ts",
+          data: new TextEncoder().encode("protected\n"),
+        },
+      ],
+      timeoutMs: 5_000,
+    });
+    expect(result.exit_code).toBe(1);
+    expect(new TextDecoder().decode(result.stdout)).toBe("1 fail\n");
+    expect(result.workspace.revision).toBe(before.revision);
+    expect(seen[0]?.files).toEqual({
+      tracked: "dirty tracked\n",
+      test: "protected\n",
+    });
+    expect(seen[0]?.dir.startsWith(fixture.rootDir)).toBe(false);
+    expect(existsSync(seen[0]?.dir ?? "/")).toBe(false);
+    const after = await fixture.provider.discover(context, "task-test");
+    expect(after?.revision).toBe(before.revision);
+    const ref = await fixture.provider.read(context, before, "tracked.txt");
+    expect(
+      new TextDecoder().decode(await fixture.artifacts.get(context, ref)),
+    ).toBe("dirty tracked\n");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("runCheck refuses a stale candidate revision and reports a missing sandbox", async () => {
+  const fixture = await makeFixture({ runner: false });
+  try {
+    await expect(
+      fixture.provider.runCheck(
+        context,
+        { ...fixture.workspace, revision: `${fixture.workspace.revision}x` },
+        { argv: ["true"], overlay: [], timeoutMs: 1_000 },
+      ),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+    await expect(
+      fixture.provider.runCheck(context, fixture.workspace, {
+        argv: ["true"],
+        overlay: [],
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toBeInstanceOf(SandboxUnavailableError);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("exportPatch reconstructs a BOM-only edit over a dirty git baseline byte for byte and leaves the source untouched", async () => {
+  const fixture = await makeFixture();
+  try {
+    const plain = new TextEncoder().encode("dirty tracked\n");
+    const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...plain]);
+    const written = await fixture.artifacts.put(context, withBom, "text/plain");
+    await fixture.provider.write(
+      context,
+      fixture.workspace,
+      "tracked.txt",
+      written,
+    );
+    const added = await fixture.artifacts.put(
+      context,
+      new TextEncoder().encode(
+        "export const sum = (a: number, b: number) => a + b;\r\n",
+      ),
+      "text/plain",
+    );
+    const candidate = await fixture.provider.discover(context, "task-test");
+    if (!candidate) throw new Error("candidate missing");
+    await fixture.provider.write(context, candidate, "src/sum.ts", added);
+    const current = await fixture.provider.discover(context, "task-test");
+    if (!current) throw new Error("candidate missing");
+    const exported = await fixture.provider.exportPatch(context, current);
+    expect(exported.round_trip).toEqual({ status: "passed", reason: null });
+    expect(exported.files).toBe(2);
+    expect(exported.workspace.revision).toBe(current.revision);
+    expect(new TextDecoder().decode(exported.patch)).toContain(
+      "+\uFEFFdirty tracked\n",
+    );
+    await expect(
+      fixture.provider.exportPatch(context, fixture.workspace),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await hashDirectory(fixture.sourceRoot)).toBe(
+      fixture.initialSourceHash,
+    );
+    expect(await gitStatus(fixture.sourceRoot)).toBe(fixture.initialGitStatus);
   } finally {
     await fixture.close();
   }
