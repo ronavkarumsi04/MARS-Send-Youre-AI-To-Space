@@ -1971,6 +1971,71 @@ describe("@mars/research durable control plane", () => {
     expect(JSON.stringify(afterStale.at(-1)?.payload)).not.toContain(env.root);
   });
 
+  test("parks an undecodable outbox row as failed and reports it", async () => {
+    const reports: Array<{ where: string; error: unknown }> = [];
+    const delivered: string[] = [];
+    let sinkAvailable = false;
+    const env = await setup({
+      service: {
+        autoStart: false,
+        events: {
+          async appendEvent(_eventContext, _taskId, input) {
+            if (!sinkAvailable) throw new Error("sink unavailable");
+            delivered.push(input.event_type);
+          },
+        },
+        onInternalError: (where, error) => {
+          reports.push({ where, error });
+        },
+      },
+    });
+    const id = await request(env.service, env.now, "poison-outbox");
+    await env.service.pump();
+    await waitFor(
+      async () =>
+        (await env.service.inspect(context(), id)).status === "completed",
+    );
+    await env.service.pump();
+    expect(
+      reports.some(
+        (report) =>
+          report.where === "flush_events" &&
+          String(report.error).includes("sink unavailable"),
+      ),
+    ).toBe(true);
+
+    const db = new Database(path.join(env.researchRoot, "research.sqlite"));
+    const outboxState = () =>
+      (
+        db
+          .query("SELECT event_state FROM findings WHERE request_id = ?")
+          .get(id) as { event_state: string }
+      ).event_state;
+    try {
+      expect(outboxState()).toBe("pending");
+      db.query("UPDATE findings SET event_json = '{' WHERE request_id = ?").run(
+        id,
+      );
+
+      sinkAvailable = true;
+      reports.length = 0;
+      await env.service.pump();
+      expect(reports).toHaveLength(1);
+      expect(reports[0]?.where).toBe("flush_events");
+      expect((reports[0]?.error as { code?: unknown }).code).toBe(
+        "corrupt_record",
+      );
+      expect(outboxState()).toBe("failed");
+
+      reports.length = 0;
+      await env.service.pump();
+      expect(reports).toEqual([]);
+      expect(delivered).not.toContain("research.proposed");
+    } finally {
+      db.close();
+    }
+  });
+
   test("migrates v1 outbox rows and rejects unsupported store versions", async () => {
     const root = makeRoot();
     const tasks = await createTaskStore({
