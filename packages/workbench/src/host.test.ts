@@ -949,6 +949,33 @@ test
   },
 );
 
+test("a failure to fix the deadline leaves the task startable", async () => {
+  const f = await fixture();
+  const api = await f.makeHost();
+  await api.create(context(), task());
+  const fix = f.store.fixDeadline?.bind(f.store);
+  let fail = true;
+  f.store.fixDeadline = async (...args) => {
+    if (fail) throw new Error("database is locked");
+    if (!fix) throw new Error("fixDeadline missing");
+    return fix(...args);
+  };
+  const start = () =>
+    api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: true, write: true, execute: false },
+    });
+  await expect(start()).rejects.toThrow("database is locked");
+  expect(
+    (await f.store.list(context())).find((item) => item.task_id === "task")
+      ?.status,
+  ).not.toBe("running");
+  expect(f.sessions).toHaveLength(0);
+  fail = false;
+  expect((await start()).status).toBe("running");
+});
+
 test("host persists launch metadata, runs only through the runtime and publishes output", async () => {
   const f = await fixture();
   const api = await f.makeHost();
