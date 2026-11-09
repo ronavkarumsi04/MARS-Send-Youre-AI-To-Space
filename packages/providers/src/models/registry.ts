@@ -63,6 +63,25 @@ function mergeById<T extends { id: string }>(...groups: T[][]): T[] {
   return [...result.values()];
 }
 
+function isEnoent(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
+
+function emptyModelsFile(): ModelsFile {
+  return {
+    version: 1,
+    providers: [],
+    models: [],
+    routes: {},
+    policy: { allowPaid: false },
+  };
+}
+
 async function readModelsFile(
   path: string,
 ): Promise<ParsedModelFile | undefined> {
@@ -70,12 +89,7 @@ async function readModelsFile(
   try {
     source = await readFile(path, "utf8");
   } catch (error) {
-    if (
-      error !== null &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
+    if (isEnoent(error)) {
       return undefined;
     }
     throw error;
@@ -109,12 +123,7 @@ async function fileExists(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error) {
-    if (
-      error !== null &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
+    if (isEnoent(error)) {
       return false;
     }
     throw error;
@@ -336,25 +345,10 @@ export class ModelProviderRegistry {
         `Provider "${provider.id}" already exists; use --force to replace it.`,
       );
     }
-    const current = (await readModelsFile(this.userFilePath))?.config ?? {
-      version: 1 as const,
-      providers: [],
-      models: [],
-      routes: {},
-      policy: { allowPaid: false },
-    };
-    const next = ModelsFileSchema.parse({
+    await this.updateUserFile((current) => ({
       ...current,
       providers: mergeById(current.providers, [provider]),
-    });
-    await writeModelsFile(this.userFilePath, next);
-    const merged = await readMergedFiles(
-      this.userFilePath,
-      this.projectFilePath,
-      this.trustProjectConfig,
-    );
-    this.file = merged.config;
-    this.notices.splice(0, this.notices.length, ...merged.notices);
+    }));
   }
 
   async addModel(
@@ -370,18 +364,19 @@ export class ModelProviderRegistry {
         `Model "${model.id}" already exists; use --force to replace it.`,
       );
     }
-    const current = (await readModelsFile(this.userFilePath))?.config ?? {
-      version: 1 as const,
-      providers: [],
-      models: [],
-      routes: {},
-      policy: { allowPaid: false },
-    };
-    const next = ModelsFileSchema.parse({
+    await this.updateUserFile((current) => ({
       ...current,
       models: mergeById(current.models, [model]),
-    });
-    await writeModelsFile(this.userFilePath, next);
+    }));
+  }
+
+  /** Read-modify-write of the user models file, then reload the merged view. */
+  private async updateUserFile(
+    mutate: (current: ModelsFile) => ModelsFile,
+  ): Promise<void> {
+    const current =
+      (await readModelsFile(this.userFilePath))?.config ?? emptyModelsFile();
+    await writeModelsFile(this.userFilePath, mutate(current));
     const merged = await readMergedFiles(
       this.userFilePath,
       this.projectFilePath,
