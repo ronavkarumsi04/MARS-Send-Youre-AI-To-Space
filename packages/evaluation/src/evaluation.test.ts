@@ -767,6 +767,46 @@ test("evaluation service cancel kills a running Harbor job and records cancelled
   }
 }, 20_000);
 
+test("evaluation service records a foreign 'cancelled' error as a failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-eval-foreign-cancel-"));
+  const bundleDir = join(root, "bundle");
+  await mkdir(bundleDir);
+  await writeFile(join(bundleDir, "mars-agent"), "#!/bin/sh\nexit 0\n");
+  const manifest = await sampleManifest(
+    {},
+    {
+      path: bundleDir,
+      sha256: sha256Hex(
+        new Uint8Array(await readFile(join(bundleDir, "mars-agent"))),
+      ),
+    },
+  );
+  const runner = {
+    run: async () => {
+      throw new Error("cancelled");
+    },
+  } as unknown as Parameters<typeof createEvaluationService>[0]["runner"];
+  const artifacts = new MemoryArtifacts();
+  const service = createEvaluationService({
+    stateDir: join(root, "state"),
+    runner,
+    artifacts,
+  });
+  try {
+    const ref = await artifacts.put(
+      context,
+      new TextEncoder().encode(canonicalJson(manifest)),
+      COMPARISON_MANIFEST_MEDIA_TYPE,
+    );
+    const job = await service.submitComparison(context, ref, manifest.budget);
+    await service.settled(job.job_id);
+    expect((await service.inspect(context, job.job_id)).status).toBe("failed");
+    expect((await service.store.read(job.job_id))?.error).toBe("cancelled");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 // ----------------------------------------------------------------- scoring
 
 test("harbor scoring backend scores the MARS arm only and refuses holdout instances", async () => {
