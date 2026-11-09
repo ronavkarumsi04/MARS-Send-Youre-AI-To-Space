@@ -68,6 +68,7 @@ import type {
   AppendEventInput,
   DurableTaskStore,
   SlotLease,
+  TaskPatch,
 } from "@mars/tasks";
 import {
   WATCH_EVIDENCE_PRODUCER,
@@ -2535,22 +2536,35 @@ export async function createWorkbenchHost(
         foundInstructions,
         skills.prompt,
       );
-      const running = await options.store.update(
-        context,
-        task.task_id,
-        task.revision,
-        {
-          status: "running",
-          ...(routing?.specialist_revision
-            ? { specialist_revision: routing.specialist_revision }
-            : {}),
-        },
-      );
+      const startPatch: TaskPatch = {
+        status: "running",
+        ...(routing?.specialist_revision
+          ? { specialist_revision: routing.specialist_revision }
+          : {}),
+      };
       // One absolute deadline for the room, the foreground run and research,
-      // fixed only once the task is actually running.
+      // fixed in the same transaction that marks the task running.
+      const started = options.store.startRun
+        ? await options.store.startRun(
+            context,
+            task.task_id,
+            task.revision,
+            startPatch,
+            Date.now(),
+          )
+        : undefined;
+      const running =
+        started?.task ??
+        (await options.store.update(
+          context,
+          task.task_id,
+          task.revision,
+          startPatch,
+        ));
       let provisionalDeadline: number;
       try {
-        provisionalDeadline = await fixedDeadline(context, running);
+        provisionalDeadline =
+          started?.deadline ?? (await fixedDeadline(context, running));
       } catch (error) {
         await settleFailedRun(task.task_id);
         throw error;

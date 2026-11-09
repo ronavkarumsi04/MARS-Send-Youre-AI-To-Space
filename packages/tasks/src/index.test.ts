@@ -2297,6 +2297,38 @@ test("budget holds share one task budget across spenders", async () => {
   await store.close();
 });
 
+test("starting a run marks the task running and fixes its deadline together", async () => {
+  const store = await openStore(makeRoot());
+  const task = makeTask();
+  await store.create(context(), task);
+  const startRun = store.startRun?.bind(store);
+  const fix = store.fixDeadline?.bind(store);
+  if (!startRun || !fix) throw new Error("startRun missing");
+  // A stale start changes neither the status nor the deadline.
+  await expect(
+    startRun(context(), task.task_id, 5, { status: "running" }, 1_000),
+  ).rejects.toMatchObject({ code: "stale_revision" });
+  await expect(
+    startRun(context(), task.task_id, 0, { status: "failed" }, 1_000),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(await fix(context(), task.task_id, 9_000)).toBe(
+    9_000 + task.budget.max_duration_ms,
+  );
+  const other = makeTask("task-2");
+  await store.create(context(), other);
+  const started = await startRun(
+    context(),
+    other.task_id,
+    0,
+    { status: "running" },
+    2_000,
+  );
+  expect(started.task.status).toBe("running");
+  expect(started.deadline).toBe(2_000 + other.budget.max_duration_ms);
+  expect(await fix(context(), other.task_id, 7_000)).toBe(started.deadline);
+  await store.close();
+});
+
 test("a task's deadline is fixed the first time it is asked for", async () => {
   const store = await openStore(makeRoot());
   const task = makeTask();
