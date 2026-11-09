@@ -17,7 +17,7 @@ import {
   type ResearchWorkerVersion,
   staleEventInput,
 } from "./events";
-import { ResearchFindingSchema } from "./schemas";
+import { ResearchFindingSchema, ResearchWorkerVersionSchema } from "./schemas";
 
 export const RESEARCH_STORE_FORMAT_VERSION = 2;
 
@@ -241,28 +241,21 @@ const CREATE_V2_SCHEMA = `
   );
 `;
 
-function workerFromJson(value: string | null): ResearchWorkerVersion | null {
+export function parseWorkerJson(
+  value: string | null,
+): ResearchWorkerVersion | null {
   if (value === null) return null;
+  let decoded: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      typeof (parsed as { id?: unknown }).id === "string" &&
-      (parsed as { id: string }).id.length > 0 &&
-      typeof (parsed as { version?: unknown }).version === "string" &&
-      (parsed as { version: string }).version.length > 0
-    ) {
-      return {
-        id: (parsed as { id: string }).id,
-        version: (parsed as { version: string }).version,
-      };
-    }
+    decoded = JSON.parse(value);
   } catch {
-    // Invalid persisted worker metadata is corrupt state.
+    throw new ResearchError("corrupt_record", "Corrupt worker record");
   }
-  throw new ResearchError("corrupt_record", "Corrupt worker record");
+  const parsed = ResearchWorkerVersionSchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new ResearchError("corrupt_record", "Corrupt worker record");
+  }
+  return parsed.data;
 }
 
 function verifiedFindingForMigration(row: {
@@ -339,7 +332,7 @@ function backfillV1Events(db: Database): void {
     const event = proposedEventInput(
       row.request_id,
       finding,
-      workerFromJson(row.worker_json),
+      parseWorkerJson(row.worker_json),
       V1_STORE_FORMAT_VERSION,
     );
     db.query(
@@ -380,7 +373,7 @@ function backfillV1Events(db: Database): void {
       row.request_id,
       row.task_revision,
       staleFindingIds.map((finding) => finding.finding_id),
-      workerFromJson(row.worker_json),
+      parseWorkerJson(row.worker_json),
       V1_STORE_FORMAT_VERSION,
     );
     db.query(
