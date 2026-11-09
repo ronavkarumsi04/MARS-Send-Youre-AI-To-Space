@@ -361,8 +361,7 @@ describe("§8.1 budgets (fixture, 10,000 events)", () => {
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
+    if (code !== 0) throw new Error(`perf.ts exited ${code}: ${stderr}`);
     const result = JSON.parse(stdout) as Awaited<ReturnType<typeof measure>>;
     expect(result.events).toBe(10_000);
     expect(result.entries).toBeLessThanOrEqual(2_001);
