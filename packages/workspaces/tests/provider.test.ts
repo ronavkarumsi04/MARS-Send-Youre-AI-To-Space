@@ -2654,6 +2654,34 @@ test("runCheck refuses a stale candidate revision and reports a missing sandbox"
   }
 });
 
+test("exportPatch reports a binary edit as unsupported and its round trip as unavailable, never passed", async () => {
+  const fixture = await makeFixture();
+  try {
+    const written = await fixture.artifacts.put(
+      context,
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]),
+      "application/octet-stream",
+    );
+    await fixture.provider.write(
+      context,
+      fixture.workspace,
+      "logo.png",
+      written,
+    );
+    const current = await fixture.provider.discover(context, "task-test");
+    if (!current) throw new Error("candidate missing");
+    const exported = await fixture.provider.exportPatch(context, current);
+    expect(exported.round_trip.status).toBe("unavailable");
+    expect(exported.round_trip.reason).toContain("logo.png");
+    expect(exported.unsupported).toContainEqual({
+      path: "logo.png",
+      reason: "binary content",
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("exportPatch reconstructs a BOM-only edit over a dirty git baseline byte for byte and leaves the source untouched", async () => {
   const fixture = await makeFixture();
   try {

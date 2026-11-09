@@ -1090,15 +1090,26 @@ export async function createLocalWorkspaceProvider(
         const patch = new TextEncoder().encode(
           diff.files.map((file) => file.patch).join(""),
         );
-        const unsupported = current.skipped.map((entry) => ({
-          path: entry.path,
-          reason: entry.reason,
-        }));
+        const binary = diff.files
+          .filter((file) => /^Binary files .* differ$/m.test(file.patch))
+          .map((file) => file.path);
+        const unsupported = [
+          ...current.skipped.map((entry) => ({
+            path: entry.path,
+            reason: entry.reason,
+          })),
+          ...binary.map((path) => ({ path, reason: "binary content" })),
+        ];
         const scratch = await mkdtemp(join(tmpdir(), "mars-export-"));
         const roundTrip = async (): Promise<{
           status: "passed" | "failed" | "unavailable";
           reason: string | null;
         }> => {
+          if (binary.length)
+            return {
+              status: "unavailable",
+              reason: `Binary files have no text patch: ${binary.slice(0, 20).join(", ")}`,
+            };
           const tree = join(scratch, "tree");
           await mkdir(tree, { recursive: true });
           for (const file of baseFiles) {
