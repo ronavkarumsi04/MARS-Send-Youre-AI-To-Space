@@ -122,7 +122,9 @@ export const BrowserRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
-    if (new Set(request.allowed_actions).size !== request.allowed_actions.length)
+    if (
+      new Set(request.allowed_actions).size !== request.allowed_actions.length
+    )
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["allowed_actions"],

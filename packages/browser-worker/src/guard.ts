@@ -26,12 +26,23 @@ const DROPPED_REQUEST_HEADERS = new Set([
   "transfer-encoding",
   "proxy-authorization",
 ]);
-const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+const METHODS = new Set([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+]);
 
 /** Classifies a URL the way research does: http(s), public DNS, allow/deny lists. */
 export async function browserUrlVerdict(
   raw: string,
-  options: Pick<GuardedBrowserFetchOptions, "resolve" | "allowHosts" | "denyHosts">,
+  options: Pick<
+    GuardedBrowserFetchOptions,
+    "resolve" | "allowHosts" | "denyHosts"
+  >,
 ): Promise<string | undefined> {
   let url: URL;
   try {
@@ -77,7 +88,8 @@ export function createGuardedBrowserFetch(
     if (verdict) return block(verdict);
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(request.headers)) {
-      if (!DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) headers[name] = value;
+      if (!DROPPED_REQUEST_HEADERS.has(name.toLowerCase()))
+        headers[name] = value;
     }
     headers["user-agent"] = options.userAgent;
     const timeout = AbortSignal.timeout(Math.max(1, options.timeoutMs()));
@@ -129,6 +141,11 @@ export function createGuardedBrowserFetch(
     });
     const cookies = response.headers.getSetCookie();
     if (cookies.length > 0) responseHeaders["set-cookie"] = cookies.join("\n");
-    return { ok: true, status: response.status, headers: responseHeaders, body };
+    return {
+      ok: true,
+      status: response.status,
+      headers: responseHeaders,
+      body,
+    };
   };
 }

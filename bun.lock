@@ -15,6 +15,7 @@
       "name": "@mars/cli",
       "version": "0.0.1",
       "dependencies": {
+        "@mars/browser-worker": "workspace:*",
         "@mars/code-refs": "workspace:*",
         "@mars/codex-tools": "workspace:*",
         "@mars/contracts": "workspace:*",
@@ -334,6 +335,8 @@
       "name": "@mars/workbench",
       "version": "0.0.1",
       "dependencies": {
+        "@mars/browser": "workspace:*",
+        "@mars/browser-worker": "workspace:*",
         "@mars/codex-tools": "workspace:*",
         "@mars/collaboration": "workspace:*",
         "@mars/context": "workspace:*",

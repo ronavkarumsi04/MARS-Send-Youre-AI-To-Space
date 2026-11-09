@@ -92,7 +92,10 @@ export function createPlaywrightEngine(
               : {}),
           });
           if (!result.ok) {
-            if (request.isNavigationRequest() && request.frame() === page?.mainFrame())
+            if (
+              request.isNavigationRequest() &&
+              request.frame() === page?.mainFrame()
+            )
               nav.blocked = { url: request.url(), reason: result.reason };
             await route.abort("blockedbyclient").catch(() => {});
             return;
@@ -101,7 +104,11 @@ export function createPlaywrightEngine(
           for (const [name, value] of Object.entries(result.headers))
             if (!DROPPED_RESPONSE_HEADERS.has(name)) headers[name] = value;
           await route
-            .fulfill({ status: result.status, headers, body: Buffer.from(result.body) })
+            .fulfill({
+              status: result.status,
+              headers,
+              body: Buffer.from(result.body),
+            })
             .catch(() => {});
         });
         context.on("page", (opened) => {
@@ -122,7 +129,8 @@ export function createPlaywrightEngine(
           delete nav.blocked;
           const raise = () => {
             const blocked = nav.blocked;
-            if (blocked) throw new NavigationBlockedError(blocked.url, blocked.reason);
+            if (blocked)
+              throw new NavigationBlockedError(blocked.url, blocked.reason);
           };
           try {
             await run();
@@ -134,16 +142,25 @@ export function createPlaywrightEngine(
         };
         return {
           page: {
-            goto: (url) => navigate(() => active.goto(url, { waitUntil: "load" })),
+            goto: (url) =>
+              navigate(() => active.goto(url, { waitUntil: "load" })),
             async snapshot(limits) {
               const data = await active.evaluate(
                 ({ attribute, maxElements, maxTextChars }) => {
-                  for (const node of Array.from(document.querySelectorAll(`[${attribute}]`)))
+                  for (const node of Array.from(
+                    document.querySelectorAll(`[${attribute}]`),
+                  ))
                     node.removeAttribute(attribute);
                   const selector =
                     "a[href],button,input:not([type=hidden]),textarea,select,[role=button],[role=link],[role=textbox],[contenteditable=true]";
-                  const elements: { ref: string; role: string; name: string }[] = [];
-                  for (const node of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+                  const elements: {
+                    ref: string;
+                    role: string;
+                    name: string;
+                  }[] = [];
+                  for (const node of Array.from(
+                    document.querySelectorAll<HTMLElement>(selector),
+                  )) {
                     if (elements.length >= maxElements) break;
                     const box = node.getBoundingClientRect();
                     if (box.width === 0 || box.height === 0) continue;
@@ -172,7 +189,10 @@ export function createPlaywrightEngine(
                   return {
                     url: location.href,
                     title: document.title,
-                    text: (document.body?.innerText ?? "").slice(0, maxTextChars),
+                    text: (document.body?.innerText ?? "").slice(
+                      0,
+                      maxTextChars,
+                    ),
                     elements,
                   };
                 },
@@ -189,14 +209,19 @@ export function createPlaywrightEngine(
               await locate(ref).fill(text);
             },
             press: (key) =>
-              navigate(() => active.keyboard.press(key === "Space" ? " " : key)),
+              navigate(() =>
+                active.keyboard.press(key === "Space" ? " " : key),
+              ),
             scroll: async (direction) => {
               await active.mouse.wheel(0, direction === "down" ? 600 : -600);
             },
             back: () => navigate(() => active.goBack({ waitUntil: "load" })),
-            screenshot: async () => new Uint8Array(await active.screenshot({ type: "png" })),
+            screenshot: async () =>
+              new Uint8Array(await active.screenshot({ type: "png" })),
             storageState: async () =>
-              new TextEncoder().encode(JSON.stringify(await context.storageState())),
+              new TextEncoder().encode(
+                JSON.stringify(await context.storageState()),
+              ),
           },
           close,
         };

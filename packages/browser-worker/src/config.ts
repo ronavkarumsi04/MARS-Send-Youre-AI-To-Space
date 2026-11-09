@@ -10,7 +10,12 @@ export const BrowserWorkerConfigSchema = z
     deny_hosts: z.array(host).max(256).default([]),
     private_needles: z.array(z.string().min(1)).max(256).default([]),
     deadline_margin_ms: z.number().int().nonnegative().default(2_000),
-    max_model_output_tokens: z.number().int().positive().max(8_192).default(400),
+    max_model_output_tokens: z
+      .number()
+      .int()
+      .positive()
+      .max(8_192)
+      .default(400),
     max_page_chars: z.number().int().positive().max(50_000).default(6_000),
     max_elements: z.number().int().positive().max(500).default(60),
     max_extract_chars: z.number().int().positive().max(16_384).default(8_000),
@@ -25,7 +30,9 @@ export const BrowserWorkerConfigSchema = z
   })
   .strict();
 
-export type BrowserWorkerConfigInput = z.input<typeof BrowserWorkerConfigSchema>;
+export type BrowserWorkerConfigInput = z.input<
+  typeof BrowserWorkerConfigSchema
+>;
 export type BrowserWorkerConfig = z.output<typeof BrowserWorkerConfigSchema>;
 
 export function parseBrowserWorkerConfig(

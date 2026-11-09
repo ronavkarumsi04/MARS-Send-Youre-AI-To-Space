@@ -113,8 +113,11 @@ export function createBrowserWorker(
 ): BrowserWorker & { readonly config: BrowserWorkerConfig } {
   const config = parseBrowserWorkerConfig(options.config);
   if (!config.live && !options.fetch)
-    throw new Error("Browser worker needs an injected fetch unless config.live is true.");
-  const fetcher: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
+    throw new Error(
+      "Browser worker needs an injected fetch unless config.live is true.",
+    );
+  const fetcher: FetchLike =
+    options.fetch ?? ((input, init) => fetch(input, init));
   const resolveHost: HostResolver =
     options.resolveHost ??
     (config.live
@@ -124,7 +127,10 @@ export function createBrowserWorker(
           throw new Error("Host resolution requires config.live.");
         });
   const now = options.now ?? Date.now;
-  const needles = [...config.private_needles, ...(options.hostPrivateRoots ?? [])];
+  const needles = [
+    ...config.private_needles,
+    ...(options.hostPrivateRoots ?? []),
+  ];
   const clean = (text: string) => redact(text, needles);
 
   const run = async (
@@ -137,7 +143,8 @@ export function createBrowserWorker(
     const { signal } = context;
     const log = (event: string, detail: BrowserWorkerLogEvent["detail"] = {}) =>
       options.log?.({ event, request_id: input.request_id, detail });
-    const remainingMs = () => Math.max(1, deadlineMs - config.deadline_margin_ms - now());
+    const remainingMs = () =>
+      Math.max(1, deadlineMs - config.deadline_margin_ms - now());
     const guardedFetch = createGuardedBrowserFetch({
       fetch: fetcher,
       resolve: resolveHost,
@@ -151,7 +158,11 @@ export function createBrowserWorker(
         log("request_blocked", { url: clean(url).slice(0, 256), reason }),
     });
     // Reported zero commits nothing to the task until a model is actually billed.
-    await context.reportUsage({ input_tokens: 0, output_tokens: 0, cost_usd: 0 });
+    await context.reportUsage({
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+    });
     const storageState = input.session_key
       ? ((await context.loadSession()) ?? undefined)
       : undefined;
@@ -200,9 +211,17 @@ export function createBrowserWorker(
       const act = async (
         action: BrowserAction,
         allowed: boolean,
-      ): Promise<{ outcome: "ok" | "blocked" | "failed"; detail: string; refs: ArtifactRef[] }> => {
+      ): Promise<{
+        outcome: "ok" | "blocked" | "failed";
+        detail: string;
+        refs: ArtifactRef[];
+      }> => {
         if (!allowed)
-          return { outcome: "blocked", detail: "Action is not allowed by the request policy", refs: [] };
+          return {
+            outcome: "blocked",
+            detail: "Action is not allowed by the request policy",
+            refs: [],
+          };
         try {
           switch (action.type) {
             case "navigate":
@@ -215,7 +234,8 @@ export function createBrowserWorker(
               if (clean(action.text) !== action.text)
                 return {
                   outcome: "blocked",
-                  detail: "Refused to type text that looks like a secret or private path",
+                  detail:
+                    "Refused to type text that looks like a secret or private path",
                   refs: [],
                 };
               await page.type(action.ref, action.text);
@@ -231,15 +251,31 @@ export function createBrowserWorker(
               break;
             case "screenshot": {
               const view = await snapshot(0);
-              const ref = await capture("screenshot", view.url, await page.screenshot());
-              return { outcome: "ok", detail: "Screenshot captured", refs: [ref] };
+              const ref = await capture(
+                "screenshot",
+                view.url,
+                await page.screenshot(),
+              );
+              return {
+                outcome: "ok",
+                detail: "Screenshot captured",
+                refs: [ref],
+              };
             }
             case "extract": {
               const view = await snapshot(config.max_extract_chars);
               const text = `${view.title}\n${view.url}\n\n${view.text}`;
-              const ref = await capture("page_text", view.url, new TextEncoder().encode(text));
+              const ref = await capture(
+                "page_text",
+                view.url,
+                new TextEncoder().encode(text),
+              );
               extracted = view.text.slice(0, config.max_extract_chars);
-              return { outcome: "ok", detail: `Captured ${view.text.length} characters of page text`, refs: [ref] };
+              return {
+                outcome: "ok",
+                detail: `Captured ${view.text.length} characters of page text`,
+                refs: [ref],
+              };
             }
             case "done":
               break;
@@ -248,10 +284,16 @@ export function createBrowserWorker(
         } catch (error) {
           if (isFatal(error) || signal.aborted) throw error;
           if (error instanceof NavigationBlockedError)
-            return { outcome: "blocked", detail: `Request blocked: ${error.reason}`, refs: [] };
+            return {
+              outcome: "blocked",
+              detail: `Request blocked: ${error.reason}`,
+              refs: [],
+            };
           return {
             outcome: "failed",
-            detail: clean(error instanceof Error ? error.message : String(error)).slice(0, 300),
+            detail: clean(
+              error instanceof Error ? error.message : String(error),
+            ).slice(0, 300),
             refs: [],
           };
         }
@@ -286,7 +328,8 @@ export function createBrowserWorker(
         } catch (error) {
           if (isFatal(error) || signal.aborted) throw error;
         }
-        if (input.session_key) await context.saveSession(await page.storageState());
+        if (input.session_key)
+          await context.saveSession(await page.storageState());
         await context.complete({
           success,
           summary: clean(summary).slice(0, 4096) || "No summary",
@@ -315,18 +358,27 @@ export function createBrowserWorker(
           await snapshot(0);
           const result = await record(action, allowedSet.has(action.type));
           if (result.outcome !== "ok") {
-            await finish(false, `Step ${index} (${describe(action)}) ${result.outcome}: ${result.detail}`);
+            await finish(
+              false,
+              `Step ${index} (${describe(action)}) ${result.outcome}: ${result.detail}`,
+            );
             return;
           }
         }
         const view = await snapshot(0);
-        await finish(true, `Ran ${input.actions.length} scripted actions; ended on "${view.title}".`);
+        await finish(
+          true,
+          `Ran ${input.actions.length} scripted actions; ended on "${view.title}".`,
+        );
         return;
       }
 
       const model = options.model;
       if (!model) {
-        await finish(false, "No model is configured, so only scripted actions can run.");
+        await finish(
+          false,
+          "No model is configured, so only scripted actions can run.",
+        );
         return;
       }
       const ledger = new UsageLedger(
@@ -360,11 +412,16 @@ export function createBrowserWorker(
           ),
         ].join("\n\n");
         const maxTokens = config.max_model_output_tokens;
-        const estimate = estimateTokens(BROWSER_SYSTEM_PROMPT) + estimateTokens(user);
-        const cost = model.estimateCostUsd ? model.estimateCostUsd(estimate, maxTokens) : 0;
-        const reservation = cost === null ? undefined : ledger.reserve(estimate, maxTokens, cost);
+        const estimate =
+          estimateTokens(BROWSER_SYSTEM_PROMPT) + estimateTokens(user);
+        const cost = model.estimateCostUsd
+          ? model.estimateCostUsd(estimate, maxTokens)
+          : 0;
+        const reservation =
+          cost === null ? undefined : ledger.reserve(estimate, maxTokens, cost);
         if (!reservation) {
-          const reason = ledger.stopReason() ?? (cost === null ? "unknown_cost" : "budget");
+          const reason =
+            ledger.stopReason() ?? (cost === null ? "unknown_cost" : "budget");
           log("model_skipped", { reason });
           await finish(false, `Stopped before the goal was met: ${reason}.`);
           return;

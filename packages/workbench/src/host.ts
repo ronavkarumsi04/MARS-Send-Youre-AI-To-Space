@@ -77,6 +77,11 @@ import {
 } from "@mars/watch";
 import type { LocalWorkspaceProvider } from "@mars/workspaces";
 import { z } from "zod";
+import {
+  browserTools,
+  staleTaskBrowser,
+  type WorkbenchBrowser,
+} from "./browser-context";
 import { chooseChildModel, isReviewerRole } from "./child-model";
 import {
   collaborationTools,
@@ -155,11 +160,6 @@ import {
   staleTaskResearch,
   type WorkbenchResearch,
 } from "./research-context";
-import {
-  browserTools,
-  staleTaskBrowser,
-  type WorkbenchBrowser,
-} from "./browser-context";
 import {
   MAX_RESPONSE_BYTES,
   WorkbenchError,
@@ -529,8 +529,10 @@ export async function createWorkbenchHost(
   // sink never fails the steer.
   const staleResearch = async (taskId: string) => {
     if (options.browser)
-      await staleTaskBrowser(options.browser, internalContext(options.scope), () =>
-        options.store.inspect(internalContext(options.scope), taskId),
+      await staleTaskBrowser(
+        options.browser,
+        internalContext(options.scope),
+        () => options.store.inspect(internalContext(options.scope), taskId),
       );
     if (!options.research) return;
     const context = internalContext(options.scope);

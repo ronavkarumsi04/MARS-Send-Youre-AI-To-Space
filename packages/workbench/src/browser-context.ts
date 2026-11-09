@@ -101,7 +101,10 @@ function renderStep(step: BrowserStep): string {
 }
 
 /** Renders a browser job as clearly untrusted web content. */
-export function renderBrowserJob(view: BrowserJobView, currentRevision: number): string {
+export function renderBrowserJob(
+  view: BrowserJobView,
+  currentRevision: number,
+): string {
   const { job, steps, result } = view;
   const stale = job.stale || job.task_revision !== currentRevision;
   const lines = [
@@ -111,7 +114,9 @@ export function renderBrowserJob(view: BrowserJobView, currentRevision: number):
     lines.push("[untrusted browser steps]");
     lines.push(...steps.slice(0, MAX_RENDERED_STEPS).map(renderStep));
     if (steps.length > MAX_RENDERED_STEPS)
-      lines.push(`${steps.length - MAX_RENDERED_STEPS} more step(s) not shown.`);
+      lines.push(
+        `${steps.length - MAX_RENDERED_STEPS} more step(s) not shown.`,
+      );
   }
   if (result) {
     lines.push(
@@ -120,9 +125,13 @@ export function renderBrowserJob(view: BrowserJobView, currentRevision: number):
       `Final URL: ${untrustedText(result.final_url, 512)}`,
     );
     if (result.extracted !== undefined)
-      lines.push(`Extracted page text: ${untrustedText(result.extracted, MAX_EXTRACT_CHARS)}`);
+      lines.push(
+        `Extracted page text: ${untrustedText(result.extracted, MAX_EXTRACT_CHARS)}`,
+      );
     if (result.artifacts.length > 0)
-      lines.push(`Artifacts: ${result.artifacts.map((ref) => `${ref.artifact_id} (${ref.media_type})`).join(", ")}`);
+      lines.push(
+        `Artifacts: ${result.artifacts.map((ref) => `${ref.artifact_id} (${ref.media_type})`).join(", ")}`,
+      );
   }
   return lines.join("\n");
 }
@@ -158,10 +167,16 @@ export function browserTools(
       const task = await currentTask();
       const remaining = taskDeadline() - now();
       if (remaining <= 0)
-        throw new Error("The task deadline has passed; browser tasks cannot be queued.");
-      const deadline = new Date(now() + Math.min(BROWSER_DEADLINE_MS, remaining)).toISOString();
+        throw new Error(
+          "The task deadline has passed; browser tasks cannot be queued.",
+        );
+      const deadline = new Date(
+        now() + Math.min(BROWSER_DEADLINE_MS, remaining),
+      ).toISOString();
       const actions = input.actions?.map(parseBrowserActionCommand);
-      const allowed = new Set<string>(input.allowed_actions ?? DEFAULT_ALLOWED_ACTIONS);
+      const allowed = new Set<string>(
+        input.allowed_actions ?? DEFAULT_ALLOWED_ACTIONS,
+      );
       if (!input.allowed_actions)
         for (const action of actions ?? []) allowed.add(action.type);
       // Half of what the task still holds, as research does: the foreground
@@ -170,12 +185,17 @@ export function browserTools(
       const budget = left
         ? {
             ...task.budget,
-            max_tokens: Math.min(task.budget.max_tokens, Math.floor(left.max_tokens / 2)),
+            max_tokens: Math.min(
+              task.budget.max_tokens,
+              Math.floor(left.max_tokens / 2),
+            ),
             max_usd: Math.min(task.budget.max_usd, left.max_usd / 2),
           }
         : task.budget;
       if (budget.max_tokens < 1)
-        throw new Error("The task's browser allowance is used up; no more browser tasks can be queued.");
+        throw new Error(
+          "The task's browser allowance is used up; no more browser tasks can be queued.",
+        );
       const job = await service.submit(context(), {
         goal: input.goal,
         task_id: task.task_id,
@@ -184,7 +204,10 @@ export function browserTools(
         ...(actions ? { actions } : {}),
         allowed_actions: [...allowed] as BrowserPolicyAction[],
         ...(input.session_key ? { session_key: input.session_key } : {}),
-        max_steps: Math.max(input.max_steps ?? DEFAULT_BROWSER_MAX_STEPS, actions?.length ?? 0),
+        max_steps: Math.max(
+          input.max_steps ?? DEFAULT_BROWSER_MAX_STEPS,
+          actions?.length ?? 0,
+        ),
         deadline,
         budget,
       });
@@ -193,8 +216,12 @@ export function browserTools(
     async result(requestId) {
       const task = await currentTask();
       const job = await service.inspect(context(), requestId);
-      if (job.task_id !== task.task_id) throw new Error("Unknown browser request for this task.");
-      return renderBrowserJob(await service.readResult(context(), requestId), task.revision);
+      if (job.task_id !== task.task_id)
+        throw new Error("Unknown browser request for this task.");
+      return renderBrowserJob(
+        await service.readResult(context(), requestId),
+        task.revision,
+      );
     },
   };
 }

@@ -24,7 +24,12 @@ import {
   type BrowserUsage,
   BrowserUsageSchema,
 } from "./schemas";
-import { type OpenBrowserStore, openBrowserStore, sha256, timestamp } from "./store";
+import {
+  type OpenBrowserStore,
+  openBrowserStore,
+  sha256,
+  timestamp,
+} from "./store";
 
 export type BrowserJobStatus =
   | "queued"
@@ -364,7 +369,11 @@ export async function createBrowserService(
 ): Promise<DurableBrowserService> {
   const config = {
     maxConcurrency: positiveInt(options.maxConcurrency, 2, "maxConcurrency"),
-    maxActivePerTask: positiveInt(options.maxActivePerTask, 4, "maxActivePerTask"),
+    maxActivePerTask: positiveInt(
+      options.maxActivePerTask,
+      4,
+      "maxActivePerTask",
+    ),
     maxAttempts: positiveInt(options.maxAttempts, 2, "maxAttempts"),
     leaseMs: positiveInt(options.leaseMs, 30_000, "leaseMs"),
     retryBackoffMs: positiveInt(
@@ -411,9 +420,18 @@ export async function createBrowserService(
   const containsPrivate = (text: string) =>
     privateRoots.some((root) => text.includes(root));
   const scrub = (text: string) =>
-    privateRoots.reduce((out, root) => out.split(root).join("[redacted]"), text);
-  if (containsPrivate(options.worker.id) || containsPrivate(options.worker.version))
-    throw new BrowserError("invalid_input", "Worker identity names a private path");
+    privateRoots.reduce(
+      (out, root) => out.split(root).join("[redacted]"),
+      text,
+    );
+  if (
+    containsPrivate(options.worker.id) ||
+    containsPrivate(options.worker.version)
+  )
+    throw new BrowserError(
+      "invalid_input",
+      "Worker identity names a private path",
+    );
 
   const instanceId = randomUUID();
   const localRuns = new Map<string, LocalRun>();
@@ -425,14 +443,18 @@ export async function createBrowserService(
   const now = () => config.now();
   const immediate = <T>(operation: () => T): T =>
     db.transaction(operation).immediate();
-  const reportInternalError = (where: BrowserInternalErrorSite, error: unknown) => {
+  const reportInternalError = (
+    where: BrowserInternalErrorSite,
+    error: unknown,
+  ) => {
     lastError = { where, error, at: timestamp(now()) };
     try {
       options.onInternalError?.(where, error);
     } catch {}
   };
   const checkOpen = () => {
-    if (state !== "open") throw new BrowserError("closed", "Browser service is closed");
+    if (state !== "open")
+      throw new BrowserError("closed", "Browser service is closed");
   };
   const parseContext = (value: unknown) => {
     const parsed = RequestContextSchema.safeParse(value);
@@ -591,8 +613,14 @@ export async function createBrowserService(
       .get(entry.scopeKey, entry.requestId, entry.token) as {
       deadline: string;
     } | null;
-    if (!row) return abortForRowState(entry);
-    if (now() >= Date.parse(row.deadline)) return markExpired(entry);
+    if (!row) {
+      abortForRowState(entry);
+      return;
+    }
+    if (now() >= Date.parse(row.deadline)) {
+      markExpired(entry);
+      return;
+    }
     const renewed = immediate(() =>
       db
         .query(
@@ -609,7 +637,10 @@ export async function createBrowserService(
           now(),
         ),
     );
-    if (renewed.changes !== 1) return abortForRowState(entry);
+    if (renewed.changes !== 1) {
+      abortForRowState(entry);
+      return;
+    }
     const slot = entry.slot;
     if (slot && options.slots) {
       const at = now();
@@ -635,7 +666,8 @@ export async function createBrowserService(
     const row = db
       .query("SELECT * FROM jobs WHERE scope_key = ? AND request_id = ?")
       .get(entry.scopeKey, entry.requestId) as JobRow | null;
-    if (!row) throw new BrowserError("lease_lost", "Browser worker lease was lost");
+    if (!row)
+      throw new BrowserError("lease_lost", "Browser worker lease was lost");
     if (row.cancel_requested === 1 || row.status === "cancelled")
       throw new BrowserError("cancelled", "Browser request was cancelled");
     if (row.error_code === "budget_exceeded")
@@ -696,7 +728,8 @@ export async function createBrowserService(
           typeof capture.url !== "string" ||
           capture.url.length > 2048 ||
           !EVIDENCE_MEDIA_TYPES.has(capture.media_type) ||
-          (capture.kind === "page_text") !== (capture.media_type === "text/plain")
+          (capture.kind === "page_text") !==
+            (capture.media_type === "text/plain")
         )
           throw new BrowserError("invalid_input", "Invalid evidence capture");
         if (capture.data.byteLength > config.maxEvidenceBytes)
@@ -713,7 +746,11 @@ export async function createBrowserService(
             "Evidence names a private path",
           );
         const ref = ArtifactRefSchema.parse(
-          await options.artifacts.put(context, capture.data, capture.media_type),
+          await options.artifacts.put(
+            context,
+            capture.data,
+            capture.media_type,
+          ),
         );
         guarded(entry, () => {
           db.query(
@@ -748,7 +785,10 @@ export async function createBrowserService(
             "Step action is not allowed by the request policy",
           );
         if (step.index > request.max_steps)
-          throw new BrowserError("budget_exceeded", "Browser step limit reached");
+          throw new BrowserError(
+            "budget_exceeded",
+            "Browser step limit reached",
+          );
         guarded(entry, () => {
           assertCaptured(entry, step.artifacts);
           const inserted = db
@@ -815,7 +855,10 @@ export async function createBrowserService(
       async saveSession(data) {
         if (!sessionKey)
           throw new BrowserError("forbidden", "Job has no session key");
-        if (!(data instanceof Uint8Array) || data.byteLength > config.maxSessionBytes)
+        if (
+          !(data instanceof Uint8Array) ||
+          data.byteLength > config.maxSessionBytes
+        )
           throw new BrowserError("invalid_input", "Invalid session state");
         guarded(entry, (current) => {
           db.query(
@@ -863,7 +906,8 @@ export async function createBrowserService(
             "UPDATE jobs SET usage_json = ? WHERE scope_key = ? AND request_id = ?",
           ).run(JSON.stringify(next), entry.scopeKey, entry.requestId);
           const exceeded =
-            next.input_tokens + next.output_tokens > request.budget.max_tokens ||
+            next.input_tokens + next.output_tokens >
+              request.budget.max_tokens ||
             (next.cost_usd !== null &&
               exceedsUsd(next.cost_usd, request.budget.max_usd));
           if (!exceeded) return false;
@@ -900,7 +944,10 @@ export async function createBrowserService(
       deadline: string;
     } | null;
     if (!row) return;
-    if (now() >= Date.parse(row.deadline)) return markExpired(entry);
+    if (now() >= Date.parse(row.deadline)) {
+      markExpired(entry);
+      return;
+    }
     if (result) finishRow(entry, "completed", null);
     else finishRow(entry, "failed", "incomplete");
   };
@@ -945,7 +992,13 @@ export async function createBrowserService(
         `UPDATE jobs SET status = 'failed', error_code = ?, finished_at = ?,
            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
          WHERE scope_key = ? AND request_id = ? AND lease_token = ?`,
-      ).run(code, timestamp(now()), entry.scopeKey, entry.requestId, entry.token);
+      ).run(
+        code,
+        timestamp(now()),
+        entry.scopeKey,
+        entry.requestId,
+        entry.token,
+      );
     });
   };
 
@@ -1189,7 +1242,11 @@ export async function createBrowserService(
       .all(scopeKey, taskId) as JobRow[];
 
   const inspectTask = async (context: RequestContext, taskId: unknown) => {
-    if (typeof taskId !== "string" || taskId.length === 0 || taskId.length > 256)
+    if (
+      typeof taskId !== "string" ||
+      taskId.length === 0 ||
+      taskId.length > 256
+    )
       throw new BrowserError("invalid_input", "Invalid task id");
     try {
       return await options.tasks.inspect(context, taskId);
@@ -1219,9 +1276,7 @@ export async function createBrowserService(
       const recordJson = canonicalJson(request);
       const recordSha = sha256(recordJson);
       const existing = db
-        .query(
-          "SELECT * FROM jobs WHERE scope_key = ? AND idem_request_id = ?",
-        )
+        .query("SELECT * FROM jobs WHERE scope_key = ? AND idem_request_id = ?")
         .get(scopeKey, context.request_id) as JobRow | null;
       if (existing) {
         if (existing.record_sha256 !== recordSha)
@@ -1273,7 +1328,12 @@ export async function createBrowserService(
       if (options.ledger) {
         await syncHolds(rows);
         try {
-          await options.ledger.reserve(context, request.task_id, holdKey, amount);
+          await options.ledger.reserve(
+            context,
+            request.task_id,
+            holdKey,
+            amount,
+          );
         } catch (error) {
           throw mapTaskError(error);
         }
@@ -1281,7 +1341,10 @@ export async function createBrowserService(
         const committed = rows.reduce(
           (sum, row) => {
             const next = commitmentOf(row);
-            return { tokens: sum.tokens + next.tokens, usd: sum.usd + next.usd };
+            return {
+              tokens: sum.tokens + next.tokens,
+              usd: sum.usd + next.usd,
+            };
           },
           { tokens: 0, usd: 0 },
         );

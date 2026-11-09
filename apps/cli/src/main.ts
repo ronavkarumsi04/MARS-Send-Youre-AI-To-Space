@@ -281,12 +281,22 @@ try {
         verified: "offline only (fixtures and injected model responses)",
         live_verified: false,
       },
+      browser: {
+        control_plane:
+          "@mars/browser (durable store under the serve state root)",
+        worker:
+          "@mars/browser-worker (playwright-core adapter, offline fake engine)",
+        enabled_by: "mars serve --browser-chromium PATH",
+        verified: "offline only (fake engine, fixtures and injected planner)",
+        live_verified: false,
+      },
       omniroute: await omnirouteDoctorReport(),
       team: teamDoctorReport(doctorArgs["team-state"]),
       limitations: [
         "Initialization probe only; no agent task or model request was run.",
         "Live-provider and real IDE workbench acceptance remain unverified; memory and learning (skills plus proposal-only background review) are implemented with offline evidence only; training is not implemented.",
         "Background research runs only when mars serve is started with --research-search; no live search provider or model run has been verified.",
+        "Background browser tasks run only when mars serve is started with --browser-chromium; no live browsing or planner model run has been verified.",
         "OmniRoute is an optional provider target enabled by mars serve --omniroute; the doctor probe is one GET /v1/models and no model request. No live OmniRoute or upstream provider call has been verified; catalog quotas are upstream approximations.",
         "Python services must use separate versioned environments.",
         "Team Chat runs only under mars team serve with the dev authenticator and the team.enabled flag (default off); no live window, second machine or identity provider has been verified.",

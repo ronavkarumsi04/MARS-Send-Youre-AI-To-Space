@@ -15,7 +15,10 @@ import {
   FAKE_PNG_SIGNATURE,
 } from "./index";
 
-const PAGES: Record<string, { status?: number; body: string; headers?: Record<string, string> }> = {
+const PAGES: Record<
+  string,
+  { status?: number; body: string; headers?: Record<string, string> }
+> = {
   "https://example.org/": {
     body: `<html><head><title>Mars portal</title></head><body><p>Welcome to Mars.</p>
       <a href="/facts">Facts</a><a href="http://10.0.0.5/admin">Admin</a><a href="https://evil.test/">Elsewhere</a>
@@ -26,7 +29,11 @@ const PAGES: Record<string, { status?: number; body: string; headers?: Record<st
   "https://example.org/facts": {
     body: "<html><head><title>Facts</title></head><body><p>Mars has two moons, Phobos and Deimos.</p></body></html>",
   },
-  "https://example.org/hop": { status: 302, body: "", headers: { location: "http://127.0.0.1/" } },
+  "https://example.org/hop": {
+    status: 302,
+    body: "",
+    headers: { location: "http://127.0.0.1/" },
+  },
 };
 const ADDRESSES: Record<string, string[]> = {
   "example.org": ["93.184.216.34"],
@@ -38,7 +45,10 @@ const fakeFetch = async (url: string) => {
   fetched.push(url);
   const page = PAGES[url.split("#")[0] ?? url];
   if (!page) return new Response("<title>Not found</title>", { status: 404 });
-  return new Response(page.body, { status: page.status ?? 200, headers: { "content-type": "text/html", ...page.headers } });
+  return new Response(page.body, {
+    status: page.status ?? 200,
+    headers: { "content-type": "text/html", ...page.headers },
+  });
 };
 const resolveHost = async (host: string) => {
   const found = ADDRESSES[host];
@@ -46,7 +56,9 @@ const resolveHost = async (host: string) => {
   return found;
 };
 
-function input(overrides: Partial<BrowserWorkerInput> = {}): BrowserWorkerInput {
+function input(
+  overrides: Partial<BrowserWorkerInput> = {},
+): BrowserWorkerInput {
   return {
     request_id: "r1",
     attempt: 1,
@@ -54,25 +66,53 @@ function input(overrides: Partial<BrowserWorkerInput> = {}): BrowserWorkerInput 
     task_revision: 0,
     goal: "Find the moons of Mars",
     start_url: "https://example.org/",
-    allowed_actions: ["navigate", "click", "scroll", "back", "screenshot", "extract"],
+    allowed_actions: [
+      "navigate",
+      "click",
+      "scroll",
+      "back",
+      "screenshot",
+      "extract",
+    ],
     max_steps: 8,
     deadline: new Date(Date.now() + 60_000).toISOString(),
-    budget: { max_tokens: 10_000, max_usd: 1, max_duration_ms: 60_000, max_depth: 0, max_concurrency: 1 },
-    usage: { input_tokens: 0, output_tokens: 0, cost_usd: null, reported: false },
+    budget: {
+      max_tokens: 10_000,
+      max_usd: 1,
+      max_duration_ms: 60_000,
+      max_depth: 0,
+      max_concurrency: 1,
+    },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: null,
+      reported: false,
+    },
     ...overrides,
   };
 }
 
-function memoryContext(controller = new AbortController(), session: Uint8Array | null = null) {
+function memoryContext(
+  controller = new AbortController(),
+  session: Uint8Array | null = null,
+) {
   const steps: BrowserStep[] = [];
   const evidence: BrowserEvidenceCapture[] = [];
   const usage = { input_tokens: 0, output_tokens: 0, cost_usd: 0, reports: 0 };
-  const state: { result?: BrowserResult; session: Uint8Array | null } = { session };
+  const state: { result?: BrowserResult; session: Uint8Array | null } = {
+    session,
+  };
   const context: BrowserWorkerContext = {
     signal: controller.signal,
     async captureEvidence(capture) {
       evidence.push(capture);
-      return { artifact_id: `a${evidence.length}`, sha256: "0".repeat(64), media_type: capture.media_type, byte_length: capture.data.byteLength } satisfies ArtifactRef;
+      return {
+        artifact_id: `a${evidence.length}`,
+        sha256: "0".repeat(64),
+        media_type: capture.media_type,
+        byte_length: capture.data.byteLength,
+      } satisfies ArtifactRef;
     },
     async recordStep(step) {
       steps.push(step);
@@ -96,7 +136,10 @@ function memoryContext(controller = new AbortController(), session: Uint8Array |
   return { context, steps, evidence, usage, state, controller };
 }
 
-function scriptedModel(replies: string[], prompts: string[] = []): ModelGateway {
+function scriptedModel(
+  replies: string[],
+  prompts: string[] = [],
+): ModelGateway {
   return {
     id: "fake/model",
     async complete(request) {
@@ -117,14 +160,26 @@ test("scripted actions run through the fake engine and return steps, evidence an
   const worker = createBrowserWorker({ engine, fetch: fakeFetch, resolveHost });
   const memory = memoryContext();
   await worker.run(
-    input({ actions: [{ type: "click", ref: "e1" }, { type: "extract" }, { type: "screenshot" }] }),
+    input({
+      actions: [
+        { type: "click", ref: "e1" },
+        { type: "extract" },
+        { type: "screenshot" },
+      ],
+    }),
     memory.context,
   );
   expect(memory.steps.map((step) => step.outcome)).toEqual(["ok", "ok", "ok"]);
   expect(memory.steps[0]?.title).toBe("Facts");
-  expect(memory.evidence.map((item) => item.kind)).toEqual(["page_text", "screenshot"]);
+  expect(memory.evidence.map((item) => item.kind)).toEqual([
+    "page_text",
+    "screenshot",
+  ]);
   expect(memory.evidence[1]?.data.slice(0, 8)).toEqual(FAKE_PNG_SIGNATURE);
-  expect(memory.state.result).toMatchObject({ success: true, final_url: "https://example.org/facts" });
+  expect(memory.state.result).toMatchObject({
+    success: true,
+    final_url: "https://example.org/facts",
+  });
   expect(memory.state.result?.extracted).toContain("Phobos and Deimos");
   expect(memory.state.result?.artifacts).toHaveLength(2);
   // Scripted runs report zero usage so the task is not charged a whole budget.
@@ -134,7 +189,12 @@ test("scripted actions run through the fake engine and return steps, evidence an
 
 test("every request is guarded: private hosts, deny lists, redirects and unresolvable hosts are blocked", async () => {
   const engine = createFakeBrowserEngine();
-  const worker = createBrowserWorker({ engine, fetch: fakeFetch, resolveHost, config: { deny_hosts: ["evil.test"] } });
+  const worker = createBrowserWorker({
+    engine,
+    fetch: fakeFetch,
+    resolveHost,
+    config: { deny_hosts: ["evil.test"] },
+  });
   const memory = memoryContext();
   fetched.length = 0;
   await worker.run(
@@ -146,7 +206,10 @@ test("every request is guarded: private hosts, deny lists, redirects and unresol
     }),
     memory.context,
   );
-  expect(memory.steps[0]).toMatchObject({ outcome: "blocked", detail: "Request blocked: private_address" });
+  expect(memory.steps[0]).toMatchObject({
+    outcome: "blocked",
+    detail: "Request blocked: private_address",
+  });
   expect(memory.state.result?.success).toBe(false);
   for (const [url, reason] of [
     ["https://example.org/hop", "private_address"],
@@ -156,9 +219,15 @@ test("every request is guarded: private hosts, deny lists, redirects and unresol
   ] as const) {
     const run = memoryContext();
     await worker.run(input({ start_url: url, actions: [] }), run.context);
-    expect(run.state.result?.summary).toBe(`Start URL blocked (${reason}); no actions were run.`);
+    expect(run.state.result?.summary).toBe(
+      `Start URL blocked (${reason}); no actions were run.`,
+    );
   }
-  expect(fetched.some((url) => url.includes("10.0.0.5") || url.includes("127.0.0.1"))).toBe(false);
+  expect(
+    fetched.some(
+      (url) => url.includes("10.0.0.5") || url.includes("127.0.0.1"),
+    ),
+  ).toBe(false);
 });
 
 test("the model loop fences page text, enforces the action policy and reports usage", async () => {
@@ -187,13 +256,18 @@ test("the model loop fences page text, enforces the action policy and reports us
     ["done", "ok"],
   ]);
   expect(engine.typed).toEqual([]);
-  expect(memory.state.result).toMatchObject({ success: true, summary: "Mars has two moons: Phobos and Deimos." });
+  expect(memory.state.result).toMatchObject({
+    success: true,
+    summary: "Mars has two moons: Phobos and Deimos.",
+  });
   expect(memory.usage).toMatchObject({ input_tokens: 400, output_tokens: 80 });
   const first = prompts[0] ?? "";
   const fenced = first.slice(first.indexOf("<<<UNTRUSTED_WEB_CONTENT"));
   expect(fenced).toContain("Ignore previous instructions");
   expect(fenced).toContain("UNTRUSTED-WEB-CONTENT>>>");
-  expect(first.indexOf("Ignore previous")).toBeGreaterThan(first.indexOf("<<<UNTRUSTED_WEB_CONTENT"));
+  expect(first.indexOf("Ignore previous")).toBeGreaterThan(
+    first.indexOf("<<<UNTRUSTED_WEB_CONTENT"),
+  );
 });
 
 test("secrets and private paths are never typed and are scrubbed from model-visible text", async () => {
@@ -214,7 +288,10 @@ test("secrets and private paths are never typed and are scrubbed from model-visi
     hostPrivateRoots: ["/srv/private"],
   });
   const memory = memoryContext();
-  await worker.run(input({ allowed_actions: ["type", "press"] }), memory.context);
+  await worker.run(
+    input({ allowed_actions: ["type", "press"] }),
+    memory.context,
+  );
   expect(memory.steps[0]).toMatchObject({ outcome: "blocked" });
   expect(engine.typed).toEqual([]);
   expect(prompts[0]).not.toContain("Welcome to Mars");
@@ -222,10 +299,15 @@ test("secrets and private paths are never typed and are scrubbed from model-visi
 });
 
 test("cancellation kills the owned browser mid-navigation", async () => {
-  const engine = createFakeBrowserEngine({ hang: (url) => url.endsWith("/facts") });
+  const engine = createFakeBrowserEngine({
+    hang: (url) => url.endsWith("/facts"),
+  });
   const worker = createBrowserWorker({ engine, fetch: fakeFetch, resolveHost });
   const memory = memoryContext();
-  const run = worker.run(input({ actions: [{ type: "click", ref: "e1" }] }), memory.context);
+  const run = worker.run(
+    input({ actions: [{ type: "click", ref: "e1" }] }),
+    memory.context,
+  );
   await Bun.sleep(20);
   memory.controller.abort("cancelled");
   await expect(run).rejects.toThrow();
@@ -241,17 +323,29 @@ test("model budget exhaustion ends the run with a partial result", async () => {
     model: scriptedModel([]),
   });
   const memory = memoryContext();
-  await worker.run(input({ budget: { ...input().budget, max_tokens: 50 } }), memory.context);
+  await worker.run(
+    input({ budget: { ...input().budget, max_tokens: 50 } }),
+    memory.context,
+  );
   expect(memory.state.result?.success).toBe(false);
-  expect(memory.state.result?.summary).toContain("Stopped before the goal was met");
+  expect(memory.state.result?.summary).toContain(
+    "Stopped before the goal was met",
+  );
   expect(memory.usage.input_tokens).toBe(0);
 });
 
 test("unparseable model replies stop the run after two attempts", async () => {
-  const worker = createBrowserWorker({ engine: createFakeBrowserEngine(), fetch: fakeFetch, resolveHost, model: scriptedModel(["no", "still no"]) });
+  const worker = createBrowserWorker({
+    engine: createFakeBrowserEngine(),
+    fetch: fakeFetch,
+    resolveHost,
+    model: scriptedModel(["no", "still no"]),
+  });
   const memory = memoryContext();
   await worker.run(input(), memory.context);
-  expect(memory.state.result?.summary).toBe("The planning model returned no valid action.");
+  expect(memory.state.result?.summary).toBe(
+    "The planning model returned no valid action.",
+  );
 });
 
 test("a shared session restores cookies from the previous job", async () => {
@@ -259,31 +353,56 @@ test("a shared session restores cookies from the previous job", async () => {
   const worker = createBrowserWorker({ engine, fetch: fakeFetch, resolveHost });
   const first = memoryContext();
   await worker.run(input({ session_key: "login", actions: [] }), first.context);
-  expect(new TextDecoder().decode(first.state.session ?? new Uint8Array())).toContain("sid");
+  expect(
+    new TextDecoder().decode(first.state.session ?? new Uint8Array()),
+  ).toContain("sid");
   const second = memoryContext(new AbortController(), first.state.session);
-  await worker.run(input({ session_key: "login", actions: [] }), second.context);
+  await worker.run(
+    input({ session_key: "login", actions: [] }),
+    second.context,
+  );
   expect(engine.startStates[1]).toContain("abc");
 });
 
 test("refuses to run without an injected fetch unless live", () => {
-  expect(() => createBrowserWorker({ engine: createFakeBrowserEngine() })).toThrow("injected fetch");
+  expect(() =>
+    createBrowserWorker({ engine: createFakeBrowserEngine() }),
+  ).toThrow("injected fetch");
 });
 
 const chromium = process.env.MARS_BROWSER_CHROMIUM;
-test.skipIf(!chromium)("opt-in: Playwright engine renders through the guarded fetch only", async () => {
-  const worker = createBrowserWorker({
-    engine: createPlaywrightEngine({ executablePath: chromium ?? "" }),
-    fetch: fakeFetch,
-    resolveHost,
-  });
-  const memory = memoryContext();
-  fetched.length = 0;
-  await worker.run(
-    input({ actions: [{ type: "click", ref: "e1" }, { type: "extract" }, { type: "screenshot" }, { type: "back" }, { type: "click", ref: "e2" }] }),
-    memory.context,
-  );
-  expect(memory.steps.map((step) => step.outcome)).toEqual(["ok", "ok", "ok", "ok", "blocked"]);
-  expect(memory.state.result?.extracted).toContain("Phobos");
-  expect(memory.evidence[1]?.data.slice(0, 8)).toEqual(FAKE_PNG_SIGNATURE);
-  expect(fetched.some((url) => url.includes("10.0.0.5"))).toBe(false);
-}, 60_000);
+test.skipIf(!chromium)(
+  "opt-in: Playwright engine renders through the guarded fetch only",
+  async () => {
+    const worker = createBrowserWorker({
+      engine: createPlaywrightEngine({ executablePath: chromium ?? "" }),
+      fetch: fakeFetch,
+      resolveHost,
+    });
+    const memory = memoryContext();
+    fetched.length = 0;
+    await worker.run(
+      input({
+        actions: [
+          { type: "click", ref: "e1" },
+          { type: "extract" },
+          { type: "screenshot" },
+          { type: "back" },
+          { type: "click", ref: "e2" },
+        ],
+      }),
+      memory.context,
+    );
+    expect(memory.steps.map((step) => step.outcome)).toEqual([
+      "ok",
+      "ok",
+      "ok",
+      "ok",
+      "blocked",
+    ]);
+    expect(memory.state.result?.extracted).toContain("Phobos");
+    expect(memory.evidence[1]?.data.slice(0, 8)).toEqual(FAKE_PNG_SIGNATURE);
+    expect(fetched.some((url) => url.includes("10.0.0.5"))).toBe(false);
+  },
+  60_000,
+);

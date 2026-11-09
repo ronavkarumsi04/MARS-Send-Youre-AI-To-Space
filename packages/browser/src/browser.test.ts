@@ -20,9 +20,11 @@ const roots: string[] = [];
 const services: DurableBrowserService[] = [];
 const stores: Array<Awaited<ReturnType<typeof createTaskStore>>> = [];
 afterEach(async () => {
-  for (const service of services.splice(0)) await service.close({ drainMs: 200 });
+  for (const service of services.splice(0))
+    await service.close({ drainMs: 200 });
   for (const store of stores.splice(0)) await store.close?.();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
 });
 
 const scope = { owner_id: "owner-1", project_id: "project-1" };
@@ -69,11 +71,22 @@ const request = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-type Run = (input: BrowserWorkerInput, context: BrowserWorkerContext) => Promise<void>;
-const worker = (run: Run): BrowserWorker => ({ id: "test-worker", version: "1", run });
+type Run = (
+  input: BrowserWorkerInput,
+  context: BrowserWorkerContext,
+) => Promise<void>;
+const worker = (run: Run): BrowserWorker => ({
+  id: "test-worker",
+  version: "1",
+  run,
+});
 
 const completing: Run = async (input, context) => {
-  await context.reportUsage({ input_tokens: 10, output_tokens: 5, cost_usd: 0.01 });
+  await context.reportUsage({
+    input_tokens: 10,
+    output_tokens: 5,
+    cost_usd: 0.01,
+  });
   const ref = await context.captureEvidence({
     kind: "page_text",
     url: input.start_url,
@@ -107,7 +120,10 @@ async function setup(
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "mars-browser-test-"));
   roots.push(root);
-  const tasks = await createTaskStore({ rootDir: path.join(root, "tasks"), workspaceRoots: [] });
+  const tasks = await createTaskStore({
+    rootDir: path.join(root, "tasks"),
+    workspaceRoots: [],
+  });
   stores.push(tasks);
   const task = options.task ?? makeTask();
   await tasks.create(ctx("create-task"), task);
@@ -141,7 +157,11 @@ async function setup(
   return { root, tasks, service, task };
 }
 
-async function settled(service: DurableBrowserService, id: string, context = ctx()) {
+async function settled(
+  service: DurableBrowserService,
+  id: string,
+  context = ctx(),
+) {
   const until = Date.now() + 5_000;
   while (Date.now() < until) {
     const job = await service.inspect(context, id);
@@ -162,43 +182,108 @@ test("a job runs to completion with steps, evidence, usage and a settled task ho
   expect(job.status).toBe("queued");
   const done = await settled(service, job.request_id);
   expect(done.status).toBe("completed");
-  expect(done.usage).toEqual({ input_tokens: 10, output_tokens: 5, cost_usd: 0.01, reported: true });
+  expect(done.usage).toEqual({
+    input_tokens: 10,
+    output_tokens: 5,
+    cost_usd: 0.01,
+    reported: true,
+  });
   const view = await service.readResult(ctx(), job.request_id);
   expect(view.steps).toHaveLength(1);
   expect(view.result?.summary).toBe("Mars has two moons.");
   const ref = view.result?.artifacts[0];
-  expect(ref && new TextDecoder().decode(await tasks.artifacts.get(ctx(), ref))).toBe("Mars has two moons.");
+  expect(
+    ref && new TextDecoder().decode(await tasks.artifacts.get(ctx(), ref)),
+  ).toBe("Mars has two moons.");
   // The hold shrinks from the whole job budget to what was used.
-  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({ tokens: 15, usd: 0.01 });
-  expect(await service.allowance(ctx(), "task-1")).toEqual({ max_tokens: 9_985, max_usd: 9.99 });
+  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({
+    tokens: 15,
+    usd: 0.01,
+  });
+  expect(await service.allowance(ctx(), "task-1")).toEqual({
+    max_tokens: 9_985,
+    max_usd: 9.99,
+  });
 });
 
 test("submission is idempotent, strict and bounded by host policy and task budget", async () => {
-  const { service } = await setup({ service: { allowedActions: ["navigate", "screenshot", "extract"] } });
+  const { service } = await setup({
+    service: { allowedActions: ["navigate", "screenshot", "extract"] },
+  });
   const same = request();
   const first = await service.submit(ctx("same"), same);
-  expect((await service.submit(ctx("same"), same)).request_id).toBe(first.request_id);
-  expect(await codeOf(service.submit(ctx("same"), { ...same, goal: "Other" }))).toBe("conflict");
-  expect(await codeOf(service.submit(ctx("a"), request({ allowed_actions: ["navigate", "type"] })))).toBe("forbidden");
+  expect((await service.submit(ctx("same"), same)).request_id).toBe(
+    first.request_id,
+  );
   expect(
-    await codeOf(service.submit(ctx("b"), request({ actions: [{ type: "click", ref: "e1" }] }))),
+    await codeOf(service.submit(ctx("same"), { ...same, goal: "Other" })),
+  ).toBe("conflict");
+  expect(
+    await codeOf(
+      service.submit(
+        ctx("a"),
+        request({ allowed_actions: ["navigate", "type"] }),
+      ),
+    ),
+  ).toBe("forbidden");
+  expect(
+    await codeOf(
+      service.submit(
+        ctx("b"),
+        request({ actions: [{ type: "click", ref: "e1" }] }),
+      ),
+    ),
   ).toBe("invalid_input");
-  expect(await codeOf(service.submit(ctx("c"), request({ start_url: "file:///etc/passwd" })))).toBe("invalid_input");
-  expect(await codeOf(service.submit(ctx("d"), request({ start_url: "https://u:p@example.org/" })))).toBe("invalid_input");
-  expect(await codeOf(service.submit(ctx("e"), request({ task_revision: 3 })))).toBe("stale_revision");
   expect(
-    await codeOf(service.submit(ctx("f"), request({ budget: { ...request().budget, max_tokens: 20_000 } }))),
+    await codeOf(
+      service.submit(ctx("c"), request({ start_url: "file:///etc/passwd" })),
+    ),
+  ).toBe("invalid_input");
+  expect(
+    await codeOf(
+      service.submit(
+        ctx("d"),
+        request({ start_url: "https://u:p@example.org/" }),
+      ),
+    ),
+  ).toBe("invalid_input");
+  expect(
+    await codeOf(service.submit(ctx("e"), request({ task_revision: 3 }))),
+  ).toBe("stale_revision");
+  expect(
+    await codeOf(
+      service.submit(
+        ctx("f"),
+        request({ budget: { ...request().budget, max_tokens: 20_000 } }),
+      ),
+    ),
   ).toBe("budget_exceeded");
 });
 
 test("the shared ledger refuses a job that would overrun the task beside other spenders", async () => {
-  const { service, tasks } = await setup({ run: async () => new Promise(() => {}) });
-  await tasks.reserveBudget!(ctx("fg"), "task-1", "foreground:test", { tokens: 9_500, usd: 0 });
-  expect(await codeOf(service.submit(ctx("big"), request()))).toBe("budget_exceeded");
-  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({ tokens: 9_500, usd: 0 });
-  const ok = await service.submit(ctx("small"), request({ budget: { ...request().budget, max_tokens: 500 } }));
+  const { service, tasks } = await setup({
+    run: async () => new Promise(() => {}),
+  });
+  await tasks.reserveBudget!(ctx("fg"), "task-1", "foreground:test", {
+    tokens: 9_500,
+    usd: 0,
+  });
+  expect(await codeOf(service.submit(ctx("big"), request()))).toBe(
+    "budget_exceeded",
+  );
+  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({
+    tokens: 9_500,
+    usd: 0,
+  });
+  const ok = await service.submit(
+    ctx("small"),
+    request({ budget: { ...request().budget, max_tokens: 500 } }),
+  );
   expect(ok.status).toBe("queued");
-  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({ tokens: 10_000, usd: 1 });
+  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({
+    tokens: 10_000,
+    usd: 1,
+  });
 });
 
 test("one task slot stays free for the foreground run; queued jobs wait for a slot", async () => {
@@ -221,16 +306,30 @@ test("one task slot stays free for the foreground run; queued jobs wait for a sl
   expect(started).toEqual([a.request_id]);
   expect((await service.inspect(ctx("b"), b.request_id)).status).toBe("queued");
   // Another spender cannot take a slot either: the only background slot is in use.
-  expect(await tasks.acquireSlot!(ctx(), "task-1", "other", { now: Date.now(), expiresAt: Date.now() + 1_000 })).toBe(false);
+  expect(
+    await tasks.acquireSlot!(ctx(), "task-1", "other", {
+      now: Date.now(),
+      expiresAt: Date.now() + 1_000,
+    }),
+  ).toBe(false);
   release();
-  expect((await settled(service, b.request_id, ctx("b"))).status).toBe("completed");
+  expect((await settled(service, b.request_id, ctx("b"))).status).toBe(
+    "completed",
+  );
   expect(started).toEqual([a.request_id, b.request_id]);
-  expect(await tasks.acquireSlot!(ctx(), "task-1", "other", { now: Date.now(), expiresAt: Date.now() + 1_000 })).toBe(true);
+  expect(
+    await tasks.acquireSlot!(ctx(), "task-1", "other", {
+      now: Date.now(),
+      expiresAt: Date.now() + 1_000,
+    }),
+  ).toBe(true);
 });
 
 test("a task whose concurrency leaves no background slot refuses browser work", async () => {
   const { service } = await setup({ task: makeTask({ max_concurrency: 1 }) });
-  expect(await codeOf(service.submit(ctx(), request()))).toBe("budget_exceeded");
+  expect(await codeOf(service.submit(ctx(), request()))).toBe(
+    "budget_exceeded",
+  );
 });
 
 test("cancel aborts the running worker, frees its slot and settles the hold", async () => {
@@ -239,8 +338,16 @@ test("cancel aborts the running worker, frees its slot and settles the hold", as
     task: makeTask({ max_concurrency: 2 }),
     run: async (_input, context) => {
       signal = context.signal;
-      await context.reportUsage({ input_tokens: 3, output_tokens: 0, cost_usd: 0 });
-      await new Promise((_, reject) => context.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      await context.reportUsage({
+        input_tokens: 3,
+        output_tokens: 0,
+        cost_usd: 0,
+      });
+      await new Promise((_, reject) =>
+        context.signal.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        ),
+      );
     },
   });
   const job = await service.submit(ctx(), request());
@@ -249,8 +356,16 @@ test("cancel aborts the running worker, frees its slot and settles the hold", as
   expect(cancelled.status).toBe("cancelled");
   expect(signal.aborted).toBe(true);
   await Bun.sleep(50);
-  expect(await tasks.acquireSlot!(ctx(), "task-1", "other", { now: Date.now(), expiresAt: Date.now() + 1_000 })).toBe(true);
-  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({ tokens: 3, usd: 0 });
+  expect(
+    await tasks.acquireSlot!(ctx(), "task-1", "other", {
+      now: Date.now(),
+      expiresAt: Date.now() + 1_000,
+    }),
+  ).toBe(true);
+  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({
+    tokens: 3,
+    usd: 0,
+  });
 });
 
 test("evidence must be captured by the attempt, private paths are refused or scrubbed", async () => {
@@ -267,10 +382,20 @@ test("evidence must be captured by the attempt, private paths are refused or scr
         }
       };
       await attempt(() =>
-        context.captureEvidence({ kind: "page_text", url: input.start_url, media_type: "text/plain", data: new TextEncoder().encode(`see ${privatePath}`) }),
+        context.captureEvidence({
+          kind: "page_text",
+          url: input.start_url,
+          media_type: "text/plain",
+          data: new TextEncoder().encode(`see ${privatePath}`),
+        }),
       );
       await attempt(() =>
-        context.captureEvidence({ kind: "screenshot", url: input.start_url, media_type: "text/html", data: new Uint8Array(1) }),
+        context.captureEvidence({
+          kind: "screenshot",
+          url: input.start_url,
+          media_type: "text/html",
+          data: new Uint8Array(1),
+        }),
       );
       await attempt(() =>
         context.recordStep({
@@ -280,20 +405,54 @@ test("evidence must be captured by the attempt, private paths are refused or scr
           detail: "",
           url: input.start_url,
           title: "",
-          artifacts: [{ artifact_id: "forged", sha256: "a".repeat(64), media_type: "image/png", byte_length: 1 }],
+          artifacts: [
+            {
+              artifact_id: "forged",
+              sha256: "a".repeat(64),
+              media_type: "image/png",
+              byte_length: 1,
+            },
+          ],
         }),
       );
       await attempt(() =>
-        context.recordStep({ index: 0, action: { type: "click", ref: "e1" }, outcome: "ok", detail: "", url: "", title: "", artifacts: [] }),
+        context.recordStep({
+          index: 0,
+          action: { type: "click", ref: "e1" },
+          outcome: "ok",
+          detail: "",
+          url: "",
+          title: "",
+          artifacts: [],
+        }),
       );
-      await context.recordStep({ index: 0, action: { type: "click", ref: "e1" }, outcome: "blocked", detail: `not allowed ${privatePath}`, url: "", title: "", artifacts: [] });
+      await context.recordStep({
+        index: 0,
+        action: { type: "click", ref: "e1" },
+        outcome: "blocked",
+        detail: `not allowed ${privatePath}`,
+        url: "",
+        title: "",
+        artifacts: [],
+      });
       await attempt(() => context.saveSession(new Uint8Array(1)));
-      await context.complete({ success: false, summary: `failed near ${privatePath}`, final_url: "", artifacts: [] });
+      await context.complete({
+        success: false,
+        summary: `failed near ${privatePath}`,
+        final_url: "",
+        artifacts: [],
+      });
     },
   });
   const job = await service.submit(ctx(), request());
   await settled(service, job.request_id);
-  expect(failures).toEqual(["evidence_rejected", "invalid_input", "evidence_rejected", "forbidden", "forbidden"]);
+  expect(failures).toEqual([
+    "evidence_rejected",
+    "invalid_input",
+    "evidence_rejected",
+    "forbidden",
+    "forbidden",
+  ]);
   const view = await service.readResult(ctx(), job.request_id);
   expect(JSON.stringify(view)).not.toContain(root);
   expect(view.steps[0]?.detail).toContain("[redacted]");
@@ -304,19 +463,33 @@ test("retryable failures get a fresh attempt; worker errors and missing results 
   const { service } = await setup({
     run: async (input, context) => {
       attempts.push(input.attempt);
-      if (input.goal === "flaky" && input.attempt === 1) throw new Error("browser crashed");
-      if (input.goal === "broken") throw new BrowserError("invalid_input", "bad");
+      if (input.goal === "flaky" && input.attempt === 1)
+        throw new Error("browser crashed");
+      if (input.goal === "broken")
+        throw new BrowserError("invalid_input", "bad");
       if (input.goal === "silent") return;
       await completing(input, context);
     },
   });
   const flaky = await service.submit(ctx("flaky"), request({ goal: "flaky" }));
-  expect((await settled(service, flaky.request_id, ctx("flaky"))).status).toBe("completed");
+  expect((await settled(service, flaky.request_id, ctx("flaky"))).status).toBe(
+    "completed",
+  );
   expect(attempts).toEqual([1, 2]);
-  const broken = await service.submit(ctx("broken"), request({ goal: "broken" }));
-  expect((await settled(service, broken.request_id, ctx("broken"))).error_code).toBe("worker_failed");
-  const silent = await service.submit(ctx("silent"), request({ goal: "silent" }));
-  expect((await settled(service, silent.request_id, ctx("silent"))).error_code).toBe("incomplete");
+  const broken = await service.submit(
+    ctx("broken"),
+    request({ goal: "broken" }),
+  );
+  expect(
+    (await settled(service, broken.request_id, ctx("broken"))).error_code,
+  ).toBe("worker_failed");
+  const silent = await service.submit(
+    ctx("silent"),
+    request({ goal: "silent" }),
+  );
+  expect(
+    (await settled(service, silent.request_id, ctx("silent"))).error_code,
+  ).toBe("incomplete");
 });
 
 test("reported usage over the job budget fails the job and aborts the worker", async () => {
@@ -324,7 +497,11 @@ test("reported usage over the job budget fails the job and aborts the worker", a
   const { service, tasks } = await setup({
     run: async (_input, context) => {
       try {
-        await context.reportUsage({ input_tokens: 900, output_tokens: 200, cost_usd: 0 });
+        await context.reportUsage({
+          input_tokens: 900,
+          output_tokens: 200,
+          cost_usd: 0,
+        });
       } finally {
         aborted = context.signal.aborted;
       }
@@ -334,7 +511,10 @@ test("reported usage over the job budget fails the job and aborts the worker", a
   const done = await settled(service, job.request_id);
   expect(done.error_code).toBe("budget_exceeded");
   expect(aborted).toBe(true);
-  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({ tokens: 1_100, usd: 0 });
+  expect(await tasks.budgetCommitted!(ctx(), "task-1")).toEqual({
+    tokens: 1_100,
+    usd: 0,
+  });
 });
 
 test("sessions are shared only between jobs of the same task with the same key", async () => {
@@ -343,7 +523,10 @@ test("sessions are shared only between jobs of the same task with the same key",
     run: async (input, context) => {
       const state = await context.loadSession();
       seen.push(state ? new TextDecoder().decode(state) : null);
-      if (input.session_key) await context.saveSession(new TextEncoder().encode(`cookie-${input.goal}`));
+      if (input.session_key)
+        await context.saveSession(
+          new TextEncoder().encode(`cookie-${input.goal}`),
+        );
       await completing(input, context);
     },
   });
@@ -370,7 +553,11 @@ test("stale revisions and terminal tasks cancel active jobs", async () => {
 test("a run interrupted by shutdown is requeued and finished by the next process", async () => {
   const { service, root, tasks } = await setup({
     run: async (_input, context) =>
-      new Promise((_, reject) => context.signal.addEventListener("abort", () => reject(new Error("closed")))),
+      new Promise((_, reject) =>
+        context.signal.addEventListener("abort", () =>
+          reject(new Error("closed")),
+        ),
+      ),
   });
   const job = await service.submit(ctx(), request());
   await Bun.sleep(50);
@@ -401,7 +588,10 @@ test("deadlines expire running jobs and abort the worker", async () => {
         }),
       ),
   });
-  const job = await service.submit(ctx(), request({ deadline: new Date(Date.now() + 150).toISOString() }));
+  const job = await service.submit(
+    ctx(),
+    request({ deadline: new Date(Date.now() + 150).toISOString() }),
+  );
   expect((await settled(service, job.request_id)).status).toBe("expired");
   expect(reason).toBe("deadline_exceeded");
 });
@@ -411,11 +601,18 @@ test("a zero retry backoff is accepted, as research accepts it; negative limits 
     if (input.attempt === 1) throw new Error("crash");
     await completing(input, context);
   };
-  const { service } = await setup({ run: flaky, service: { retryBackoffMs: 0 } });
+  const { service } = await setup({
+    run: flaky,
+    service: { retryBackoffMs: 0 },
+  });
   const job = await service.submit(ctx(), request());
   expect((await settled(service, job.request_id)).attempts).toBe(2);
-  expect(await codeOf(setup({ service: { retryBackoffMs: -1 } }))).toBe("invalid_input");
-  expect(await codeOf(setup({ service: { leaseMs: 0 } }))).toBe("invalid_input");
+  expect(await codeOf(setup({ service: { retryBackoffMs: -1 } }))).toBe(
+    "invalid_input",
+  );
+  expect(await codeOf(setup({ service: { leaseMs: 0 } }))).toBe(
+    "invalid_input",
+  );
 });
 
 test("hold keys are namespaced per request", () => {

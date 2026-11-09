@@ -129,7 +129,8 @@ export function openBrowserStore(options: {
   const overlaps = (root: string) =>
     [...privateRoots].some(
       (privateRoot) =>
-        isInsideOrEqual(root, privateRoot) || isInsideOrEqual(privateRoot, root),
+        isInsideOrEqual(root, privateRoot) ||
+        isInsideOrEqual(privateRoot, root),
     );
   if (overlaps(resolveForSafety(requestedRoot)))
     throw unsafe("Browser store root overlaps a private path");

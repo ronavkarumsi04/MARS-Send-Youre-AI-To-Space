@@ -10,12 +10,6 @@ import {
   sep,
 } from "node:path";
 import {
-  createDerivedArtifactStore,
-  createRepositoryMapProvider,
-  type RepositoryMapProvider,
-} from "@mars/context";
-import { type Scope, ScopeSchema } from "@mars/contracts";
-import {
   type BrowserPolicyAction,
   type BrowserServiceOptions,
   createBrowserService,
@@ -27,6 +21,12 @@ import {
   type BrowserWorkerLogEvent,
   createBrowserWorker,
 } from "@mars/browser-worker";
+import {
+  createDerivedArtifactStore,
+  createRepositoryMapProvider,
+  type RepositoryMapProvider,
+} from "@mars/context";
+import { type Scope, ScopeSchema } from "@mars/contracts";
 import { createKnowledgeGraphService } from "@mars/knowledge-graph";
 import { createMemoryStore, type DurableMemoryStore } from "@mars/memory";
 import { vaultStatus } from "@mars/memory-vault";

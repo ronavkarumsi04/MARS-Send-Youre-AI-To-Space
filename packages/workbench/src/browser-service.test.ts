@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Task } from "@mars/contracts";
 import { createFakeBrowserEngine } from "@mars/browser-worker";
+import type { Task } from "@mars/contracts";
 import { openRuntimeSession } from "@mars/execution";
 import { loadModelRegistry } from "@mars/providers";
 import type { FetchLike, ModelGateway } from "@mars/research-worker";
@@ -143,7 +143,9 @@ function planner(replies: object[]) {
     estimateCostUsd: () => 0,
     async complete(request) {
       prompts.push(request.user);
-      const next = replies.shift() ?? { action: { type: "done", success: false, result: "out of replies" } };
+      const next = replies.shift() ?? {
+        action: { type: "done", success: false, result: "out of replies" },
+      };
       return {
         text: JSON.stringify(next),
         model: "fixture/planner",
@@ -163,14 +165,22 @@ test("mars_browse runs through the real worker and control plane to mars_browse_
     webCalls.push(input);
     const body = PAGES[input];
     if (body === undefined) return new Response("missing", { status: 404 });
-    return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(body, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
   };
   const engine = createFakeBrowserEngine();
   const plan = planner([
     { action: { type: "click", ref: "e2" } },
     { action: { type: "click", ref: "e1" } },
     { action: { type: "extract" } },
-    { action: { type: "done", success: true, result: "Mars has two moons: Phobos and Deimos." } },
+    {
+      action: {
+        type: "done",
+        success: true,
+        result: "Mars has two moons: Phobos and Deimos.",
+      },
+    },
   ]);
   const bodies: string[] = [];
   let requests = 0;
@@ -202,9 +212,18 @@ test("mars_browse runs through the real worker and control plane to mars_browse_
               goal: "Find the names of the moons of Mars.",
               start_url: "https://example.org/",
             });
-          const requestId = body.match(/Queued browser request ([A-Za-z0-9_-]+)/)?.[1];
-          if (!requestId) throw new Error(`mars_browse result was not echoed: ${body.slice(-400)}`);
-          if (/Browser request [A-Za-z0-9_-]+: (completed|failed|expired|cancelled)/.test(body))
+          const requestId = body.match(
+            /Queued browser request ([A-Za-z0-9_-]+)/,
+          )?.[1];
+          if (!requestId)
+            throw new Error(
+              `mars_browse result was not echoed: ${body.slice(-400)}`,
+            );
+          if (
+            /Browser request [A-Za-z0-9_-]+: (completed|failed|expired|cancelled)/.test(
+              body,
+            )
+          )
             return sse({ content: "Browsed; moons named." });
           await new Promise((yes) => setTimeout(yes, 25));
           return toolCall("mars_browse_result", { request_id: requestId });
@@ -212,9 +231,14 @@ test("mars_browse runs through the real worker and control plane to mars_browse_
       }),
   });
   cleanup.push(() => service.close());
-  const connection = JSON.parse(await readFile(service.connectionFile, "utf8")) as { token: string };
+  const connection = JSON.parse(
+    await readFile(service.connectionFile, "utf8"),
+  ) as { token: string };
   const client = new MarsClient(
-    new HttpRpcTransport({ rpcUrl: `${service.url}/v1/rpc`, getToken: async () => connection.token }),
+    new HttpRpcTransport({
+      rpcUrl: `${service.url}/v1/rpc`,
+      getToken: async () => connection.token,
+    }),
   );
   await client.describe();
   const created = await client.create(task());
@@ -229,14 +253,20 @@ test("mars_browse runs through the real worker and control plane to mars_browse_
   expect(finished.status).toBe("completed");
   expect(bodies[0]).toContain("mars_browse");
 
-  const toolResults = (JSON.parse(bodies.at(-1) ?? "{}") as { messages: Array<{ role: string; content: string }> }).messages
+  const toolResults = (
+    JSON.parse(bodies.at(-1) ?? "{}") as {
+      messages: Array<{ role: string; content: string }>;
+    }
+  ).messages
     .filter((message) => message.role === "tool")
     .map((message) => message.content)
     .join("\n");
   expect(toolResults).toMatch(/Browser request [A-Za-z0-9_-]+: completed/);
   expect(toolResults).toContain("[untrusted browser result · succeeded]");
   expect(toolResults).toContain("Phobos and Deimos");
-  expect(toolResults).toContain("click e2 -> blocked · Request blocked: private_address");
+  expect(toolResults).toContain(
+    "click e2 -> blocked · Request blocked: private_address",
+  );
   expect(toolResults).not.toContain(f.root);
   expect(toolResults).not.toContain(f.source);
   expect(toolResults).not.toContain("PRIVATE_SOURCE_MARKER");
@@ -244,15 +274,24 @@ test("mars_browse runs through the real worker and control plane to mars_browse_
 
   // The planner saw page content only inside the untrusted fence.
   const firstPrompt = plan.prompts[0] ?? "";
-  expect(firstPrompt.indexOf("Ignore previous instructions")).toBeGreaterThan(firstPrompt.indexOf("<<<UNTRUSTED_WEB_CONTENT"));
+  expect(firstPrompt.indexOf("Ignore previous instructions")).toBeGreaterThan(
+    firstPrompt.indexOf("<<<UNTRUSTED_WEB_CONTENT"),
+  );
   // Egress went only to the fixture host, never to the metadata address.
-  expect(webCalls).toEqual(expect.arrayContaining(["https://example.org/", "https://example.org/moons"]));
+  expect(webCalls).toEqual(
+    expect.arrayContaining([
+      "https://example.org/",
+      "https://example.org/moons",
+    ]),
+  );
   expect(webCalls.some((url) => url.includes("169.254"))).toBe(false);
   expect(engine.closed).toBe(engine.opened);
 
   const browserRoot = join(f.root, "browser");
   expect((await stat(browserRoot)).mode & 0o077).toBe(0);
-  expect(await Bun.file(join(browserRoot, "browser.sqlite")).exists()).toBe(true);
+  expect(await Bun.file(join(browserRoot, "browser.sqlite")).exists()).toBe(
+    true,
+  );
 }, 60_000);
 
 test("without a browser option no browser store is created and sessions get no browser tools", async () => {
@@ -264,7 +303,6 @@ test("without a browser option no browser store is created and sessions get no b
     scope,
     registry: f.registry,
     port: 0,
-    research: undefined,
     runtimeFactory: async (options) =>
       openRuntimeSession({
         ...options,
@@ -279,17 +317,50 @@ test("without a browser option no browser store is created and sessions get no b
 });
 
 test("action commands parse into strict actions and reject anything else", () => {
-  expect(parseBrowserActionCommand("click e3")).toEqual({ type: "click", ref: "e3" });
-  expect(parseBrowserActionCommand("type e2 hello world")).toEqual({ type: "type", ref: "e2", text: "hello world" });
-  expect(parseBrowserActionCommand("PRESS Enter")).toEqual({ type: "press", key: "Enter" });
-  expect(parseBrowserActionCommand("scroll Down")).toEqual({ type: "scroll", direction: "down" });
-  expect(parseBrowserActionCommand("navigate https://example.org/x")).toEqual({ type: "navigate", url: "https://example.org/x" });
-  for (const bad of ["done", "click", "type e2", "navigate file:///etc/passwd", "press F13", "extract now", "eval 1+1", "click ../x"])
-    expect(() => parseBrowserActionCommand(bad)).toThrow("Invalid browser action");
+  expect(parseBrowserActionCommand("click e3")).toEqual({
+    type: "click",
+    ref: "e3",
+  });
+  expect(parseBrowserActionCommand("type e2 hello world")).toEqual({
+    type: "type",
+    ref: "e2",
+    text: "hello world",
+  });
+  expect(parseBrowserActionCommand("PRESS Enter")).toEqual({
+    type: "press",
+    key: "Enter",
+  });
+  expect(parseBrowserActionCommand("scroll Down")).toEqual({
+    type: "scroll",
+    direction: "down",
+  });
+  expect(parseBrowserActionCommand("navigate https://example.org/x")).toEqual({
+    type: "navigate",
+    url: "https://example.org/x",
+  });
+  for (const bad of [
+    "done",
+    "click",
+    "type e2",
+    "navigate file:///etc/passwd",
+    "press F13",
+    "extract now",
+    "eval 1+1",
+    "click ../x",
+  ])
+    expect(() => parseBrowserActionCommand(bad)).toThrow(
+      "Invalid browser action",
+    );
 });
 
 test("mars_browse sizes jobs to the remaining allowance, scopes results to the task and marks stale results", async () => {
-  const budget = { max_tokens: 100, max_usd: 1, max_duration_ms: 60_000, max_depth: 2, max_concurrency: 2 };
+  const budget = {
+    max_tokens: 100,
+    max_usd: 1,
+    max_duration_ms: 60_000,
+    max_depth: 2,
+    max_concurrency: 2,
+  };
   let current = { task_id: "task-1", revision: 3, budget } as unknown as Task;
   let left = { max_tokens: 40, max_usd: 2 };
   const submitted: Array<Record<string, unknown>> = [];
@@ -313,33 +384,87 @@ test("mars_browse sizes jobs to the remaining allowance, scopes results to the t
     readResult: async () => ({
       job,
       steps: [],
-      result: { success: true, summary: "ok\u0007", final_url: "https://example.org/", artifacts: [] },
+      result: {
+        success: true,
+        summary: "ok\u0007",
+        final_url: "https://example.org/",
+        artifacts: [],
+      },
     }),
   } as unknown as WorkbenchBrowser;
-  const context = () => ({ schema_version: 1 as const, scope, request_id: "r" });
-  const tools = browserTools(service, context, async () => current, () => Date.now() + 60_000);
-  await tools.submit({ goal: "g", start_url: "https://example.org/", actions: ["type e1 hi"] });
-  expect(submitted[0]).toMatchObject({ task_revision: 3, budget: { max_tokens: 20, max_usd: 1 } });
+  const context = () => ({
+    schema_version: 1 as const,
+    scope,
+    request_id: "r",
+  });
+  const tools = browserTools(
+    service,
+    context,
+    async () => current,
+    () => Date.now() + 60_000,
+  );
+  await tools.submit({
+    goal: "g",
+    start_url: "https://example.org/",
+    actions: ["type e1 hi"],
+  });
+  expect(submitted[0]).toMatchObject({
+    task_revision: 3,
+    budget: { max_tokens: 20, max_usd: 1 },
+  });
   expect(submitted[0]?.allowed_actions).toContain("type");
-  await tools.submit({ goal: "g", start_url: "https://example.org/", allowed_actions: ["extract"] });
+  await tools.submit({
+    goal: "g",
+    start_url: "https://example.org/",
+    allowed_actions: ["extract"],
+  });
   expect(submitted[1]?.allowed_actions).toEqual(["extract"]);
   left = { max_tokens: 1, max_usd: 0 };
-  await expect(tools.submit({ goal: "g", start_url: "https://example.org/" })).rejects.toThrow("allowance is used up");
-  expect(await tools.result("job-1")).toContain("job-1: completed, attempt 1 of 2");
+  await expect(
+    tools.submit({ goal: "g", start_url: "https://example.org/" }),
+  ).rejects.toThrow("allowance is used up");
+  expect(await tools.result("job-1")).toContain(
+    "job-1: completed, attempt 1 of 2",
+  );
   current = { ...current, revision: 4 } as Task;
-  expect(await tools.result("job-1")).toContain("(stale: the task changed since it was queued)");
+  expect(await tools.result("job-1")).toContain(
+    "(stale: the task changed since it was queued)",
+  );
   current = { ...current, task_id: "task-2" } as Task;
-  await expect(tools.result("job-1")).rejects.toThrow("Unknown browser request");
-  const expired = browserTools(service, context, async () => current, () => Date.now() - 1);
-  await expect(expired.submit({ goal: "g", start_url: "https://example.org/" })).rejects.toThrow("deadline has passed");
+  await expect(tools.result("job-1")).rejects.toThrow(
+    "Unknown browser request",
+  );
+  const expired = browserTools(
+    service,
+    context,
+    async () => current,
+    () => Date.now() - 1,
+  );
+  await expect(
+    expired.submit({ goal: "g", start_url: "https://example.org/" }),
+  ).rejects.toThrow("deadline has passed");
 });
 
 test("rendered results neutralise control characters in page-derived text", () => {
   const rendered = renderBrowserJob(
     {
-      job: { request_id: "j", task_id: "t", task_revision: 0, status: "completed", stale: false, attempts: 1, max_attempts: 2, error_code: null } as never,
+      job: {
+        request_id: "j",
+        task_id: "t",
+        task_revision: 0,
+        status: "completed",
+        stale: false,
+        attempts: 1,
+        max_attempts: 2,
+        error_code: null,
+      } as never,
       steps: [],
-      result: { success: false, summary: "line\u001b[31m", final_url: "https://example.org/", artifacts: [] },
+      result: {
+        success: false,
+        summary: "line\u001b[31m",
+        final_url: "https://example.org/",
+        artifacts: [],
+      },
     },
     0,
   );

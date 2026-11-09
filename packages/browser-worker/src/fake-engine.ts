@@ -112,7 +112,9 @@ export function createFakeBrowserEngine(
         : null;
       startStates.push(initial);
       const cookies = new Map<string, string>(
-        initial ? (JSON.parse(initial) as { cookies: [string, string][] }).cookies : [],
+        initial
+          ? (JSON.parse(initial) as { cookies: [string, string][] }).cookies
+          : [],
       );
       const fetcher: BrowserFetch = open.fetch;
       let isClosed = false;
@@ -122,7 +124,8 @@ export function createFakeBrowserEngine(
       let focused: string | undefined;
       let scrollY = 0;
       const alive = () => {
-        if (isClosed || open.signal.aborted) throw new Error("Browser is closed");
+        if (isClosed || open.signal.aborted)
+          throw new Error("Browser is closed");
       };
       const load = async (target: string, push: boolean): Promise<void> => {
         alive();
@@ -176,7 +179,8 @@ export function createFakeBrowserEngine(
           goto: (url) => load(url, true),
           async snapshot(limits) {
             alive();
-            if (!doc) return { url: "about:blank", title: "", text: "", elements: [] };
+            if (!doc)
+              return { url: "about:blank", title: "", text: "", elements: [] };
             return {
               url: doc.url,
               title: doc.title,
@@ -193,7 +197,8 @@ export function createFakeBrowserEngine(
           },
           async type(ref, text) {
             const target = element(ref);
-            if (target.role !== "textbox") throw new Error("Element is not editable");
+            if (target.role !== "textbox")
+              throw new Error("Element is not editable");
             typed.push(text);
             values.set(ref, text);
             focused = ref;
@@ -215,7 +220,10 @@ export function createFakeBrowserEngine(
           },
           async scroll(direction) {
             alive();
-            scrollY = Math.max(0, scrollY + (direction === "down" ? 600 : -600));
+            scrollY = Math.max(
+              0,
+              scrollY + (direction === "down" ? 600 : -600),
+            );
           },
           async back() {
             alive();
@@ -227,14 +235,18 @@ export function createFakeBrowserEngine(
             const marker = new TextEncoder().encode(
               `fake:${doc?.url ?? "about:blank"}:${scrollY}`,
             );
-            const bytes = new Uint8Array(FAKE_PNG_SIGNATURE.length + marker.length);
+            const bytes = new Uint8Array(
+              FAKE_PNG_SIGNATURE.length + marker.length,
+            );
             bytes.set(FAKE_PNG_SIGNATURE);
             bytes.set(marker, FAKE_PNG_SIGNATURE.length);
             return bytes;
           },
           async storageState() {
             alive();
-            return new TextEncoder().encode(JSON.stringify({ cookies: [...cookies] }));
+            return new TextEncoder().encode(
+              JSON.stringify({ cookies: [...cookies] }),
+            );
           },
         },
         async close() {
