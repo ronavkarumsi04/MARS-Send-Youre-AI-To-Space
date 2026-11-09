@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import {
@@ -40,12 +39,18 @@ import { resolveSafePath, validateRelativePath } from "./paths";
 import { isValidArgv } from "./sandbox";
 import {
   acquireProviderLock,
+  CHECKPOINT_ID_PATTERN,
   type CheckpointRecord,
   listMetas,
   loadMeta,
   metaPath,
+  newCheckpointId,
+  newToken,
+  newWorkspaceId,
   revision,
   saveMeta,
+  WORKSPACE_ENTRY_PATTERN,
+  WORKSPACE_ID_PATTERN,
   type WorkspaceMeta,
   workspacePath,
 } from "./store";
@@ -72,8 +77,8 @@ const checkpointManifestSchema = z
   .object({
     schema_version: z.literal(1),
     kind: z.literal("mars.workspace.checkpoint"),
-    checkpoint_id: z.string().regex(/^cp_[a-f0-9]{32}$/),
-    workspace_id: z.string().regex(/^ws_[a-f0-9]{32}$/),
+    checkpoint_id: z.string().regex(CHECKPOINT_ID_PATTERN),
+    workspace_id: z.string().regex(WORKSPACE_ID_PATTERN),
     provider: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/),
     owner_id: z.string().min(1),
     project_id: z.string().min(1),
@@ -144,9 +149,17 @@ async function withMutex<T>(
   }
 }
 
-export async function createLocalWorkspaceProvider(
+interface ResolvedProviderOptions {
+  sourceRoot: string;
+  rootDir: string;
+  providerId: string;
+  limits: WorkspaceLimits;
+  extraIgnores: readonly string[];
+}
+
+async function resolveProviderOptions(
   options: LocalWorkspaceProviderOptions,
-): Promise<LocalWorkspaceProvider> {
+): Promise<ResolvedProviderOptions> {
   if (!isAbsolute(options.rootDir) || !isAbsolute(options.sourceRoot)) {
     throw new WorkspacePolicyError(
       "rootDir and sourceRoot must be absolute paths",
@@ -183,7 +196,10 @@ export async function createLocalWorkspaceProvider(
   if (!/^[a-z0-9][a-z0-9.-]{0,63}$/.test(providerId)) {
     throw new WorkspacePolicyError("Invalid providerId");
   }
-  const limits = { ...DEFAULT_WORKSPACE_LIMITS, ...options.limits };
+  const limits: WorkspaceLimits = {
+    ...DEFAULT_WORKSPACE_LIMITS,
+    ...options.limits,
+  };
   for (const [key, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new WorkspacePolicyError(`Invalid workspace limit: ${key}`);
@@ -200,6 +216,14 @@ export async function createLocalWorkspaceProvider(
       "extraIgnores must contain segment names or simple segment globs",
     );
   }
+  return { sourceRoot, rootDir, providerId, limits, extraIgnores };
+}
+
+export async function createLocalWorkspaceProvider(
+  options: LocalWorkspaceProviderOptions,
+): Promise<LocalWorkspaceProvider> {
+  const { sourceRoot, rootDir, providerId, limits, extraIgnores } =
+    await resolveProviderOptions(options);
   const releaseLock = await acquireProviderLock(rootDir);
   let recoveryState: RecoveryState;
   try {
@@ -294,7 +318,7 @@ export async function createLocalWorkspaceProvider(
       typeof workspace === "string" ? workspace : workspace?.workspace_id;
     if (
       typeof workspaceId !== "string" ||
-      !/^ws_[a-f0-9]{32}$/.test(workspaceId) ||
+      !WORKSPACE_ID_PATTERN.test(workspaceId) ||
       (typeof workspace !== "string" && workspace.provider !== providerId)
     ) {
       throw new WorkspaceNotFoundError();
@@ -352,6 +376,30 @@ export async function createLocalWorkspaceProvider(
       throw error;
     }
   };
+  // Shared prologue for workspace-scoped methods: scope/ownership check, then
+  // under the workspace lock a closed check, metadata reload and availability
+  // check. `reload: "scoped"` re-runs the scope check instead of the plain
+  // metadata reload.
+  const withWorkspace = async <T>(
+    context: RequestContext,
+    workspace: WorkspaceRef | string,
+    fn: (current: WorkspaceMeta, tree: string) => T | Promise<T>,
+    {
+      allowRestoreJournal = false,
+      reload = "meta",
+    }: { allowRestoreJournal?: boolean; reload?: "meta" | "scoped" } = {},
+  ): Promise<T> => {
+    const meta = await assertWorkspace(context, workspace, allowRestoreJournal);
+    return withMutex(lockFor(meta.workspace_id), async () => {
+      assertOpen();
+      const current =
+        reload === "scoped"
+          ? await assertWorkspace(context, workspace, allowRestoreJournal)
+          : await reloadWorkspaceMeta(meta.workspace_id);
+      const tree = await assertWorkspaceAvailable(current);
+      return fn(current, tree);
+    });
+  };
   const treeSnapshot = (
     meta: WorkspaceMeta,
     enforceLimits = true,
@@ -385,7 +433,7 @@ export async function createLocalWorkspaceProvider(
     const priorPath = join(
       rootDir,
       "staging",
-      `${current.workspace_id}-prior-${randomUUID().replaceAll("-", "")}`,
+      `${current.workspace_id}-prior-${newToken()}`,
     );
     const previous = {
       counter: current.counter,
@@ -470,7 +518,7 @@ export async function createLocalWorkspaceProvider(
     snapshot: TreeSnapshot,
     persist = true,
   ): Promise<CheckpointRef> => {
-    const checkpointId = `cp_${randomUUID().replaceAll("-", "")}`;
+    const checkpointId = newCheckpointId();
     const checkpointTime = now().toISOString();
     const checkpointRevision = meta.revision;
     const files: CheckpointManifest["files"] = [];
@@ -545,7 +593,7 @@ export async function createLocalWorkspaceProvider(
   ): Promise<CheckpointManifest> => {
     if (
       !checkpoint ||
-      !/^cp_[a-f0-9]{32}$/.test(checkpoint.checkpoint_id) ||
+      !CHECKPOINT_ID_PATTERN.test(checkpoint.checkpoint_id) ||
       checkpoint.workspace?.workspace_id !== meta.workspace_id ||
       checkpoint.workspace.provider !== providerId
     ) {
@@ -669,11 +717,7 @@ export async function createLocalWorkspaceProvider(
     context: RequestContext,
     workspace: WorkspaceRef,
   ): Promise<CheckpointRef> => {
-    const meta = await assertWorkspace(context, workspace);
-    return withMutex(lockFor(meta.workspace_id), async () => {
-      assertOpen();
-      const fresh = await reloadWorkspaceMeta(meta.workspace_id);
-      await assertWorkspaceAvailable(fresh);
+    return withWorkspace(context, workspace, async (fresh) => {
       const snapshot = await treeSnapshot(fresh, true, true);
       if (fresh.tree_digest !== snapshot.digest) {
         fresh.tree_digest = snapshot.digest;
@@ -728,8 +772,8 @@ export async function createLocalWorkspaceProvider(
           enforceLimits: true,
           skipped: skippedFiles,
         });
-        const workspaceId = `ws_${randomUUID().replaceAll("-", "")}`;
-        const stageName = `${workspaceId}-${randomUUID().replaceAll("-", "")}`;
+        const workspaceId = newWorkspaceId();
+        const stageName = `${workspaceId}-${newToken()}`;
         const stageDir = join(rootDir, "staging", stageName);
         const stagedTree = join(stageDir, "tree");
         const finalTree = workspacePath(rootDir, workspaceId);
@@ -750,7 +794,7 @@ export async function createLocalWorkspaceProvider(
             revision: initialRevision,
             tree_digest: snapshot.digest,
             created_at: createdAt,
-            baseline_checkpoint_id: `cp_${randomUUID().replaceAll("-", "")}`,
+            baseline_checkpoint_id: newCheckpointId(),
             checkpoints: [],
             blob_index: {},
             skipped: skippedFiles,
@@ -787,11 +831,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async read(context, workspace, relativePath) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         const path = validateRelativePath(relativePath, limits, extraIgnores);
         const absolute = await resolveSafePath(treeDir(current), path);
         let handle: FileHandle | undefined;
@@ -830,11 +870,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async write(context, workspace, relativePath, artifact, writeOptions) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         const path = validateRelativePath(relativePath, limits, extraIgnores);
         const ref = validateArtifact(artifact);
         const data = await options.artifacts.get(context, ref);
@@ -883,7 +919,7 @@ export async function createLocalWorkspaceProvider(
         const temporary = join(
           rootDir,
           "staging",
-          `${current.workspace_id}-write-${randomUUID().replaceAll("-", "")}`,
+          `${current.workspace_id}-write-${newToken()}`,
         );
         let handle: FileHandle | undefined;
         try {
@@ -917,11 +953,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async remove(context, workspace, relativePath) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         const path = validateRelativePath(relativePath, limits, extraIgnores);
         const tree = treeDir(current);
         const absolute = await resolveSafePath(tree, path);
@@ -947,11 +979,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async execute(context, workspace, argv, budget, executeOptions) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         if (!isValidArgv(argv))
           throw new WorkspacePolicyError("Invalid command arguments");
         const parsedBudget = BudgetSchema.safeParse(budget);
@@ -984,7 +1012,7 @@ export async function createLocalWorkspaceProvider(
           parsedBudget.data.max_duration_ms,
           limits.maxExecutionMs,
         );
-        const runId = randomUUID().replaceAll("-", "");
+        const runId = newToken();
         const startedAt = now().toISOString();
         const controller = new AbortController();
         const completion = createDeferred();
@@ -1093,11 +1121,7 @@ export async function createLocalWorkspaceProvider(
     },
     async restore(context, checkpoint, expectedRevision) {
       if (!checkpoint?.workspace) throw new WorkspaceNotFoundError();
-      const meta = await assertWorkspace(context, checkpoint.workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, checkpoint.workspace, async (current) => {
         if (expectedRevision !== current.revision)
           throw new RevisionConflictError();
         const { manifest, files } = await getCheckpoint(
@@ -1108,8 +1132,8 @@ export async function createLocalWorkspaceProvider(
         const currentSnapshot = await treeSnapshot(current, false, false);
         if (currentSnapshot.digest !== current.tree_digest)
           throw new WorkspaceModifiedError();
-        const stageName = `${current.workspace_id}-${randomUUID().replaceAll("-", "")}`;
-        const backupName = `${current.workspace_id}-${randomUUID().replaceAll("-", "")}`;
+        const stageName = `${current.workspace_id}-${newToken()}`;
+        const backupName = `${current.workspace_id}-${newToken()}`;
         const stagingDir = join(rootDir, "staging", stageName);
         const stagingTree = join(stagingDir, "tree");
         const backupDir = join(rootDir, "trash", backupName);
@@ -1179,11 +1203,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async diff(context, workspace, diffOptions): Promise<WorkspaceDiff> {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         const checkpoint =
           diffOptions?.base ?? (await baselineRef(context, current));
         const { files: baseFiles } = await getCheckpoint(
@@ -1196,11 +1216,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async collect(context, workspace) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         const base = await baselineRef(context, current);
         const { files: baseFiles } = await getCheckpoint(
           context,
@@ -1273,28 +1289,18 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async inspect(context, workspaceId) {
-      const meta = await assertWorkspace(context, workspaceId);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspaceId, async (current) => {
         return currentRef(current);
       });
     },
     async workspacePath(context, workspace) {
-      const meta = await assertWorkspace(context, workspace, true);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await assertWorkspace(context, workspace, true);
-        return assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, (_current, tree) => tree, {
+        allowRestoreJournal: true,
+        reload: "scoped",
       });
     },
     async checkpoints(context, workspace) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         return current.checkpoints.map((record) => ({
           checkpoint_id: record.checkpoint_id,
           workspace: {
@@ -1307,11 +1313,7 @@ export async function createLocalWorkspaceProvider(
       });
     },
     async skipped(context, workspace) {
-      const meta = await assertWorkspace(context, workspace);
-      return withMutex(lockFor(meta.workspace_id), async () => {
-        assertOpen();
-        const current = await reloadWorkspaceMeta(meta.workspace_id);
-        await assertWorkspaceAvailable(current);
+      return withWorkspace(context, workspace, async (current) => {
         return current.skipped.map((entry) => ({ ...entry }));
       });
     },
@@ -1481,7 +1483,7 @@ async function recoverProviderState(
     for (const entry of await readdir(join(rootDir, "meta"), {
       withFileTypes: true,
     })) {
-      if (!/^ws_[a-f0-9]{32}$/.test(entry.name)) continue;
+      if (!WORKSPACE_ID_PATTERN.test(entry.name)) continue;
       const metadataDirectory = join(rootDir, "meta", entry.name);
       metadataDirectories.add(entry.name);
       try {
@@ -1566,7 +1568,7 @@ async function recoverProviderState(
     for (const entry of await readdir(join(rootDir, "workspaces"), {
       withFileTypes: true,
     })) {
-      if (!/^ws_[a-f0-9]{32}$/.test(entry.name)) continue;
+      if (!WORKSPACE_ID_PATTERN.test(entry.name)) continue;
       if (metadataDirectories.has(entry.name)) continue;
       if (!entry.isDirectory() || entry.isSymbolicLink()) {
         lostWorkspaces.add(entry.name);
@@ -1608,7 +1610,7 @@ async function rollbackRestoreJournal(
         aside = join(
           rootDir,
           "trash",
-          `${meta.workspace_id}-aside-${randomUUID().replaceAll("-", "")}`,
+          `${meta.workspace_id}-aside-${newToken()}`,
         );
         await rename(workspace, aside);
       }
@@ -1708,7 +1710,7 @@ async function cleanupRecoveryDirectories(
     const directoryPath = join(rootDir, directory);
     const entries = await readdir(directoryPath).catch(() => []);
     for (const entry of entries) {
-      const match = /^(ws_[a-f0-9]{32})-[A-Za-z0-9-]+$/.exec(entry);
+      const match = WORKSPACE_ENTRY_PATTERN.exec(entry);
       const workspaceId = match?.[1];
       if (!workspaceId) continue;
       const meta = readableMetas.get(workspaceId);

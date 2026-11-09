@@ -125,56 +125,73 @@ export const ScanRecordSchema = z
   })
   .strict();
 export type ScanRecord = z.infer<typeof ScanRecordSchema>;
-export type Decision =
-  | "pending"
-  | "approved"
-  | "denied"
-  | "revoked"
-  | "superseded"
-  | "expired";
-export interface Review {
-  review_id: string;
-  revision: number;
-  scope: Scope;
-  kind: Kind;
-  integration_id: string;
-  evidence: SourceEvidence;
-  permissions: Permission[];
-  credential_bindings: CredentialBinding[];
-  binding_sha256: string;
-  state: Decision;
-  expires_at: string;
-  scans: ScanRecord[];
-}
-export interface Grant extends Omit<Review, "scans"> {
-  grant_id: string;
-  approved_by: string;
-  approved_at: string;
-}
-export interface AuditEventInput {
-  at: string;
-  type: string;
-  scope: Scope;
-  kind: Kind;
-  integration_id: string;
-  review_id?: string | undefined;
-  grant_id?: string | undefined;
-  actor: string;
-  reason_code: string;
-  binding_sha256: string;
-}
-export interface AuditEvent extends AuditEventInput {
-  seq: number;
-  event_id: string;
-  prev_sha256: string;
-  sha256: string;
-}
-export interface TrustState {
-  reviews: Review[];
-  grants: Grant[];
-  consumed_nonces: string[];
-  events: AuditEvent[];
-}
+export const DecisionSchema = z.enum([
+  "pending",
+  "approved",
+  "denied",
+  "revoked",
+  "superseded",
+  "expired",
+]);
+export type Decision = z.infer<typeof DecisionSchema>;
+const TimestampSchema = z.string().datetime({ offset: true });
+export const RevisionSchema = z.number().int().safe().min(1);
+export const ReviewSchema = z
+  .object({
+    review_id: CodeSchema,
+    revision: RevisionSchema,
+    scope: ScopeSchema,
+    kind: KindSchema,
+    integration_id: CodeSchema,
+    evidence: SourceEvidenceSchema,
+    permissions: z.array(PermissionSchema),
+    credential_bindings: z.array(CredentialBindingSchema),
+    binding_sha256: DigestSchema,
+    state: DecisionSchema,
+    expires_at: TimestampSchema,
+    scans: z.array(ScanRecordSchema),
+  })
+  .strict();
+export type Review = z.infer<typeof ReviewSchema>;
+export const GrantSchema = ReviewSchema.omit({ scans: true })
+  .extend({
+    grant_id: CodeSchema,
+    approved_by: CodeSchema,
+    approved_at: TimestampSchema,
+  })
+  .strict();
+export type Grant = z.infer<typeof GrantSchema>;
+export const AuditEventInputSchema = z
+  .object({
+    at: TimestampSchema,
+    type: CodeSchema,
+    scope: ScopeSchema,
+    kind: KindSchema,
+    integration_id: CodeSchema,
+    review_id: CodeSchema.optional(),
+    grant_id: CodeSchema.optional(),
+    actor: CodeSchema,
+    reason_code: CodeSchema,
+    binding_sha256: DigestSchema,
+  })
+  .strict();
+export type AuditEventInput = z.infer<typeof AuditEventInputSchema>;
+export const AuditEventSchema = AuditEventInputSchema.extend({
+  seq: RevisionSchema,
+  event_id: CodeSchema,
+  prev_sha256: DigestSchema,
+  sha256: DigestSchema,
+}).strict();
+export type AuditEvent = z.infer<typeof AuditEventSchema>;
+export const TrustStateSchema = z
+  .object({
+    reviews: z.array(ReviewSchema),
+    grants: z.array(GrantSchema),
+    consumed_nonces: z.array(CodeSchema),
+    events: z.array(AuditEventSchema),
+  })
+  .strict();
+export type TrustState = z.infer<typeof TrustStateSchema>;
 export type NormalizedScope = Omit<Scope, "workspace_id"> & {
   workspace_id: string | null;
 };

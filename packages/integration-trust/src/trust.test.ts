@@ -854,6 +854,81 @@ for (const file of ["state.json", "audit.jsonl"])
     await expect(s.load()).rejects.toMatchObject({ code: "store_corrupt" });
     await denied(f, "store_corrupt");
   });
+async function rewriteStore(
+  directory: string,
+  edit: (state: Record<string, unknown[]>) => void,
+) {
+  const path = join(directory, "state.json"),
+    record = JSON.parse(await readFile(path, "utf8")),
+    state = record.state;
+  edit(state);
+  let previous = "0".repeat(64);
+  state.events = state.events.map(
+    (event: Record<string, unknown>, index: number) => {
+      const { sha256: _, ...rest } = event,
+        next = { ...rest, seq: index + 1, prev_sha256: previous };
+      previous = sha256(canonicalJSON(next));
+      return { ...next, sha256: previous };
+    },
+  );
+  await writeFile(
+    join(directory, "audit.jsonl"),
+    state.events.map((e: unknown) => `${canonicalJSON(e)}\n`).join(""),
+  );
+  await writeFile(
+    path,
+    canonicalJSON({
+      ...record,
+      state,
+      last_audit_sha256: previous,
+      state_sha256: sha256(canonicalJSON(state)),
+    }),
+  );
+}
+test("self-consistent file store with valid shape loads unchanged", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "trust-")),
+    s = new FileTrustStore({ directory, workspaceRoots: [] }),
+    f = fixture(s);
+  await f.approved();
+  const before = await s.load();
+  await rewriteStore(directory, () => undefined);
+  expect(await s.load()).toEqual(before);
+});
+for (const [name, edit] of [
+  [
+    "grant expires_at",
+    (state: Record<string, unknown[]>) => {
+      (state.grants?.[0] as Record<string, unknown>).expires_at = 0;
+    },
+  ],
+  [
+    "review state",
+    (state: Record<string, unknown[]>) => {
+      (state.reviews?.[0] as Record<string, unknown>).state = "trusted";
+    },
+  ],
+  [
+    "audit event kind",
+    (state: Record<string, unknown[]>) => {
+      (state.events?.[0] as Record<string, unknown>).kind = "bogus";
+    },
+  ],
+  [
+    "unknown state field",
+    (state: Record<string, unknown[]>) => {
+      state.extra = [];
+    },
+  ],
+] as const)
+  test(`self-consistent file store with malformed ${name} fails closed`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "trust-")),
+      s = new FileTrustStore({ directory, workspaceRoots: [] }),
+      f = fixture(s);
+    await f.approved();
+    await rewriteStore(directory, edit);
+    await expect(s.load()).rejects.toMatchObject({ code: "store_corrupt" });
+    await denied(f, "store_corrupt");
+  });
 test("workspace location and symlink into workspace rejected", async () => {
   const root = await mkdtemp(join(tmpdir(), "trust-")),
     workspace = join(root, "workspace");

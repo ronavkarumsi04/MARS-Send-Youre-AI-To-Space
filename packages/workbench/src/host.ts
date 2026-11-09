@@ -1,16 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import {
   mkdir,
-  open,
   readFile,
   realpath,
   rename,
-  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type ChildLaunch,
   type ChildRunner,
@@ -29,24 +26,16 @@ import type {
   RequiredCheck,
   Scope,
   Task,
-  VerificationCheckResult,
-  VerificationEvidenceRecord,
   VerificationView,
   WorkspaceRef,
 } from "@mars/contracts";
 import {
   isTerminalTaskStatus,
   JournalEntryIdsSchema,
-  REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
-  RequiredCheckSchema,
-  ScopeSchema,
-  VERIFICATION_EVIDENCE_OPERATION,
-  VerificationEvidenceRecordSchema,
   verificationStateFor,
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
 } from "@mars/contracts";
-import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import {
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
@@ -81,12 +70,10 @@ import { chooseChildModel, isReviewerRole } from "./child-model";
 import {
   collaborationTools,
   type FrozenCollaboration,
-  FrozenCollaborationSchema,
   type WorkbenchCollaboration,
 } from "./collaboration-context";
 import {
   type FrozenInstructions,
-  FrozenInstructionsSchema,
   freezeInstructions,
   hookBlockMessage,
   hookResultRecord,
@@ -97,27 +84,45 @@ import {
 } from "./conventions-context";
 import { diffDigest } from "./diff-digest";
 import {
-  FrozenGraphSummarySchema,
+  type FrozenGraphSummarySchema,
   freezeGraphSummary,
   graphEvidence,
-  validateFrozenGraphSummary,
   type WorkbenchKnowledgeGraph,
   withFrozenGraphSummary,
 } from "./graph-context";
+import { childWorkspaceTaskId, createChildRecords } from "./host-children";
+import {
+  type LaunchLocation,
+  readLaunch,
+  readLaunchIfPresent,
+  rewriteLaunch,
+  taskStateDir,
+  writeLaunch,
+} from "./host-launch";
+import {
+  errorCodeOf,
+  internalContext,
+  WORKBENCH_PRODUCER,
+  workbenchEvent,
+} from "./host-shared";
+import {
+  freezeRequiredChecks,
+  type VerificationHost,
+  verificationRecords,
+  verifyCandidate,
+} from "./host-verification";
 import { projectJournal, readJournalFile } from "./journal";
 import {
-  FrozenMemorySchema,
+  type FrozenMemorySchema,
   freezeMemory,
   recallHistory,
   serializedBytes,
-  validateFrozenMemory,
   type WorkbenchMemory,
   withFrozenMemory,
 } from "./memory-context";
 import { proposalTools, type WorkbenchOptimization } from "./proposal-context";
 import {
   type Approvals,
-  ApprovalsSchema,
   CheckpointRefSchema,
   type DiffResult,
   type EvidenceRecord,
@@ -125,10 +130,9 @@ import {
   WorkspaceRefSchema,
 } from "./protocol";
 import {
-  FrozenRepositoryMapSchema,
+  type FrozenRepositoryMapSchema,
   freezeRepositoryMap,
   repositoryMapTokenBudget,
-  validateFrozenRepositoryMap,
   withFrozenRepositoryMap,
 } from "./repository-context";
 import {
@@ -139,15 +143,12 @@ import {
 import { WorkbenchError, type WorkbenchOperations } from "./server";
 import {
   type FrozenSkills,
-  FrozenSkillsSchema,
   freezeCurrentSkills,
-  validateFrozenSkills,
   type WorkbenchSkills,
   withFrozenSkills,
 } from "./skills-context";
 import {
   type FrozenRouting,
-  FrozenRoutingSchema,
   routeLaunch,
   type WorkbenchSpecialists,
 } from "./specialist-routing";
@@ -157,91 +158,7 @@ import {
   watchEvidence,
 } from "./watch-context";
 
-const launchSchema = z
-  .object({
-    schema_version: z.literal(1),
-    task_id: z.string().min(1),
-    scope: ScopeSchema,
-    model_id: z.string().min(1),
-    model_classification: z
-      .object({ tier: z.enum(["free", "paid", "local"]), free: z.boolean() })
-      .strict()
-      .optional(),
-    deadline: z.number().int().positive().optional(),
-    approvals: ApprovalsSchema,
-    workspace: WorkspaceRefSchema,
-    cwd: z.string().min(1).refine(isAbsolute),
-    memory: FrozenMemorySchema.optional(),
-    skills: FrozenSkillsSchema.optional(),
-    repository_map: FrozenRepositoryMapSchema.optional(),
-    knowledge_graph: FrozenGraphSummarySchema.optional(),
-    instructions: FrozenInstructionsSchema.optional(),
-    routing: FrozenRoutingSchema.optional(),
-    collaboration: FrozenCollaborationSchema.optional(),
-    /** Host-run checks fixed at launch; the model never sees or edits them. */
-    required_checks: z.array(RequiredCheckSchema).max(32).optional(),
-  })
-  .strict();
-type Launch = z.infer<typeof launchSchema>;
-
-const MAX_VERIFICATION_RECORDS = 50;
-/** Fragments of the text-form tool-call syntax some models emit instead of a structured call. */
-const TEXTUAL_TOOL_CALL = /<function=[A-Za-z0-9_]+>|<\/?tool_call>/;
-
-function textualToolCallDiagnostic(content: string): string | null {
-  const match = TEXTUAL_TOOL_CALL.exec(content);
-  if (!match) return null;
-  return `Assistant text contains a tool call written as text (${match[0]}); it was never executed. Tools run only through validated structured calls.`;
-}
-
-function expectedDigest(check: RequiredCheck): string {
-  return (
-    check.sha256 ??
-    createHash("sha256")
-      .update(check.content ?? "", "utf8")
-      .digest("hex")
-  );
-}
-
-/**
- * Launch metadata keeps only the digest form of each required check, so a
- * start that was accepted can never write a launch the host refuses to read
- * (expected bytes travel in the request, not in `launch.json`).
- */
-function freezeRequiredChecks(
-  checks: readonly RequiredCheck[],
-): RequiredCheck[] {
-  return checks.map((check) =>
-    RequiredCheckSchema.parse({
-      kind: check.kind,
-      path: check.path,
-      sha256: expectedDigest(check),
-      ...(check.timeout_ms !== undefined
-        ? { timeout_ms: check.timeout_ms }
-        : {}),
-    }),
-  );
-}
-
-class CheckTimeoutError extends Error {
-  constructor(readonly timeoutMs: number) {
-    super(`Required check timed out after ${timeoutMs} ms`);
-    this.name = "CheckTimeoutError";
-  }
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new CheckTimeoutError(timeoutMs)),
-        timeoutMs,
-      );
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
+export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
 export interface WorkspaceHost extends ExecutionProvider {
   reopen(context: RequestContext, taskId: string): Promise<WorkspaceRef>;
@@ -330,16 +247,6 @@ function normalizeClaimedPath(path: string): string | null {
 }
 
 /** A write is inside the child's claim when it equals or sits under a claimed path. */
-/**
- * The workspace id a child's tree is prepared under. The runner derives child
- * task ids by suffixing the parent's, which can exceed the provider's 128
- * character limit for a valid parent; such ids map to a stable digest alias.
- */
-function childWorkspaceTaskId(childTaskId: string): string {
-  if (/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(childTaskId))
-    return childTaskId;
-  return "child." + createHash("sha256").update(childTaskId).digest("hex");
-}
 
 /** The executable bit a workspace diff patch records for the file's new state. */
 function seededExecutable(patch: string): boolean | undefined {
@@ -372,50 +279,6 @@ function parseEvidenceRecord(bytes: Uint8Array): WatchEvidenceRecord | null {
   }
   const result = WatchEvidenceRecordSchema.safeParse(parsed);
   return result.success ? result.data : null;
-}
-
-export const WORKBENCH_PACKAGE_VERSION = "0.0.1";
-const WORKBENCH_PRODUCER = "@mars/workbench";
-
-function workbenchEvent(
-  payload: unknown,
-  runId: string = randomUUID(),
-  extra: Pick<AppendEventInput, "source_event_ids" | "usage"> = {},
-): AppendEventInput {
-  return {
-    event_type: "tool.completed",
-    producer: WORKBENCH_PRODUCER,
-    run_id: runId,
-    versions: [
-      { component: WORKBENCH_PRODUCER, revision: WORKBENCH_PACKAGE_VERSION },
-    ],
-    ...extra,
-    payload,
-  };
-}
-
-/** The `code` property of a thrown value, whatever its shape. */
-function errorCodeOf(error: unknown): unknown {
-  return typeof error === "object" && error !== null && "code" in error
-    ? error.code
-    : undefined;
-}
-
-function internalContext(scope: Scope): RequestContext {
-  return { schema_version: 1, scope, request_id: randomUUID() };
-}
-
-function scopeKey(scope: Scope, taskId: string): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify([
-        scope.owner_id,
-        scope.project_id,
-        scope.workspace_id ?? null,
-        taskId,
-      ]),
-    )
-    .digest("hex");
 }
 
 export async function createWorkbenchHost(
@@ -610,8 +473,8 @@ export async function createWorkbenchHost(
       throw new WorkbenchError("model_unavailable");
     }
   };
-  const taskState = (task: Task) =>
-    join(root, scopeKey(options.scope, task.task_id));
+  const launchLocation: LaunchLocation = { root, scope: options.scope };
+  const taskState = (task: Task) => taskStateDir(launchLocation, task.task_id);
   const classifyModel = (modelId: string) => {
     const model = options.registry.getModel(modelId);
     if (!model) return null;
@@ -626,91 +489,6 @@ export async function createWorkbenchHost(
           : ("paid" as const);
     return { tier, free: model.pricing.free };
   };
-  const readLaunch = async (task: Task): Promise<Launch> => {
-    const dir = taskState(task);
-    if (!isInsideOrEqual(root, dir) || (await realpath(dir)) !== dir)
-      throw new WorkbenchError("not_found");
-    const file = await open(
-      join(dir, "launch.json"),
-      constants.O_RDONLY | constants.O_NOFOLLOW,
-    );
-    try {
-      const info = await file.stat();
-      if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 128 * 1024)
-        throw new WorkbenchError("internal_error");
-      const value = launchSchema.parse(JSON.parse(await file.readFile("utf8")));
-      if (value.repository_map) {
-        const map = value.repository_map;
-        validateFrozenRepositoryMap(map);
-        if (
-          !value.approvals.read ||
-          map.scope.owner_id !== task.scope.owner_id ||
-          map.scope.project_id !== task.scope.project_id ||
-          map.scope.workspace_id !== task.scope.workspace_id ||
-          map.workspace.workspace_id !== value.workspace.workspace_id ||
-          map.workspace.provider !== value.workspace.provider ||
-          map.workspace.revision !== value.workspace.revision
-        )
-          throw new WorkbenchError("internal_error");
-      }
-      if (value.knowledge_graph) {
-        const graph = value.knowledge_graph;
-        validateFrozenGraphSummary(graph);
-        if (
-          !value.approvals.read ||
-          graph.scope.owner_id !== task.scope.owner_id ||
-          graph.scope.project_id !== task.scope.project_id ||
-          graph.scope.workspace_id !== task.scope.workspace_id ||
-          graph.workspace.workspace_id !== value.workspace.workspace_id ||
-          graph.workspace.provider !== value.workspace.provider ||
-          graph.workspace.revision !== value.workspace.revision
-        )
-          throw new WorkbenchError("internal_error");
-      }
-      if (value.memory) {
-        validateFrozenMemory(value.memory);
-        if (
-          value.memory.scope.owner_id !== task.scope.owner_id ||
-          value.memory.scope.project_id !== task.scope.project_id ||
-          value.memory.scope.workspace_id !== task.scope.workspace_id
-        )
-          throw new WorkbenchError("internal_error");
-      }
-      if (value.skills) {
-        validateFrozenSkills(value.skills);
-        if (!value.approvals.read) throw new WorkbenchError("internal_error");
-      }
-      if (
-        value.task_id !== task.task_id ||
-        value.scope.owner_id !== task.scope.owner_id ||
-        value.scope.project_id !== task.scope.project_id ||
-        value.scope.workspace_id !== task.scope.workspace_id
-      )
-        throw new WorkbenchError("internal_error");
-      return value;
-    } finally {
-      await file.close();
-    }
-  };
-  const writeLaunch = async (task: Task, launch: Launch): Promise<void> => {
-    const dir = taskState(task);
-    if ((await realpath(dir)) !== dir || ((await stat(dir)).mode & 0o077) !== 0)
-      throw new WorkbenchError("internal_error");
-    const file = await open(
-      join(dir, "launch.json"),
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      await file.writeFile(JSON.stringify(launchSchema.parse(launch)));
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-  };
   const privatePatterns = async (
     context: RequestContext,
     taskId: string,
@@ -723,7 +501,7 @@ export async function createWorkbenchHost(
       const directory = dirname(binding.session_file);
       if (directory.length > 1) patterns.add(directory);
     }
-    const launch = await readLaunch(task).catch(() => null);
+    const launch = await readLaunchIfPresent(launchLocation, task);
     if (binding && !launch) throw new WorkbenchError("unavailable");
     if (launch) {
       patterns.add(launch.cwd);
@@ -939,121 +717,15 @@ export async function createWorkbenchHost(
     }
     return recorded;
   };
-  const childRouting = new Map<string, FrozenRouting>();
-  // Models already used inside a task (coordinator and children) so a
-  // reviewer child can be routed to a different one; per child, whether its
-  // review was independent, mirrored into the child.result event.
-  // The history is durable (private per-task record) and selection is
-  // serialized per task, so it survives pauses and host restarts and two
-  // children routed concurrently can never both claim the same model.
-  const TaskModelsSchema = z
-    .object({
-      models: z.array(z.string().min(1)),
-      verdicts: z.record(z.string(), z.boolean()),
-    })
-    .strict();
-  type TaskModels = z.infer<typeof TaskModelsSchema>;
-  const taskModels = new Map<string, TaskModels>();
-  const taskModelLocks = new Map<string, Promise<unknown>>();
-  const taskModelsPath = (taskId: string) =>
-    join(
-      options.stateRoot,
-      "children",
-      "models",
-      childWorkspaceTaskId(taskId) + ".json",
-    );
-  const loadTaskModels = async (taskId: string): Promise<TaskModels> => {
-    const known = taskModels.get(taskId);
-    if (known) return known;
-    // Only a missing file is an empty history (it is created on first
-    // save). A corrupt or unreadable one throws so it is never cached or
-    // overwritten, which would drop models a reviewer must avoid.
-    const text = await readFile(taskModelsPath(taskId), "utf8").catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      },
-    );
-    const record =
-      text === null
-        ? { models: [], verdicts: {} }
-        : TaskModelsSchema.parse(JSON.parse(text));
-    taskModels.set(taskId, record);
-    return record;
-  };
-  // Cached only once durable: a restart must never find less history than
-  // the models this process already handed out.
-  const saveTaskModels = async (taskId: string, record: TaskModels) => {
-    const path = taskModelsPath(taskId);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = path + "." + randomUUID() + ".tmp";
-    try {
-      await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-      await rename(temporary, path);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    taskModels.set(taskId, record);
-  };
-  const forgetTaskModels = async (taskId: string) => {
-    taskModels.delete(taskId);
-    await rm(taskModelsPath(taskId), { force: true }).catch(() => undefined);
-  };
-  const withTaskModelLock = async <T>(
-    taskId: string,
-    work: () => Promise<T>,
-  ): Promise<T> => {
-    const previous = taskModelLocks.get(taskId) ?? Promise.resolve();
-    const run = previous.then(work, work);
-    const settled = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    taskModelLocks.set(taskId, settled);
-    try {
-      return await run;
-    } finally {
-      if (taskModelLocks.get(taskId) === settled) taskModelLocks.delete(taskId);
-    }
-  };
-  /** Routing decisions survive a host restart in a private per-child record. */
-  const childRoutingPath = (childTaskId: string) =>
-    join(
-      options.stateRoot,
-      "children",
-      "routing",
-      childWorkspaceTaskId(childTaskId) + ".json",
-    );
-  const rememberChildRouting = async (
-    childTaskId: string,
-    routing: FrozenRouting,
-  ) => {
-    childRouting.set(childTaskId, routing);
-    const path = childRoutingPath(childTaskId);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = path + "." + randomUUID() + ".tmp";
-    await writeFile(temporary, JSON.stringify(routing), { mode: 0o600 });
-    await rename(temporary, path);
-  };
-  const recallChildRouting = async (
-    childTaskId: string,
-  ): Promise<FrozenRouting | null> => {
-    const known = childRouting.get(childTaskId);
-    if (known) return known;
-    const parsed = await readFile(childRoutingPath(childTaskId), "utf8")
-      .then((text) => FrozenRoutingSchema.safeParse(JSON.parse(text)))
-      .catch(() => null);
-    if (!parsed?.success) return null;
-    childRouting.set(childTaskId, parsed.data);
-    return parsed.data;
-  };
-  const forgetChildRouting = async (childTaskId: string) => {
-    childRouting.delete(childTaskId);
-    await rm(childRoutingPath(childTaskId), { force: true }).catch(
-      () => undefined,
-    );
-  };
+  const {
+    loadTaskModels,
+    saveTaskModels,
+    forgetTaskModels,
+    withTaskModelLock,
+    rememberChildRouting,
+    recallChildRouting,
+    forgetChildRouting,
+  } = createChildRecords(options.stateRoot);
   const childLaunches = new Map<string, ChildLaunch>();
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
@@ -1203,9 +875,45 @@ export async function createWorkbenchHost(
           .catch(() => undefined)
       : Promise.resolve();
   const closeRecordedRoom = async (task: Task, mode: "drain" | "cancel") => {
-    const launch = await readLaunch(task).catch(() => null);
+    const launch = await readLaunchIfPresent(launchLocation, task);
     if (launch?.collaboration)
       await closeFrozenRoom(task.task_id, launch.collaboration, mode);
+  };
+  /**
+   * The one teardown for a run that cannot continue: dispose the runtime,
+   * cancel its room, and only while the task is still running record
+   * `evidence` and move it to `status` (`paused` keeps a failed resume
+   * resumable); research is always reconciled. Every step is best-effort so
+   * the caller's original error is what surfaces.
+   */
+  const settleFailedRun = async (
+    taskId: string,
+    settle: {
+      runtime?: RuntimeSession | undefined;
+      collaboration?: FrozenCollaboration | undefined;
+      status?: "failed" | "paused";
+      evidence?: AppendEventInput;
+    } = {},
+  ) => {
+    await settle.runtime?.dispose().catch(() => undefined);
+    if (settle.collaboration)
+      await closeFrozenRoom(taskId, settle.collaboration, "cancel");
+    const context = internalContext(options.scope);
+    const current = await options.store
+      .inspect(context, taskId)
+      .catch(() => null);
+    if (current?.status === "running") {
+      if (settle.evidence)
+        await options.store
+          .appendEvent(context, taskId, settle.evidence)
+          .catch(() => undefined);
+      await options.store
+        .update(context, taskId, current.revision, {
+          status: settle.status ?? "failed",
+        })
+        .catch(() => undefined);
+    }
+    await reconcileResearch(taskId);
   };
   // Steering advances the task revision; the room marks pending child
   // proposals stale so the coordinator reviews them against current intent.
@@ -1217,7 +925,7 @@ export async function createWorkbenchHost(
    * the frozen one in launch metadata and in the live room tools.
    */
   const reviseRecordedRoom = async (task: Task) => {
-    const launch = await readLaunch(task).catch(() => null);
+    const launch = await readLaunchIfPresent(launchLocation, task);
     if (!launch?.collaboration || !options.collaboration) return;
     const context = internalContext(options.scope);
     const roomId = launch.collaboration.room_id;
@@ -1236,7 +944,10 @@ export async function createWorkbenchHost(
         capability: revised.coordinator,
         budget: revised.room.coordinator_runtime_budget,
       };
-      await rewriteLaunch(task, { ...launch, collaboration: frozen });
+      await rewriteLaunch(launchLocation, task, {
+        ...launch,
+        collaboration: frozen,
+      });
       const live = liveRooms.get(task.task_id);
       if (live) Object.assign(live, frozen);
     } catch (error) {
@@ -1247,26 +958,6 @@ export async function createWorkbenchHost(
         return;
       throw error;
     }
-  };
-  const rewriteLaunch = async (task: Task, launch: Launch): Promise<void> => {
-    const dir = taskState(task);
-    if ((await realpath(dir)) !== dir || ((await stat(dir)).mode & 0o077) !== 0)
-      throw new WorkbenchError("internal_error");
-    const temporary = join(dir, "launch.json." + randomUUID());
-    const file = await open(
-      temporary,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      await file.writeFile(JSON.stringify(launchSchema.parse(launch)));
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, join(dir, "launch.json"));
   };
   /**
    * Only successful foreground turns reach background review; `run` is never
@@ -1316,182 +1007,10 @@ export async function createWorkbenchHost(
       // Review is advisory; it never affects the task.
     }
   };
-  /**
-   * The host-owned verdict: re-reads the candidate (the workspace revision
-   * after the agent stopped), runs every required check against it with a
-   * bounded timeout, confirms the revision did not move meanwhile, and
-   * persists the result as task evidence. Never throws; an unavailable
-   * verifier is `inconclusive`, never `passed`.
-   */
-  const verifyCandidate = async (
-    task: Task,
-    runtime: RuntimeSession,
-    requiredChecks: readonly RequiredCheck[],
-    content: string,
-  ): Promise<VerificationEvidenceRecord | null> => {
-    if (requiredChecks.length === 0) return null;
-    const context = internalContext(options.scope);
-    const startedAt = Date.now();
-    const diagnostics: string[] = [];
-    const textual = textualToolCallDiagnostic(content);
-    if (textual) diagnostics.push(textual);
-    const persist = async (record: VerificationEvidenceRecord) => {
-      await options.store
-        .appendEvent(
-          context,
-          task.task_id,
-          workbenchEvent(record, runtime.sessionId),
-        )
-        .catch(() => undefined);
-      return record;
-    };
-    let candidate: WorkspaceRef;
-    try {
-      candidate = WorkspaceRefSchema.parse(
-        await withTimeout(
-          options.workspace.reopen(context, task.task_id),
-          REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
-        ),
-      );
-    } catch {
-      // No candidate can be named, so no check can run; the failure is still
-      // evidence (inconclusive), never silence that reads as "unverified".
-      return persist(
-        VerificationEvidenceRecordSchema.parse({
-          schema_version: 1,
-          operation: VERIFICATION_EVIDENCE_OPERATION,
-          run_id: runtime.sessionId,
-          task_id: task.task_id,
-          task_revision: task.revision,
-          candidate: null,
-          verdict: "inconclusive",
-          verified: false,
-          checks: [],
-          reasons: [
-            "Candidate revision could not be acquired; required checks did not run",
-          ],
-          diagnostics,
-          duration_ms: Math.max(0, Date.now() - startedAt),
-          recorded_at: new Date().toISOString(),
-        } satisfies VerificationEvidenceRecord),
-      );
-    }
-    const checks: VerificationCheckResult[] = [];
-    const reasons: string[] = [];
-    for (const check of requiredChecks) {
-      const expected = expectedDigest(check);
-      const timeoutMs = check.timeout_ms ?? REQUIRED_CHECK_DEFAULT_TIMEOUT_MS;
-      const began = Date.now();
-      let status: VerificationCheckResult["status"];
-      let reason: string | null = null;
-      let observed: string | null = null;
-      try {
-        const artifact = await withTimeout(
-          options.workspace.read(context, candidate, check.path),
-          timeoutMs,
-        );
-        observed = artifact.sha256;
-        if (artifact.sha256 === expected) status = "passed";
-        else {
-          status = "failed";
-          reason = `Required file content mismatch: ${check.path}`;
-        }
-      } catch (error) {
-        if (error instanceof CheckTimeoutError) {
-          status = "inconclusive";
-          reason = `${error.message}: ${check.path}`;
-        } else if (
-          error instanceof Error &&
-          errorCodeOf(error) === "not_found"
-        ) {
-          status = "failed";
-          reason = `Required file missing: ${check.path}`;
-        } else {
-          status = "inconclusive";
-          reason = `Verifier unavailable for ${check.path}`;
-        }
-      }
-      if (reason) reasons.push(reason);
-      checks.push({
-        kind: check.kind,
-        path: check.path,
-        expected_sha256: expected,
-        observed_sha256: observed,
-        status,
-        reason,
-        duration_ms: Math.max(0, Date.now() - began),
-      });
-    }
-    let verdict: VerificationEvidenceRecord["verdict"] = checks.some(
-      (check) => check.status === "failed",
-    )
-      ? "failed"
-      : checks.some((check) => check.status === "inconclusive")
-        ? "inconclusive"
-        : "passed";
-    try {
-      const after = await withTimeout(
-        options.workspace.reopen(context, task.task_id),
-        REQUIRED_CHECK_DEFAULT_TIMEOUT_MS,
-      );
-      if (after.revision !== candidate.revision) {
-        verdict = "inconclusive";
-        reasons.push("Workspace revision changed while checks were running");
-      }
-    } catch {
-      verdict = "inconclusive";
-      reasons.push("Candidate revision could not be confirmed after checks");
-    }
-    return persist(
-      VerificationEvidenceRecordSchema.parse({
-        schema_version: 1,
-        operation: VERIFICATION_EVIDENCE_OPERATION,
-        run_id: runtime.sessionId,
-        task_id: task.task_id,
-        task_revision: task.revision,
-        candidate,
-        verdict,
-        verified:
-          verdict === "passed" &&
-          checks.every((check) => check.status === "passed"),
-        checks,
-        reasons,
-        diagnostics,
-        duration_ms: Math.max(0, Date.now() - startedAt),
-        recorded_at: new Date().toISOString(),
-      } satisfies VerificationEvidenceRecord),
-    );
-  };
-  const verificationRecords = async (
-    context: RequestContext,
-    taskId: string,
-  ): Promise<VerificationEvidenceRecord[]> => {
-    const records: VerificationEvidenceRecord[] = [];
-    for await (const event of options.store.events(context, taskId)) {
-      if (
-        event.event_type !== "tool.completed" ||
-        event.producer !== WORKBENCH_PRODUCER
-      )
-        continue;
-      const bytes = await options.store.artifacts.get(context, event.payload);
-      let payload: unknown;
-      try {
-        payload = JSON.parse(new TextDecoder().decode(bytes));
-      } catch {
-        continue;
-      }
-      if (
-        !payload ||
-        typeof payload !== "object" ||
-        (payload as { operation?: unknown }).operation !==
-          VERIFICATION_EVIDENCE_OPERATION
-      )
-        continue;
-      const parsed = VerificationEvidenceRecordSchema.safeParse(payload);
-      if (parsed.success && parsed.data.task_id === taskId)
-        records.push(parsed.data);
-    }
-    return records.slice(-MAX_VERIFICATION_RECORDS);
+  const verificationHost: VerificationHost = {
+    scope: options.scope,
+    store: options.store,
+    workspace: options.workspace,
   };
   const run = (
     task: Task,
@@ -1510,6 +1029,8 @@ export async function createWorkbenchHost(
         : Promise.resolve();
     active.set(task.task_id, runtime);
     const job = (async () => {
+      // The step a failed run stopped in, recorded as the failure's evidence.
+      let stage: "run" | "publish" | "collect" | "verify" | "update" = "run";
       try {
         try {
           options.review?.beginLiveTurn(runtime.sessionId);
@@ -1538,6 +1059,7 @@ export async function createWorkbenchHost(
               .catch(() => undefined);
           }
         }
+        stage = "publish";
         await publishResult(
           task,
           runtime,
@@ -1547,6 +1069,7 @@ export async function createWorkbenchHost(
         const context = internalContext(options.scope);
         let current = await options.store.inspect(context, task.task_id);
         if (current.status !== "running") return;
+        stage = "collect";
         const collected = await options.workspace.collect(context, workspace);
         const artifact = await options.store.artifacts.put(
           context,
@@ -1561,13 +1084,16 @@ export async function createWorkbenchHost(
             : outcome.status;
         // The verdict is recorded before the task turns `completed`, so a
         // client that sees the terminal status also sees the evidence.
+        stage = "verify";
         if (status === "completed")
           await verifyCandidate(
+            verificationHost,
             current,
             runtime,
             requiredChecks,
             outcome.content,
           );
+        stage = "update";
         await options.store.update(context, task.task_id, current.revision, {
           status,
           artifacts: [
@@ -1591,19 +1117,19 @@ export async function createWorkbenchHost(
             iterationsBefore,
           );
         await reconcileResearch(task.task_id);
-      } catch {
-        await closeRoom("cancel");
-        const context = internalContext(options.scope);
-        const current = await options.store
-          .inspect(context, task.task_id)
-          .catch(() => null);
-        if (current?.status === "running")
-          await options.store
-            .update(context, task.task_id, current.revision, {
+      } catch (error) {
+        await settleFailedRun(task.task_id, {
+          collaboration,
+          evidence: workbenchEvent(
+            {
+              operation: "runtime.run",
               status: "failed",
-            })
-            .catch(() => undefined);
-        await reconcileResearch(task.task_id);
+              stage,
+              reason: error instanceof WorkbenchError ? error.code : "internal",
+            },
+            runtime.sessionId,
+          ),
+        });
       } finally {
         try {
           options.review?.endLiveTurn(runtime.sessionId);
@@ -2123,6 +1649,17 @@ export async function createWorkbenchHost(
               );
             } catch {
               routing = null;
+              await options.store
+                .appendEvent(
+                  internalContext(options.scope),
+                  request.task_id,
+                  workbenchEvent({
+                    operation: "routing",
+                    status: "unavailable",
+                    child_task_id: request.child_task_id,
+                  }),
+                )
+                .catch(() => undefined);
             }
           }
           const choice = chooseChildModel(
@@ -2331,12 +1868,7 @@ export async function createWorkbenchHost(
         delegation: Boolean(delegation),
       };
     } catch {
-      await options.store
-        .update(context, running.task_id, running.revision, {
-          status: "failed",
-        })
-        .catch(() => undefined);
-      await reconcileResearch(running.task_id);
+      await settleFailedRun(running.task_id);
       throw new WorkbenchError("unavailable");
     }
   };
@@ -2521,25 +2053,6 @@ export async function createWorkbenchHost(
       {},
     );
   };
-  const abandonLaunch = async (
-    context: RequestContext,
-    taskId: string,
-    runtime: RuntimeSession | undefined,
-    collaboration: FrozenCollaboration | undefined,
-  ) => {
-    await runtime?.dispose().catch(() => undefined);
-    if (collaboration) await closeFrozenRoom(taskId, collaboration, "cancel");
-    const current = await options.store
-      .inspect(context, taskId)
-      .catch(() => null);
-    if (current?.status === "running")
-      await options.store
-        .update(internalContext(options.scope), taskId, current.revision, {
-          status: "failed",
-        })
-        .catch(() => undefined);
-    await reconcileResearch(taskId);
-  };
 
   const api: WorkbenchOperations &
     Required<Pick<WorkbenchOperations, "journal">> = {
@@ -2617,7 +2130,7 @@ export async function createWorkbenchHost(
     async inspect(context, taskId) {
       checkContext(context);
       const task = await options.store.inspect(context, taskId);
-      const launch = await readLaunch(task).catch(() => null);
+      const launch = await readLaunchIfPresent(launchLocation, task);
       const classification = launch
         ? (launch.model_classification ?? classifyModel(launch.model_id))
         : null;
@@ -2672,7 +2185,7 @@ export async function createWorkbenchHost(
       const binding = await options.store.upstreamSession(context, taskId);
       if (!binding || !entryIds.length)
         return projectJournal([], entryIds, false);
-      const launch = await readLaunch(task).catch(() => null);
+      const launch = await readLaunchIfPresent(launchLocation, task);
       const free = launch
         ? (launch.model_classification ?? classifyModel(launch.model_id))
             ?.free === true
@@ -2802,7 +2315,7 @@ export async function createWorkbenchHost(
         });
         runtime = opened.runtime;
         if (closing) throw new WorkbenchError("unavailable");
-        await writeLaunch(task, {
+        await writeLaunch(launchLocation, task, {
           schema_version: 1,
           task_id: task.task_id,
           scope: task.scope,
@@ -2860,7 +2373,7 @@ export async function createWorkbenchHost(
         );
         return running;
       } catch (error) {
-        await abandonLaunch(context, task.task_id, runtime, collaboration);
+        await settleFailedRun(task.task_id, { runtime, collaboration });
         throw error;
       }
     },
@@ -2872,7 +2385,7 @@ export async function createWorkbenchHost(
         throw new WorkbenchError("conflict");
       const binding = await options.store.upstreamSession(context, taskId);
       if (!binding) throw new WorkbenchError("conflict");
-      const launch = await readLaunch(task);
+      const launch = await readLaunch(launchLocation, task);
       if (launch.approvals.execute && !options.canExecute)
         throw new WorkbenchError("forbidden");
       const { queued } = await runtimeResults(context, taskId);
@@ -2972,15 +2485,7 @@ export async function createWorkbenchHost(
         );
         return running;
       } catch (error) {
-        await runtime?.dispose().catch(() => undefined);
-        const current = await options.store.inspect(context, taskId);
-        if (current.status === "running")
-          await options.store.update(
-            internalContext(options.scope),
-            taskId,
-            current.revision,
-            { status: "paused" },
-          );
+        await settleFailedRun(taskId, { runtime, status: "paused" });
         throw error;
       }
     },
@@ -3003,8 +2508,11 @@ export async function createWorkbenchHost(
         throw new WorkbenchError("conflict");
       await options.store.cancel(context, taskId);
       await active.get(taskId)?.cancel();
-      await closeRecordedRoom(task, "cancel");
-      await reconcileResearch(taskId);
+      try {
+        await closeRecordedRoom(task, "cancel");
+      } finally {
+        await reconcileResearch(taskId);
+      }
     },
     async events(context, taskId, cursor) {
       checkContext(context);
@@ -3114,7 +2622,11 @@ export async function createWorkbenchHost(
     async verification(context, taskId): Promise<VerificationView> {
       checkContext(context);
       await options.store.inspect(context, taskId);
-      const records = await verificationRecords(context, taskId);
+      const records = await verificationRecords(
+        verificationHost,
+        context,
+        taskId,
+      );
       let candidate: WorkspaceRef | null = null;
       try {
         candidate = WorkspaceRefSchema.parse(

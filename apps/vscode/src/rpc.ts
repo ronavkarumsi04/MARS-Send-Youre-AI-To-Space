@@ -1,4 +1,8 @@
 import type { RequestContext } from "@mars/contracts";
+import {
+  BoundedReadError,
+  readBoundedUtf8,
+} from "@mars/contracts/bounded-read";
 import { RpcErrorSchema, type RpcMethod } from "./protocol";
 
 export type RpcErrorKind =
@@ -66,37 +70,27 @@ export type FetchLike = (
   status: number;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
   body?: ReadableStream<Uint8Array> | null;
 }>;
 
 type FetchResponse = Awaited<ReturnType<FetchLike>>;
 
-/** Reads a response body, aborting as soon as it exceeds `maxBytes`. */
 async function readBounded(
   response: FetchResponse,
   maxBytes: number,
 ): Promise<string> {
-  if (!response.body) {
-    const text = await response.text();
-    if (text.length > maxBytes)
-      throw new RpcError("protocol", "Server response is too large.");
-    return text;
+  try {
+    return await readBoundedUtf8(response, maxBytes);
+  } catch (error) {
+    if (!(error instanceof BoundedReadError)) throw error;
+    throw new RpcError(
+      "protocol",
+      error.failure === "too_large"
+        ? "Server response is too large."
+        : "Server response is not valid UTF-8.",
+    );
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new RpcError("protocol", "Server response is too large.");
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-  return text + decoder.decode();
 }
 
 export interface HttpTransportOptions {
@@ -190,9 +184,6 @@ export class HttpRpcTransport<
       });
       status = response.status;
       contentType = response.headers.get("content-type");
-      const declared = Number(response.headers.get("content-length") ?? "0");
-      if (declared > this.maxBytes)
-        throw new RpcError("protocol", "Server response is too large.");
       text = await readBounded(response, this.maxBytes);
     } catch (error) {
       if (error instanceof RpcError) throw error;
