@@ -195,15 +195,18 @@ export async function verifyCandidate(
   const startedAt = Date.now();
   const diagnostics: string[] = [];
   if (textual) diagnostics.push(textual);
+  // An unstored verdict is no verdict: it must not feed review or the badge.
   const persist = async (record: VerificationEvidenceRecord) => {
-    await host.store
-      .appendEvent(
+    try {
+      await host.store.appendEvent(
         context,
         task.task_id,
         workbenchEvent(record, runtime.sessionId),
-      )
-      .catch(() => undefined);
-    return record;
+      );
+      return record;
+    } catch {
+      return null;
+    }
   };
   let candidate: WorkspaceRef;
   try {
