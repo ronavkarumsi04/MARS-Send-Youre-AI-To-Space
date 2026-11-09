@@ -2253,6 +2253,67 @@ test("concurrency slots leave one slot for the foreground run", async () => {
   await store.close();
 });
 
+test("settling a hold frees its unspent part once and never undercounts later settles", async () => {
+  const store = await openStore(makeRoot());
+  const task = makeTask();
+  await store.create(context(), task);
+  const reserve = store.reserveBudget?.bind(store);
+  const settle = store.settleBudget?.bind(store);
+  const committed = store.budgetCommitted?.bind(store);
+  const unsettled = store.unsettledBudgetHolds?.bind(store);
+  if (!reserve || !settle || !committed || !unsettled)
+    throw new Error("ledger missing");
+  await reserve(context(), task.task_id, "foreground", { tokens: 200, usd: 0 });
+  await reserve(context(), task.task_id, "delegation", { tokens: 800, usd: 0 });
+  expect(await unsettled(context(), "delegation")).toEqual([task.task_id]);
+  await expect(
+    reserve(context(), task.task_id, "research:a", { tokens: 1, usd: 0 }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  await settle(context(), task.task_id, "delegation", {
+    tokens: 99.5,
+    usd: 0,
+  });
+  expect(await committed(context(), task.task_id, "foreground")).toEqual({
+    tokens: 100,
+    usd: 0,
+  });
+  expect(await unsettled(context(), "delegation")).toEqual([]);
+  // The unspent 700 tokens are usable by the other spenders; the spent 100 stay held.
+  await reserve(context(), task.task_id, "research:a", { tokens: 700, usd: 0 });
+  await expect(
+    reserve(context(), task.task_id, "foreground", { tokens: 201, usd: 0 }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  // A stale (lower) settle never lowers a settled hold; a higher one raises it.
+  await settle(context(), task.task_id, "delegation", { tokens: 10, usd: 0 });
+  expect(await committed(context(), task.task_id)).toEqual({
+    tokens: 1000,
+    usd: 0,
+  });
+  await settle(context(), task.task_id, "delegation", { tokens: 150, usd: 0 });
+  expect(await committed(context(), task.task_id)).toEqual({
+    tokens: 1050,
+    usd: 0,
+  });
+  // A task without the hold settles nothing; a fresh reservation reopens it.
+  const other = makeTask("task-other");
+  await store.create(context(), other);
+  await settle(context(), other.task_id, "delegation", { tokens: 0, usd: 0 });
+  expect(await committed(context(), other.task_id)).toEqual({
+    tokens: 0,
+    usd: 0,
+  });
+  expect(await unsettled(context(), "delegation")).toEqual([]);
+  await reserve(context(), other.task_id, "delegation", { tokens: 5, usd: 0 });
+  expect(await unsettled(context(), "delegation")).toEqual([other.task_id]);
+  await expect(
+    settle(context(), "missing-task", "delegation", { tokens: 1, usd: 0 }),
+  ).rejects.toMatchObject({ code: "not_found" });
+  await expect(unsettled(context(), "bad key")).rejects.toMatchObject({
+    code: "invalid_input",
+  });
+  await store.close();
+});
+
 test("budget holds share one task budget across spenders", async () => {
   const store = await openStore(makeRoot());
   const task = makeTask();

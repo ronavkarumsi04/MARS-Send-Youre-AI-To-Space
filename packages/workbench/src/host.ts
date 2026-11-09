@@ -227,6 +227,8 @@ export interface WorkbenchReview {
 
 /** Bound on each transcript message handed to background review. */
 const REVIEW_TRANSCRIPT_LENGTH = 8_000;
+/** Ledger hold for the delegation pool a room reserves at launch. */
+const DELEGATION_HOLD = "delegation";
 
 export interface WorkbenchHostOptions {
   image?: string;
@@ -881,6 +883,41 @@ export async function createWorkbenchHost(
   const childSweeps = new Map<string, Promise<void>>();
   /** Room capabilities kept for sweeping after the coordinator has exited. */
   const sweepRooms = new Map<string, FrozenCollaboration>();
+  /** Rooms closed in drain mode whose children are still finishing. */
+  const drainingRooms = new Map<string, FrozenCollaboration>();
+  /**
+   * Once a task's room is closed its children can no longer spend, so the
+   * delegation pool reserved at launch is settled to what the room charged
+   * them (plus any reservation it still reports outstanding) and the unspent
+   * rest returns to the task's foreground run and research. Settling is
+   * idempotent and only ever raises an already settled hold, so retries,
+   * restarts and concurrent hosts never undercount.
+   */
+  const settleDelegation = async (
+    taskId: string,
+    frozen: FrozenCollaboration,
+  ): Promise<void> => {
+    const collaboration = options.collaboration;
+    const { settleBudget } = options.store;
+    if (!collaboration || !settleBudget) return;
+    const context = internalContext(options.scope);
+    const room = await collaboration.host.inspectRoom(context, frozen.room_id);
+    if (room.task_id !== taskId) return;
+    if (room.status !== "closed") {
+      if (room.status === "draining") drainingRooms.set(taskId, frozen);
+      return;
+    }
+    const stats = await collaboration.host.stats(context, frozen.room_id);
+    await settleBudget.call(options.store, context, taskId, DELEGATION_HOLD, {
+      tokens: stats.tokens.input + stats.tokens.output + stats.reserved.tokens,
+      usd: stats.usd + stats.reserved.usd,
+    });
+    if (drainingRooms.get(taskId) === frozen) drainingRooms.delete(taskId);
+  };
+  const settleDrainingRooms = async () => {
+    for (const [taskId, frozen] of [...drainingRooms])
+      await settleDelegation(taskId, frozen).catch(() => undefined);
+  };
   /**
    * Mirrors the room's children into the parent task's durable timeline from
    * the collaboration store's charged usage (the authority for budgets, which
@@ -970,6 +1007,7 @@ export async function createWorkbenchHost(
         }
         cursor = page.next_cursor;
       } while (cursor);
+      await settleDelegation(taskId, frozen).catch(() => undefined);
       if (settled && !liveRooms.has(taskId)) {
         sweepRooms.delete(taskId);
         // A paused task keeps its model history for later reviewers; only a
@@ -1023,6 +1061,9 @@ export async function createWorkbenchHost(
       ? options.collaboration.host
           .closeRoom(internalContext(options.scope), frozen.room_id, mode)
           .then(() => sweepChildren(taskId, frozen))
+          .catch(() => undefined)
+          // An already closed room still settles its delegation hold.
+          .then(() => settleDelegation(taskId, frozen))
           .catch(() => undefined)
       : Promise.resolve();
   const closeRecordedRoom = async (task: Task, mode: "drain" | "cancel") => {
@@ -1868,9 +1909,32 @@ export async function createWorkbenchHost(
         }),
     });
     await runner.recover();
-    const tick = () => void runner?.tick().catch(() => undefined);
+    const tick = () =>
+      void runner
+        ?.tick()
+        .catch(() => undefined)
+        .then(settleDrainingRooms);
     runnerTimer = setInterval(tick, delegation.tickMs ?? 1000);
     runnerTimer.unref();
+  }
+  // Rooms that closed while no host was watching (including those recovery
+  // just closed) settle their delegation holds now; draining ones settle from
+  // the runner tick once their last child finishes.
+  if (options.collaboration && options.store.unsettledBudgetHolds) {
+    const context = internalContext(options.scope);
+    const unsettled = await options.store
+      .unsettledBudgetHolds(context, DELEGATION_HOLD)
+      .catch(() => []);
+    for (const taskId of unsettled) {
+      try {
+        const task = await options.store.inspect(context, taskId);
+        const launch = await readLaunchIfPresent(launchLocation, task);
+        if (launch?.collaboration)
+          await settleDelegation(taskId, launch.collaboration);
+      } catch {
+        // Unreadable launch metadata keeps the whole pool held.
+      }
+    }
   }
 
   // Launch stages for `api.start`, in call order. Each optional-context stage
@@ -2086,7 +2150,7 @@ export async function createWorkbenchHost(
       };
       if ((pool.tokens > 0 || pool.usd > 0) && options.store.reserveBudget)
         await options.store
-          .reserveBudget(context, running.task_id, "delegation", pool)
+          .reserveBudget(context, running.task_id, DELEGATION_HOLD, pool)
           .catch(async (error) => {
             await options.collaboration?.host
               .closeRoom(context, opened.room.room_id, "cancel")
