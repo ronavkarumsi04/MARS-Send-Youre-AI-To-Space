@@ -949,31 +949,49 @@ test
   },
 );
 
-test("a failure to fix the deadline leaves the task startable", async () => {
+test("the deadline is fixed only once a start succeeds, and its failure settles the task", async () => {
   const f = await fixture();
   const api = await f.makeHost();
   await api.create(context(), task());
+  await api.create(context(), task("second"));
   const fix = f.store.fixDeadline?.bind(f.store);
-  let fail = true;
-  f.store.fixDeadline = async (...args) => {
-    if (fail) throw new Error("database is locked");
-    if (!fix) throw new Error("fixDeadline missing");
-    return fix(...args);
+  const update = f.store.update.bind(f.store);
+  if (!fix) throw new Error("fixDeadline missing");
+  const fixed: string[] = [];
+  let failFix = false;
+  let failUpdate = true;
+  f.store.fixDeadline = async (ctx, taskId, now) => {
+    fixed.push(taskId);
+    if (failFix) throw new Error("database is locked");
+    return fix(ctx, taskId, now);
   };
-  const start = () =>
+  f.store.update = async (...args) => {
+    if (failUpdate) {
+      failUpdate = false;
+      throw new Error("disk I/O error");
+    }
+    return update(...args);
+  };
+  const start = (taskId: string) =>
     api.start(context(), {
-      task_id: "task",
+      task_id: taskId,
       expected_revision: 0,
       approvals: { read: true, write: true, execute: false },
     });
-  await expect(start()).rejects.toThrow("database is locked");
-  expect(
-    (await f.store.list(context())).find((item) => item.task_id === "task")
-      ?.status,
-  ).not.toBe("running");
+  const status = async (taskId: string) =>
+    (await f.store.list(context())).find((item) => item.task_id === taskId)
+      ?.status;
+  // A start that never marks the task running leaves its clock unstarted.
+  await expect(start("task")).rejects.toThrow("disk I/O error");
+  expect(fixed).toEqual([]);
+  expect(await status("task")).toBe("pending");
+  // A deadline failure after the task is running settles it, not strands it.
+  failFix = true;
+  await expect(start("second")).rejects.toThrow("database is locked");
+  expect(await status("second")).toBe("failed");
   expect(f.sessions).toHaveLength(0);
-  fail = false;
-  expect((await start()).status).toBe("running");
+  failFix = false;
+  expect((await start("task")).status).toBe("running");
 });
 
 test("host persists launch metadata, runs only through the runtime and publishes output", async () => {

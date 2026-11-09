@@ -2535,9 +2535,6 @@ export async function createWorkbenchHost(
         foundInstructions,
         skills.prompt,
       );
-      // One absolute deadline for the room, the foreground run and research,
-      // fixed before the task is marked running so a failure strands nothing.
-      const provisionalDeadline = await fixedDeadline(context, task);
       const running = await options.store.update(
         context,
         task.task_id,
@@ -2549,6 +2546,15 @@ export async function createWorkbenchHost(
             : {}),
         },
       );
+      // One absolute deadline for the room, the foreground run and research,
+      // fixed only once the task is actually running.
+      let provisionalDeadline: number;
+      try {
+        provisionalDeadline = await fixedDeadline(context, running);
+      } catch (error) {
+        await settleFailedRun(task.task_id);
+        throw error;
+      }
       const collaboration = await openLaunchRoom(
         context,
         running,
