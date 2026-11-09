@@ -1035,3 +1035,81 @@ describe("verified patch flow", () => {
     ctx.controller.dispose();
   });
 });
+
+describe("Watch evidence beside the host verdict", () => {
+  const record = (revision: string, stale: boolean) => ({
+    event_id: `event-${revision}`,
+    verdict: "pass",
+    assurance: "visual_advisory",
+    verified: false,
+    recorded_at: "2026-11-03T00:00:00Z",
+    workspace_id: workspace.workspace_id,
+    workspace_revision: revision,
+    diff_sha256: "c".repeat(64),
+    stale,
+  });
+
+  test("one evidence read paints the badge and the Watch records without tasks.verification", async () => {
+    const ctx = setup();
+    ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
+    ctx.server.on("tasks.evidence", (params) => {
+      expect(params.include_host_verification).toBe(true);
+      return {
+        task_revision: 1,
+        workspace: { ...workspace, revision: "rev-2" },
+        diff_sha256: "c".repeat(64),
+        verify_records: [record("rev-1", true), record("rev-2", false)],
+        host_verification: {
+          candidate: { ...workspace, revision: "rev-2" },
+          state: "unverified",
+          record: null,
+          reasons: [],
+          records: [],
+        },
+      };
+    });
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    const selected = ctx.last().selected;
+    expect(selected?.verification).toMatchObject({
+      state: "unverified",
+      candidate: "rev-2",
+    });
+    expect(selected?.watch).toEqual([
+      expect.objectContaining({ revision: "rev-2", stale: false }),
+      expect.objectContaining({ revision: "rev-1", stale: true }),
+    ]);
+    expect(ctx.server.methods()).not.toContain("tasks.verification");
+    ctx.controller.dispose();
+  });
+
+  test("a host that rejects the parameter still gets a badge from tasks.verification", async () => {
+    const ctx = setup();
+    ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
+    ctx.server.on("tasks.evidence", (params) => {
+      if (params.include_host_verification !== undefined)
+        throw new RpcError("protocol", "unknown parameter", "invalid_params");
+      return {
+        task_revision: 1,
+        workspace: { ...workspace, revision: "rev-2" },
+        diff_sha256: "c".repeat(64),
+        verify_records: [record("rev-2", false)],
+      };
+    });
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    expect(ctx.server.methods()).toContain("tasks.verification");
+    expect(ctx.last().selected?.verification?.state).toBe("unverified");
+    expect(ctx.last().selected?.watch).toEqual([
+      expect.objectContaining({ revision: "rev-2", stale: false }),
+    ]);
+    expect(ctx.last().notice).toBeNull();
+    ctx.controller.dispose();
+  });
+});

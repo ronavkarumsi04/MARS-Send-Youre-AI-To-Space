@@ -435,6 +435,32 @@ function renderVerificationDetail(
   ];
 }
 
+/** Watch records are advisory; they are labelled apart from the host-required verdict and never change the badge. */
+function renderWatchEvidence(watch: SelectedView["watch"]): HTMLElement[] {
+  if (watch.length === 0) return [];
+  const list = h("ul", { class: "small" });
+  for (const record of watch)
+    list.append(
+      h(
+        "li",
+        {},
+        `${record.verdict} · ${record.assurance} · rev ${record.revision ?? "unbound"}${record.stale ? " · stale" : ""} · ${record.recorded_at}`,
+      ),
+    );
+  return [
+    h(
+      "div",
+      { class: "verification small", label: "Watch evidence" },
+      h(
+        "p",
+        { class: "muted small" },
+        "Watch evidence (advisory, not a host-required check)",
+      ),
+      list,
+    ),
+  ];
+}
+
 function renderEvents(sel: SelectedView): HTMLElement {
   const taskId = sel.task.task_id;
   const list = h("ol", { class: "timeline", label: "Event timeline" });
@@ -745,6 +771,7 @@ function renderSelected(s: ViewState, sel: SelectedView): HTMLElement {
       ),
       h("p", { class: "request" }, task.request),
       ...renderVerificationDetail(sel.verification),
+      ...renderWatchEvidence(sel.watch),
       h("h4", {}, "Acceptance criteria"),
       criteria,
       meter(

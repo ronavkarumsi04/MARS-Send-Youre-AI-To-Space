@@ -180,6 +180,16 @@ export interface VerificationBadge {
   patch_sha256: string | null;
 }
 
+/** One Watch-only verify record: advisory evidence, never a host-required check result. */
+export interface WatchRecordView {
+  verdict: "pass" | "fail" | "inconclusive" | "error";
+  assurance: string;
+  verified: boolean;
+  revision: string | null;
+  stale: boolean;
+  recorded_at: string;
+}
+
 export interface SelectedView {
   task: Task;
   events: EventView[];
@@ -192,6 +202,8 @@ export interface SelectedView {
   artifact: ArtifactView | null;
   /** Host-owned verification verdict; null until the server has answered. */
   verification: VerificationBadge | null;
+  /** Newest Watch verify records first, read with the same candidate as `verification` when the host supports it. */
+  watch: WatchRecordView[];
 }
 
 export interface TaskSummary {
