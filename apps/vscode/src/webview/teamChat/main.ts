@@ -65,10 +65,11 @@ const jumpButton = button("Jump to latest", "jump-latest", () => {
 jumpButton.className = "jump";
 jumpButton.hidden = true;
 
-/** `aria-live` region used only for new-message announcements. */
+/** `aria-live` region used only for new-message announcements; mounted once outside the re-rendered `#app`. */
 const announcer = h("div", { class: "announcer", role: "status" });
 announcer.setAttribute("aria-live", "polite");
 announcer.setAttribute("aria-atomic", "true");
+document.body.append(announcer);
 let announcedSeq = 0;
 
 let lastViewport: { focused: boolean; atBottom: boolean } | null = null;
@@ -957,7 +958,7 @@ function render(): void {
         ),
     code,
   );
-  app.replaceChildren(layout, announcer);
+  app.replaceChildren(layout);
   if (s.announcement && s.announcement.seq !== announcedSeq) {
     announcedSeq = s.announcement.seq;
     announcer.textContent = s.announcement.text;
