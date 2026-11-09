@@ -576,6 +576,7 @@ export async function createWorkbenchHost(
   const verificationView = async (
     context: RequestContext,
     taskId: string,
+    bound?: { workspace: WorkspaceRef; diff: { files: { patch: string }[] } },
   ): Promise<VerificationView> => {
     await options.store.inspect(context, taskId);
     const records = await verificationRecords(
@@ -587,9 +588,11 @@ export async function createWorkbenchHost(
     let patch: string | null = null;
     try {
       candidate = WorkspaceRefSchema.parse(
-        await options.workspace.reopen(context, taskId),
+        bound?.workspace ?? (await options.workspace.reopen(context, taskId)),
       );
-      patch = patchSha256(await options.workspace.diff(context, candidate));
+      patch = patchSha256(
+        bound?.diff ?? (await options.workspace.diff(context, candidate)),
+      );
     } catch {
       patch = null;
     }
@@ -2730,7 +2733,12 @@ export async function createWorkbenchHost(
         diff_sha256: digest,
         verify_records: records,
         ...(includeHostVerification
-          ? { host_verification: await verificationView(context, taskId) }
+          ? {
+              host_verification: await verificationView(context, taskId, {
+                workspace,
+                diff,
+              }),
+            }
           : {}),
       };
     },

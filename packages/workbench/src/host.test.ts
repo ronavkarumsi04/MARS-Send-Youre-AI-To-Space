@@ -5386,6 +5386,24 @@ test("evidence keeps Watch records apart and adds the host verdict only when ask
   await api.close();
 });
 
+test("evidence binds Watch records and the host verdict to one candidate read", async () => {
+  const { f, host } = await hostCheckFixture();
+  let reads = 0;
+  let moving = false;
+  const api = await host({
+    async reopen(context, taskId) {
+      const ref = await f.workspace.reopen(context, taskId);
+      return moving ? { ...ref, revision: `moved-${++reads}` } : ref;
+    },
+  });
+  await runHostCheckTask(f, api, "task", 0);
+  moving = true;
+  const both = await api.evidence(context(), "task", true);
+  expect(both.host_verification?.candidate).toEqual(both.workspace);
+  expect(reads).toBe(1);
+  await api.close();
+});
+
 test("restore never overlaps verification or export of the same candidate", async () => {
   const { f, host } = await hostCheckFixture();
   const outcomes: string[] = [];
