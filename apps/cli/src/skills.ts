@@ -51,10 +51,28 @@ function renderSkill(skill: SkillRecord): string {
   return `${skill.name} [${flags}] used ${skill.useCount}×, last activity ${new Date(skill.lastActivity).toISOString()}`;
 }
 
+// Keeps proposed text from moving the cursor or recoloring the operator's terminal.
+function isControl(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (
+    (code < 0x20 && char !== "\n" && char !== "\t") ||
+    (code >= 0x7f && code <= 0x9f)
+  );
+}
+
 export function renderSkillProposal(proposal: SkillProposal): string {
+  // Operators must see the exact instructions they would accept.
   const ops = proposal.ops.map((op) =>
     "content" in op && typeof op.content === "string"
-      ? `    ${op.op} ${op.name} (${op.content.length} chars)`
+      ? [
+          `    ${op.op} ${op.name}:`,
+          ...op.content
+            .split("")
+            .map((c) => (isControl(c) ? "\uFFFD" : c))
+            .join("")
+            .split("\n")
+            .map((line) => `      | ${line}`),
+        ].join("\n")
       : `    ${op.op} ${"name" in op ? op.name : ""}`,
   );
   return [

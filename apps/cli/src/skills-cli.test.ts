@@ -112,12 +112,24 @@ test("mars skills drives the proposal, undo, pin, archive and version lifecycle"
     expect((await run(state, ["restore", "release-notes"])).exit).toBe(0);
     expect((await store.get("release-notes"))?.status).toBe("active");
 
-    const reviewed = new SkillStore(join(state, "skills"));
-    await reviewed.create("triage", skill("triage", "Reproduce first."), {
-      actor: "background_review",
-      source: "review",
-      reviewId: "review-9",
+    const reviewed = await store.submitProposal({
+      source: "background_review:session-1:review-9",
+      rationale: "Triage lesson",
+      ops: [
+        {
+          op: "create",
+          name: "triage",
+          content: skill("triage", "Reproduce first."),
+        },
+      ],
     });
+    // Idle curation of an unrelated skill must not invalidate this proposal.
+    await store.runCurator({ actor: "curator", source: "curator" });
+    const pending = await run(state, ["proposals", "--status", "pending"]);
+    expect(pending.stdout).toContain("create triage:");
+    expect(pending.stdout).toContain("      | Reproduce first.");
+    expect((await run(state, ["accept", reviewed.id])).exit).toBe(0);
+    expect((await store.get("triage"))?.status).toBe("active");
     expect((await run(state, ["undo", "review-9"])).exit).toBe(0);
     expect((await store.get("triage"))?.status).toBe("archived");
     expect((await run(state, ["curate"])).stdout).toContain(
