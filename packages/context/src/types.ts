@@ -1,4 +1,5 @@
 import type { RequestContext, WorkspaceRef } from "@mars/contracts";
+import { WorkspaceRefSchema } from "@mars/contracts";
 import { z } from "zod";
 
 export interface AuthorizedWorkspaceRoot {
@@ -39,14 +40,6 @@ export interface RepositoryMapProviderOptions {
   confinement?: ConfinementMode;
   now?: () => number;
 }
-
-export const WorkspaceRefSchema = z
-  .object({
-    workspace_id: z.string().min(1),
-    provider: z.string().min(1),
-    revision: z.string().min(1),
-  })
-  .strict();
 
 export const RepositoryMapRequestSchema = z
   .object({
