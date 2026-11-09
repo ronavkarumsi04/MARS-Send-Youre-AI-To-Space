@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { ResearchFinding } from "@mars/contracts";
+import {
+  isInsideOrEqual,
+  resolveForSafety,
+} from "@mars/contracts/path-containment";
 import { canonicalJson } from "@mars/tasks";
 import { ResearchError, throwResearchError } from "./errors";
 import {
@@ -48,33 +52,6 @@ export function timestamp(now: number): string {
   return new Date(now).toISOString();
 }
 
-function pathContains(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
-  );
-}
-
-function resolveForSafety(value: string): string {
-  const absolute = path.resolve(value);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const suffix: string[] = [];
-    let existing = absolute;
-    while (!existsSync(existing)) {
-      const parent = path.dirname(existing);
-      if (parent === existing) return absolute;
-      suffix.unshift(path.basename(existing));
-      existing = parent;
-    }
-    return path.resolve(realpathSync(existing), ...suffix);
-  }
-}
-
 function prepareRoot(options: StoreOptions): {
   rootDir: string;
   privateNeedles: PrivateNeedles;
@@ -102,8 +79,8 @@ function prepareRoot(options: StoreOptions): {
   const rootDir = resolveForSafety(requestedRoot);
   for (const privateRoot of privateRoots) {
     if (
-      pathContains(rootDir, privateRoot) ||
-      pathContains(privateRoot, rootDir)
+      isInsideOrEqual(rootDir, privateRoot) ||
+      isInsideOrEqual(privateRoot, rootDir)
     ) {
       throw new ResearchError(
         "unsafe_path",
@@ -154,8 +131,8 @@ function prepareRoot(options: StoreOptions): {
   const realRoot = realpathSync(requestedRoot);
   for (const privateRoot of privateRoots) {
     if (
-      pathContains(realRoot, privateRoot) ||
-      pathContains(privateRoot, realRoot)
+      isInsideOrEqual(realRoot, privateRoot) ||
+      isInsideOrEqual(privateRoot, realRoot)
     ) {
       throw new ResearchError(
         "unsafe_path",
