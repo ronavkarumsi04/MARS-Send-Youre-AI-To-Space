@@ -52,6 +52,7 @@ import {
   makeBaseline,
   makeSpecialistFixture,
 } from "../../specialists/tests/helpers";
+import type { WorkbenchBrowser } from "./browser-context";
 import type {
   ChildWorkspaceBinder,
   WorkbenchCollaboration,
@@ -428,6 +429,7 @@ async function fixture() {
       | "vault"
       | "checks"
       | "memoryProposals"
+      | "browser"
     > & {
       canExecute?: boolean;
       workspaceOverrides?: Partial<WorkspaceHost>;
@@ -5701,4 +5703,65 @@ test("memory proposal operations fail closed without a memory owner or outside t
   expect(await owned.memoryProposals(context(), {})).toEqual([]);
   await api.close();
   await owned.close();
+});
+
+test("browser jobs stop at the task's fixed deadline, also after a resume", async () => {
+  const f = await fixture();
+  const submitted: { deadline: string }[] = [];
+  const browser = {
+    async submit(_context: unknown, request: { deadline: string }) {
+      submitted.push(request);
+      return { request_id: `br_${submitted.length}` };
+    },
+    async markStale() {},
+    async reconcileTask() {
+      return { task_revision: 0, stale_request_ids: [] };
+    },
+  } as unknown as WorkbenchBrowser;
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { browser },
+  );
+  const created = task();
+  await api.create(context(), {
+    ...created,
+    budget: { ...created.budget, max_duration_ms: 90_000 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: false, write: false, execute: false },
+  });
+  // Asking later returns the deadline fixed at start, never a new one.
+  const fixed = required(
+    await f.store.fixDeadline?.(context(), "task", Date.now() + 3_600_000),
+  );
+  const first = required(f.sessions[0]);
+  await required(first.options.browser).submit({
+    goal: "read",
+    start_url: "https://example.org/",
+  });
+  expect(Date.parse(required(submitted[0]).deadline)).toBeLessThanOrEqual(
+    fixed,
+  );
+  first.finish("paused");
+  await first.disposed;
+  const paused = await api.inspect(context(), "task");
+  await api.resume(context(), "task", paused.revision);
+  const second = required(f.sessions[1]);
+  await required(second.options.browser).submit({
+    goal: "read again",
+    start_url: "https://example.org/",
+  });
+  expect(Date.parse(required(submitted[1]).deadline)).toBeLessThanOrEqual(
+    fixed,
+  );
+  second.finish("completed");
+  await second.disposed;
+  await api.close();
 });
