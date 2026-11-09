@@ -146,7 +146,7 @@ export class WorkbenchError extends Error {
 
 export const DEFAULT_WORKBENCH_PORT = 7331;
 const MAX_REQUEST_BYTES = 512 * 1024;
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_PAGE_EVENTS = 1000;
 const headers = {
   "Content-Type": "application/json; charset=utf-8",

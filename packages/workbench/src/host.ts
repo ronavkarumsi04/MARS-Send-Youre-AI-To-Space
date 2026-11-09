@@ -31,6 +31,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  ArtifactRefSchema,
   EVENT_OPERATIONS,
   isTerminalTaskStatus,
   JournalEntryIdsSchema,
@@ -147,7 +148,11 @@ import {
   staleTaskResearch,
   type WorkbenchResearch,
 } from "./research-context";
-import { WorkbenchError, type WorkbenchOperations } from "./server";
+import {
+  MAX_RESPONSE_BYTES,
+  WorkbenchError,
+  type WorkbenchOperations,
+} from "./server";
 import {
   type FrozenSkills,
   freezeCurrentSkills,
@@ -165,7 +170,13 @@ import {
   watchEvidence,
 } from "./watch-context";
 
-const MAX_EXPORT_PATCH_BYTES = 2 * 1024 * 1024;
+/** Whether `tasks.artifact` can return these bytes within one server response. */
+const artifactResponseFits = (bytes: number, mediaType: string) =>
+  4 * Math.ceil(bytes / 3) +
+    Buffer.byteLength(
+      JSON.stringify({ result: { data_base64: "", media_type: mediaType } }),
+    ) <=
+  MAX_RESPONSE_BYTES;
 
 export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
@@ -563,16 +574,29 @@ export async function createWorkbenchHost(
         event.producer === WORKBENCH_PRODUCER
       ) {
         const bytes = await options.store.artifacts.get(context, event.payload);
-        const payload = z
+        const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+        const checkpoint = z
           .object({
             operation: z.literal("workspace.checkpoint"),
             checkpoint: CheckpointRefSchema,
           })
           .strict()
-          .safeParse(JSON.parse(new TextDecoder().decode(bytes)));
+          .safeParse(parsed);
         if (
-          payload.success &&
-          payload.data.checkpoint.artifact.artifact_id === ref.artifact_id
+          checkpoint.success &&
+          checkpoint.data.checkpoint.artifact.artifact_id === ref.artifact_id
+        )
+          return true;
+        const exported = z
+          .object({
+            operation: z.literal("patch.exported"),
+            artifact: ArtifactRefSchema,
+          })
+          .strict()
+          .safeParse(parsed);
+        if (
+          exported.success &&
+          exported.data.artifact.artifact_id === ref.artifact_id
         )
           return true;
       }
@@ -2716,8 +2740,7 @@ export async function createWorkbenchHost(
       if (candidate.revision !== params.expected_revision)
         throw new WorkbenchError("conflict");
       const exported = await options.workspace.exportPatch(context, candidate);
-      // Base64 in `tasks.artifact` must still fit the response cap.
-      if (exported.patch.byteLength > MAX_EXPORT_PATCH_BYTES)
+      if (!artifactResponseFits(exported.patch.byteLength, "text/x-diff"))
         throw new WorkbenchError("too_large");
       const sha256 = createHash("sha256").update(exported.patch).digest("hex");
       if (sha256 !== params.expected_patch_sha256)
@@ -2741,14 +2764,12 @@ export async function createWorkbenchHost(
         exported.patch,
         "text/x-diff",
       );
-      // Task-owned, so `tasks.artifact` serves the exported bytes.
-      const owner = await options.store.inspect(context, params.task_id);
-      if (
-        !owner.artifacts.some((ref) => ref.artifact_id === artifact.artifact_id)
-      )
-        await options.store.update(context, params.task_id, owner.revision, {
-          artifacts: [...owner.artifacts, artifact],
-        });
+      // An event, not a task update: owning the export must not move the task revision.
+      await options.store.appendEvent(
+        context,
+        params.task_id,
+        workbenchEvent({ operation: "patch.exported", artifact }),
+      );
       return PatchExportSchema.parse({
         candidate: {
           workspace_id: candidate.workspace_id,

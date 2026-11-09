@@ -70,6 +70,7 @@ import { HostCheckDefinitionSchema } from "./host-checks";
 import type { WorkbenchMemory } from "./memory-context";
 import type { DiffResult } from "./protocol.js";
 import type { WorkbenchResearch } from "./research-context";
+import { MAX_RESPONSE_BYTES } from "./server";
 import type { WorkbenchSkills } from "./skills-context";
 import type { WorkbenchSpecialists } from "./specialist-routing";
 import type { WorkbenchWatch } from "./watch-context";
@@ -5304,11 +5305,13 @@ test("export returns the exact verified patch bytes and refuses a moved revision
       expected_patch_sha256: "0".repeat(64),
     }),
   ).rejects.toMatchObject({ code: "conflict" });
+  const before = (await f.store.inspect(context(), "task")).revision;
   const exported = await api.export(context(), {
     task_id: "task",
     expected_revision: "r1",
     expected_patch_sha256: sha,
   });
+  expect((await f.store.inspect(context(), "task")).revision).toBe(before);
   expect(exported).toMatchObject({
     patch_sha256: sha,
     verification: "verified",
@@ -5333,13 +5336,14 @@ test("export returns the exact verified patch bytes and refuses a moved revision
   await api.close();
 });
 
-test("export refuses a patch too large to download through tasks.artifact", async () => {
+test("export serves any patch whose tasks.artifact response fits the server cap and refuses larger ones", async () => {
   const { f, host } = await hostCheckFixture();
+  let size = 0;
   const api = await host({
     async exportPatch(_context, workspace) {
       return {
         workspace,
-        patch: new Uint8Array(2 * 1024 * 1024 + 1),
+        patch: new Uint8Array(size).fill(0x61),
         files: 1,
         round_trip: { status: "passed", reason: null },
         unsupported: [],
@@ -5347,12 +5351,23 @@ test("export refuses a patch too large to download through tasks.artifact", asyn
     },
   });
   await runHostCheckTask(f, api, "task", 0);
-  await expect(
-    api.export(context(), {
+  const shaOf = (n: number) =>
+    createHash("sha256").update(new Uint8Array(n).fill(0x61)).digest("hex");
+  const exportOf = (n: number) => {
+    size = n;
+    return api.export(context(), {
       task_id: "task",
       expected_revision: "r1",
-      expected_patch_sha256: "0".repeat(64),
-    }),
-  ).rejects.toMatchObject({ code: "too_large" });
+      expected_patch_sha256: shaOf(n),
+    });
+  };
+  const exported = await exportOf(2.5 * 1024 * 1024);
+  const served = await api.artifact(context(), "task", exported.artifact);
+  expect(
+    Buffer.byteLength(JSON.stringify({ result: served })),
+  ).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+  await expect(exportOf(3 * 1024 * 1024)).rejects.toMatchObject({
+    code: "too_large",
+  });
   await api.close();
 });
