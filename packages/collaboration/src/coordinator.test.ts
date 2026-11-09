@@ -2064,6 +2064,7 @@ test("a failed finalize after a start failure is reported and left to lease reco
     delegation("finalize-fails"),
   );
   const finalizeError = new Error("database is locked");
+  const startError = new CollaborationError("forbidden", "Pre-run failure.");
   const jobs = Object.assign(Object.create(f.collaboration.host.jobs), {
     async finalize() {
       throw finalizeError;
@@ -2078,7 +2079,7 @@ test("a failed finalize after a start failure is reported and left to lease reco
     runnerId: "finalize-fails",
     adapter: {
       async start() {
-        throw new CollaborationError("forbidden", "Pre-run failure.");
+        throw startError;
       },
     },
     onError(error, { job_id }) {
@@ -2090,8 +2091,11 @@ test("a failed finalize after a start failure is reported and left to lease reco
   await runner.idle();
   const [report] = reported;
   if (!report) throw new Error("Finalize failure was not reported");
-  expect(reported).toHaveLength(1);
-  expect(report.error).toBe(finalizeError);
+  expect(reported.map(({ error }) => error)).toEqual([
+    startError,
+    finalizeError,
+  ]);
+  expect(new Set(reported.map(({ job_id }) => job_id)).size).toBe(1);
   f.advance(301);
   const expired = await f.collaboration.host.jobs.recoverExpired();
   expect(expired.map((job) => job.job_id)).toEqual([report.job_id]);
@@ -2125,12 +2129,134 @@ test("a failed finalize after a start failure is reported and left to lease reco
     });
     expect(await asyncRunner.tick()).toBe(1);
     await asyncRunner.idle();
-    expect(asyncReported).toHaveLength(1);
+    expect(asyncReported).toHaveLength(2);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(unhandled).toEqual([]);
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }
+});
+
+test("a non-lease first heartbeat failure cancels the started child and is reported", async () => {
+  const f = await fixture();
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("first-heartbeat-fails"),
+  );
+  const heartbeatError = new Error("disk I/O error");
+  const realJobs = f.collaboration.host.jobs;
+  const finalized: Parameters<typeof realJobs.finalize>[3][] = [];
+  const jobs = Object.assign(Object.create(realJobs), {
+    async heartbeat() {
+      throw heartbeatError;
+    },
+    finalize(...args: Parameters<typeof realJobs.finalize>) {
+      finalized.push(args[3]);
+      return realJobs.finalize(...args);
+    },
+  });
+  const reported: unknown[] = [];
+  const finalizedBeforeReport: number[] = [];
+  let cancels = 0;
+  const runner = createChildRunner({
+    collaboration: {
+      ...f.collaboration,
+      host: { ...f.collaboration.host, jobs },
+    },
+    runnerId: "first-heartbeat-fails",
+    adapter: {
+      async start() {
+        return {
+          session_ref: "first-heartbeat-session",
+          base_revision: null,
+          outcome: new Promise<ChildOutcome>(() => undefined),
+          async cancel() {
+            cancels += 1;
+          },
+        };
+      },
+    },
+    onError(error) {
+      finalizedBeforeReport.push(finalized.length);
+      reported.push(error);
+    },
+  });
+  expect(await runner.tick()).toBe(1);
+  await runner.idle();
+  expect(cancels).toBeGreaterThan(0);
+  expect(reported).toEqual([heartbeatError]);
+  expect(finalizedBeforeReport).toEqual([1]);
+  expect(finalized).toEqual([
+    {
+      status: "failed",
+      summary: "Child runtime failed after it started.",
+      artifacts: [],
+      usage: null,
+    },
+  ]);
+  expect(
+    (
+      await f.collaboration.agents.children(context, f.coordinator)
+    ).children.find((member) => member.agent_id === child.agent_id),
+  ).toMatchObject({ state: "failed" });
+});
+
+test("a failed result write after the child ran is reported and not recorded as a start failure", async () => {
+  const f = await fixture();
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("result-write-fails"),
+  );
+  const writeError = new Error("database is locked");
+  const realJobs = f.collaboration.host.jobs;
+  const finalized: Parameters<typeof realJobs.finalize>[3][] = [];
+  const jobs = Object.assign(Object.create(realJobs), {
+    finalize(...args: Parameters<typeof realJobs.finalize>) {
+      finalized.push(args[3]);
+      if (finalized.length === 1) return Promise.reject(writeError);
+      return realJobs.finalize(...args);
+    },
+  });
+  const reported: unknown[] = [];
+  const runner = createChildRunner({
+    collaboration: {
+      ...f.collaboration,
+      host: { ...f.collaboration.host, jobs },
+    },
+    runnerId: "result-write-fails",
+    adapter: {
+      async start() {
+        return {
+          session_ref: "result-write-session",
+          base_revision: null,
+          outcome: Promise.resolve({
+            status: "completed",
+            summary: "Ran to completion.",
+            artifacts: [],
+            usage: { input_tokens: 1, output_tokens: 1, usd: 0, steps: 1 },
+          }),
+          async cancel() {},
+        };
+      },
+    },
+    onError(error) {
+      reported.push(error);
+    },
+  });
+  expect(await runner.tick()).toBe(1);
+  await runner.idle();
+  expect(reported).toEqual([writeError]);
+  expect(finalized.map((outcome) => outcome.summary)).toEqual([
+    "Ran to completion.",
+    "Child result could not be recorded.",
+  ]);
+  expect(
+    (
+      await f.collaboration.agents.children(context, f.coordinator)
+    ).children.find((member) => member.agent_id === child.agent_id),
+  ).toMatchObject({ state: "failed" });
 });
 
 test("runtime caps stop exhausted starts and finalize token or step overruns", async () => {

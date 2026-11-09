@@ -1,4 +1,8 @@
-import type { EventEnvelope, VerificationView } from "@mars/contracts";
+import {
+  EVENT_OPERATIONS,
+  type EventEnvelope,
+  type VerificationView,
+} from "@mars/contracts";
 import { LIMITS } from "./limits";
 import type { JournalEntry, JournalState } from "./types";
 
@@ -479,7 +483,7 @@ export function projectTranscript(
       }
       case "tool.completed": {
         const operation = str(payload.operation);
-        if (operation === "runtime.result") {
+        if (operation === EVENT_OPERATIONS.runtimeResult) {
           const started = turnStarted ? Date.parse(turnStarted) : Number.NaN;
           const seconds = Number.isNaN(started)
             ? null
@@ -499,7 +503,7 @@ export function projectTranscript(
           });
           toolsThisTurn = 0;
           turnStarted = null;
-        } else if (operation === "hook.completed") {
+        } else if (operation === EVENT_OPERATIONS.hookCompleted) {
           const results = Array.isArray(payload.results)
             ? payload.results.map(bag)
             : [];
@@ -518,7 +522,7 @@ export function projectTranscript(
               .join("\n"),
             provenance,
           });
-        } else if (operation === "child.result") {
+        } else if (operation === EVENT_OPERATIONS.childResult) {
           const label =
             str(payload.role_label) ?? str(payload.child_agent_id) ?? "child";
           const status = str(payload.status) ?? "unknown";
@@ -534,7 +538,7 @@ export function projectTranscript(
             tier: str(routing.tier) ?? str(payload.tier),
             provenance,
           });
-        } else if (operation === "watch.evidence") {
+        } else if (operation === EVENT_OPERATIONS.watchEvidence) {
           const verdict = str(payload.verdict) ?? "inconclusive";
           if (str(payload.kind) === "verify") {
             if (verdict === "pass") verify.pass++;
@@ -553,7 +557,10 @@ export function projectTranscript(
             record: rawPayload ?? null,
             provenance,
           });
-        } else if (operation === "graph.build" || operation === "graph.query") {
+        } else if (
+          operation === EVENT_OPERATIONS.graphBuild ||
+          operation === EVENT_OPERATIONS.graphQuery
+        ) {
           entries.push({
             kind: "graph",
             id,
