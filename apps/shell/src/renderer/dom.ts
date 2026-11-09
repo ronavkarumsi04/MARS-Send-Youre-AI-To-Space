@@ -10,6 +10,8 @@ export interface ShellElement {
   removeAttribute(name: string): void;
   append(...nodes: (ShellElement | ShellText)[]): void;
   replaceChildren(...nodes: (ShellElement | ShellText)[]): void;
+  querySelectorAll(selectors: string): ArrayLike<ShellElement>;
+  focus(): void;
   addEventListener(
     type: string,
     listener: (event: { target?: unknown }) => void,
@@ -17,6 +19,7 @@ export interface ShellElement {
 }
 
 export interface ShellDocument {
+  readonly activeElement: ShellElement | null;
   createElement(tagName: string): ShellElement;
   createTextNode(text: string): ShellText;
   getElementById(id: string): ShellElement | null;
