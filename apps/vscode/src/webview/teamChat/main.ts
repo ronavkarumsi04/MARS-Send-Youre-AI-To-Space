@@ -316,8 +316,8 @@ function renderSearch(s: TeamChatViewState): HTMLElement {
 }
 
 function renderInbox(s: TeamChatViewState): HTMLElement {
-  const viewerSelect = h("select", { label: "Fixture viewer" });
-  viewerSelect.dataset.focusKey = "viewer";
+  const viewerSelect = h("select", { key: "viewer" });
+  viewerSelect.id = "viewer-select";
   for (const user of s.viewers) {
     const option = h("option", {}, `${user.display_name} (@${user.handle})`);
     option.value = user.user_id;
@@ -329,6 +329,8 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
     textarea.value = "";
     post({ type: "fixtureSwitchViewer", userId: viewerSelect.value });
   });
+  const viewerLabel = h("label", { class: "small muted" }, "Viewing as");
+  viewerLabel.htmlFor = viewerSelect.id;
   const list = h("ul", { class: "conversations", label: "Conversations" });
   for (const conversation of s.conversations) {
     const active =
@@ -419,12 +421,7 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
         : null,
     ),
     s.viewers.length > 0
-      ? h(
-          "div",
-          { class: "viewer-row" },
-          h("label", { class: "small muted" }, "Viewing as"),
-          viewerSelect,
-        )
+      ? h("div", { class: "viewer-row" }, viewerLabel, viewerSelect)
       : h(
           "div",
           { class: "viewer-row small muted" },
@@ -787,12 +784,14 @@ function renderComposerParts(): void {
   replyBar.hidden = !composer.reply_to;
   chipBar.replaceChildren();
   for (const chip of composer.chips) {
+    const label = chipLabel(chip.reference, chip.repo_name);
     const remove = button(
-      `${chipLabel(chip.reference, chip.repo_name)} ×`,
+      `${label} ×`,
       `draft-chip-${chip.key}`,
       () => updateComposer({ type: "removeChip", key: chip.key }),
       { secondary: true, title: "Remove reference" },
     );
+    remove.setAttribute("aria-label", `Remove reference ${label}`);
     remove.className = "chip draft";
     chipBar.append(remove);
   }
