@@ -10,6 +10,7 @@ export {
   type KeyIntent,
   keyIntent,
   mentionOptionId,
+  nextPickerStatus,
   type PickerAnnouncement,
   type PickerState,
   pickerAnnouncement,

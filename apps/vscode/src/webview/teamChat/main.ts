@@ -11,6 +11,7 @@ import {
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
   mentionOptionId,
+  nextPickerStatus,
   pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
@@ -752,7 +753,7 @@ picker.id = "mention-picker";
 const pickerStatus = h("div", { class: "announcer", role: "status" });
 pickerStatus.setAttribute("aria-live", "polite");
 pickerStatus.setAttribute("aria-atomic", "true");
-let announcedPickerResults = "";
+let announcedPicker = pickerAnnouncement(null);
 const sendButton = button("Send", "send", () => send());
 const composerAlert = h("p", {
   class: "notice error composer-error",
@@ -862,10 +863,9 @@ function renderComposerParts(): void {
   textarea.setAttribute("aria-controls", picker.id);
   picker.hidden = !composer.picker;
   const announcement = pickerAnnouncement(composer.picker);
-  if (announcement.results !== announcedPickerResults) {
-    announcedPickerResults = announcement.results;
-    pickerStatus.textContent = announcement.text;
-  }
+  const status = nextPickerStatus(announcedPicker, announcement);
+  if (status !== null) pickerStatus.textContent = status;
+  announcedPicker = announcement;
   composerAlert.textContent = composerError ?? "";
   composerAlert.hidden = composerError === null;
   sendButton.disabled =
