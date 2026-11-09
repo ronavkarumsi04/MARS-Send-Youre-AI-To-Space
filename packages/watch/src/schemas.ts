@@ -1,10 +1,11 @@
+import { EVENT_OPERATIONS } from "@mars/contracts";
 import { z } from "zod";
 
 export const WATCH_PACKAGE_VERSION = "0.0.1";
 /** The only upstream release this wrapper has been written against. */
 export const WATCH_SKILL_VERSION = "1.4.3";
 export const WATCH_EVIDENCE_PRODUCER = "@mars/watch";
-export const WATCH_EVIDENCE_OPERATION = "watch.evidence";
+export const WATCH_EVIDENCE_OPERATION = EVENT_OPERATIONS.watchEvidence;
 
 export const WatchVerdictSchema = z.enum([
   "pass",

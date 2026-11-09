@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./bounded-read": "./src/bounded-read.ts",
     "./canonical": "./src/canonical.ts",
     "./path-containment": "./src/path-containment.ts"
   },

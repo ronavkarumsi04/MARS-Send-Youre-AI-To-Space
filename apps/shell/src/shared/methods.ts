@@ -47,9 +47,37 @@ export type BridgeErrorKind =
   | "invalid_response"
   | "hash_mismatch";
 
+export type BridgeError = { kind: BridgeErrorKind; message: string };
+
 export type BridgeResult<T> =
   | { ok: true; result: T }
-  | { ok: false; error: { kind: BridgeErrorKind; message: string } };
+  | { ok: false; error: BridgeError };
+
+export const BRIDGE_ERROR_MESSAGES: Readonly<Record<BridgeErrorKind, string>> =
+  Object.freeze({
+    not_connected: "Not connected to a workbench.",
+    refused: "Workbench request was refused.",
+    unauthorized: "Workbench authentication failed.",
+    forbidden: "Workbench request is not permitted.",
+    not_found: "Workbench resource was not found.",
+    conflict: "Workbench request conflicts with the current state.",
+    timeout: "Workbench did not respond in time.",
+    unavailable: "Workbench is unavailable.",
+    protocol: "Workbench returned an invalid response.",
+    invalid_response: "Workbench returned an invalid response.",
+    hash_mismatch: "Workbench artifact failed integrity verification.",
+  });
+
+export function bridgeError(kind: BridgeErrorKind): BridgeError {
+  return { kind, message: BRIDGE_ERROR_MESSAGES[kind] };
+}
+
+export function bridgeFailure(kind: BridgeErrorKind): {
+  ok: false;
+  error: BridgeError;
+} {
+  return { ok: false, error: bridgeError(kind) };
+}
 
 export type ShellBridge = {
   readonly [M in ReadMethod]: (

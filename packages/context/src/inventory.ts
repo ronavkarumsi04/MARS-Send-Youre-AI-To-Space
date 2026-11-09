@@ -164,8 +164,10 @@ async function inventoryInternal(
       rules: readonly GitignoreRule[];
     }[],
   ): Promise<void> => {
+    const directoryStillSafe = () =>
+      directoryIsSafe(directory, realRoot, confinement);
     check();
-    if (!(await directoryIsSafe(directory, realRoot, confinement))) {
+    if (!(await directoryStillSafe())) {
       skip("symlink");
       return;
     }
@@ -175,46 +177,29 @@ async function inventoryInternal(
         ? procFdPath(directory.handle as FileHandle, procFdRoot)
         : (directory.absolutePath as string);
     const rules = [...inheritedRules];
-    const ignorePath = join(absoluteDirectory, ".gitignore");
-    const ignoreRelativePath = relativeDirectory
-      ? `${relativeDirectory}/.gitignore`
-      : ".gitignore";
-    try {
-      const stat = await lstat(ignorePath);
-      if (stat.isFile() && !stat.isSymbolicLink()) {
-        if (stat.size > options.limits.maxFileBytes) {
-          skip("too_large");
-        } else if (totalBytes + stat.size > options.limits.maxTotalBytes) {
-          stopForLimit();
-          return;
-        } else {
-          const contents = await readNoFollow(
-            ignorePath,
-            stat,
-            confinement,
-            realRoot,
-            ignoreRelativePath,
-          );
-          totalBytes += contents.length;
-          rules.push({
-            prefix: relativeDirectory,
-            rules: parseGitignore(contents.toString("utf8")),
-          });
-        }
-      }
-    } catch (error) {
-      if (isSymlinkRace(error)) {
-        skip("symlink");
-      } else if (!isMissing(error)) {
-        throw asIoError(error);
-      }
+    const gitignore = await loadGitignoreRules(
+      absoluteDirectory,
+      relativeDirectory,
+      confinement,
+      realRoot,
+      options.limits,
+      totalBytes,
+    );
+    if (gitignore.kind === "limit") {
+      stopForLimit();
+      return;
+    }
+    if (gitignore.kind === "skipped") skip(gitignore.reason);
+    if (gitignore.kind === "loaded") {
+      totalBytes += gitignore.bytes;
+      rules.push({ prefix: relativeDirectory, rules: gitignore.rules });
     }
 
     let names: string[];
     try {
       names = await readdir(absoluteDirectory);
     } catch (error) {
-      if (!(await directoryIsSafe(directory, realRoot, confinement))) {
+      if (!(await directoryStillSafe())) {
         skip("symlink");
         return;
       }
@@ -225,14 +210,14 @@ async function inventoryInternal(
       if (isMissing(error)) return;
       throw asIoError(error);
     }
-    if (!(await directoryIsSafe(directory, realRoot, confinement))) {
+    if (!(await directoryStillSafe())) {
       skip("symlink");
       return;
     }
     names.sort(compare);
     for (const name of names) {
       check();
-      if (!(await directoryIsSafe(directory, realRoot, confinement))) {
+      if (!(await directoryStillSafe())) {
         skip("symlink");
         return;
       }
@@ -273,38 +258,20 @@ async function inventoryInternal(
         continue;
       }
       if (stat.isDirectory()) {
-        if (confinement === "anchored") {
-          let childHandle: FileHandle | undefined;
-          try {
-            childHandle = await openAnchoredDirectory(absolute, stat);
-          } catch (error) {
-            throw asIoError(error);
-          }
-          if (!childHandle) {
-            skip("symlink");
-            continue;
-          }
-          try {
-            await walk(
-              {
-                relativePath: relative,
-                expectedStat: stat,
-                handle: childHandle,
-              },
-              rules,
-            );
-          } finally {
-            await childHandle.close().catch(() => undefined);
-          }
-        } else {
-          await walk(
-            {
-              relativePath: relative,
-              expectedStat: stat,
-              absolutePath: absolute,
-            },
-            rules,
-          );
+        const child = await openChildDirectory(
+          absolute,
+          relative,
+          stat,
+          confinement,
+        );
+        if (!child) {
+          skip("symlink");
+          continue;
+        }
+        try {
+          await walk(child, rules);
+        } finally {
+          await child.handle?.close().catch(() => undefined);
         }
         if (!complete) return;
         continue;
@@ -344,56 +311,34 @@ async function inventoryInternal(
         throw asIoError(error);
       }
       totalBytes += bytes.length;
-      if (bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
-        skip("binary");
+      const content = classifyFileContent(bytes);
+      if (content.kind === "skipped") {
+        skip(content.reason);
         continue;
       }
-      let text: string;
-      try {
-        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch {
-        skip("binary");
-        continue;
-      }
-      if (
-        text.slice(0, GENERATED_MARKER_WINDOW).includes("@generated") ||
-        text.slice(0, GENERATED_MARKER_WINDOW).includes("DO NOT EDIT") ||
-        text
-          .split(/\r?\n/)
-          .some((line) => line.length > MAX_GENERATED_LINE_LENGTH) ||
-        (text.length > 0 &&
-          text.length / Math.max(1, text.split(/\r?\n/).length) >
-            MAX_AVERAGE_LINE_LENGTH)
-      ) {
-        skip("generated");
-        continue;
-      }
-      if (text.includes("-----BEGIN") && text.includes("PRIVATE KEY-----")) {
-        skip("secret");
-        continue;
-      }
+      const { text } = content;
       const sha256 = createHash("sha256").update(bytes).digest("hex");
-      const extractorVersion = relative.toLowerCase().endsWith(".py")
-        ? PYTHON_EXTRACTOR_VERSION
-        : TS_EXTRACTOR_VERSION;
+      const extractor = selectExtractor(relative);
       const previous = options.previous.get(relative);
       let parsed: ExtractedFile;
       if (
         previous &&
         previous.sha256 === sha256 &&
-        previous.extractorVersion === extractorVersion
+        previous.extractorVersion === extractor.version
       ) {
         parsed = previous;
         filesReused += 1;
       } else {
-        parsed = relative.toLowerCase().endsWith(".py")
-          ? extractPython(text, options.limits.maxSymbolsPerFile)
-          : extractTypeScript(relative, text, options.limits.maxSymbolsPerFile);
+        parsed = extractor.extract(
+          relative,
+          text,
+          options.limits.maxSymbolsPerFile,
+        );
         filesParsed += 1;
       }
       const entry: ParseCacheEntry = {
         sha256,
-        extractorVersion,
+        extractorVersion: extractor.version,
         defs: parsed.defs,
         refs: parsed.refs,
         droppedSymbols: parsed.droppedSymbols ?? 0,
@@ -431,6 +376,131 @@ async function inventoryInternal(
     files_reused: filesReused,
     cacheEntries,
   };
+}
+
+type GitignoreLoad =
+  | { kind: "absent" }
+  | { kind: "loaded"; rules: GitignoreRule[]; bytes: number }
+  | { kind: "skipped"; reason: SkippedReason }
+  | { kind: "limit" };
+
+async function loadGitignoreRules(
+  absoluteDirectory: string,
+  relativeDirectory: string,
+  confinement: ConfinementMode,
+  realRoot: string,
+  limits: RepositoryMapLimits,
+  totalBytes: number,
+): Promise<GitignoreLoad> {
+  const ignorePath = join(absoluteDirectory, ".gitignore");
+  const ignoreRelativePath = relativeDirectory
+    ? `${relativeDirectory}/.gitignore`
+    : ".gitignore";
+  try {
+    const stat = await lstat(ignorePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return { kind: "absent" };
+    if (stat.size > limits.maxFileBytes) {
+      return { kind: "skipped", reason: "too_large" };
+    }
+    if (totalBytes + stat.size > limits.maxTotalBytes) return { kind: "limit" };
+    const contents = await readNoFollow(
+      ignorePath,
+      stat,
+      confinement,
+      realRoot,
+      ignoreRelativePath,
+    );
+    return {
+      kind: "loaded",
+      rules: parseGitignore(contents.toString("utf8")),
+      bytes: contents.length,
+    };
+  } catch (error) {
+    if (isSymlinkRace(error)) return { kind: "skipped", reason: "symlink" };
+    if (isMissing(error)) return { kind: "absent" };
+    throw asIoError(error);
+  }
+}
+
+async function openChildDirectory(
+  absolutePath: string,
+  relativePath: string,
+  expectedStat: Awaited<ReturnType<typeof lstat>>,
+  confinement: ConfinementMode,
+): Promise<WalkDirectory | undefined> {
+  if (confinement !== "anchored") {
+    return { relativePath, expectedStat, absolutePath };
+  }
+  let handle: FileHandle | undefined;
+  try {
+    handle = await openAnchoredDirectory(absolutePath, expectedStat);
+  } catch (error) {
+    throw asIoError(error);
+  }
+  return handle ? { relativePath, expectedStat, handle } : undefined;
+}
+
+export type FileContentClassification =
+  | { kind: "source"; text: string }
+  | { kind: "skipped"; reason: "binary" | "generated" | "secret" };
+
+export function classifyFileContent(
+  bytes: Uint8Array,
+): FileContentClassification {
+  if (bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
+    return { kind: "skipped", reason: "binary" };
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return { kind: "skipped", reason: "binary" };
+  }
+  if (looksGenerated(text)) return { kind: "skipped", reason: "generated" };
+  if (text.includes("-----BEGIN") && text.includes("PRIVATE KEY-----")) {
+    return { kind: "skipped", reason: "secret" };
+  }
+  return { kind: "source", text };
+}
+
+function looksGenerated(text: string): boolean {
+  const header = text.slice(0, GENERATED_MARKER_WINDOW);
+  if (header.includes("@generated") || header.includes("DO NOT EDIT")) {
+    return true;
+  }
+  const lines = text.split(/\r?\n/);
+  if (lines.some((line) => line.length > MAX_GENERATED_LINE_LENGTH)) {
+    return true;
+  }
+  return (
+    text.length > 0 &&
+    text.length / Math.max(1, lines.length) > MAX_AVERAGE_LINE_LENGTH
+  );
+}
+
+export interface Extractor {
+  version: string;
+  extract: (
+    relative: string,
+    text: string,
+    maxSymbols: number,
+  ) => ExtractedFile;
+}
+
+const PYTHON_EXTRACTOR: Extractor = {
+  version: PYTHON_EXTRACTOR_VERSION,
+  extract: (_relative, text, maxSymbols) => extractPython(text, maxSymbols),
+};
+
+const TYPESCRIPT_EXTRACTOR: Extractor = {
+  version: TS_EXTRACTOR_VERSION,
+  extract: extractTypeScript,
+};
+
+export function selectExtractor(relative: string): Extractor {
+  return relative.toLowerCase().endsWith(".py")
+    ? PYTHON_EXTRACTOR
+    : TYPESCRIPT_EXTRACTOR;
 }
 
 async function readNoFollow(

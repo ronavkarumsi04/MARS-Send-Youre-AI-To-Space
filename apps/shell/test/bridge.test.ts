@@ -5,9 +5,15 @@ import {
   type FixtureData,
 } from "../scripts/fixture-workbench";
 import { createBridge } from "../src/main/bridge";
-import { createLoopbackTransport } from "../src/main/transport";
+import { createLoopbackTransport, TransportError } from "../src/main/transport";
 import { createController } from "../src/renderer/controller";
-import { READ_METHODS, type ShellBridge } from "../src/shared/methods";
+import {
+  BRIDGE_ERROR_MESSAGES,
+  type BridgeErrorKind,
+  bridgeFailure,
+  READ_METHODS,
+  type ShellBridge,
+} from "../src/shared/methods";
 import { findAll, MiniDocument } from "./mini-dom";
 import { loadFixtureData } from "./test-utils";
 
@@ -281,4 +287,40 @@ test("describe and inspect accept additive fields while rejecting unknown fields
   expect(
     await unknownInspect.call("tasks.inspect", { task_id: task.task_id }),
   ).toMatchObject({ ok: false, error: { kind: "protocol" } });
+});
+
+test("transport failures surface the shared message for their kind", async () => {
+  const data = (await loadFixtureData()) as FixtureData;
+  const kinds = Object.keys(BRIDGE_ERROR_MESSAGES) as BridgeErrorKind[];
+  for (const kind of kinds) {
+    const error = new TransportError(kind);
+    expect(error.message).toBe(BRIDGE_ERROR_MESSAGES[kind]);
+    const bridge = createBridge({
+      transport: {
+        async send(request) {
+          if (request.method === "workbench.describe") return data.describe;
+          throw error;
+        },
+      },
+      connectionScope: {
+        owner_id: data.describe.scope.owner_id,
+        project_id: data.describe.scope.project_id,
+      },
+    });
+    expect(await bridge.call("tasks.list", {})).toEqual(bridgeFailure(kind));
+  }
+  const crashing = createBridge({
+    transport: {
+      async send() {
+        throw new Error("socket reset");
+      },
+    },
+    connectionScope: {
+      owner_id: data.describe.scope.owner_id,
+      project_id: data.describe.scope.project_id,
+    },
+  });
+  expect(await crashing.call("tasks.list", {})).toEqual(
+    bridgeFailure("unavailable"),
+  );
 });

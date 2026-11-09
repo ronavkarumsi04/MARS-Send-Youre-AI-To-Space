@@ -4,11 +4,14 @@ import {
   type ResearchFinding,
   type ResearchRequest,
 } from "@mars/contracts";
-import { RequestContextSchema } from "@mars/tasks";
+import { type AppendEventInput, RequestContextSchema } from "@mars/tasks";
 import { z } from "zod";
+import type { ResearchWorkerVersion } from "./events";
+import type { ResearchUsage } from "./service";
 
 const nonempty = z.string().min(1);
 const timestamp = z.string().datetime({ offset: true });
+const safeInteger = z.number().int().safe();
 export const ResearchTimestampSchema = timestamp;
 
 export const ResearchRequestSchema = z
@@ -89,5 +92,60 @@ export const ResearchFindingSchema = z
     status: z.enum(["proposed", "used", "stale"]),
   })
   .strict() satisfies z.ZodType<ResearchFinding>;
+export const ResearchWorkerVersionSchema = z.object({
+  id: nonempty,
+  version: nonempty,
+}) satisfies z.ZodType<ResearchWorkerVersion>;
+
+export const ResearchUsageSchema = z.object({
+  input_tokens: safeInteger,
+  output_tokens: safeInteger,
+  cost_usd: z.number().finite().nullable(),
+  reported: z.boolean(),
+}) satisfies z.ZodType<ResearchUsage>;
+
+const storedEventEnvelope = {
+  run_id: nonempty,
+  producer: z.literal("mars-research"),
+  versions: z
+    .array(z.object({ component: z.string(), revision: z.string() }).strict())
+    .min(1),
+  source_event_ids: z.array(z.string()),
+};
+
+export const StoredResearchEventInputSchema = z.discriminatedUnion(
+  "event_type",
+  [
+    z
+      .object({
+        event_type: z.literal("research.proposed"),
+        ...storedEventEnvelope,
+        payload: z
+          .object({
+            request_id: z.string(),
+            finding_id: z.string(),
+            task_revision: safeInteger,
+            confidence: z.string(),
+            source_count: safeInteger,
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        event_type: z.literal("research.stale"),
+        ...storedEventEnvelope,
+        payload: z
+          .object({
+            request_id: z.string(),
+            task_revision: safeInteger,
+            stale_finding_ids: z.array(z.string()),
+          })
+          .strict(),
+      })
+      .strict(),
+  ],
+) satisfies z.ZodType<AppendEventInput>;
+
 export { RequestContextSchema };
 export type ParsedResearchRequest = ResearchRequest;
