@@ -36,6 +36,11 @@ import {
   WorkspacePolicyError,
 } from "../src";
 import { isIgnored, isSecret } from "../src/paths";
+import {
+  isValidArgv,
+  MAX_COMMAND_ARG_BYTES,
+  MAX_COMMAND_ARGS,
+} from "../src/sandbox";
 import { DEFAULT_WORKSPACE_LIMITS, snapshotTree } from "../src/tree";
 import {
   artifactText,
@@ -2130,6 +2135,68 @@ test("Docker config is validated by one rule set at resolve and build time [stub
       "mars-ws-run-1",
     ),
   ).toThrow("Invalid Docker label");
+});
+
+test("provider and Docker sandbox share one argv policy [stub runner — not isolation evidence]", async () => {
+  const atLimit = [
+    Array.from({ length: MAX_COMMAND_ARGS }, () => "a"),
+    ["a".repeat(MAX_COMMAND_ARG_BYTES)],
+  ];
+  const overLimit: unknown[] = [
+    [],
+    "true",
+    Array.from({ length: MAX_COMMAND_ARGS + 1 }, () => "a"),
+    ["a".repeat(MAX_COMMAND_ARG_BYTES + 1)],
+    ["é".repeat(MAX_COMMAND_ARG_BYTES / 2 + 1)],
+    ["bad\0arg"],
+    ["ok", 1],
+  ];
+  for (const argv of atLimit) expect(isValidArgv(argv)).toBe(true);
+  for (const argv of overLimit) expect(isValidArgv(argv)).toBe(false);
+
+  const resolved = resolveDockerConfig({
+    image: `mirror.gcr.io/library/busybox@sha256:${digest}`,
+    user: { uid: 1000, gid: 1000 },
+  });
+  const request: SandboxRunRequest = {
+    workspaceDir: "/tmp/workspaces/ws_abc/tree",
+    argv: ["true"],
+    timeoutMs: 1000,
+    maxOutputBytes: 1000,
+    signal: new AbortController().signal,
+    runId: "run-1",
+    labels: {},
+  };
+  for (const argv of atLimit) {
+    expect(() =>
+      buildDockerRunArgs(resolved, { ...request, argv }, "mars-ws-run-1"),
+    ).not.toThrow();
+  }
+  for (const argv of overLimit) {
+    expect(() =>
+      buildDockerRunArgs(
+        resolved,
+        { ...request, argv: argv as readonly string[] },
+        "mars-ws-run-1",
+      ),
+    ).toThrow(new TypeError("Invalid command arguments"));
+  }
+
+  const fixture = await makeFixture({ runner: false });
+  try {
+    for (const argv of overLimit) {
+      await expect(
+        fixture.provider.execute(
+          context,
+          fixture.workspace,
+          argv as readonly string[],
+          budget,
+        ),
+      ).rejects.toThrow(new WorkspacePolicyError("Invalid command arguments"));
+    }
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("remove deletes one regular file through the provider, advances the revision and refuses directories, symlinks and missing paths [stub runner — not isolation evidence]", async () => {
