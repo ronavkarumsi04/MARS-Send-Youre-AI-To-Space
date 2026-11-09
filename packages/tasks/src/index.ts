@@ -184,8 +184,8 @@ export interface DurableTaskStore extends TaskService {
    * Settles a spender's hold once its spending can no longer grow (a closed
    * room's delegation pool): the first settle sets the hold to `spent`, which
    * frees the unspent rest for the other spenders; later settles only raise it,
-   * so a stale or concurrent settle never undercounts. `reserveBudget` on the
-   * key reopens the hold.
+   * so a stale or concurrent settle never undercounts. Any successful
+   * `reserveBudget` on the key reopens the hold, even one it already covers.
    */
   settleBudget?(
     context: RequestContext,
