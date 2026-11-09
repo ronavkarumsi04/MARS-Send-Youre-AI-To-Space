@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { SkillLifecycleService } from "@mars/contracts";
 import { scanThreat } from "@mars/memory";
+import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter";
 import { withDirectoryLock } from "./lock";
 
@@ -88,6 +89,158 @@ export class SkillError extends Error {
 function fail(code: string, message: string): never {
   throw new SkillError(code, message);
 }
+
+const SkillSchema = z
+  .object({
+    name: z.string(),
+    content: z.string(),
+    status: z.enum(["active", "stale", "archived"]),
+    pinned: z.boolean(),
+    createdAt: z.number(),
+    lastActivity: z.number(),
+    useCount: z.number(),
+  })
+  .passthrough() satisfies z.ZodType<Skill>;
+const StoredSkillSchema = SkillSchema.omit({ content: true });
+const DraftSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    content: z.string(),
+    rationale: z.string(),
+    ts: z.string(),
+    baseRevision: z.string(),
+  })
+  .passthrough() satisfies z.ZodType<Draft>;
+const OperationSchema = z.union([
+  z
+    .object({
+      name: z.string(),
+      op: z.enum(["create", "update"]),
+      content: z.string(),
+    })
+    .passthrough(),
+  z
+    .object({
+      name: z.string(),
+      op: z.enum(["archive", "restore", "recordUse", "stale"]),
+    })
+    .passthrough(),
+  z
+    .object({ name: z.string(), op: z.literal("pin"), pinned: z.boolean() })
+    .passthrough(),
+  z
+    .object({
+      name: z.string(),
+      op: z.literal("restoreVersion"),
+      versionId: z.string(),
+    })
+    .passthrough(),
+]) satisfies z.ZodType<Operation>;
+const ProposalSchema = z
+  .object({
+    id: z.string(),
+    source: z.string(),
+    ops: z.array(OperationSchema),
+    rationale: z.string(),
+    expectedRevision: z.string(),
+    status: z.enum(["pending", "accepted", "rejected"]),
+    reason: z.string().optional(),
+  })
+  .passthrough()
+  .transform(
+    ({ reason, ...proposal }): Proposal => ({
+      ...proposal,
+      ...(reason === undefined ? {} : { reason }),
+    }),
+  );
+const ChangeSchema = z
+  .object({
+    ts: z.string(),
+    actor: z.string(),
+    source: z.string(),
+    op: z.string(),
+    skill: z.string().nullable(),
+    revisionBefore: z.string(),
+    revisionAfter: z.string(),
+    reviewId: z.string().nullable(),
+    before: SkillSchema.optional(),
+    after: SkillSchema.optional(),
+    draftsBefore: z.array(DraftSchema).optional(),
+    draftsAfter: z.array(DraftSchema).optional(),
+  })
+  .passthrough()
+  .transform(
+    ({ before, after, draftsBefore, draftsAfter, ...change }): Change => ({
+      ...change,
+      ...(before === undefined ? {} : { before }),
+      ...(after === undefined ? {} : { after }),
+      ...(draftsBefore === undefined ? {} : { draftsBefore }),
+      ...(draftsAfter === undefined ? {} : { draftsAfter }),
+    }),
+  );
+// z.record drops a "__proto__" key while parsing; reject it instead of losing the entry.
+const recordOf = <S extends z.ZodTypeAny>(value: S) =>
+  z
+    .custom<unknown>(
+      (input) =>
+        !input ||
+        typeof input !== "object" ||
+        !Object.hasOwn(input, "__proto__"),
+    )
+    .pipe(z.record(value));
+const stateShape = <S extends z.ZodTypeAny>(skill: S) =>
+  z
+    .object({
+      skills: recordOf(skill),
+      versions: recordOf(
+        z.array(
+          z
+            .object({
+              id: z.string(),
+              ts: z.string(),
+              op: z.string(),
+              skill: SkillSchema,
+            })
+            .passthrough(),
+        ),
+      ),
+      drafts: z.array(DraftSchema),
+      proposals: z.array(ProposalSchema),
+      undone: z.array(z.string()),
+    })
+    .passthrough();
+const StateSchema = stateShape(SkillSchema) satisfies z.ZodType<
+  State,
+  z.ZodTypeDef,
+  unknown
+>;
+const LifecycleSchema = stateShape(StoredSkillSchema);
+const TransactionSchema = z
+  .object({ state: StateSchema, journal: z.string() })
+  .passthrough() satisfies z.ZodType<Transaction, z.ZodTypeDef, unknown>;
+
+function parseStored<S extends z.ZodTypeAny>(
+  text: string,
+  schema: S,
+  file: string,
+): z.output<S> {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(text);
+  } catch {
+    fail("corrupt", `${file} is not valid JSON`);
+  }
+  const parsed = schema.safeParse(decoded);
+  if (!parsed.success) fail("corrupt", `${file} has an invalid structure`);
+  return parsed.data;
+}
+function parseJournal(text: string, file: string): Change[] {
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => parseStored(line, ChangeSchema, file));
+}
 function validateName(name: string) {
   if (
     typeof name !== "string" ||
@@ -167,7 +320,7 @@ export class SkillStore implements SkillLifecycleService {
     }
     return path;
   }
-  private location(skill: Skill) {
+  private location(skill: Pick<Skill, "name" | "status">) {
     validateName(skill.name);
     return join(
       "skills",
@@ -230,7 +383,12 @@ export class SkillStore implements SkillLifecycleService {
   private async recover() {
     const pending = await this.read(".skills-transaction.json");
     if (!pending) return;
-    const tx = JSON.parse(pending) as Transaction;
+    const tx: Transaction = parseStored(
+      pending,
+      TransactionSchema,
+      ".skills-transaction.json",
+    );
+    parseJournal(tx.journal, ".skills-transaction.json journal");
     for (const skill of Object.values(tx.state.skills)) {
       validateContent(skill.name, skill.content);
       const destination = this.location(skill);
@@ -263,18 +421,27 @@ export class SkillStore implements SkillLifecycleService {
     await this.atomic("changes.jsonl", tx.journal);
     await rm(await this.safe(".skills-transaction.json"));
   }
+  private async readLifecycle() {
+    const text = await this.read(".lifecycle.json");
+    return text === undefined
+      ? fresh()
+      : parseStored(text, LifecycleSchema, ".lifecycle.json");
+  }
+  private async readJournal() {
+    const text = (await this.read("changes.jsonl")) ?? "";
+    return { text, changes: parseJournal(text, "changes.jsonl") };
+  }
   private async load(): Promise<State> {
-    const state = JSON.parse(
-      (await this.read(".lifecycle.json")) ?? JSON.stringify(fresh()),
-    ) as State;
-    for (const [name, skill] of Object.entries(state.skills)) {
+    const { skills, ...rest } = await this.readLifecycle();
+    const state: State = { ...rest, skills: {} };
+    for (const [name, skill] of Object.entries(skills)) {
       validateName(name);
       if (skill.name !== name) fail("corrupt", "Skill metadata name mismatch");
       const content = await this.read(join(this.location(skill), "SKILL.md"));
       if (content === undefined)
         fail("missing", `Missing SKILL.md for ${name}`);
       validateContent(name, content);
-      skill.content = content;
+      state.skills[name] = { ...skill, content };
     }
     return state;
   }
@@ -317,9 +484,7 @@ export class SkillStore implements SkillLifecycleService {
     };
   }
   private async commit(state: State, changes: Change[]) {
-    const previous = JSON.parse(
-      (await this.read(".lifecycle.json")) ?? JSON.stringify(fresh()),
-    ) as State;
+    const previous = await this.readLifecycle();
     for (const skill of Object.values(state.skills)) {
       validateContent(skill.name, skill.content);
       const destination = this.location(skill);
@@ -337,8 +502,9 @@ export class SkillStore implements SkillLifecycleService {
       )
         fail("conflict", "Unmanaged or conflicting skill directories exist");
     }
+    const { text } = await this.readJournal();
     const journal =
-      ((await this.read("changes.jsonl")) ?? "") +
+      (text && !text.endsWith("\n") ? `${text}\n` : text) +
       changes.map((c) => `${JSON.stringify(c)}\n`).join("");
     await this.atomic(
       ".skills-transaction.json",
@@ -603,10 +769,7 @@ export class SkillStore implements SkillLifecycleService {
       this.check(state, options);
       if (!reviewId.trim()) fail("invalid", "reviewId is required");
       if (state.undone.includes(reviewId)) return [];
-      const history: Change[] = ((await this.read("changes.jsonl")) ?? "")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as Change);
+      const history = (await this.readJournal()).changes;
       const skillOps = [
         "create",
         "update",
