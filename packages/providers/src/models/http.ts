@@ -1,3 +1,4 @@
+import type { ChatResponse, ChatToolCall } from "@mars/contracts";
 import type { AdapterOptions } from "./adapter-types";
 import { ProviderError } from "./errors";
 
@@ -9,6 +10,94 @@ export function asObject(value: unknown): JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonObject)
     : {};
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function unexpectedResponseShape(providerId: string): ProviderError {
+  return new ProviderError(
+    providerId,
+    "Provider returned an unexpected response shape.",
+    { retryable: false },
+  );
+}
+
+/** A token count is reported only when it is an integer; otherwise it is unknown. */
+export function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value)
+    ? value
+    : undefined;
+}
+
+/** Reads `{ inputTokens, outputTokens }` from a usage object, or nothing unless both counts are reported. */
+export function usageFrom(
+  raw: unknown,
+  inputKey: string,
+  outputKey: string,
+): ChatResponse["usage"] {
+  const usage = asObject(raw);
+  const inputTokens = tokenCount(usage[inputKey]);
+  const outputTokens = tokenCount(usage[outputKey]);
+  return inputTokens !== undefined && outputTokens !== undefined
+    ? { inputTokens, outputTokens }
+    : undefined;
+}
+
+/*
+ * Tool-call policy shared by every adapter in both complete and stream mode:
+ * a tool call needs a non-empty string id and name, and its arguments must be
+ * a JSON object (an empty argument string means `{}`). A call that breaks
+ * either rule fails the request with a non-retryable ProviderError; it is
+ * never dropped, coerced to `{}`, or given a synthesized id.
+ */
+
+/** Decodes a JSON tool-argument string into an object, per the tool-call policy. */
+export function parseToolArguments(
+  raw: string,
+  providerId: string,
+): JsonObject {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw || "{}");
+  } catch {
+    parsed = undefined;
+  }
+  if (isJsonObject(parsed)) return parsed;
+  throw new ProviderError(
+    providerId,
+    "Provider returned invalid tool arguments.",
+    { retryable: false },
+  );
+}
+
+/** Validates a decoded tool call against the tool-call policy. */
+export function requireToolCall(
+  call: { id: unknown; name: unknown; arguments: unknown },
+  providerId: string,
+): ChatToolCall {
+  const { id, name } = call;
+  if (
+    typeof id !== "string" ||
+    id.length === 0 ||
+    typeof name !== "string" ||
+    name.length === 0
+  ) {
+    throw new ProviderError(
+      providerId,
+      "Provider returned a tool call without an id or name.",
+      { retryable: false },
+    );
+  }
+  if (!isJsonObject(call.arguments)) {
+    throw new ProviderError(
+      providerId,
+      "Provider returned invalid tool arguments.",
+      { retryable: false },
+    );
+  }
+  return { id, name, arguments: call.arguments };
 }
 
 export function parseRetryAfter(header: string | null): number | undefined {

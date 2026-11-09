@@ -15,12 +15,17 @@ import {
   hasErrorEnvelope,
   type JsonObject,
   parseSseJson,
+  parseToolArguments,
   providerEnvelopeError,
   readJson,
   readSseFrames,
+  requireToolCall,
   sendProviderRequest,
   streamBody,
   streamFailure,
+  tokenCount,
+  unexpectedResponseShape,
+  usageFrom,
 } from "./http";
 
 function contentText(
@@ -160,55 +165,35 @@ export function createAnthropicAdapter(
         !Object.hasOwn(payload, "stop_reason") ||
         (typeof stopReason !== "string" && stopReason !== null)
       ) {
-        throw new ProviderError(
-          provider.id,
-          "Provider returned an unexpected response shape.",
-          { retryable: false },
-        );
+        throw unexpectedResponseShape(provider.id);
       }
+      const isTextBlock = (block: JsonObject) =>
+        block.type === "text" && typeof block.text === "string";
       if (
         contentBlocks.length > 0 &&
         !contentBlocks.some((rawBlock) => {
           const block = asObject(rawBlock);
-          return (
-            (block.type === "text" && typeof block.text === "string") ||
-            (block.type === "tool_use" &&
-              typeof block.name === "string" &&
-              typeof block.id === "string")
-          );
+          return isTextBlock(block) || block.type === "tool_use";
         })
       ) {
-        throw new ProviderError(
-          provider.id,
-          "Provider returned an unexpected response shape.",
-          { retryable: false },
-        );
+        throw unexpectedResponseShape(provider.id);
       }
       const content: string[] = [];
       const toolCalls: ChatToolCall[] = [];
       for (const rawBlock of contentBlocks) {
         const block = asObject(rawBlock);
-        if (block.type === "text" && typeof block.text === "string") {
-          content.push(block.text);
-        } else if (
-          block.type === "tool_use" &&
-          typeof block.name === "string" &&
-          typeof block.id === "string"
-        ) {
-          const input = asObject(block.input);
-          toolCalls.push({ id: block.id, name: block.name, arguments: input });
+        if (isTextBlock(block)) {
+          content.push(block.text as string);
+        } else if (block.type === "tool_use") {
+          toolCalls.push(
+            requireToolCall(
+              { id: block.id, name: block.name, arguments: block.input },
+              provider.id,
+            ),
+          );
         }
       }
-      const usageObject = asObject(payload.usage);
-      const inputTokens = usageObject.input_tokens;
-      const outputTokens = usageObject.output_tokens;
-      const usage =
-        typeof inputTokens === "number" &&
-        Number.isInteger(inputTokens) &&
-        typeof outputTokens === "number" &&
-        Number.isInteger(outputTokens)
-          ? { inputTokens, outputTokens }
-          : undefined;
+      const usage = usageFrom(payload.usage, "input_tokens", "output_tokens");
       return {
         content: content.join(""),
         toolCalls,
@@ -243,7 +228,7 @@ export function createAnthropicAdapter(
       let messageStopped = false;
       const partialTools = new Map<
         number,
-        { id: string; name: string; input: JsonObject; partialJson: string }
+        { id: unknown; name: unknown; input: unknown; partialJson: string }
       >();
 
       try {
@@ -263,9 +248,8 @@ export function createAnthropicAdapter(
             const message = asObject(payload.message);
             if (typeof message.model === "string")
               responseModel = message.model;
-            const usage = asObject(message.usage);
-            if (typeof usage.input_tokens === "number")
-              inputTokens = usage.input_tokens;
+            inputTokens =
+              tokenCount(asObject(message.usage).input_tokens) ?? inputTokens;
           } else if (eventType === "content_block_start") {
             const index = typeof payload.index === "number" ? payload.index : 0;
             const block = asObject(payload.content_block);
@@ -275,9 +259,9 @@ export function createAnthropicAdapter(
               yield { type: "text-delta", text: block.text };
             } else if (block.type === "tool_use") {
               partialTools.set(index, {
-                id: typeof block.id === "string" ? block.id : "",
-                name: typeof block.name === "string" ? block.name : "",
-                input: asObject(block.input),
+                id: block.id,
+                name: block.name,
+                input: block.input,
                 partialJson: "",
               });
             }
@@ -299,9 +283,8 @@ export function createAnthropicAdapter(
             const delta = asObject(payload.delta);
             if (typeof delta.stop_reason === "string")
               finishReason = delta.stop_reason;
-            const usage = asObject(payload.usage);
-            if (typeof usage.output_tokens === "number")
-              outputTokens = usage.output_tokens;
+            outputTokens =
+              tokenCount(asObject(payload.usage).output_tokens) ?? outputTokens;
           } else if (eventType === "message_stop") {
             messageStopped = true;
             break;
@@ -323,36 +306,16 @@ export function createAnthropicAdapter(
       for (const [, tool] of [...partialTools.entries()].sort(
         ([left], [right]) => left - right,
       )) {
-        let input = tool.input;
-        if (tool.partialJson) {
-          try {
-            const parsed: unknown = JSON.parse(tool.partialJson);
-            input =
-              parsed !== null &&
-              typeof parsed === "object" &&
-              !Array.isArray(parsed)
-                ? (parsed as JsonObject)
-                : {};
-          } catch {
-            throw new ProviderError(
-              provider.id,
-              "Provider returned invalid tool arguments.",
-              { retryable: false },
-            );
-          }
-        }
-        if (!tool.id || !tool.name) {
-          throw new ProviderError(
-            provider.id,
-            "Provider returned a tool call without an id or name.",
-            { retryable: false },
-          );
-        }
-        const toolCall: ChatToolCall = {
-          id: tool.id,
-          name: tool.name,
-          arguments: input,
-        };
+        const toolCall = requireToolCall(
+          {
+            id: tool.id,
+            name: tool.name,
+            arguments: tool.partialJson
+              ? parseToolArguments(tool.partialJson, provider.id)
+              : tool.input,
+          },
+          provider.id,
+        );
         toolCalls.push(toolCall);
         yield { type: "tool-call", toolCall };
       }
