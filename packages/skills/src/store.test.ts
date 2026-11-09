@@ -357,17 +357,37 @@ describe("skill lifecycle owner", () => {
     });
   });
 
-  it("rejects stale proposals and preserves their pending status", async () => {
+  it("a proposal goes stale only when a skill it targets changes, and stays pending", async () => {
     const proposal = await store.submitProposal({
       source: "review",
       rationale: "New",
       ops: [{ op: "create", name: "test", content: content("test") }],
     });
+    const clashing = await store.submitProposal({
+      source: "review",
+      rationale: "New",
+      ops: [{ op: "create", name: "clash", content: content("clash") }],
+    });
     await store.create("other", content("other"), options);
-    await expect(store.accept(proposal.id, "user")).rejects.toMatchObject({
+    await store.create("clash", content("clash", "direct"), options);
+    await store.accept(proposal.id, "user");
+    expect((await store.get("test"))?.content).toBe(content("test"));
+    await expect(store.accept(clashing.id, "user")).rejects.toMatchObject({
       code: "stale-revision",
     });
-    expect((await store.listProposals())[0]?.status).toBe("pending");
+    expect((await store.listProposals())[1]?.status).toBe("pending");
+  });
+
+  it("accepting a background-review proposal journals its review id so undo finds it", async () => {
+    const proposal = await store.submitProposal({
+      source: "background_review:session-1:review-9",
+      rationale: "Lesson",
+      ops: [{ op: "create", name: "test", content: content("test") }],
+    });
+    await store.accept(proposal.id, options);
+    const undone = await store.undoReview("review-9", options);
+    expect(undone.length).toBeGreaterThan(0);
+    expect((await store.get("test"))?.status).toBe("archived");
   });
 
   it("logs provenance, review id and revision chains for a batch", async () => {
