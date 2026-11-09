@@ -1090,7 +1090,7 @@ describe("Watch evidence beside the host verdict", () => {
     const ctx = setup();
     ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
     ctx.server.on("tasks.evidence", () => {
-      throw new RpcError("invalid_params", "unknown parameter");
+      throw new RpcError("protocol", "unknown parameter", "invalid_params");
     });
     await ctx.controller.handleMessage({ type: "ready" });
     await ctx.controller.handleMessage({
