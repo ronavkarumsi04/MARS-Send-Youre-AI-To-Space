@@ -451,10 +451,20 @@ test("the live pinned fetch connects to the validated address, never a fresh DNS
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: (request) =>
-      new Response(`host=${request.headers.get("host")}`, {
+    fetch: (request) => {
+      const route = new URL(request.url).pathname;
+      if (route === "/205") return new Response(null, { status: 205 });
+      if (route === "/gzip")
+        return new Response(
+          Bun.gzipSync(new TextEncoder().encode("decoded page")),
+          { headers: { "content-encoding": "gzip" } },
+        );
+      if (route === "/zstd")
+        return new Response("x", { headers: { "content-encoding": "zstd" } });
+      return new Response(`host=${request.headers.get("host")}`, {
         headers: { "set-cookie": "a=1", "x-test": "yes" },
-      }),
+      });
+    },
   });
   try {
     const response = await createPinnedFetch()(
@@ -465,6 +475,22 @@ test("the live pinned fetch connects to the validated address, never a fresh DNS
     expect(response.status).toBe(200);
     expect(response.headers.get("x-test")).toBe("yes");
     expect(await response.text()).toBe(`host=pinned.invalid:${server.port}`);
+    // Bodiless statuses and compressed bodies come back as readable Responses.
+    const pinned = (route: string) =>
+      createPinnedFetch()(
+        `http://pinned.invalid:${server.port}${route}`,
+        { method: "GET" },
+        "127.0.0.1",
+      );
+    const reset = await pinned("/205");
+    expect(reset.status).toBe(205);
+    expect(await reset.text()).toBe("");
+    const gzipped = await pinned("/gzip");
+    expect(gzipped.headers.get("content-encoding")).toBeNull();
+    expect(await gzipped.text()).toBe("decoded page");
+    await expect(pinned("/zstd")).rejects.toThrow(
+      "Unsupported content encoding",
+    );
     await expect(
       createPinnedFetch()(
         "http://pinned.invalid/",

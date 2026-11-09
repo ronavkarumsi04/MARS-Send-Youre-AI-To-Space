@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import {
   type HostResolver,
   hostAllowed,
@@ -102,6 +103,14 @@ export async function browserUrlVerdict(
   return checked.ok ? undefined : checked.reason;
 }
 
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+const DECODERS: Record<string, () => NodeJS.ReadWriteStream & Readable> = {
+  gzip: createGunzip,
+  "x-gzip": createGunzip,
+  deflate: createInflate,
+  br: createBrotliDecompress,
+};
+
 /**
  * The live PinnedFetch: node:http(s) with a `lookup` that only ever returns
  * the validated address. TLS still verifies the certificate against the URL's
@@ -120,6 +129,8 @@ export function createPinnedFetch(): PinnedFetch {
       new Headers(init.headers).forEach((value, name) => {
         outgoing[name] = value;
       });
+      // Only encodings decoded below are offered.
+      outgoing["accept-encoding"] = "gzip, deflate, br";
       const client = target.protocol === "https:" ? https : http;
       const lookup = (
         _hostname: string,
@@ -151,16 +162,35 @@ export function createPinnedFetch(): PinnedFetch {
               headers.append(name, item);
           }
           const empty =
-            status === 204 || status === 304 || init.method === "HEAD";
+            NULL_BODY_STATUSES.has(status) || init.method === "HEAD";
           if (empty) response.resume();
-          resolve(
-            new Response(
-              empty
-                ? null
-                : (Readable.toWeb(response) as unknown as ReadableStream),
-              { status, headers },
-            ),
-          );
+          try {
+            let body: Readable = response;
+            const encoding = headers.get("content-encoding")?.trim();
+            if (!empty && encoding && encoding !== "identity") {
+              const decoder = DECODERS[encoding.toLowerCase()];
+              if (!decoder) {
+                response.destroy();
+                reject(new Error("Unsupported content encoding."));
+                return;
+              }
+              body = response.pipe(decoder());
+              response.on("error", (error) => body.destroy(error));
+              headers.delete("content-encoding");
+              headers.delete("content-length");
+            }
+            resolve(
+              new Response(
+                empty
+                  ? null
+                  : (Readable.toWeb(body) as unknown as ReadableStream),
+                { status, headers },
+              ),
+            );
+          } catch (error) {
+            response.destroy();
+            reject(error);
+          }
         },
       );
       request.on("error", reject);
