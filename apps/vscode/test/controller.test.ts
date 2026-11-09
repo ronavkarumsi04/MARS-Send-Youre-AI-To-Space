@@ -1089,8 +1089,15 @@ describe("Watch evidence beside the host verdict", () => {
   test("a host that rejects the parameter still gets a badge from tasks.verification", async () => {
     const ctx = setup();
     ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
-    ctx.server.on("tasks.evidence", () => {
-      throw new RpcError("protocol", "unknown parameter", "invalid_params");
+    ctx.server.on("tasks.evidence", (params) => {
+      if (params.include_host_verification !== undefined)
+        throw new RpcError("protocol", "unknown parameter", "invalid_params");
+      return {
+        task_revision: 1,
+        workspace: { ...workspace, revision: "rev-2" },
+        diff_sha256: "c".repeat(64),
+        verify_records: [record("rev-2", false)],
+      };
     });
     await ctx.controller.handleMessage({ type: "ready" });
     await ctx.controller.handleMessage({
@@ -1099,7 +1106,9 @@ describe("Watch evidence beside the host verdict", () => {
     });
     expect(ctx.server.methods()).toContain("tasks.verification");
     expect(ctx.last().selected?.verification?.state).toBe("unverified");
-    expect(ctx.last().selected?.watch).toEqual([]);
+    expect(ctx.last().selected?.watch).toEqual([
+      expect.objectContaining({ revision: "rev-2", stale: false }),
+    ]);
     expect(ctx.last().notice).toBeNull();
     ctx.controller.dispose();
   });

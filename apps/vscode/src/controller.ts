@@ -550,15 +550,19 @@ export class WorkbenchController {
     // One evidence read binds the host verdict and Watch records to the same
     // candidate; hosts without that parameter fall back to two reads.
     const loaded = await this.request(null, async (client, signal) => {
-      const evidence = await client
+      const bound = await client
         .evidence(taskId, signal, true)
         .catch(() => null);
-      return {
-        view:
-          evidence?.host_verification ??
-          (await client.verification(taskId, signal)),
-        watch: evidence ? watchRecords(evidence.verify_records) : [],
-      };
+      if (bound?.host_verification)
+        return {
+          view: bound.host_verification,
+          watch: watchRecords(bound.verify_records),
+        };
+      const [view, legacy] = await Promise.all([
+        client.verification(taskId, signal),
+        bound ?? client.evidence(taskId, signal).catch(() => null),
+      ]);
+      return { view, watch: legacy ? watchRecords(legacy.verify_records) : [] };
     });
     const selected = this.current(taskId);
     // Only the newest answer may paint the badge; an older reply can speak
