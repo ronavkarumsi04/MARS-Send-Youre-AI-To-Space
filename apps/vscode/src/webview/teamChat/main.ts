@@ -317,8 +317,8 @@ function renderSearch(s: TeamChatViewState): HTMLElement {
 }
 
 function renderInbox(s: TeamChatViewState): HTMLElement {
-  const viewerSelect = h("select", { label: "Fixture viewer" });
-  viewerSelect.dataset.focusKey = "viewer";
+  const viewerSelect = h("select", { key: "viewer" });
+  viewerSelect.id = "viewer-select";
   for (const user of s.viewers) {
     const option = h("option", {}, `${user.display_name} (@${user.handle})`);
     option.value = user.user_id;
@@ -330,6 +330,8 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
     textarea.value = "";
     post({ type: "fixtureSwitchViewer", userId: viewerSelect.value });
   });
+  const viewerLabel = h("label", { class: "small muted" }, "Viewing as");
+  viewerLabel.htmlFor = viewerSelect.id;
   const list = h("ul", { class: "conversations", label: "Conversations" });
   for (const conversation of s.conversations) {
     const active =
@@ -420,12 +422,7 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
         : null,
     ),
     s.viewers.length > 0
-      ? h(
-          "div",
-          { class: "viewer-row" },
-          h("label", { class: "small muted" }, "Viewing as"),
-          viewerSelect,
-        )
+      ? h("div", { class: "viewer-row" }, viewerLabel, viewerSelect)
       : h(
           "div",
           { class: "viewer-row small muted" },
@@ -501,6 +498,10 @@ function renderChips(
   return row;
 }
 
+function messageFocusKey(messageId: string): string {
+  return `message-${messageId}`;
+}
+
 function renderMessage(
   s: TeamChatViewState,
   message: MessageView,
@@ -517,6 +518,7 @@ function renderMessage(
           );
           target?.scrollIntoView({ block: "center" });
           target?.classList.add("flash");
+          target?.focus({ preventScroll: true });
         },
         { secondary: true, title: "Jump to the replied message" },
       )
@@ -526,6 +528,7 @@ function renderMessage(
     "li",
     {
       class: `message ${mine ? "mine" : ""} ${s.selected?.highlight_message_id === message.message_id ? "highlight" : ""}`,
+      key: messageFocusKey(message.message_id),
     },
     h(
       "div",
@@ -560,6 +563,8 @@ function renderMessage(
     renderReactions(s, message),
   );
   item.dataset.messageId = message.message_id;
+  // Jump targets (reply quote, search hit) receive focus programmatically.
+  item.tabIndex = -1;
   return item;
 }
 
@@ -786,8 +791,9 @@ function renderComposerParts(): void {
   replyBar.hidden = !composer.reply_to;
   chipBar.replaceChildren();
   composer.chips.forEach((chip, index) => {
+    const label = chipLabel(chip.reference, chip.repo_name);
     const remove = button(
-      `${chipLabel(chip.reference, chip.repo_name)} ×`,
+      `${label} ×`,
       `draft-chip-${chip.key}`,
       () => {
         updateComposer({ type: "removeChip", key: chip.key });
@@ -796,6 +802,7 @@ function renderComposerParts(): void {
       },
       { secondary: true, title: "Remove reference" },
     );
+    remove.setAttribute("aria-label", `Remove reference ${label}`);
     remove.className = "chip draft";
     chipBar.append(remove);
   });
@@ -982,6 +989,7 @@ function render(): void {
       scrolledToHit = highlightId;
       target.scrollIntoView({ block: "center" });
       stickToBottom = false;
+      returnFocusTo = messageFocusKey(highlightId);
     }
   } else if (!highlightId) scrolledToHit = null;
   jumpButton.hidden = stickToBottom;

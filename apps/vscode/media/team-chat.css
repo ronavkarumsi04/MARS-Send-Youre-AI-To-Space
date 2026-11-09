@@ -75,7 +75,8 @@ button:disabled {
 }
 button:focus-visible,
 textarea:focus-visible,
-select:focus-visible {
+select:focus-visible,
+.message:focus-visible {
   outline: 2px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }

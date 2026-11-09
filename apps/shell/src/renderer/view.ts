@@ -39,6 +39,10 @@ export type ShellState = {
   onRefresh?: () => void;
 };
 
+export const HEADING_FOCUS_KEY = "heading";
+const REFRESH_FOCUS_KEY = "refresh";
+const HEADING_ATTRS = { "data-focus-key": HEADING_FOCUS_KEY, tabindex: "-1" };
+
 const STATUS_ORDER: Task["status"][] = [
   "running",
   "paused",
@@ -88,6 +92,7 @@ function taskList(
         {
           class: `session${task.task_id === selectedId ? " selected" : ""}`,
           "data-task-id": task.task_id,
+          "data-focus-key": `task:${task.task_id}`,
           "aria-pressed": task.task_id === selectedId ? "true" : "false",
           title: task.task_id,
           type: "button",
@@ -140,7 +145,7 @@ function taskHeader(
       doc,
       "header",
       { class: "task-header" },
-      h(doc, "h1", {}, "No task selected"),
+      h(doc, "h1", HEADING_ATTRS, "No task selected"),
       h(doc, "p", {}, "Select a session to inspect its read-only details."),
     );
   const candidateRevision =
@@ -155,7 +160,7 @@ function taskHeader(
     doc,
     "header",
     { class: "task-header" },
-    h(doc, "h1", {}, `Task ${task.task_id}`),
+    h(doc, "h1", HEADING_ATTRS, `Task ${task.task_id}`),
     h(
       doc,
       "div",
@@ -403,13 +408,18 @@ export function renderShell(
   state: ShellState,
 ): ShellElement {
   if (state.error) {
-    const retry = h(doc, "button", { class: "retry", type: "button" }, "Retry");
+    const retry = h(
+      doc,
+      "button",
+      { class: "retry", type: "button", "data-focus-key": REFRESH_FOCUS_KEY },
+      "Retry",
+    );
     retry.addEventListener("click", () => state.onRefresh?.());
     return h(
       doc,
       "main",
       { class: "connection-error", role: "alert" },
-      h(doc, "h1", {}, "MARS Shell"),
+      h(doc, "h1", HEADING_ATTRS, "MARS Shell"),
       h(doc, "p", {}, state.error),
       retry,
     );
@@ -418,7 +428,7 @@ export function renderShell(
   const refresh = h(
     doc,
     "button",
-    { class: "refresh", type: "button" },
+    { class: "refresh", type: "button", "data-focus-key": REFRESH_FOCUS_KEY },
     "Refresh",
   );
   refresh.addEventListener("click", () => state.onRefresh?.());
