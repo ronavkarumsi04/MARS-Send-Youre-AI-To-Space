@@ -964,6 +964,14 @@ test("host persists launch metadata, runs only through the runtime and publishes
   ).toBe("running");
   expect(f.sessions).toHaveLength(1);
   expect(f.sessions[0]?.options.cwd).toBe(join(f.root, "isolated"));
+  // The run gets the task's fixed deadline; asking again later never moves it.
+  const fixed = await f.store.fixDeadline?.(
+    context(),
+    "task",
+    Date.now() + 3_600_000,
+  );
+  expect(fixed).toBeDefined();
+  expect(f.sessions[0]?.options.deadline).toBe(fixed);
   await expect(
     f.sessions[0]?.options.tools.execute(["anything"]),
   ).rejects.toMatchObject({ code: "forbidden" });

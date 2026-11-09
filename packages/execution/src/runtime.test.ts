@@ -406,6 +406,31 @@ test("actual Oh My Pi owns a two-turn write-tool session through the existing pr
   }
 }, 30000);
 
+test("a run never outlives the task's fixed deadline, even when resumed", async () => {
+  const f = await fixture();
+  try {
+    const fixed = Date.now() + 30_000;
+    const first = await f.open({
+      deadline: fixed,
+      fetch: async () => sse({ content: "First turn" }),
+    });
+    const result = await first.run("First instruction");
+    expect(result.usage.deadline).toBe(fixed);
+    const file = first.journalPath;
+    await first.dispose();
+    const second = await f.open({
+      sessionFile: file,
+      deadline: fixed - 10_000,
+      fetch: async () => sse({ content: "Resumed turn" }),
+    });
+    const resumed = await second.run("Continue");
+    expect(resumed.usage.deadline).toBe(fixed - 10_000);
+    await second.dispose();
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
 test("a stopped SDK session reopens its original journal and retains budget and conversation", async () => {
   const f = await fixture();
   let requests = 0;

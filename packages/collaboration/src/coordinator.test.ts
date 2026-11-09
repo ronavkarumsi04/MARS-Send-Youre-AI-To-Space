@@ -3366,3 +3366,30 @@ test("fresh processes preserve envelopes, results, sequence, and claimable jobs"
   await pendingRunner.idle();
   expect(starts).toBe(1);
 });
+
+test("a room never outlives the task's fixed deadline", async () => {
+  const f = await fixture();
+  const start = f.room.deadline - task().budget.max_duration_ms;
+  const authority = {
+    approvals: { read: true, write: false, execute: false },
+    allow_delegation: false,
+    paid_consent: false,
+  };
+  const late = await f.collaboration.host.openRoom(context, {
+    task: task("fixed-deadline"),
+    idempotency_key: "fixed-deadline",
+    authority,
+    deadline: start + 1000,
+  });
+  expect(late.room.deadline).toBe(start + 1000);
+  await expectCode(
+    () =>
+      f.collaboration.host.openRoom(context, {
+        task: task("past-deadline"),
+        idempotency_key: "past-deadline",
+        authority,
+        deadline: start,
+      }),
+    "expired",
+  );
+});

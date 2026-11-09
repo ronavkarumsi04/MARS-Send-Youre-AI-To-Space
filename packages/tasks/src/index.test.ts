@@ -2296,3 +2296,20 @@ test("budget holds share one task budget across spenders", async () => {
   ).rejects.toMatchObject({ code: "invalid_input" });
   await store.close();
 });
+
+test("a task's deadline is fixed the first time it is asked for", async () => {
+  const store = await openStore(makeRoot());
+  const task = makeTask();
+  await store.create(context(), task);
+  const fix = store.fixDeadline?.bind(store);
+  if (!fix) throw new Error("fixDeadline missing");
+  const first = await fix(context(), task.task_id, 1_000);
+  expect(first).toBe(1_000 + task.budget.max_duration_ms);
+  // A later resume or room never moves it.
+  expect(await fix(context(), task.task_id, 5_000_000)).toBe(first);
+  await expect(fix(context(), task.task_id, Number.NaN)).rejects.toMatchObject(
+    { code: "invalid_input" },
+  );
+  await expect(fix(context(), "missing", 1_000)).rejects.toBeDefined();
+  await store.close();
+});

@@ -1983,6 +1983,12 @@ export async function createWorkbenchHost(
   };
   // Every spender of a task holds its share of the task budget in the store's
   // ledger: the foreground run, research and the delegation pool.
+  const fixedDeadline = async (
+    context: RequestContext,
+    task: Task,
+  ): Promise<number> =>
+    (await options.store.fixDeadline?.(context, task.task_id, Date.now())) ??
+    Date.now() + task.budget.max_duration_ms;
   const foregroundBudget = (
     context: RequestContext,
     taskId: string,
@@ -2007,6 +2013,7 @@ export async function createWorkbenchHost(
     approvals: Approvals,
     modelId: string,
     coordinatorBudget: Budget,
+    deadline: number,
   ): Promise<FrozenCollaboration | undefined> => {
     if (!options.collaboration) return undefined;
     try {
@@ -2025,6 +2032,7 @@ export async function createWorkbenchHost(
             }
           : {}),
         model_id: modelId,
+        deadline,
       });
       if (
         opened.room.coordinator_runtime_budget.max_tokens <
@@ -2170,6 +2178,7 @@ export async function createWorkbenchHost(
     let deadline = launch.provisionalDeadline;
     const runtime = await runtimeFactory({
       ...foregroundBudget(context, taskId),
+      deadline: launch.provisionalDeadline,
       task: runtimeTask(running, collaboration),
       cwd,
       stateDir: launch.stateDir,
@@ -2209,7 +2218,10 @@ export async function createWorkbenchHost(
         await persistObservation(event);
       },
     });
-    deadline = Date.now() + running.budget.max_duration_ms;
+    deadline = Math.min(
+      Date.now() + running.budget.max_duration_ms,
+      launch.provisionalDeadline,
+    );
     return {
       runtime,
       deadline,
@@ -2534,15 +2546,15 @@ export async function createWorkbenchHost(
             : {}),
         },
       );
-      // Research deadlines follow the runtime ledger, whose clock starts when
-      // the session opens, not when the task was marked running.
-      const provisionalDeadline = Date.now() + running.budget.max_duration_ms;
+      // One absolute deadline for the room, the foreground run and research.
+      const provisionalDeadline = await fixedDeadline(context, running);
       const collaboration = await openLaunchRoom(
         context,
         running,
         params.approvals,
         model.id,
         coordinatorBudget,
+        provisionalDeadline,
       );
       let runtime: RuntimeSession | undefined;
       try {
@@ -2684,6 +2696,7 @@ export async function createWorkbenchHost(
       try {
         runtime = await runtimeFactory({
           ...foregroundBudget(context, running.task_id),
+          deadline: await fixedDeadline(context, running),
           task: runtimeTask(running, launch.collaboration),
           cwd,
           stateDir: taskState(task),

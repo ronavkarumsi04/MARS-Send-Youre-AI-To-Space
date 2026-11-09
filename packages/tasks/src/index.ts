@@ -203,6 +203,16 @@ export interface DurableTaskStore extends TaskService {
     taskId: string,
     key: string,
   ): Promise<void>;
+  /**
+   * The task's one absolute deadline (epoch ms), fixed the first time it is
+   * asked for at `now + budget.max_duration_ms`. Foreground, research and
+   * delegated work all stop at it; later calls never move it.
+   */
+  fixDeadline?(
+    context: RequestContext,
+    taskId: string,
+    now: number,
+  ): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -769,6 +779,13 @@ export async function createTaskStore(
         slot_key TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
         PRIMARY KEY (scope_key, task_id, slot_key),
+        FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_deadlines (
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        deadline INTEGER NOT NULL,
+        PRIMARY KEY (scope_key, task_id),
         FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
       );
       CREATE TABLE IF NOT EXISTS session_bindings (
@@ -2393,6 +2410,25 @@ export async function createTaskStore(
       db.query(
         "DELETE FROM concurrency_slots WHERE scope_key = ? AND task_id = ? AND slot_key = ?",
       ).run(key, taskId, slotKey);
+    },
+    async fixDeadline(context, taskId, now) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      if (!Number.isSafeInteger(now) || now <= 0)
+        throw invalidInput("Invalid deadline time");
+      const transaction = db.transaction((): number => {
+        const task = readTask(key, taskId);
+        db.query(
+          "INSERT OR IGNORE INTO task_deadlines (scope_key, task_id, deadline) VALUES (?, ?, ?)",
+        ).run(key, taskId, now + task.budget.max_duration_ms);
+        const row = db
+          .query(
+            "SELECT deadline FROM task_deadlines WHERE scope_key = ? AND task_id = ?",
+          )
+          .get(key, taskId) as { deadline: number };
+        return row.deadline;
+      });
+      return transaction.immediate();
     },
     async close() {
       if (closed) return;
