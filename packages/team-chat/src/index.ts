@@ -9,6 +9,8 @@ export {
   EMPTY_COMPOSER,
   type KeyIntent,
   keyIntent,
+  mentionOptionId,
+  type PickerAnnouncement,
   type PickerState,
   pickerAnnouncement,
   type ReplyContext,

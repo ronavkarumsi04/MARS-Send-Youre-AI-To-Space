@@ -10,6 +10,7 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
+  mentionOptionId,
   pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
@@ -747,10 +748,11 @@ const picker = h("ul", {
   label: "Mention picker",
 });
 picker.id = "mention-picker";
-/** Polite status for picker result counts; separate from the message announcer. */
+/** Polite status for picker results; separate from the message announcer. */
 const pickerStatus = h("div", { class: "announcer", role: "status" });
 pickerStatus.setAttribute("aria-live", "polite");
 pickerStatus.setAttribute("aria-atomic", "true");
+let announcedPickerResults = "";
 const sendButton = button("Send", "send", () => send());
 const composerAlert = h("p", {
   class: "notice error composer-error",
@@ -827,7 +829,7 @@ function renderComposerParts(): void {
         h("span", { class: "mono" }, candidate.label),
         h("span", { class: "muted small" }, candidate.detail),
       );
-      option.id = `mention-${index}`;
+      option.id = mentionOptionId(index, candidate);
       option.setAttribute("aria-selected", String(index === selected));
       option.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -845,8 +847,12 @@ function renderComposerParts(): void {
       });
       picker.append(option);
     });
-    if (candidates.length > 0)
-      textarea.setAttribute("aria-activedescendant", `mention-${selected}`);
+    const active = candidates[selected];
+    if (active)
+      textarea.setAttribute(
+        "aria-activedescendant",
+        mentionOptionId(selected, active),
+      );
     else textarea.removeAttribute("aria-activedescendant");
     textarea.setAttribute("aria-expanded", "true");
   } else {
@@ -855,8 +861,11 @@ function renderComposerParts(): void {
   }
   textarea.setAttribute("aria-controls", picker.id);
   picker.hidden = !composer.picker;
-  const status = pickerAnnouncement(composer.picker);
-  if (pickerStatus.textContent !== status) pickerStatus.textContent = status;
+  const announcement = pickerAnnouncement(composer.picker);
+  if (announcement.results !== announcedPickerResults) {
+    announcedPickerResults = announcement.results;
+    pickerStatus.textContent = announcement.text;
+  }
   composerAlert.textContent = composerError ?? "";
   composerAlert.hidden = composerError === null;
   sendButton.disabled =

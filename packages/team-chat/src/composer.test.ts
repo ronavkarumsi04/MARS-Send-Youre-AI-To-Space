@@ -6,6 +6,7 @@ import {
   composerProblem,
   EMPTY_COMPOSER,
   keyIntent,
+  mentionOptionId,
   pickerAnnouncement,
   reduceComposer,
 } from "./composer";
@@ -215,26 +216,51 @@ describe("composer reducer", () => {
 });
 
 describe("picker announcement", () => {
-  test("announces the result count on open, not on arrow moves, and the no-match state", () => {
-    expect(pickerAnnouncement(EMPTY_COMPOSER.picker)).toBe("");
+  test("announces the result count and highlighted candidate on open, nothing on arrow moves, and the no-match state", () => {
+    expect(pickerAnnouncement(EMPTY_COMPOSER.picker)).toEqual({
+      results: "",
+      text: "",
+    });
     const open = type(EMPTY_COMPOSER, "@");
-    const count = open.picker?.candidates.length ?? 0;
-    expect(count).toBeGreaterThan(1);
-    const text = pickerAnnouncement(open.picker);
-    expect(text).toBe(
-      `${count} suggestions, use Up and Down arrows to choose, Enter or Tab to attach.`,
+    const candidates = open.picker?.candidates ?? [];
+    expect(candidates.length).toBeGreaterThan(1);
+    const first = pickerAnnouncement(open.picker);
+    expect(first.text).toBe(
+      `${candidates.length} suggestions, ${candidates[0]?.label} (${candidates[0]?.kind}) highlighted. Use Up and Down arrows to choose, Enter or Tab to attach.`,
     );
     const moved = reduceComposer(open, { type: "pickerMove", delta: 1 }, env);
-    expect(pickerAnnouncement(moved.picker)).toBe(text);
+    expect(pickerAnnouncement(moved.picker).results).toBe(first.results);
     const none = type(EMPTY_COMPOSER, "@zzzz-no-such-thing");
     expect(none.picker?.candidates).toEqual([]);
-    expect(pickerAnnouncement(none.picker)).toBe(
-      "No matching file, symbol or range.",
-    );
+    const empty = pickerAnnouncement(none.picker);
+    expect(empty.text).toBe("No matching file, symbol or range.");
+    expect(empty.results).not.toBe("");
     const one = open.picker
-      ? { ...open.picker, candidates: open.picker.candidates.slice(0, 1) }
+      ? { ...open.picker, candidates: candidates.slice(0, 1) }
       : null;
-    expect(pickerAnnouncement(one)).toMatch(/^1 suggestion, /);
+    expect(pickerAnnouncement(one).text).toMatch(/^1 suggestion, /);
+  });
+
+  test("a same-count replacement of the results is re-announced and moves the active descendant", () => {
+    const open = type(EMPTY_COMPOSER, "@");
+    const all = open.picker?.candidates ?? [];
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    const base = open.picker as NonNullable<typeof open.picker>;
+    const before = { ...base, candidates: all.slice(0, 2), selected: 0 };
+    const after = { ...base, candidates: all.slice(2, 4), selected: 0 };
+    const a = pickerAnnouncement(before);
+    const b = pickerAnnouncement(after);
+    expect(b.results).not.toBe(a.results);
+    expect(b.text).toContain(`${all[2]?.label} (${all[2]?.kind}) highlighted`);
+    const [x, y] = [all[0], all[2]] as [
+      (typeof all)[number],
+      (typeof all)[number],
+    ];
+    expect(mentionOptionId(0, x)).not.toBe(mentionOptionId(0, y));
+    expect(mentionOptionId(0, x)).toBe(mentionOptionId(0, x));
+    const ids = all.map((c, i) => mentionOptionId(i, c));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) expect(id).toMatch(/^mention-\d+-[0-9a-z]+$/);
   });
 });
 

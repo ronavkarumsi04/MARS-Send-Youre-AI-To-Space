@@ -165,12 +165,49 @@ export function keyIntent(
   return "none";
 }
 
-/** Polite status text for the open picker; empty when closed. Does not change on arrow moves. */
-export function pickerAnnouncement(picker: PickerState | null): string {
-  if (!picker) return "";
-  const n = picker.candidates.length;
-  if (n === 0) return "No matching file, symbol or range.";
-  return `${n} ${n === 1 ? "suggestion" : "suggestions"}, use Up and Down arrows to choose, Enter or Tab to attach.`;
+export interface PickerAnnouncement {
+  /** Identity of the open result set; "" when closed. Re-announce only when it changes. */
+  results: string;
+  /** Polite status text; "" when closed. */
+  text: string;
+}
+
+/**
+ * Status for the open picker. `results` changes whenever the candidate set
+ * changes (even at the same count), not on arrow moves, which
+ * `aria-activedescendant` conveys.
+ */
+export function pickerAnnouncement(
+  picker: PickerState | null,
+): PickerAnnouncement {
+  if (!picker) return { results: "", text: "" };
+  const { candidates } = picker;
+  const results = ["open", ...candidates.map((c) => c.key)].join("\n");
+  const highlighted = candidates[picker.selected];
+  if (!highlighted)
+    return { results, text: "No matching file, symbol or range." };
+  const n = candidates.length;
+  return {
+    results,
+    text: `${n} ${n === 1 ? "suggestion" : "suggestions"}, ${highlighted.label} (${highlighted.kind}) highlighted. Use Up and Down arrows to choose, Enter or Tab to attach.`,
+  };
+}
+
+/**
+ * DOM id of a picker option. Derived from the candidate key, so the
+ * textarea's `aria-activedescendant` changes whenever the highlighted
+ * candidate does, even when its index stays the same.
+ */
+export function mentionOptionId(
+  index: number,
+  candidate: MentionCandidate,
+): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < candidate.key.length; i++) {
+    hash ^= candidate.key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `mention-${index}-${(hash >>> 0).toString(36)}`;
 }
 
 export type ComposerProblem = "empty" | "too_long";
