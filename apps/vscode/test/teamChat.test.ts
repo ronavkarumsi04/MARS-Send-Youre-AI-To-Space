@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TEAM_MAX_SEARCH_QUERY_CHARS } from "@mars/contracts";
 import {
   FIXTURE_CONVERSATIONS as C,
   FIXTURE,
@@ -85,6 +86,13 @@ describe("message schema", () => {
         messageId: "m",
       }).success,
     ).toBe(false);
+  });
+
+  test("caps search queries at the shared Team Chat contract limit", () => {
+    const search = (query: string) =>
+      TeamChatWebviewMessageSchema.safeParse({ type: "search", query }).success;
+    expect(search("x".repeat(TEAM_MAX_SEARCH_QUERY_CHARS))).toBe(true);
+    expect(search("x".repeat(TEAM_MAX_SEARCH_QUERY_CHARS + 1))).toBe(false);
   });
 });
 
