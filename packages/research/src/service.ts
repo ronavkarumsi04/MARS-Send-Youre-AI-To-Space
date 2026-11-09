@@ -1721,7 +1721,27 @@ export async function createResearchService(
           throw new ResearchError("invalid_input", "Invalid reported usage");
         }
         let exceeded = false;
-        guarded(entry, (row) => {
+        let late: RequestRow | undefined;
+        immediate(db, () => {
+          let row: RequestRow;
+          try {
+            row = workerGuard(entry);
+          } catch (error) {
+            // A call that fails after this attempt lost its authority (deadline,
+            // cancellation, lost lease) may still have been billed. Its usage
+            // is still added to the request, without reopening the attempt.
+            const stored =
+              !entry.forced && dbOpen
+                ? (db
+                    .query(
+                      "SELECT * FROM requests WHERE scope_key = ? AND request_id = ?",
+                    )
+                    .get(entry.scopeKey, entry.requestId) as RequestRow | null)
+                : null;
+            if (!stored) throw error;
+            row = stored;
+            late = stored;
+          }
           const request = verifiedRequest(row);
           const usage = usageFromJson(row.usage_json);
           const inputTokens = usage.input_tokens + delta.input_tokens;
@@ -1740,7 +1760,20 @@ export async function createResearchService(
             inputTokens + outputTokens > request.budget.max_tokens ||
             (reportedCost !== null &&
               exceedsUsd(reportedCost, request.budget.max_usd));
-          if (exceeded) {
+          if (late) {
+            db.query(
+              `UPDATE requests SET usage_json = ?
+               WHERE scope_key = ? AND request_id = ?`,
+            ).run(JSON.stringify(nextUsage), entry.scopeKey, entry.requestId);
+            if (exceeded)
+              db.query(
+                `UPDATE requests SET status = 'failed',
+                   error_code = 'budget_exceeded', finished_at = ?,
+                   lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+                 WHERE scope_key = ? AND request_id = ? AND status = 'running'`,
+              ).run(timestamp(currentTime()), entry.scopeKey, entry.requestId);
+            exceeded = false;
+          } else if (exceeded) {
             db.query(
               `UPDATE requests SET usage_json = ?, status = 'failed',
                  error_code = 'budget_exceeded', finished_at = ?,
@@ -1766,6 +1799,16 @@ export async function createResearchService(
             );
           }
         });
+        if (late) {
+          const stored = db
+            .query(
+              "SELECT * FROM requests WHERE scope_key = ? AND request_id = ?",
+            )
+            .get(entry.scopeKey, entry.requestId) as RequestRow | null;
+          if (stored) await syncResearchHolds([stored]);
+          wake();
+          return;
+        }
         if (exceeded) {
           entry.controller.abort("budget_exceeded");
           wake();

@@ -2144,6 +2144,39 @@ describe("@mars/research durable control plane", () => {
     expect((await resumed.inspect(context(), interruptedId)).attempts).toBe(2);
   });
 
+  test("usage reported after the deadline is still recorded", async () => {
+    let clock = Date.now();
+    let reported: unknown = "pending";
+    const lateWorker: ResearchWorker = {
+      id: "late-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        clock += 24 * 60 * 60 * 1000;
+        reported = await workerContext
+          .reportUsage({ input_tokens: 3, output_tokens: 4, cost_usd: 0.01 })
+          .then(
+            () => "ok",
+            (error: unknown) => error,
+          );
+      },
+    };
+    const env = await setup({
+      worker: lateWorker,
+      now: () => clock,
+      service: { maxAttempts: 1 },
+    });
+    const id = await request(env.service, env.now, "late-usage");
+    await waitFor(() => reported !== "pending");
+    expect(reported).toBe("ok");
+    const job = await env.service.inspect(context(), id);
+    expect(job.usage).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 4,
+      cost_usd: 0.01,
+      reported: true,
+    });
+  });
+
   test("persists reported budget failures and marks unreported usage honestly", async () => {
     const budgetWorker: ResearchWorker = {
       id: "budget-worker",
