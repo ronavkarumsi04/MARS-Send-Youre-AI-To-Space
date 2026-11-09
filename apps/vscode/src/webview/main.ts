@@ -194,7 +194,7 @@ const newTask = (() => {
   return { details, request, create };
 })();
 
-const steerBox = focusKey(h("textarea"), "steer");
+const steerBox = focusKey(h("textarea"), "steer-instruction");
 steerBox.rows = 2;
 steerBox.placeholder = "Steer the running task…";
 const approvals = {
