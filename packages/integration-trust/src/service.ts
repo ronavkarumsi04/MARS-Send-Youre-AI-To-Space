@@ -189,8 +189,8 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           }),
         ]),
       );
-    } catch {
-      fail("evidence_unavailable");
+    } catch (error) {
+      fail("evidence_unavailable", error);
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -348,8 +348,8 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     let result: unknown;
     try {
       result = await authorizer.verify(ctx, frozenClone(challenge), proof);
-    } catch {
-      fail("approval_invalid");
+    } catch (error) {
+      fail("approval_invalid", error);
     }
     const parsed = z
       .object({

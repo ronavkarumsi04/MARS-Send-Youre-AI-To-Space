@@ -815,6 +815,47 @@ test("rejecting async audit reporter does not escape the gate", async () => {
   }
   expect(unhandled).toEqual([]);
 });
+test("probe and authorizer failures keep their cause", async () => {
+  const probeFailure = new Error("probe crashed"),
+    authorizerFailure = new TypeError("authorizer crashed");
+  const f = fixture(),
+    r = await f.submit();
+  f.probe.mockImplementation(async () => {
+    throw probeFailure;
+  });
+  const probeError = await f.admin
+    .approve(ctx, {
+      review_id: r.review_id,
+      expected_revision: r.revision,
+      proof: proof(r),
+    })
+    .catch((e) => e);
+  expect(probeError).toMatchObject({ code: "evidence_unavailable" });
+  expect(probeError.cause).toBe(probeFailure);
+  const { admin } = createIntegrationTrust({
+    store: new MemoryTrustStore(),
+    authorizer: {
+      verify: async () => {
+        throw authorizerFailure;
+      },
+    },
+    probe: { observe: async () => evidence() },
+  });
+  const pending = await admin.submitCandidate(ctx, {
+    evidence: evidence(),
+    permissions,
+    credential_bindings: [],
+  });
+  const authorizerError = await admin
+    .approve(ctx, {
+      review_id: pending.review_id,
+      expected_revision: pending.revision,
+      proof: proof(pending),
+    })
+    .catch((e) => e);
+  expect(authorizerError).toMatchObject({ code: "approval_invalid" });
+  expect(authorizerError.cause).toBe(authorizerFailure);
+});
 test("file store I/O errors keep their cause", async () => {
   const directory = await mkdtemp(join(tmpdir(), "trust-")),
     s = new FileTrustStore({ directory, workspaceRoots: [] });
