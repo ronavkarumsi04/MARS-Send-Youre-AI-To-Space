@@ -2179,7 +2179,7 @@ export async function createTaskStore(
           try {
             payload = JSON.parse(text);
           } catch {
-            fail("corrupt_record", "Event history contains host-private data");
+            fail("corrupt_record", "Corrupt task.updated payload");
           }
           if (
             containsForbiddenHostPrivateKey(payload) ||

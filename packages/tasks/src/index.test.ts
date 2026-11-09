@@ -1807,6 +1807,44 @@ describe("@mars/tasks durable store", () => {
     }
   });
 
+  test("reports a malformed task.updated payload as a corrupt payload", async () => {
+    const rootDir = makeRoot();
+    const task = makeTask("malformed-payload-task");
+    const binding = {
+      runtime: "oh-my-pi" as const,
+      package_version: "18.14.0",
+      session_id: task.session_id,
+      session_file: path.join(rootDir, "missing-session.jsonl"),
+    };
+    const initial = await openStore(rootDir);
+    await initial.create(context("malformed-create"), task);
+    await initial.close();
+    writeLegacyBindEvent(
+      rootDir,
+      task.scope,
+      task.task_id,
+      binding,
+      "malformed-bind",
+      new TextEncoder().encode("{not json"),
+    );
+
+    const reopened = await openStore(rootDir);
+    try {
+      let eventsError: unknown;
+      try {
+        await collect(reopened.events(context(), task.task_id));
+      } catch (error) {
+        eventsError = error;
+      }
+      expect(eventsError).toMatchObject({
+        code: "corrupt_record",
+        message: "Corrupt task.updated payload",
+      });
+    } finally {
+      await reopened.close();
+    }
+  });
+
   test("rejects bound-path artifact writes and screens artifacts stored before binding", async () => {
     const rootDir = makeRoot();
     const journalDirectory = mkdtempSync(
