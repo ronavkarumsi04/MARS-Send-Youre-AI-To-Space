@@ -2,11 +2,17 @@ import type { EventEnvelope } from "@mars/contracts";
 import type { BridgeResult, ShellBridge } from "../shared/methods";
 import type { ShellDocument, ShellElement } from "./dom";
 import { verifyArtifact } from "./verify";
-import { type ArtifactView, renderShell, type ShellState } from "./view";
+import {
+  type ArtifactView,
+  HEADING_FOCUS_KEY,
+  renderShell,
+  type ShellState,
+} from "./view";
 
 const TEXT_MEDIA_TYPES = new Set(["application/json", "application/x-ndjson"]);
 const MAX_RENDERED_ARTIFACT_BYTES = 256 * 1024;
 const MAX_TASK_EVENTS = 1000;
+const FOCUS_KEY = "data-focus-key";
 
 type OptionalValue<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -24,7 +30,15 @@ export function createController(
   let loadPromise: Promise<void> | undefined;
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
-  const render = () => root.replaceChildren(renderShell(doc, state));
+  const render = () => {
+    const focusKey = doc.activeElement?.getAttribute(FOCUS_KEY) ?? null;
+    root.replaceChildren(renderShell(doc, state));
+    if (focusKey === null) return;
+    const targets = Array.from(root.querySelectorAll(`[${FOCUS_KEY}]`));
+    const keyed = (key: string) =>
+      targets.find((element) => element.getAttribute(FOCUS_KEY) === key);
+    (keyed(focusKey) ?? keyed(HEADING_FOCUS_KEY))?.focus();
+  };
   const displayError = (message: string) => {
     state = {
       tasks: [],

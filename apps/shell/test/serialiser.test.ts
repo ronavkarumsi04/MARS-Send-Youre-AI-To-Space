@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { EventEnvelope } from "@mars/contracts";
 import { createController } from "../src/renderer/controller";
 import { READ_METHODS, type ShellBridge } from "../src/shared/methods";
-import { findAll, MiniDocument, serialize } from "./mini-dom";
+import { findAll, MiniDocument, type MiniElement, serialize } from "./mini-dom";
 import { fakeBridge, loadFixtureData, type RecordedCall } from "./test-utils";
 
 function pagedBridge(
@@ -124,7 +124,9 @@ test("pending task details stay visible when workspace sections are unavailable"
 
   const snapshot = serialize(document.root);
   expect(snapshot).toContain('data-task-id="fixture-pending"');
-  expect(snapshot).toContain("<h1>Task fixture-pending</h1>");
+  expect(snapshot).toContain(
+    '<h1 data-focus-key="heading" tabindex="-1">Task fixture-pending</h1>',
+  );
   expect(snapshot).toContain("Pending sample task.");
   expect(snapshot).toContain("unavailable · Workbench resource was not found.");
   expect(
@@ -456,4 +458,119 @@ test("a session click during an in-flight load queues the selected task", async 
     findAll(document.root, (element) => element.tagName === "H1")[1]
       ?.textContent,
   ).toContain("fixture-completed-verified");
+});
+
+function button(root: MiniElement, focusKey: string): MiniElement {
+  const found = findAll(
+    root,
+    (element) =>
+      element.tagName === "BUTTON" &&
+      element.getAttribute("data-focus-key") === focusKey,
+  );
+  expect(found).toHaveLength(1);
+  return found[0] as MiniElement;
+}
+
+test("initial load does not move focus", async () => {
+  const data = await loadFixtureData();
+  const document = new MiniDocument();
+  const controller = createController(
+    fakeBridge(data),
+    document,
+    document.root,
+  );
+  await controller.load();
+  expect(document.activeElement).toBeNull();
+});
+
+test("selecting a session or refreshing keeps keyboard focus on the activated control", async () => {
+  const data = await loadFixtureData();
+  const document = new MiniDocument();
+  const controller = createController(
+    fakeBridge(data),
+    document,
+    document.root,
+  );
+  await controller.load();
+
+  const session = button(document.root, "task:fixture-pending");
+  session.focus();
+  session.click();
+  await controller.settled();
+  const focusedSession = document.activeElement;
+  expect(focusedSession).not.toBe(session);
+  expect(focusedSession?.getAttribute("data-task-id")).toBe("fixture-pending");
+  expect(focusedSession?.getAttribute("aria-pressed")).toBe("true");
+
+  const refresh = button(document.root, "refresh");
+  refresh.focus();
+  refresh.click();
+  await controller.settled();
+  expect(document.activeElement).not.toBe(refresh);
+  expect(document.activeElement?.textContent).toBe("Refresh");
+});
+
+test("focus follows the reload control between the error view and the recovered view", async () => {
+  const data = await loadFixtureData();
+  const delegate = fakeBridge(data);
+  let available = false;
+  const bridge: ShellBridge = {
+    ...delegate,
+    "workbench.describe": (params) =>
+      available
+        ? delegate["workbench.describe"](params)
+        : Promise.resolve({
+            ok: false,
+            error: {
+              kind: "not_connected",
+              message: "Workbench is unavailable.",
+            },
+          }),
+  };
+  const document = new MiniDocument();
+  const controller = createController(bridge, document, document.root);
+  await controller.load();
+
+  available = true;
+  const retry = button(document.root, "refresh");
+  expect(retry.textContent).toBe("Retry");
+  retry.focus();
+  retry.click();
+  await controller.settled();
+  expect(document.activeElement?.textContent).toBe("Refresh");
+
+  available = false;
+  document.activeElement?.click();
+  await controller.settled();
+  expect(document.activeElement?.textContent).toBe("Retry");
+});
+
+test("focus falls back to the task heading when the focused session disappears", async () => {
+  const data = await loadFixtureData();
+  const delegate = fakeBridge(data);
+  let hidden: string | undefined;
+  const bridge: ShellBridge = {
+    ...delegate,
+    "tasks.list": async (params) => {
+      const result = await delegate["tasks.list"](params);
+      if (!result.ok) return result;
+      return {
+        ok: true,
+        result: result.result.filter((task) => task.task_id !== hidden),
+      };
+    },
+  };
+  const document = new MiniDocument();
+  const controller = createController(bridge, document, document.root);
+  await controller.load();
+
+  const session = button(document.root, "task:fixture-pending");
+  session.focus();
+  hidden = "fixture-pending";
+  session.click();
+  await controller.settled();
+  const heading = document.activeElement;
+  expect(heading?.tagName).toBe("H1");
+  expect(heading?.getAttribute("tabindex")).toBe("-1");
+  expect(heading?.textContent).toStartWith("Task ");
 });

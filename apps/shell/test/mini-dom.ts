@@ -17,7 +17,10 @@ export class MiniElement implements ShellElement {
     ((event: { target?: unknown }) => void)[]
   >();
 
-  constructor(tagName: string) {
+  constructor(
+    tagName: string,
+    private readonly ownerDocument?: MiniDocument,
+  ) {
     this.tagName = tagName.toUpperCase();
   }
 
@@ -79,6 +82,18 @@ export class MiniElement implements ShellElement {
     this.listeners.set(type, existing);
   }
 
+  querySelectorAll(selectors: string): MiniElement[] {
+    const attribute = /^\[([a-z-]+)\]$/.exec(selectors)?.[1];
+    if (!attribute) throw new Error("Unsupported selector.");
+    return findAll(this, (element) => element.attributes.has(attribute)).filter(
+      (element) => element !== this,
+    );
+  }
+
+  focus(): void {
+    if (this.ownerDocument) this.ownerDocument.focused = this;
+  }
+
   insertAdjacentHTML(): never {
     throw new Error("HTML serialization is disabled.");
   }
@@ -90,14 +105,23 @@ export class MiniElement implements ShellElement {
 }
 
 export class MiniDocument implements ShellDocument {
-  readonly root = new MiniElement("div");
+  readonly root = new MiniElement("div", this);
+  focused: MiniElement | null = null;
 
   constructor() {
     this.root.setAttribute("id", "app");
   }
 
+  get activeElement(): MiniElement | null {
+    const focused = this.focused;
+    if (!focused) return null;
+    return findAll(this.root, (element) => element === focused).length
+      ? focused
+      : null;
+  }
+
   createElement(tagName: string): ShellElement {
-    return new MiniElement(tagName);
+    return new MiniElement(tagName, this);
   }
 
   createTextNode(text: string): ShellText {
