@@ -122,6 +122,8 @@ const describeError = (error: unknown) => {
       : {}),
   };
 };
+/** Matches the memory store's `PROPOSAL_LIMITS.task_id_length`; longer ids submit unlinked. */
+const MAX_TASK_LINK_LENGTH = 1024;
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const EXCLUDED =
@@ -429,7 +431,9 @@ export class ReviewRunner {
               source,
               rationale: proposal.rationale,
               expected_revision: memory.revision,
-              ...(turn.taskId ? { task_id: turn.taskId } : {}),
+              ...(turn.taskId && turn.taskId.length <= MAX_TASK_LINK_LENGTH
+                ? { task_id: turn.taskId }
+                : {}),
               operations: memoryEntries(
                 context,
                 result.reviewId,

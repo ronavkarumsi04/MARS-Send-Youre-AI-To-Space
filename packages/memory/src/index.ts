@@ -260,7 +260,7 @@ export const PROPOSAL_LIMITS = {
   reason_length: 1024,
   source_length: 128,
   actor_length: 128,
-  task_id_length: 256,
+  task_id_length: 1024,
 } as const;
 const proposalInputSchema = z
   .object({
@@ -1363,7 +1363,7 @@ export class DurableMemoryStore
     if (threat) fail("invalid_input", { threat });
     return trimmed;
   }
-  /** Exact identifiers (actors, task ids) are stored verbatim, never trimmed into another id. */
+  /** Actors are stored verbatim, never trimmed into another id. Task ids are opaque host ids, only length-bounded by the schema. */
   private identifier(value: string, limit: number): string {
     if (this.text(value, limit) !== value || /\s/.test(value))
       fail("invalid_input");
@@ -1392,9 +1392,7 @@ export class DurableMemoryStore
       PROPOSAL_LIMITS.rationale_length,
     );
     const taskId =
-      proposal.task_id === undefined
-        ? undefined
-        : this.identifier(proposal.task_id, PROPOSAL_LIMITS.task_id_length);
+      proposal.task_id === undefined ? undefined : proposal.task_id;
     return this.write(() => {
       const pending = (
         this.db

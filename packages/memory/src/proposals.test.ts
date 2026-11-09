@@ -321,12 +321,24 @@ test("accept and reject record who resolved the proposal and the task it came fr
           source: "review:test",
           rationale: "r",
           expected_revision: 1,
-          task_id: "bad id",
+          task_id: "t".repeat(1025),
           operations: [{ operation: "add", entry: entry("x") }],
         }),
       )
     )?.code,
   ).toBe("invalid_input");
+  // Task ids are opaque host ids: stored verbatim, spaces included.
+  expect(
+    (
+      await store.submitProposal(c, {
+        source: "review:test",
+        rationale: "r",
+        expected_revision: 1,
+        task_id: " task 2 ",
+        operations: [{ operation: "add", entry: entry("y") }],
+      })
+    ).task_id,
+  ).toBe(" task 2 ");
   // Records written before these fields existed still load and accept.
   expect((await store.acceptProposal(c, late.proposal_id)).resolved_by).toBe(
     undefined,
