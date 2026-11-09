@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import {
@@ -149,7 +149,10 @@ export interface ResearchTaskReader {
   inspect(context: RequestContext, taskId: string): Promise<Task>;
 }
 
-/** The task's shared budget ledger; research owns the `research` hold. */
+/**
+ * The task's shared budget ledger. Each research job owns one hold, keyed by
+ * its submission id, so admission is atomic in the ledger across instances.
+ */
 export interface ResearchBudgetLedger {
   reserve(
     context: RequestContext,
@@ -166,11 +169,18 @@ export interface ResearchBudgetLedger {
   committed(
     context: RequestContext,
     taskId: string,
-    excludeKey: string,
+    excludeKey?: string,
   ): Promise<{ tokens: number; usd: number }>;
 }
 
-export const RESEARCH_BUDGET_HOLD = "research";
+export const RESEARCH_BUDGET_HOLD_PREFIX = "research:";
+
+export function researchBudgetHoldKey(idemRequestId: string): string {
+  return `${RESEARCH_BUDGET_HOLD_PREFIX}${createHash("sha256")
+    .update(idemRequestId)
+    .digest("hex")
+    .slice(0, 32)}`;
+}
 
 export interface ResearchArtifactStore {
   put(
@@ -194,6 +204,7 @@ export type ResearchInternalErrorSite =
   | "run_settled"
   | "flush_events"
   | "execute_claim"
+  | "ledger"
   | "pump";
 
 export interface ResearchInternalError {
@@ -508,36 +519,6 @@ function isErrorCode(error: unknown, code: string): boolean {
   );
 }
 
-function researchCommitmentFor(
-  db: Database,
-  scopeKey: string,
-  taskId: string,
-): { tokens: number; usd: number } {
-  return taskResearchCommitment(
-    db
-      .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
-      .all(scopeKey, taskId) as RequestRow[],
-  );
-}
-
-/** Runs ledger work for one task at a time so reserve, insert and record never interleave. */
-async function withTaskLock<T>(
-  locks: Map<string, Promise<unknown>>,
-  key: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  const current = (locks.get(key) ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(run);
-  const tail = current.catch(() => undefined);
-  locks.set(key, tail);
-  try {
-    return await current;
-  } finally {
-    if (locks.get(key) === tail) locks.delete(key);
-  }
-}
-
 function mapLedgerError(error: unknown): ResearchError {
   if ((error as { code?: unknown } | null)?.code === "budget_exceeded")
     return new ResearchError(
@@ -744,7 +725,6 @@ export async function createResearchService(
     throw new ResearchError("invalid_input", "Invalid research service option");
   }
   const configured = validateOptions(options);
-  const ledgerLocks = new Map<string, Promise<unknown>>();
   const requestedMaxTimerMs = (
     options as ResearchServiceOptions & { __maxTimerMs?: number }
   ).__maxTimerMs;
@@ -763,6 +743,37 @@ export async function createResearchService(
         };
   const store: OpenResearchStore = await openResearchStore(storeOptions);
   const db = store.db;
+  /**
+   * Sets each job's hold to its commitment. An active job commits at least what
+   * it reserved and a terminal job's commitment is final, so a stale read never
+   * releases capacity a job may still spend; holds only fall once a job ends.
+   */
+  const syncResearchHolds = async (
+    rows: readonly RequestRow[],
+  ): Promise<void> => {
+    const ledger = options.ledger;
+    if (!ledger) return;
+    for (const row of rows) {
+      let scope: RequestContext["scope"];
+      try {
+        scope = JSON.parse(row.scope_json) as RequestContext["scope"];
+      } catch {
+        continue;
+      }
+      await ledger
+        .record(
+          {
+            schema_version: 1,
+            scope,
+            request_id: `research-hold-${row.request_id}`,
+          },
+          row.task_id,
+          researchBudgetHoldKey(row.idem_request_id),
+          taskResearchCommitment([row]),
+        )
+        .catch((error: unknown) => reportInternalError("ledger", error));
+    }
+  };
   const instanceId = Bun.randomUUIDv7();
   const privateNeedles = privatePathForms(
     store.rootDir,
@@ -2096,55 +2107,54 @@ export async function createResearchService(
           return { request_id: requestId, inserted: true };
         });
       const ledger = options.ledger;
-      const insertResult = !ledger
-        ? insert()
-        : await withTaskLock(
-            ledgerLocks,
-            `${parsedContext.scopeKey}\u0000${request.task_id}`,
-            async () => {
-              const replay = db
-                .query(
-                  "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ?",
-                )
-                .get(parsedContext.scopeKey, parsedContext.context.request_id);
-              if (!replay) {
-                const committed = researchCommitmentFor(
-                  db,
-                  parsedContext.scopeKey,
-                  request.task_id,
-                );
-                try {
-                  await ledger.reserve(
-                    parsedContext.context,
-                    request.task_id,
-                    RESEARCH_BUDGET_HOLD,
-                    {
-                      tokens: committed.tokens + request.budget.max_tokens,
-                      usd: committed.usd + request.budget.max_usd,
-                    },
-                  );
-                } catch (error) {
-                  throw mapLedgerError(error);
-                }
-              }
-              try {
-                return insert();
-              } finally {
-                await ledger
-                  .record(
-                    parsedContext.context,
-                    request.task_id,
-                    RESEARCH_BUDGET_HOLD,
-                    researchCommitmentFor(
-                      db,
-                      parsedContext.scopeKey,
-                      request.task_id,
-                    ),
-                  )
-                  .catch(() => undefined);
-              }
-            },
+      let insertResult: ReturnType<typeof insert>;
+      if (!ledger) insertResult = insert();
+      else {
+        const holdKey = researchBudgetHoldKey(parsedContext.context.request_id);
+        const submitted = () =>
+          db
+            .query(
+              "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ?",
+            )
+            .get(parsedContext.scopeKey, parsedContext.context.request_id) !==
+          null;
+        const replay = submitted();
+        if (!replay) {
+          // Settled jobs release their unused holds before this one is admitted.
+          await syncResearchHolds(
+            db
+              .query(
+                "SELECT * FROM requests WHERE scope_key = ? AND task_id = ?",
+              )
+              .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
           );
+          try {
+            await ledger.reserve(
+              parsedContext.context,
+              request.task_id,
+              holdKey,
+              {
+                tokens: request.budget.max_tokens,
+                usd: request.budget.max_usd,
+              },
+            );
+          } catch (error) {
+            throw mapLedgerError(error);
+          }
+        }
+        try {
+          insertResult = insert();
+        } catch (error) {
+          if (!replay && !submitted())
+            await ledger
+              .record(parsedContext.context, request.task_id, holdKey, {
+                tokens: 0,
+                usd: 0,
+              })
+              .catch(() => undefined);
+          throw error;
+        }
+      }
       wake();
       if (insertResult.inserted) schedulePump();
       return insertResult.request_id;
@@ -2168,37 +2178,27 @@ export async function createResearchService(
       } catch (error) {
         throw mapTaskError(error);
       }
-      const committed = researchCommitmentFor(
-        db,
-        parsedContext.scopeKey,
-        taskId,
-      );
-      let others = { tokens: 0, usd: 0 };
+      const rows = db
+        .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+        .all(parsedContext.scopeKey, taskId) as RequestRow[];
+      let committed = taskResearchCommitment(rows);
       if (options.ledger) {
-        await options.ledger
-          .record(
-            parsedContext.context,
-            taskId,
-            RESEARCH_BUDGET_HOLD,
-            committed,
-          )
-          .catch(() => undefined);
+        await syncResearchHolds(rows);
+        let all: { tokens: number; usd: number };
         try {
-          others = await options.ledger.committed(
-            parsedContext.context,
-            taskId,
-            RESEARCH_BUDGET_HOLD,
-          );
+          all = await options.ledger.committed(parsedContext.context, taskId);
         } catch (error) {
           throw mapLedgerError(error);
         }
+        // The ledger already holds every research job; never count less than the jobs commit.
+        committed = {
+          tokens: Math.max(all.tokens, committed.tokens),
+          usd: Math.max(all.usd, committed.usd),
+        };
       }
       return {
-        max_tokens: Math.max(
-          0,
-          task.budget.max_tokens - committed.tokens - others.tokens,
-        ),
-        max_usd: remainingUsd(task.budget.max_usd, committed.usd + others.usd),
+        max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
+        max_usd: remainingUsd(task.budget.max_usd, committed.usd),
       };
     },
 
@@ -2463,6 +2463,12 @@ export async function createResearchService(
       return closePromise;
     },
   };
+
+  // Holds for jobs submitted before this store had a ledger, or by an earlier
+  // process, are restored before any other spender can reserve around them.
+  await syncResearchHolds(
+    db.query("SELECT * FROM requests").all() as RequestRow[],
+  );
 
   if (configured.autoStart) {
     autoPump = setInterval(() => {

@@ -28,7 +28,6 @@ import {
   type DurableResearchService,
   type FindingProposal,
   isTerminalResearchStatus,
-  RESEARCH_BUDGET_HOLD,
   RESEARCH_STORE_FORMAT_VERSION,
   type ResearchBudgetLedger,
   type ResearchWorker,
@@ -1615,53 +1614,76 @@ describe("@mars/research durable control plane", () => {
     ).toBe("budget_exceeded");
   });
 
-  test("research admission counts the task's other spenders in the shared ledger", async () => {
+  test("research holds share the task ledger across instances and restarts", async () => {
     const now = Date.now;
-    const holds = new Map<string, { tokens: number; usd: number }>([
-      ["foreground", { tokens: 600, usd: 0 }],
-    ]);
-    const sum = (exclude: string) => {
-      let tokens = 0;
-      let usd = 0;
-      for (const [key, hold] of holds)
-        if (key !== exclude) {
-          tokens += hold.tokens;
-          usd += hold.usd;
-        }
-      return { tokens, usd };
-    };
-    const ledger: ResearchBudgetLedger = {
-      async reserve(_context, _taskId, key, amount) {
-        if (sum(key).tokens + amount.tokens > 1000)
-          throw Object.assign(new Error("full"), { code: "budget_exceeded" });
-        holds.set(key, amount);
-      },
-      async record(_context, _taskId, key, amount) {
-        holds.set(key, amount);
-      },
-      async committed(_context, _taskId, excludeKey) {
-        return sum(excludeKey);
-      },
-    };
     const base = makeTask("task-1", scope);
     const env = await setup({
       task: { ...base, budget: { ...base.budget, max_tokens: 1000 } },
-      service: { autoStart: false, maxConcurrency: 4, ledger },
+      service: { autoStart: false, maxConcurrency: 4 },
     });
     const tokens = (max_tokens: number) => ({
       budget: { ...makeRequest(now).budget, max_tokens },
     });
-    await request(env.service, now, "shared-a", tokens(300));
-    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(300);
-    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
-      100,
-    );
+    // Submitted before the service had a ledger.
+    await request(env.service, now, "legacy", tokens(300));
+    const store = env.tasks;
+    const ledger: ResearchBudgetLedger = {
+      reserve: (c, t, k, a) =>
+        store.reserveBudget?.(c, t, k, a) ?? Promise.resolve(),
+      record: (c, t, k, a) =>
+        store.recordBudget?.(c, t, k, a) ?? Promise.resolve(),
+      committed: async (c, t, k) =>
+        (await store.budgetCommitted?.(c, t, k)) ?? { tokens: 0, usd: 0 },
+    };
+    const open = async () => {
+      const service = await createResearchService({
+        rootDir: path.join(env.root, "research"),
+        tasks: store,
+        artifacts: store.artifacts,
+        worker: publishingWorker(now),
+        autoStart: false,
+        maxConcurrency: 4,
+        ledger,
+      });
+      services.push(service);
+      return service;
+    };
+    const first = await open();
+    const second = await open();
+    // Startup restored the legacy job's hold before the foreground reserves.
+    expect((await ledger.committed(context(), "task-1")).tokens).toBe(300);
+    await store.reserveBudget?.(context(), "task-1", "foreground", {
+      tokens: 600,
+      usd: 0,
+    });
+    await expect(
+      store.reserveBudget?.(context(), "task-1", "foreground", {
+        tokens: 701,
+        usd: 0,
+      }),
+    ).rejects.toMatchObject({ code: "budget_exceeded" });
+    // Two instances racing for the last 100 tokens: exactly one is admitted.
+    const raced = await Promise.allSettled([
+      request(first, now, "race-a", tokens(80)),
+      request(second, now, "race-b", tokens(80)),
+    ]);
+    expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(
-      await errorCode(() => request(env.service, now, "shared-b", tokens(300))),
+      await errorCode(() =>
+        Promise.reject(
+          (raced.find((r) => r.status === "rejected") as PromiseRejectedResult)
+            .reason,
+        ),
+      ),
     ).toBe("budget_exceeded");
-    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(300);
-    await request(env.service, now, "shared-c", tokens(100));
-    expect(holds.get(RESEARCH_BUDGET_HOLD)?.tokens).toBe(400);
+    // Allowance never lowers a job's hold from a snapshot taken before it.
+    const [left] = await Promise.all([
+      second.allowance(context(), "task-1"),
+      request(first, now, "small", tokens(10)),
+    ]);
+    expect(left.max_tokens === 20 || left.max_tokens === 10).toBe(true);
+    expect((await ledger.committed(context(), "task-1")).tokens).toBe(990);
+    expect((await second.allowance(context(), "task-1")).max_tokens).toBe(10);
   });
 
   test("autoStart false only claims queued work on an explicit pump", async () => {
