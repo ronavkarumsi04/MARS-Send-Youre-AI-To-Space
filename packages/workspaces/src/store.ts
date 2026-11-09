@@ -276,10 +276,7 @@ export async function loadMeta(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       try {
-        const directory = await lstat(join(rootDir, "meta", workspaceId));
-        if (directory.isDirectory() && !directory.isSymbolicLink()) {
-          throw new IntegrityError("workspace state lost", { cause: error });
-        }
+        await lstat(join(rootDir, "meta", workspaceId));
         throw new IntegrityError("workspace state lost", { cause: error });
       } catch (directoryError) {
         if (directoryError instanceof IntegrityError) throw directoryError;
