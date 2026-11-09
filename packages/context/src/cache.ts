@@ -12,33 +12,18 @@ export interface WorkspaceCache {
   maps: Map<string, RepositoryMap>;
 }
 
-export function touchMap(
-  maps: Map<string, RepositoryMap>,
+export function touchLru<V>(
+  entries: Map<string, V>,
   key: string,
-  value: RepositoryMap,
+  value: V,
   limit: number,
 ): void {
-  maps.delete(key);
-  maps.set(key, value);
-  while (maps.size > limit) {
-    const oldest = maps.keys().next().value as string | undefined;
+  entries.delete(key);
+  entries.set(key, value);
+  while (entries.size > limit) {
+    const oldest = entries.keys().next().value as string | undefined;
     if (oldest === undefined) break;
-    maps.delete(oldest);
-  }
-}
-
-export function touchWorkspace(
-  workspaces: Map<string, WorkspaceCache>,
-  key: string,
-  value: WorkspaceCache,
-  limit: number,
-): void {
-  workspaces.delete(key);
-  workspaces.set(key, value);
-  while (workspaces.size > limit) {
-    const oldest = workspaces.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    workspaces.delete(oldest);
+    entries.delete(oldest);
   }
 }
 

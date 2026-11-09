@@ -2,12 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import type { RequestContext } from "@mars/contracts";
 import { ScopeSchema } from "@mars/contracts";
-import {
-  cloneMap,
-  touchMap,
-  touchWorkspace,
-  type WorkspaceCache,
-} from "./cache";
+import { cloneMap, touchLru, type WorkspaceCache } from "./cache";
 import {
   ContextCancelledError,
   ContextClosedError,
@@ -208,8 +203,8 @@ export function createRepositoryMapProvider(
           workspaces.delete(staleKey);
         }
         workspaceCache.files = currentFiles;
-        touchWorkspace(workspaces, key, workspaceCache, maxCachedWorkspaces);
-        touchMap(workspaceCache.maps, mapKey, cachedMap, maxCachedMaps);
+        touchLru(workspaces, key, workspaceCache, maxCachedWorkspaces);
+        touchLru(workspaceCache.maps, mapKey, cachedMap, maxCachedMaps);
         const cloned = cloneMap(cachedMap);
         cloned.stats.map_cache_hit = true;
         cloned.complete = result.complete;
@@ -284,8 +279,8 @@ export function createRepositoryMapProvider(
         },
       };
       workspaceCache.files = currentFiles;
-      touchMap(workspaceCache.maps, mapKey, baseMap, maxCachedMaps);
-      touchWorkspace(workspaces, key, workspaceCache, maxCachedWorkspaces);
+      touchLru(workspaceCache.maps, mapKey, baseMap, maxCachedMaps);
+      touchLru(workspaces, key, workspaceCache, maxCachedWorkspaces);
       return cloneMap(baseMap);
     });
   };
