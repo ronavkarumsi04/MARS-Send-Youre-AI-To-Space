@@ -1215,3 +1215,63 @@ test("storage errors keep the original cause and SQLite code", async () => {
   expect((openError as MemoryStoreError).details).toBeUndefined();
   expect((openError as Error).cause).toMatchObject({ code: "EEXIST" });
 });
+
+test("persisted keys and row hashes keep their pinned digests", async () => {
+  expect(
+    canonicalJson({
+      b: [1, -0, "x", null, true],
+      a: { z: 1, "10": 2, "9": 3 },
+    }),
+  ).toBe('{"a":{"10":2,"9":3,"z":1},"b":[1,0,"x",null,true]}');
+  for (const value of [
+    { a: undefined },
+    new Array<unknown>(1),
+    Number.NaN,
+    new Date(0),
+  ]) {
+    expect(() => canonicalJson(value)).toThrow(MemoryStoreError);
+  }
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  expect(() => canonicalJson(cyclic)).toThrow(MemoryStoreError);
+
+  const dir = root(),
+    s = open(dir);
+  await add(s, entry("pinned", "fact"));
+  await s.indexJournal(c, {
+    session_id: "session",
+    entries: [
+      { type: "session", version: 3, id: "session", cwd: "/x" },
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00Z",
+        message: { role: "user", content: "hello" },
+      },
+    ],
+  });
+  const db = new Database(join(dir, "memory.sqlite"));
+  try {
+    expect(db.query("SELECT stream_key FROM streams").all()).toEqual([
+      {
+        stream_key:
+          "8ac6d12a97cdf6cadd0882fcc1cea44da2925c3f80ec680955a0aa2bedeb58f9",
+      },
+    ]);
+    expect(db.query("SELECT scope_key FROM sessions").all()).toEqual([
+      {
+        scope_key:
+          "092ec843829fcf2b6caf1a8c02ddfba6b1816a513f322b724dd8c9084896ddfd",
+      },
+    ]);
+    expect(db.query("SELECT row_hash FROM journal").all()).toEqual([
+      {
+        row_hash:
+          "52adb646adce7554bf6b164bc11f06e7e0d1bca61efbb247e77ccd51d3ffc41d",
+      },
+    ]);
+  } finally {
+    db.close();
+  }
+});

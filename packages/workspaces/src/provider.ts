@@ -22,6 +22,7 @@ import {
   ScopeSchema,
   type WorkspaceRef,
 } from "@mars/contracts";
+import { sha256 } from "@mars/contracts/canonical";
 import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
 import { createWorkspaceDiff } from "./diff";
@@ -60,7 +61,6 @@ import {
   DEFAULT_WORKSPACE_LIMITS,
   ensureDirectory,
   materializeSnapshot,
-  sha256,
   snapshotTree,
   type TreeFile,
   type TreeSnapshot,
