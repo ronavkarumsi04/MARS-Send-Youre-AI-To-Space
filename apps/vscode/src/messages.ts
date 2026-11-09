@@ -196,6 +196,8 @@ export interface TaskSummary {
 export interface Notice {
   kind: "info" | "error" | "conflict" | "permission";
   text: string;
+  /** Changes on every `setNotice`, so a repeated identical notice is announced again. */
+  seq: number;
 }
 
 export interface ViewState {

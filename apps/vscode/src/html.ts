@@ -26,7 +26,9 @@ export function isValidNonce(nonce: string): boolean {
 /**
  * Static shell for the workbench webview. The body is built by the bundled
  * script with DOM APIs and textContent only; the CSP allows no inline script,
- * no inline style, no network access and no frames.
+ * no inline style, no network access and no frames. `#app` is re-rendered
+ * wholesale, so it is not a live region; each script mounts its own
+ * persistent status regions outside it.
  */
 export function buildWebviewHtml(options: HtmlOptions): string {
   if (!isValidNonce(options.nonce)) throw new Error("Invalid CSP nonce");
@@ -51,7 +53,7 @@ export function buildWebviewHtml(options: HtmlOptions): string {
 <title>${escapeAttribute(options.title ?? "MARS Tasks")}</title>
 </head>
 <body>
-<main id="app" aria-live="polite"></main>
+<main id="app"></main>
 <script nonce="${escapeAttribute(options.nonce)}" src="${escapeAttribute(options.scriptUri)}"></script>
 </body>
 </html>`;
