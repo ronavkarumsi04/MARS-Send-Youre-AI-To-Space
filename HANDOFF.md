@@ -10,6 +10,20 @@ Covers all three repositories:
 
 Authoritative spec: `documentation/MASTER_SPECIFICATION.md` (10 milestones, section 16).
 
+## Milestone 1: verified patch through VS Code (branch `devin/1794199219-m1-verified-patch`, base `09d8a01`)
+
+Gate: one bug report → one verified, exportable patch. State: **deterministic path implemented and offline-tested; real-model and real-editor acceptance BLOCKED** (no model credentials, no Ollama, no VS Code binary on the build VM).
+
+- BOM-only edits now produce an applicable patch (`TextDecoder` `ignoreBOM` in `packages/workspaces/src/diff.ts`); round trip proven with `git apply --check`/`git apply` + byte compare.
+- Host-defined protected checks: `RequiredCheck` is `file_content | host_test`. `host_test` names a `check_id` from `mars serve --checks FILE` (`packages/workbench/src/host-checks.ts`: argv, `protected_files` overlaid from host-owned sources, `exclude_paths`, timeout). The host pins `definition_sha256` at Start (a client value is ignored), refuses unknown ids (`invalid_request`) and refuses without execute approval + sandbox (`forbidden`). `workbench.describe.checks` advertises id/label/description only.
+- `LocalWorkspaceProvider.runCheck` runs the check in the sandbox against a disposable copy (protected overlay, exclusions, candidate revision never moves); a candidate edit to a path the check owns (e.g. `bunfig.toml`, the protected test) fails without running. Timeout, cancellation, missing sandbox, changed definition, unreadable patch → `inconclusive`, never pass.
+- Verdicts record raw `patch_sha256` (exact bytes; normalised `diffDigest` unchanged) and `check_manifest_sha256`; `tasks.verification` returns `patch_sha256`, and the shared `verificationStateFor` reports `stale` when the revision or the bytes moved.
+- Review/learning: only a persisted verdict feeds `review.recordTurn` (`success = verified`); runs without required checks are never recorded as successes. Textual `<function=…>`/`<tool_call>` prose is recorded as a `runtime.diagnostic` event even without checks and is never executed.
+- `tasks.export {task_id, expected_revision, expected_patch_sha256}` → `PatchExport`: `conflict` if either moved; artifact sha256 == patch sha256; `LocalWorkspaceProvider.exportPatch` proves the round trip over the dirty baseline; `verified` only when the exact candidate is verified and the round trip passed.
+- VS Code: Start shows host checks as check boxes and sends `required_checks` (`host_test` by id, resolved against `describe`, never webview text); the confirm names the checks; the badge re-asks the host on refresh and diff load, uses a sequence guard, and includes the patch digest; **Export verified patch…** saves the exact artifact bytes via a save dialog.
+- Real sandbox evidence (opt-in): `MARS_WORKSPACES_BUN_TEST_IMAGE=oven/bun@sha256:5148f6742ac31fac28e6eab391ab1f11f6dfc0c8512c7a3679b374ec470f5982 bun test packages/workspaces/tests/docker-check.test.ts` — buggy candidate fails, candidate `bunfig.toml` preload is excluded, the fix passes (Docker, no network, read-only root).
+- Not done: Watch vs host evidence in one view (`tasks.evidence` unchanged; the badge uses host verdicts only); `requestTimeoutMs` model option and distinct runtime `failure_code`s (child C findings); live model + real VS Code window.
+
 ## Status (2026-11-03)
 
 Merged since the recovery started (2026-11-02): #42 HANDOFF, #43 research worker in `mars serve`, #44 MARS Output Format, #48 Milestone 3 skills/review/threat scanner, #49 `@mars/watch`, #52 Milestone 4 evaluation + GEPA; `MARS` #24 `/how` landscape. CI green on `main` here (`Foundation checks`) and in `mars-platform` (`CI`). `MARS` builds on Vercel only.
