@@ -371,12 +371,19 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
         );
         if (slot && options.slots) {
           const now = options.collaboration.host.jobs.currentTime();
-          await options.slots
+          const held = await options.slots
             .acquire(slot.taskId, slot.key, {
               now,
               expiresAt: now + options.collaboration.host.jobs.leaseMs,
             })
-            .catch(() => undefined);
+            .catch(() => true);
+          if (!held) {
+            // The slot lapsed and was taken: stop and let the lease expire so
+            // the job is recovered like any other lost lease.
+            leaseLost = true;
+            await cancelRun("lease_lost");
+            return;
+          }
         }
         if (isBudgetStop) await cancelRun("budget");
         else if (result.stop) await cancelRun("cancelled");
@@ -406,7 +413,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
           await options.collaboration.host.jobs.getLaunchContext(jobId);
         if (options.slots) {
           const now = options.collaboration.host.jobs.currentTime();
-          const key = `delegation:${jobId}`;
+          const key = `delegation:${jobId}:${claimed.lease_epoch}`;
           const admitted = await options.slots.acquire(context.task_id, key, {
             now,
             expiresAt: now + options.collaboration.host.jobs.leaseMs,

@@ -237,6 +237,62 @@ test("a child without a free task slot is requeued and retried", async () => {
   ).toMatchObject({ state: "completed" });
 });
 
+test("a child whose task slot lapsed and was taken stops", async () => {
+  const f = await fixture();
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("slot-lost"),
+  );
+  let acquires = 0;
+  let cancelled = false;
+  let finish!: (outcome: ChildOutcome) => void;
+  const runner = createChildRunner({
+    collaboration: f.collaboration,
+    runnerId: "slot-lost-runner",
+    heartbeatMs: 10,
+    slots: {
+      async acquire() {
+        acquires += 1;
+        return acquires === 1;
+      },
+      async release() {},
+    },
+    adapter: {
+      async start() {
+        return {
+          session_ref: "slot-lost-session",
+          base_revision: null,
+          outcome: new Promise<ChildOutcome>((resolve) => {
+            finish = resolve;
+          }),
+          async cancel() {
+            cancelled = true;
+            finish({
+              status: "cancelled",
+              summary: "Stopped.",
+              artifacts: [],
+              usage: { input_tokens: 0, output_tokens: 0, usd: 0, steps: 0 },
+            });
+          },
+        };
+      },
+    },
+  });
+  await runner.tick();
+  await runner.idle();
+  expect(acquires).toBeGreaterThan(1);
+  expect(cancelled).toBe(true);
+  const children = await f.collaboration.agents.children(
+    context,
+    f.coordinator,
+  );
+  expect(
+    children.children.find((member) => member.agent_id === child.agent_id)
+      ?.state,
+  ).not.toBe("completed");
+});
+
 test("long child deadlines do not expire after a clamped timer chunk", async () => {
   const dayMs = 24 * 60 * 60 * 1000;
   const f = await fixture({ taskDurationMs: 60 * dayMs });

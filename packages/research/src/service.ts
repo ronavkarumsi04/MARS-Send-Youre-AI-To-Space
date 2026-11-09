@@ -1172,8 +1172,28 @@ export async function createResearchService(
           now,
           expiresAt: now + configured.leaseMs,
         })
+        .then((held) => {
+          if (!held) loseSlot(entry);
+        })
         .catch((error: unknown) => reportInternalError("slots", error));
     }
+  };
+
+  // A run whose slot lapsed and was taken stops and goes back to the queue.
+  const loseSlot = (entry: LocalRun): void => {
+    if (!dbOpen || entry.controller.signal.aborted) return;
+    immediate(db, () =>
+      db
+        .query(
+          `UPDATE requests
+           SET status = 'queued', lease_owner = NULL, lease_token = NULL,
+               lease_expires_at = NULL
+           WHERE scope_key = ? AND request_id = ? AND lease_token = ?
+             AND status = 'running'`,
+        )
+        .run(entry.scopeKey, entry.requestId, entry.token),
+    );
+    entry.controller.abort("lease_lost");
   };
 
   const workerGuard = (entry: LocalRun, requireDb = true): RequestRow => {
@@ -1778,7 +1798,7 @@ export async function createResearchService(
       ),
       forced: false,
       settled: Promise.resolve(),
-      ...(options.slots ? { slot: slotFor(claim.row) } : {}),
+      ...(options.slots ? { slot: slotFor(claim.row, claim.attempt) } : {}),
     };
     entry.heartbeat.unref?.();
     entry.deadlineTimer.unref?.();
@@ -1852,13 +1872,14 @@ export async function createResearchService(
     void entry.settled;
   };
 
-  const slotFor = (row: RequestRow): SlotRef => ({
+  // Keyed per attempt, so a stale attempt never renews or frees its successor's.
+  const slotFor = (row: RequestRow, attempt: number): SlotRef => ({
     context: scopeCanonicalContext(
       row.scope_json,
       `research:${row.request_id}:slot`,
     ),
     taskId: row.task_id,
-    key: researchBudgetHoldKey(row.idem_request_id),
+    key: `${researchBudgetHoldKey(row.idem_request_id)}:${attempt}`,
   });
 
   let slotRetry: ReturnType<typeof setTimeout> | undefined;
@@ -1867,7 +1888,7 @@ export async function createResearchService(
   const admitSlot = async (claim: ClaimedJob): Promise<boolean> => {
     const slots = options.slots;
     if (!slots) return true;
-    const slot = slotFor(claim.row);
+    const slot = slotFor(claim.row, claim.attempt);
     const now = currentTime();
     const admitted = await slots
       .acquire(slot.context, slot.taskId, slot.key, {
