@@ -28,12 +28,30 @@ function liveRegion(role: "status" | "alert"): HTMLElement {
   region.setAttribute("aria-atomic", "true");
   return region;
 }
+const connectionRegion = liveRegion("status");
 const statusRegion = liveRegion("status");
 const alertRegion = liveRegion("alert");
-document.body.append(statusRegion, alertRegion);
+document.body.append(connectionRegion, statusRegion, alertRegion);
+const repeatTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+let announcedNoticeSeq: number | null = null;
 
-function announce(region: HTMLElement, text: string): void {
-  if (region.textContent !== text) region.textContent = text;
+/** Updates a region only when its text changes, or when `repeat` re-announces identical text. */
+function announce(region: HTMLElement, text: string, repeat = false): void {
+  if (region.textContent === text && !repeat) return;
+  clearTimeout(repeatTimers.get(region));
+  repeatTimers.delete(region);
+  if (region.textContent !== text || !text) {
+    region.textContent = text;
+    return;
+  }
+  region.textContent = "";
+  repeatTimers.set(
+    region,
+    setTimeout(() => {
+      repeatTimers.delete(region);
+      region.textContent = text;
+    }, 100),
+  );
 }
 let approvalTask: string | null = null;
 
@@ -647,10 +665,22 @@ function render(): void {
     : null;
   const busyText = s.busy ? `${s.busy}…` : "";
   const infoText = s.notice?.kind === "info" ? s.notice.text : "";
-  announce(statusRegion, [busyText, infoText].filter(Boolean).join(" · "));
+  const newNotice = s.notice !== null && s.notice.seq !== announcedNoticeSeq;
+  announcedNoticeSeq = s.notice?.seq ?? null;
+  const c = s.connection;
+  announce(
+    connectionRegion,
+    [STATUS_TEXT[c.status] ?? c.status, c.message].filter(Boolean).join(": "),
+  );
+  announce(
+    statusRegion,
+    [busyText, infoText].filter(Boolean).join(" · "),
+    newNotice && s.notice?.kind === "info",
+  );
   announce(
     alertRegion,
     s.notice && s.notice.kind !== "info" ? s.notice.text : "",
+    newNotice && s.notice?.kind !== "info",
   );
   const connected = s.connection.status === "connected";
   newTask.create.disabled = !connected || s.busy !== null;
