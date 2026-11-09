@@ -387,6 +387,31 @@ describe("targets and holdout", () => {
     expect(listError).not.toBeInstanceOf(OptimizationError);
     expect((listError as NodeJS.ErrnoException).code).toBe("ENOTDIR");
   });
+
+  test("concurrent and failed record writes leave no temp files behind", async () => {
+    const { targetId, root } = await setup({});
+    const store = new OptimizationStore(root);
+    const [seed] = await store.listCandidates(context, targetId);
+    if (!seed) throw new Error("missing seed candidate");
+    await Promise.all(
+      Array.from({ length: 16 }, () => store.writeCandidate(context, seed)),
+    );
+    expect(await store.listCandidates(context, targetId)).toEqual([seed]);
+    const dir = path.join(
+      root,
+      scopeKey(context.scope),
+      "targets",
+      targetId,
+      "candidates",
+    );
+    expect((await readdir(dir)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+
+    const file = path.join(dir, `${seed.candidate.candidate_id}.json`);
+    await rm(file);
+    await mkdir(file);
+    await expect(store.writeCandidate(context, seed)).rejects.toThrow();
+    expect((await readdir(dir)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  });
 });
 
 describe("propose with the real GEPA worker (gepa 0.1.4 in the pinned venv)", () => {
