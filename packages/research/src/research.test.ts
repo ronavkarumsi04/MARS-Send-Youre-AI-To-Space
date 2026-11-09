@@ -1684,6 +1684,20 @@ describe("@mars/research durable control plane", () => {
     expect(left.max_tokens === 20 || left.max_tokens === 10).toBe(true);
     expect((await ledger.committed(context(), "task-1")).tokens).toBe(990);
     expect((await second.allowance(context(), "task-1")).max_tokens).toBe(10);
+    // One submission id racing into two tasks: the refused task's hold is released.
+    const other = makeTask("task-2", scope);
+    await store.create(context("create-task-2"), {
+      ...other,
+      budget: { ...other.budget, max_tokens: 1000 },
+    });
+    const dup = await Promise.allSettled([
+      request(first, now, "dup", tokens(5), "task-1"),
+      request(second, now, "dup", tokens(5), "task-2"),
+    ]);
+    expect(dup.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const held = async (taskId: string) =>
+      (await ledger.committed(context(), taskId)).tokens;
+    expect((await held("task-1")) - 990 + (await held("task-2"))).toBe(5);
   });
 
   test("autoStart false only claims queued work on an explicit pump", async () => {

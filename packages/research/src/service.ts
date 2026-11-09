@@ -2114,10 +2114,13 @@ export async function createResearchService(
         const submitted = () =>
           db
             .query(
-              "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ?",
+              "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ? AND task_id = ?",
             )
-            .get(parsedContext.scopeKey, parsedContext.context.request_id) !==
-          null;
+            .get(
+              parsedContext.scopeKey,
+              parsedContext.context.request_id,
+              request.task_id,
+            ) !== null;
         const replay = submitted();
         if (!replay) {
           // Settled jobs release their unused holds before this one is admitted.
