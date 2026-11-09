@@ -270,7 +270,11 @@ export interface MemoryService {
   ): Promise<{ affected_training_manifests: string[] }>;
 }
 
-export type MemoryProposalStatus = "pending" | "accepted" | "rejected";
+export type MemoryProposalStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "reverted";
 /** A proposed memory batch awaiting a human/host decision; only the memory owner applies it. */
 export interface MemoryProposal {
   proposal_id: string;
@@ -280,16 +284,36 @@ export interface MemoryProposal {
   rationale: string;
   expected_revision: number;
   status: MemoryProposalStatus;
+  /** Task whose run produced the proposal (background review); absent for vault or manual proposals. */
+  task_id?: string;
   reason?: string;
   submitted_at: string;
   resolved_at?: string;
+  /** Actor that accepted or rejected the proposal; absent on records written before it existed. */
+  resolved_by?: string;
   applied_revision?: number;
+  reverted_at?: string;
+  reverted_by?: string;
+  /** Memory revision that restored the entries the accepted proposal changed. */
+  reverted_revision?: number;
+  revert_reason?: string;
 }
 export interface MemoryProposalInput {
   source: string;
   operations: MemoryOperation[];
   rationale: string;
   expected_revision: number;
+  task_id?: string;
+}
+export interface MemoryProposalFilter {
+  task_id?: string;
+}
+export interface MemoryProposalResolution {
+  /** Who resolved the proposal (human, CLI or host actor id). */
+  resolved_by?: string;
+}
+export interface MemoryProposalRevert extends MemoryProposalResolution {
+  reason?: string;
 }
 /** Proposal-only surface handed to background review; it can never write authoritative memory. */
 export interface MemoryProposalService {
@@ -300,15 +324,31 @@ export interface MemoryProposalService {
   listProposals(
     context: RequestContext,
     status?: MemoryProposalStatus,
+    filter?: MemoryProposalFilter,
   ): Promise<MemoryProposal[]>;
   acceptProposal(
     context: RequestContext,
     proposalId: string,
+    resolution?: MemoryProposalResolution,
   ): Promise<MemoryProposal>;
   rejectProposal(
     context: RequestContext,
     proposalId: string,
     reason: string,
+    resolution?: MemoryProposalResolution,
+  ): Promise<MemoryProposal>;
+}
+/**
+ * Owner-only reversal of an accepted proposal: restores every entry the
+ * proposal changed to its prior revision, fenced on the memory revision the
+ * caller saw and on each entry being unchanged since the accept.
+ */
+export interface MemoryProposalReversal {
+  revertProposal(
+    context: RequestContext,
+    proposalId: string,
+    expectedRevision: number,
+    options?: MemoryProposalRevert,
   ): Promise<MemoryProposal>;
 }
 

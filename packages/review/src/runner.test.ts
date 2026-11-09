@@ -605,3 +605,20 @@ test("the registry gateway maps an exhausted 429 route to ReviewRateLimit", asyn
   expect((await runner.reviewNow(turn())).status).toBe("rate-limited");
   expect(runner.pendingSessions).toEqual(["session-a"]);
 });
+
+test("memory proposals are linked to the host task the reviewed turn came from", async () => {
+  const model = fakeModel(() =>
+    output([memoryProposal("Run bun test before pushing.")]),
+  );
+  const { memory, runner } = setup(model);
+  expect((await runner.reviewNow({ ...turn(), taskId: "task 7" })).status).toBe(
+    "completed",
+  );
+  const [linked] = await memory.listProposals(context, "pending", {
+    task_id: "task 7",
+  });
+  expect(linked?.task_id).toBe("task 7");
+  expect(linked?.status).toBe("pending");
+  expect((await memory.snapshot(context)).entries).toEqual([]);
+  expect(runner.modelRequests).toBe(1);
+});

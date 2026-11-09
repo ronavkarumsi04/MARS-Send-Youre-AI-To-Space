@@ -19,9 +19,21 @@ tasks.checkpoint / tasks.restore
 tasks.verification
 tasks.evidence                      (additive, Team Chat PR 6)
 tasks.journal                       (additive, UI §8.3)
+memory.proposals.list / .accept / .reject / .revert   (additive, Milestone 2)
 ```
 
 ### Additive changes to the frozen protocol
+
+#### Milestone 2 memory proposal methods
+
+New methods only; no existing request or result changed. Each takes the strict host-bound `context` and returns the stored proposal (`MemoryProposalViewSchema`: `proposal_id`, `scope`, `source`, `operations`, `rationale`, `expected_revision`, `status: pending|accepted|rejected|reverted`, optional `task_id`, `reason`, `submitted_at`, `resolved_at`, `resolved_by`, `applied_revision`, `reverted_at`, `reverted_by`, `reverted_revision`, `revert_reason`).
+
+- `memory.proposals.list {status?, task_id?}` returns the scope's proposals; the transport rejects results outside the scope or the requested filter.
+- `memory.proposals.accept {proposal_id, resolved_by?}` applies a pending proposal through the normal memory batch writer (revision fence unchanged).
+- `memory.proposals.reject {proposal_id, reason, resolved_by?}` closes it without writing memory.
+- `memory.proposals.revert {proposal_id, expected_revision, reason?, resolved_by?}` restores every entry an accepted proposal touched to its pre-accept revision (entries it added are tombstoned) in one new memory revision. It fails `conflict` if the scope's memory revision is not `expected_revision` or if any touched entry changed or was erased since acceptance; unrelated writes are fine once the caller re-reads the revision.
+
+`resolved_by` defaults to the requesting scope owner. The transport checks that the returned proposal has the requested id and the status the method implies. A host without a memory owner answers `unavailable`. Background review still only submits pending proposals; nothing here runs automatically.
 
 #### UI §8.3 read-only additions
 

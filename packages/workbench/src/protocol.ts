@@ -166,6 +166,101 @@ export const ExportParamsSchema = z
   .strict();
 export type ExportParams = z.infer<typeof ExportParamsSchema>;
 
+// Views mirror what the memory store accepts; the transport's response cap bounds their size.
+const timestamp = z.string().min(1);
+const actor = z.string().min(1).max(128);
+const reason = z.string().min(1).max(1024);
+const opaque = z.string().min(1);
+const MemoryEntryViewSchema = z
+  .object({
+    entry_id: opaque,
+    scope: ScopeSchema,
+    target: z.enum(["profile", "project"]),
+    fact: z.string(),
+    revision,
+    source_event_ids: z.array(opaque),
+    observed_at: timestamp,
+    verified_at: timestamp.nullable(),
+    supersedes: opaque.nullable(),
+    deleted: z.boolean(),
+  })
+  .strict();
+const MemoryOperationViewSchema = z.discriminatedUnion("operation", [
+  z
+    .object({ operation: z.literal("add"), entry: MemoryEntryViewSchema })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("patch"),
+      entry_id: opaque,
+      fact: z.string(),
+      source_event_ids: z.array(opaque),
+    })
+    .strict(),
+  z.object({ operation: z.literal("remove"), entry_id: opaque }).strict(),
+]);
+export const MemoryProposalStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "rejected",
+  "reverted",
+]);
+/** A durable memory proposal as stored by the memory owner, including its audit trail. */
+export const MemoryProposalViewSchema = z
+  .object({
+    proposal_id: opaque,
+    scope: ScopeSchema,
+    source: opaque,
+    operations: z.array(MemoryOperationViewSchema).min(1),
+    rationale: z.string(),
+    expected_revision: revision,
+    status: MemoryProposalStatusSchema,
+    task_id: opaque.optional(),
+    reason: z.string().optional(),
+    submitted_at: timestamp,
+    resolved_at: timestamp.optional(),
+    resolved_by: opaque.optional(),
+    applied_revision: revision.optional(),
+    reverted_at: timestamp.optional(),
+    reverted_by: opaque.optional(),
+    reverted_revision: revision.optional(),
+    revert_reason: z.string().optional(),
+  })
+  .strict();
+export type MemoryProposalView = z.infer<typeof MemoryProposalViewSchema>;
+export const MemoryProposalListParamsSchema = z
+  .object({
+    status: MemoryProposalStatusSchema.optional(),
+    task_id: z.string().min(1).max(1024).optional(),
+  })
+  .strict();
+export type MemoryProposalListParams = z.infer<
+  typeof MemoryProposalListParamsSchema
+>;
+export const MemoryProposalAcceptParamsSchema = z
+  .object({ proposal_id: id, resolved_by: actor.optional() })
+  .strict();
+export type MemoryProposalAcceptParams = z.infer<
+  typeof MemoryProposalAcceptParamsSchema
+>;
+export const MemoryProposalRejectParamsSchema = z
+  .object({ proposal_id: id, reason, resolved_by: actor.optional() })
+  .strict();
+export type MemoryProposalRejectParams = z.infer<
+  typeof MemoryProposalRejectParamsSchema
+>;
+export const MemoryProposalRevertParamsSchema = z
+  .object({
+    proposal_id: id,
+    expected_revision: revision,
+    reason: reason.optional(),
+    resolved_by: actor.optional(),
+  })
+  .strict();
+export type MemoryProposalRevertParams = z.infer<
+  typeof MemoryProposalRevertParamsSchema
+>;
+
 function method<M extends string, P extends z.AnyZodObject>(
   name: M,
   params: P,
@@ -232,5 +327,9 @@ export const RpcRequestSchema = z.discriminatedUnion("method", [
       })
       .strict(),
   ),
+  method("memory.proposals.list", MemoryProposalListParamsSchema),
+  method("memory.proposals.accept", MemoryProposalAcceptParamsSchema),
+  method("memory.proposals.reject", MemoryProposalRejectParamsSchema),
+  method("memory.proposals.revert", MemoryProposalRevertParamsSchema),
 ]);
 export type RpcRequest = z.infer<typeof RpcRequestSchema>;

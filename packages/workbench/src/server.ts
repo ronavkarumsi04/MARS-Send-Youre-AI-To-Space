@@ -32,6 +32,12 @@ import {
   type ExportParams,
   type InspectResult,
   InspectResultSchema,
+  type MemoryProposalAcceptParams,
+  type MemoryProposalListParams,
+  type MemoryProposalRejectParams,
+  type MemoryProposalRevertParams,
+  type MemoryProposalView,
+  MemoryProposalViewSchema,
   type RpcRequest,
   RpcRequestSchema,
   type StartParams,
@@ -96,7 +102,27 @@ export interface WorkbenchOperations {
     checkpointId: string,
     revision: string,
   ): Promise<WorkspaceRef>;
+  /** Durable memory proposals in the caller's scope; absent when the host has no memory owner. */
+  memoryProposals?(
+    context: RequestContext,
+    params: MemoryProposalListParams,
+  ): Promise<MemoryProposalView[]>;
+  acceptMemoryProposal?(
+    context: RequestContext,
+    params: MemoryProposalAcceptParams,
+  ): Promise<MemoryProposalView>;
+  rejectMemoryProposal?(
+    context: RequestContext,
+    params: MemoryProposalRejectParams,
+  ): Promise<MemoryProposalView>;
+  /** Restores what an accepted proposal changed, fenced on the scope's current memory revision. */
+  revertMemoryProposal?(
+    context: RequestContext,
+    params: MemoryProposalRevertParams,
+  ): Promise<MemoryProposalView>;
 }
+
+const memoryProposalList = z.array(MemoryProposalViewSchema).max(10_000);
 
 export interface WorkbenchServerOptions {
   api: WorkbenchOperations;
@@ -211,6 +237,7 @@ function errorCode(error: unknown): RpcErrorCode {
         return "not_found";
       case "unsafe_path":
       case "permission_denied":
+      case "scope_denied":
         return "forbidden";
       case "invalid_input":
       case "unknown_cursor":
@@ -318,6 +345,26 @@ async function dispatch(
           request.params.expected_revision,
         ),
       );
+    case "memory.proposals.list":
+      if (!api.memoryProposals) throw new WorkbenchError("unavailable");
+      return memoryProposalList.parse(
+        await api.memoryProposals(context, request.params),
+      );
+    case "memory.proposals.accept":
+      if (!api.acceptMemoryProposal) throw new WorkbenchError("unavailable");
+      return MemoryProposalViewSchema.parse(
+        await api.acceptMemoryProposal(context, request.params),
+      );
+    case "memory.proposals.reject":
+      if (!api.rejectMemoryProposal) throw new WorkbenchError("unavailable");
+      return MemoryProposalViewSchema.parse(
+        await api.rejectMemoryProposal(context, request.params),
+      );
+    case "memory.proposals.revert":
+      if (!api.revertMemoryProposal) throw new WorkbenchError("unavailable");
+      return MemoryProposalViewSchema.parse(
+        await api.revertMemoryProposal(context, request.params),
+      );
   }
 }
 
@@ -372,6 +419,37 @@ function validateResult(request: RpcRequest, result: unknown, scope: Scope) {
       task.task_id !== taskId ||
       (request.method === "tasks.create" &&
         task.session_id !== request.params.task.session_id)
+    )
+      invalid();
+  } else if (request.method === "memory.proposals.list") {
+    const seen = new Set<string>();
+    for (const proposal of memoryProposalList.parse(result)) {
+      if (
+        !sameScope(proposal.scope, scope) ||
+        seen.has(proposal.proposal_id) ||
+        (request.params.status !== undefined &&
+          proposal.status !== request.params.status) ||
+        (request.params.task_id !== undefined &&
+          proposal.task_id !== request.params.task_id)
+      )
+        invalid();
+      seen.add(proposal.proposal_id);
+    }
+  } else if (
+    request.method === "memory.proposals.accept" ||
+    request.method === "memory.proposals.reject" ||
+    request.method === "memory.proposals.revert"
+  ) {
+    const proposal = MemoryProposalViewSchema.parse(result);
+    const status = {
+      "memory.proposals.accept": "accepted",
+      "memory.proposals.reject": "rejected",
+      "memory.proposals.revert": "reverted",
+    }[request.method];
+    if (
+      !sameScope(proposal.scope, scope) ||
+      proposal.proposal_id !== request.params.proposal_id ||
+      proposal.status !== status
     )
       invalid();
   }

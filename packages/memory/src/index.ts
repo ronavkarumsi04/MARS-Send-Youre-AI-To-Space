@@ -15,7 +15,11 @@ import {
   type MemoryEntry,
   type MemoryOperation,
   type MemoryProposal,
+  type MemoryProposalFilter,
   type MemoryProposalInput,
+  type MemoryProposalResolution,
+  type MemoryProposalReversal,
+  type MemoryProposalRevert,
   type MemoryProposalService,
   type MemoryProposalStatus,
   type MemoryService,
@@ -255,6 +259,8 @@ export const PROPOSAL_LIMITS = {
   rationale_length: 2048,
   reason_length: 1024,
   source_length: 128,
+  actor_length: 128,
+  task_id_length: 1024,
 } as const;
 const proposalInputSchema = z
   .object({
@@ -262,16 +268,33 @@ const proposalInputSchema = z
     operations: z.array(operationSchema).min(1).max(PROPOSAL_LIMITS.operations),
     rationale: z.string().min(1).max(PROPOSAL_LIMITS.rationale_length),
     expected_revision: z.number().int().nonnegative(),
+    task_id: z.string().min(1).max(PROPOSAL_LIMITS.task_id_length).optional(),
   })
   .strict();
-const proposalStatusSchema = z.enum(["pending", "accepted", "rejected"]);
+const proposalStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "rejected",
+  "reverted",
+]);
+const proposalFilterSchema = z
+  .object({
+    task_id: z.string().min(1).max(PROPOSAL_LIMITS.task_id_length).optional(),
+  })
+  .strict();
+const resolutionSchema = z
+  .object({ resolved_by: z.string().optional() })
+  .strict();
+const revertSchema = z
+  .object({ resolved_by: z.string().optional(), reason: z.string().optional() })
+  .strict();
 interface ProposalRow {
   proposal_id: string;
   status: string;
   record: string;
 }
 export class DurableMemoryStore
-  implements MemoryService, MemoryProposalService
+  implements MemoryService, MemoryProposalService, MemoryProposalReversal
 {
   private db!: Database;
   private queue: Promise<unknown> = Promise.resolve();
@@ -1340,6 +1363,18 @@ export class DurableMemoryStore
     if (threat) fail("invalid_input", { threat });
     return trimmed;
   }
+  /** Actors are stored verbatim, never trimmed into another id. Task ids are opaque host ids, only length-bounded by the schema. */
+  private identifier(value: string, limit: number): string {
+    if (this.text(value, limit) !== value || /\s/.test(value))
+      fail("invalid_input");
+    return value;
+  }
+  private actor(resolution: unknown): string | undefined {
+    const { resolved_by } = validate(resolutionSchema, resolution ?? {});
+    return resolved_by === undefined
+      ? undefined
+      : this.identifier(resolved_by, PROPOSAL_LIMITS.actor_length);
+  }
   /**
    * Validates a proposed batch by dry-running it inside a rolled-back
    * savepoint (scope, threat, budget and conflict checks all run) and persists
@@ -1356,6 +1391,8 @@ export class DurableMemoryStore
       proposal.rationale,
       PROPOSAL_LIMITS.rationale_length,
     );
+    const taskId =
+      proposal.task_id === undefined ? undefined : proposal.task_id;
     return this.write(() => {
       const pending = (
         this.db
@@ -1388,6 +1425,7 @@ export class DurableMemoryStore
         rationale,
         expected_revision: proposal.expected_revision,
         status: "pending",
+        ...(taskId === undefined ? {} : { task_id: taskId }),
         submitted_at: this.now(),
       };
       if (
@@ -1403,10 +1441,12 @@ export class DurableMemoryStore
   async listProposals(
     ctx: RequestContext,
     status?: MemoryProposalStatus,
+    options?: MemoryProposalFilter,
   ): Promise<MemoryProposal[]> {
     this.context(ctx);
     const filter =
       status === undefined ? undefined : validate(proposalStatusSchema, status);
+    const { task_id: taskId } = validate(proposalFilterSchema, options ?? {});
     return this.transaction(() => {
       const rows = (
         filter
@@ -1421,7 +1461,11 @@ export class DurableMemoryStore
               )
               .all(scopeKey(ctx))
       ) as ProposalRow[];
-      return rows.map((row) => this.loadProposal(ctx, row.proposal_id));
+      return rows
+        .map((row) => this.loadProposal(ctx, row.proposal_id))
+        .filter(
+          (proposal) => taskId === undefined || proposal.task_id === taskId,
+        );
     });
   }
   /**
@@ -1434,9 +1478,11 @@ export class DurableMemoryStore
   async acceptProposal(
     ctx: RequestContext,
     proposalId: string,
+    resolution?: MemoryProposalResolution,
   ): Promise<MemoryProposal> {
     this.context(ctx);
     validate(id, proposalId);
+    const actor = this.actor(resolution);
     return this.write(() => {
       const proposal = this.loadProposal(ctx, proposalId);
       if (proposal.status !== "pending")
@@ -1453,6 +1499,7 @@ export class DurableMemoryStore
         ...proposal,
         status: "accepted",
         resolved_at: this.now(),
+        ...(actor === undefined ? {} : { resolved_by: actor }),
         applied_revision: applied.revision,
       };
       this.storeProposal(ctx, resolved);
@@ -1463,6 +1510,7 @@ export class DurableMemoryStore
     ctx: RequestContext,
     proposalId: string,
     reason: string,
+    resolution?: MemoryProposalResolution,
   ): Promise<MemoryProposal> {
     this.context(ctx);
     validate(id, proposalId);
@@ -1470,6 +1518,7 @@ export class DurableMemoryStore
       validate(z.string(), reason),
       PROPOSAL_LIMITS.reason_length,
     );
+    const actor = this.actor(resolution);
     return this.write(() => {
       const proposal = this.loadProposal(ctx, proposalId);
       if (proposal.status !== "pending")
@@ -1479,9 +1528,93 @@ export class DurableMemoryStore
         status: "rejected",
         reason: why,
         resolved_at: this.now(),
+        ...(actor === undefined ? {} : { resolved_by: actor }),
       };
       this.storeProposal(ctx, resolved);
       return resolved;
+    });
+  }
+  /**
+   * Reverses an accepted proposal by appending, in one new revision, the
+   * prior state of every entry it changed: entries it added become
+   * tombstones, entries it patched, removed or superseded get their previous
+   * fact back. Fenced twice: the scope's memory revision must equal
+   * `expectedRevision` (what the caller looked at), and every entry the
+   * proposal touched must still be at the revision the accept wrote, so a
+   * later edit or erasure of the same entry yields `conflict` instead of
+   * being silently undone. Unrelated later writes do not block the revert.
+   */
+  async revertProposal(
+    ctx: RequestContext,
+    proposalId: string,
+    expectedRevision: number,
+    options?: MemoryProposalRevert,
+  ): Promise<MemoryProposal> {
+    this.context(ctx);
+    validate(id, proposalId);
+    validate(z.number().int().nonnegative(), expectedRevision);
+    const input = validate(revertSchema, options ?? {});
+    const actor = this.actor(
+      input.resolved_by === undefined ? {} : { resolved_by: input.resolved_by },
+    );
+    const why =
+      input.reason === undefined
+        ? undefined
+        : this.text(input.reason, PROPOSAL_LIMITS.reason_length);
+    return this.write(() => {
+      const proposal = this.loadProposal(ctx, proposalId);
+      const applied = proposal.applied_revision;
+      if (proposal.status !== "accepted" || applied === undefined)
+        fail("conflict", { status: proposal.status });
+      const current = this.revision(ctx);
+      if (current !== expectedRevision)
+        fail("conflict", { current_revision: current });
+      const touched = new Set<string>();
+      for (const op of proposal.operations) {
+        if (op.operation === "add") {
+          touched.add(op.entry.entry_id);
+          if (op.entry.supersedes) touched.add(op.entry.supersedes);
+        } else touched.add(op.entry_id);
+      }
+      const seq = this.nextSeq();
+      const targets = new Set<"profile" | "project">();
+      const changedWorkspaces = new Set<string>();
+      for (const entryId of [...touched].sort()) {
+        let latest: MemoryEntry;
+        try {
+          latest = this.find(ctx, entryId);
+        } catch (e) {
+          if (e instanceof MemoryStoreError && e.code === "not_found")
+            fail("conflict", { entry_id: entryId });
+          throw e;
+        }
+        if (this.latest(entryId)?.commit_seq !== applied)
+          fail("conflict", { entry_id: entryId });
+        const before = this.latest(entryId, applied - 1);
+        const prior = before ? this.decode(before) : null;
+        const restored: MemoryEntry = prior
+          ? {
+              ...prior,
+              fact: prior.deleted ? prior.fact : this.validateFact(prior.fact),
+              revision: latest.revision + 1,
+            }
+          : { ...latest, revision: latest.revision + 1, deleted: true };
+        targets.add(restored.target);
+        if (restored.target === "project")
+          changedWorkspaces.add(restored.scope.workspace_id ?? "");
+        this.append(ctx, restored, seq);
+      }
+      this.checkBudgets(ctx, targets, changedWorkspaces);
+      const reverted: MemoryProposal = {
+        ...proposal,
+        status: "reverted",
+        reverted_at: this.now(),
+        ...(actor === undefined ? {} : { reverted_by: actor }),
+        reverted_revision: seq,
+        ...(why === undefined ? {} : { revert_reason: why }),
+      };
+      this.storeProposal(ctx, reverted);
+      return reverted;
     });
   }
   async close(): Promise<void> {

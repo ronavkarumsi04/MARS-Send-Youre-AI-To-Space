@@ -276,3 +276,210 @@ test("proposals survive reopening the store", async () => {
     "accepted",
   );
 });
+
+test("accept and reject record who resolved the proposal and the task it came from", async () => {
+  const store = open();
+  const linked = await store.submitProposal(c, {
+    source: "review:test",
+    rationale: "Lesson from task-1.",
+    expected_revision: 0,
+    task_id: "task-1",
+    operations: [{ operation: "add", entry: entry("lesson") }],
+  });
+  expect(linked.task_id).toBe("task-1");
+  const other = await submit(store, ["Unlinked"]);
+  expect(
+    (await store.listProposals(c, undefined, { task_id: "task-1" })).map(
+      (p) => p.proposal_id,
+    ),
+  ).toEqual([linked.proposal_id]);
+  const accepted = await store.acceptProposal(c, linked.proposal_id, {
+    resolved_by: "human:alice",
+  });
+  expect(accepted).toMatchObject({
+    status: "accepted",
+    resolved_by: "human:alice",
+    task_id: "task-1",
+  });
+  const rejected = await store.rejectProposal(c, other.proposal_id, "noise", {
+    resolved_by: "cli",
+  });
+  expect(rejected.resolved_by).toBe("cli");
+  const late = await submit(store, ["Late"], 1);
+  for (const bad of [" padded", "has space", "", "x".repeat(129)])
+    expect(
+      (
+        await code(
+          store.acceptProposal(c, late.proposal_id, { resolved_by: bad }),
+        )
+      )?.code,
+    ).toBe("invalid_input");
+  expect(
+    (
+      await code(
+        store.submitProposal(c, {
+          source: "review:test",
+          rationale: "r",
+          expected_revision: 1,
+          task_id: "t".repeat(1025),
+          operations: [{ operation: "add", entry: entry("x") }],
+        }),
+      )
+    )?.code,
+  ).toBe("invalid_input");
+  // Task ids are opaque host ids: stored verbatim, spaces included.
+  expect(
+    (
+      await store.submitProposal(c, {
+        source: "review:test",
+        rationale: "r",
+        expected_revision: 1,
+        task_id: " task 2 ",
+        operations: [{ operation: "add", entry: entry("y") }],
+      })
+    ).task_id,
+  ).toBe(" task 2 ");
+  // Records written before these fields existed still load and accept.
+  expect((await store.acceptProposal(c, late.proposal_id)).resolved_by).toBe(
+    undefined,
+  );
+});
+
+test("revert tombstones added entries, survives unrelated writes and is fenced on the caller's revision", async () => {
+  const store = open();
+  const proposal = await submit(store, ["Use bun test", "Prefer Biome"]);
+  const accepted = await store.acceptProposal(c, proposal.proposal_id);
+  await store.batch(c, 1, [{ operation: "add", entry: entry("unrelated") }]);
+  expect(await code(store.revertProposal(c, proposal.proposal_id, 1))).toEqual({
+    code: "conflict",
+    details: { current_revision: 2 },
+  });
+  const reverted = await store.revertProposal(c, proposal.proposal_id, 2, {
+    resolved_by: "human:alice",
+    reason: "Wrong lesson",
+  });
+  expect(reverted).toMatchObject({
+    status: "reverted",
+    applied_revision: accepted.applied_revision,
+    reverted_by: "human:alice",
+    reverted_revision: 3,
+    revert_reason: "Wrong lesson",
+    reverted_at: "2026-02-01T00:00:00.000Z",
+  });
+  const snapshot = await store.snapshot(c);
+  expect(snapshot.revision).toBe(3);
+  expect(snapshot.entries.map((e) => e.entry_id)).toEqual(["unrelated"]);
+  expect(await store.search(c, "Biome")).toEqual([]);
+  // The history stays auditable: the tombstone sits on top of the accepted fact.
+  expect(
+    (await store.provenance(c, "Prefer Biome-1")).map((e) => e.deleted),
+  ).toEqual([false, true]);
+  expect(await code(store.revertProposal(c, proposal.proposal_id, 3))).toEqual({
+    code: "conflict",
+    details: { status: "reverted" },
+  });
+  expect(
+    (await store.listProposals(c, "reverted")).map((p) => p.proposal_id),
+  ).toEqual([proposal.proposal_id]);
+});
+
+test("revert conflicts when an entry the proposal touched changed or was erased since", async () => {
+  const store = open();
+  const patched = await submit(store, ["Use bun test"]);
+  await store.acceptProposal(c, patched.proposal_id);
+  await store.batch(c, 1, [
+    {
+      operation: "patch",
+      entry_id: "Use bun test-0",
+      fact: "Use bun test --bail",
+      source_event_ids: ["user"],
+    },
+  ]);
+  expect(await code(store.revertProposal(c, patched.proposal_id, 2))).toEqual({
+    code: "conflict",
+    details: { entry_id: "Use bun test-0" },
+  });
+  expect((await store.snapshot(c)).entries.map((e) => e.fact)).toEqual([
+    "Use bun test --bail",
+  ]);
+  const erased = await submit(store, ["Forget me"], 2);
+  await store.acceptProposal(c, erased.proposal_id);
+  await store.forgetEntry(c, "Forget me-0");
+  const revision = (await store.snapshot(c)).revision;
+  expect(
+    await code(store.revertProposal(c, erased.proposal_id, revision)),
+  ).toEqual({ code: "conflict", details: { entry_id: "Forget me-0" } });
+  const pending = await submit(store, ["Pending"], revision);
+  expect(
+    await code(store.revertProposal(c, pending.proposal_id, revision)),
+  ).toEqual({ code: "conflict", details: { status: "pending" } });
+  expect(
+    await code(store.revertProposal(ctx("other"), pending.proposal_id, 0)),
+  ).toEqual({ code: "not_found", details: undefined });
+});
+
+test("revert restores patched, removed and superseded entries to their prior facts", async () => {
+  const store = open();
+  await store.batch(c, 0, [
+    { operation: "add", entry: entry("keep", "original") },
+    { operation: "add", entry: entry("drop", "dropped") },
+    { operation: "add", entry: entry("old", "old fact") },
+  ]);
+  const proposal = await store.submitProposal(c, {
+    source: "review:test",
+    rationale: "Rewrite",
+    expected_revision: 1,
+    operations: [
+      {
+        operation: "patch",
+        entry_id: "keep",
+        fact: "rewritten",
+        source_event_ids: ["e2"],
+      },
+      { operation: "remove", entry_id: "drop" },
+      {
+        operation: "add",
+        entry: { ...entry("new", "new fact"), supersedes: "old" },
+      },
+    ],
+  });
+  await store.acceptProposal(c, proposal.proposal_id);
+  expect((await store.snapshot(c)).entries.map((e) => e.fact).sort()).toEqual([
+    "new fact",
+    "rewritten",
+  ]);
+  await store.revertProposal(c, proposal.proposal_id, 2);
+  const restored = await store.snapshot(c);
+  expect(restored.entries.map((e) => [e.entry_id, e.fact]).sort()).toEqual([
+    ["drop", "dropped"],
+    ["keep", "original"],
+    ["old", "old fact"],
+  ]);
+  expect(
+    restored.entries.find((e) => e.entry_id === "keep")?.source_event_ids,
+  ).toEqual(["event-keep"]);
+  expect((await store.search(c, "original")).map((e) => e.entry_id)).toEqual([
+    "keep",
+  ]);
+});
+
+test("reverted proposals survive reopen", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-memory-proposals-"));
+  roots.push(dir);
+  const first = createMemoryStore({ rootDir: dir });
+  const proposal = await submit(first, ["Durable"]);
+  await first.acceptProposal(c, proposal.proposal_id, { resolved_by: "cli" });
+  await first.revertProposal(c, proposal.proposal_id, 1, {
+    resolved_by: "cli",
+  });
+  await first.close();
+  const second = createMemoryStore({ rootDir: dir });
+  stores.push(second);
+  expect((await second.listProposals(c))[0]).toMatchObject({
+    status: "reverted",
+    resolved_by: "cli",
+    reverted_by: "cli",
+    reverted_revision: 2,
+  });
+  expect((await second.snapshot(c)).entries).toEqual([]);
+});

@@ -40,8 +40,8 @@ import { createMemoryStore } from "@mars/memory";
 import type { ModelProviderRegistry } from "@mars/providers";
 import { loadModelRegistry } from "@mars/providers";
 import { ResearchError } from "@mars/research";
-import type { Turn } from "@mars/review";
-import { CommandError } from "@mars/skills";
+import { ReviewRunner, type Turn } from "@mars/review";
+import { CommandError, SkillStore } from "@mars/skills";
 import type { RoutingRequest } from "@mars/specialists";
 import { createTaskStore } from "@mars/tasks";
 import { WorkspaceModifiedError } from "@mars/workspaces";
@@ -427,6 +427,7 @@ async function fixture() {
       | "providerStatus"
       | "vault"
       | "checks"
+      | "memoryProposals"
     > & {
       canExecute?: boolean;
       workspaceOverrides?: Partial<WorkspaceHost>;
@@ -5479,4 +5480,176 @@ test("restore never overlaps verification or export of the same candidate", asyn
   });
   expect(await attemptRestore()).toBe("restored");
   await api.close();
+});
+
+test("a reviewed lesson accepted through the host reaches a follow-up task's frozen memory; after revert a later task's does not (offline)", async () => {
+  const f = await fixture();
+  const memory = createMemoryStore({ rootDir: join(f.root, "memory") });
+  cleanup.push(() => memory.close());
+  const lesson = "Run bun test packages/memory before pushing memory changes.";
+  const prompts: string[] = [];
+  const runner = new ReviewRunner({
+    context: context(),
+    memory,
+    skills: new SkillStore(join(f.root, "skills")),
+    model: {
+      id: "fake:offline",
+      async complete(request) {
+        prompts.push(request.user);
+        return {
+          text: JSON.stringify({
+            proposals: [
+              {
+                tool: "memory.submitProposal",
+                rationale: "The verified run relied on it",
+                ops: [{ op: "add", target: "memory", content: lesson }],
+              },
+            ],
+          }),
+          model: "fake",
+          finishReason: "stop",
+          toolCalls: 0,
+        };
+      },
+    },
+    logRoot: join(f.root, "review"),
+    idleMs: 60_000,
+    timeoutMs: 5_000,
+  });
+  cleanup.push(() => runner.stop());
+  const turns: Turn[] = [];
+  const api = await f.makeHost(
+    undefined,
+    memory,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      memoryProposals: memory,
+      review: {
+        beginLiveTurn() {},
+        endLiveTurn() {},
+        recordTurn(turn) {
+          turns.push(structuredClone(turn));
+        },
+      },
+    },
+  );
+  const launch = async (taskId: string, index: number) => {
+    await api.create(context(), task(taskId));
+    await api.start(context(), {
+      task_id: taskId,
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+      ...(taskId === "task"
+        ? {
+            required_checks: [
+              {
+                kind: "file_content" as const,
+                path: "ok.txt",
+                content: "checkpoint",
+              },
+            ],
+          }
+        : {}),
+    });
+    const session = required(f.sessions[index]);
+    const frozen = JSON.parse(
+      await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+    ).memory as { revision: number; text: string };
+    session.finish("completed");
+    await session.disposed;
+    return { instruction: required(session.instructions[0]), frozen };
+  };
+
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("checkpoint"),
+      "application/octet-stream",
+    ),
+  );
+  await launch("task", 0);
+  expect((await api.verification(context(), "task")).state).toBe("verified");
+  expect(turns.map((turn) => turn.taskId)).toEqual(["task"]);
+  const review = await runner.reviewNow(required(turns[0]));
+  expect(review.status).toBe("completed");
+  // Review only proposes: nothing reaches durable memory without an owner decision.
+  expect((await memory.snapshot(context())).entries).toEqual([]);
+  const [pending, ...others] = await api.memoryProposals(context(), {
+    status: "pending",
+    task_id: "task",
+  });
+  expect(others).toEqual([]);
+  expect(required(pending)).toMatchObject({
+    task_id: "task",
+    source: `background_review:${required(turns[0]).sessionId}:${review.reviewId}`,
+  });
+  const accepted = await api.acceptMemoryProposal(context(), {
+    proposal_id: required(pending).proposal_id,
+    resolved_by: "human:reviewer",
+  });
+  expect(accepted).toMatchObject({
+    status: "accepted",
+    resolved_by: "human:reviewer",
+    applied_revision: 1,
+  });
+
+  const followUp = await launch("task-2", 1);
+  expect(followUp.frozen.revision).toBe(1);
+  expect(followUp.frozen.text).toContain(lesson);
+  expect(followUp.frozen.text).toContain(`review:${review.reviewId}`);
+  expect(followUp.instruction).toContain(lesson);
+
+  const reverted = await api.revertMemoryProposal(context(), {
+    proposal_id: required(pending).proposal_id,
+    expected_revision: 1,
+    reason: "Lesson was wrong",
+  });
+  expect(reverted).toMatchObject({
+    status: "reverted",
+    reverted_by: scope.owner_id,
+    reverted_revision: 2,
+    revert_reason: "Lesson was wrong",
+  });
+  const later = await launch("task-3", 2);
+  expect(later.frozen.revision).toBe(2);
+  expect(later.frozen.text).not.toContain(lesson);
+  expect(later.instruction).not.toContain(lesson);
+  // The audit trail survives the revert.
+  expect(await api.memoryProposals(context(), { status: "reverted" })).toEqual([
+    reverted,
+  ]);
+  expect(runner.modelRequests).toBe(1);
+  expect(prompts).toHaveLength(1);
+  await api.close();
+});
+
+test("memory proposal operations fail closed without a memory owner or outside the host scope", async () => {
+  const f = await fixture();
+  const api = await f.makeHost();
+  await expect(api.memoryProposals(context(), {})).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  const memory = createMemoryStore({ rootDir: join(f.root, "memory") });
+  cleanup.push(() => memory.close());
+  const owned = await f.makeHost(
+    undefined,
+    memory,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { memoryProposals: memory },
+  );
+  const other = context();
+  other.scope = { ...other.scope, project_id: "elsewhere" };
+  await expect(owned.memoryProposals(other, {})).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  expect(await owned.memoryProposals(context(), {})).toEqual([]);
+  await api.close();
+  await owned.close();
 });

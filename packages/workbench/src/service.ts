@@ -481,6 +481,7 @@ export async function createWorkbenchService(
           }
         : {}),
       memory,
+      memoryProposals: memory,
       skills,
       ...(review ? { review } : {}),
       repositoryMap,
