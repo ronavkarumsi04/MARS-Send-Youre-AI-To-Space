@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { LocalConnection } from "@mars/contracts/connection-file";
 import { createReconnectingBridge } from "../src/main/session";
 import { TransportError, type TransportRequest } from "../src/main/transport";
+import { bridgeFailure } from "../src/shared/methods";
 import { loadFixtureData } from "./test-utils";
 
 const connection: LocalConnection = {
@@ -71,7 +72,7 @@ test("unavailable and unauthorized failures trigger connection resolution again"
           async send(request) {
             if (request.method === "workbench.describe") return data.describe;
             if (request.method === "tasks.list" && instance === 1)
-              throw new TransportError(kind, "sanitized failure");
+              throw new TransportError(kind);
             if (request.method === "tasks.list") return data.tasks;
             throw new Error("Unexpected test request.");
           },
@@ -106,4 +107,22 @@ test("a refused method does not resolve a connection", async () => {
     error: { kind: "refused" },
   });
   expect(resolveCalls).toBe(0);
+});
+
+test("connection failures use the shared not_connected message", async () => {
+  const bridge = createReconnectingBridge({
+    async resolve() {
+      throw new Error("resolver crashed");
+    },
+    makeTransport() {
+      throw new Error("Unexpected transport creation.");
+    },
+  });
+
+  expect(await bridge.call("tasks.list", {})).toEqual(
+    bridgeFailure("not_connected"),
+  );
+  expect(await bridge.call("tasks.start", {})).toEqual(
+    bridgeFailure("refused"),
+  );
 });

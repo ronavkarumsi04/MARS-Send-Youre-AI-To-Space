@@ -79,8 +79,10 @@ export function createFileArtifactStore(rootDir: string): ArtifactStore {
         bytes = new Uint8Array(
           await readFile(path.join(dirFor(context), `${ref.sha256}.bin`)),
         );
-      } catch {
-        throw new OptimizationError("artifact_missing", ref.artifact_id);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          throw new OptimizationError("artifact_missing", ref.artifact_id);
+        throw error;
       }
       return verify(ref, bytes);
     },
@@ -251,8 +253,9 @@ export class OptimizationStore {
     let names: string[];
     try {
       names = await readdir(dir);
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
     }
     const records = await Promise.all(
       names

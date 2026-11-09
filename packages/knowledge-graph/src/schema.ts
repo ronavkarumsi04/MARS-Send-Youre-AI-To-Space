@@ -1,3 +1,4 @@
+import { EVENT_OPERATIONS } from "@mars/contracts";
 import { z } from "zod";
 
 /** The graphify release the sandboxed runner accepts (`graphify --version`). */
@@ -127,7 +128,7 @@ export type GraphDoctor = z.infer<typeof GraphDoctorSchema>;
 export const GraphBuildRecordSchema = z
   .object({
     schema_version: z.literal(1),
-    operation: z.literal("graph.build"),
+    operation: z.literal(EVENT_OPERATIONS.graphBuild),
     status: z.enum(["built", "unavailable", "failed", "stale", "refused"]),
     workspace_id: z.string().min(1),
     revision: z.string().min(1),

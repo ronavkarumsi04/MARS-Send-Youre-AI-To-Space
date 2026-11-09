@@ -112,17 +112,40 @@ export class ModelRouter {
         });
         continue;
       }
-      const cooldownUntil = this.cooldowns.get(provider.id);
-      if (cooldownUntil !== undefined && cooldownUntil > this.now()) {
-        skipped.push({
-          modelId: id,
-          reason: `Provider is cooling down for ${cooldownUntil - this.now()}ms.`,
-        });
+      const cooling = this.cooldownSkip(model);
+      if (cooling) {
+        skipped.push(cooling);
         continue;
       }
       models.push(model);
     }
     return { models, skipped };
+  }
+
+  private cooldownSkip(model: ModelConfig): SkippedModel | undefined {
+    const cooldownUntil = this.cooldowns.get(model.providerId);
+    if (cooldownUntil === undefined || cooldownUntil <= this.now()) {
+      return undefined;
+    }
+    return {
+      modelId: model.id,
+      reason: `Provider is cooling down for ${cooldownUntil - this.now()}ms.`,
+    };
+  }
+
+  private routingInfo(
+    selection: ModelSelection,
+    model: ModelConfig,
+    attempts: RoutingAttempt[],
+  ): RoutingInfo {
+    return {
+      selected: model.id,
+      reason:
+        attempts.length > 0
+          ? `Fallback after ${attempts.length} retryable provider failure(s).`
+          : `Selected from ${selection.model ? "explicit model" : `route "${selection.route ?? "default"}"`}.`,
+      attempts,
+    };
   }
 
   private adapterFor(model: ModelConfig) {
@@ -184,26 +207,16 @@ export class ModelRouter {
 
     const attempts: RoutingAttempt[] = [];
     for (const model of models) {
-      const cooldownUntil = this.cooldowns.get(model.providerId);
-      if (cooldownUntil !== undefined && cooldownUntil > this.now()) {
-        skipped.push({
-          modelId: model.id,
-          reason: `Provider is cooling down for ${cooldownUntil - this.now()}ms.`,
-        });
+      const cooling = this.cooldownSkip(model);
+      if (cooling) {
+        skipped.push(cooling);
         continue;
       }
       try {
         const response = await this.adapterFor(model).complete(request, model);
         return {
           ...response,
-          routing: {
-            selected: model.id,
-            reason:
-              attempts.length > 0
-                ? `Fallback after ${attempts.length} retryable provider failure(s).`
-                : `Selected from ${selection.model ? "explicit model" : `route "${selection.route ?? "default"}"`}.`,
-            attempts,
-          },
+          routing: this.routingInfo(selection, model, attempts),
         };
       } catch (error) {
         const providerError = this.handleProviderError(model, error, attempts);
@@ -222,12 +235,9 @@ export class ModelRouter {
 
     const attempts: RoutingAttempt[] = [];
     for (const model of models) {
-      const cooldownUntil = this.cooldowns.get(model.providerId);
-      if (cooldownUntil !== undefined && cooldownUntil > this.now()) {
-        skipped.push({
-          modelId: model.id,
-          reason: `Provider is cooling down for ${cooldownUntil - this.now()}ms.`,
-        });
+      const cooling = this.cooldownSkip(model);
+      if (cooling) {
+        skipped.push(cooling);
         continue;
       }
       let emitted = false;
@@ -238,15 +248,10 @@ export class ModelRouter {
         )) {
           emitted = true;
           if (event.type === "done") {
-            const routing: RoutingInfo = {
-              selected: model.id,
-              reason:
-                attempts.length > 0
-                  ? `Fallback after ${attempts.length} retryable provider failure(s).`
-                  : `Selected from ${selection.model ? "explicit model" : `route "${selection.route ?? "default"}"`}.`,
-              attempts,
+            yield {
+              ...event,
+              routing: this.routingInfo(selection, model, attempts),
             };
-            yield { ...event, routing };
           } else {
             yield event;
           }
