@@ -568,6 +568,9 @@ test("router falls back when a stream ends before emitting content", async () =>
     expect(done?.type).toBe("done");
     if (done?.type === "done") {
       expect(done.routing?.selected).toBe("second-model");
+      expect(done.routing?.reason).toBe(
+        "Fallback after 1 retryable provider failure(s).",
+      );
       expect(done.routing?.attempts).toHaveLength(1);
     }
   } finally {
@@ -610,11 +613,60 @@ test("router falls back after 429, retains retry-after cooldown, and records the
     const result = await new ModelRouter(registry).complete(request);
     expect(result.content).toBe("fallback");
     expect(result.routing.selected).toBe("second");
+    expect(result.routing.reason).toBe(
+      "Fallback after 1 retryable provider failure(s).",
+    );
     expect(result.routing.attempts).toEqual([
       { modelId: "first", error: "Provider returned HTTP 429." },
     ]);
     expect(retryableProviderRequests).toBe(1);
     expect(fallbackRequests).toBe(1);
+  } finally {
+    await stub.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("router reports cooled-down providers as skipped in complete and stream", async () => {
+  let requests = 0;
+  const stub = await serve((_incoming, outgoing) => {
+    requests += 1;
+    outgoing.writeHead(429, { "retry-after": "2" });
+    outgoing.end();
+  });
+  const root = await temporaryDirectory();
+  try {
+    const registry = await registryFor(
+      root,
+      [provider("a", `${stub.baseUrl}/a/v1`)],
+      [model("first", "a"), model("first-retry", "a")],
+      ["first", "first-retry"],
+    );
+    const router = new ModelRouter(registry, { now: () => 1_000 });
+    const cooling = "Provider is cooling down for 2000ms.";
+    await expect(router.complete(request)).rejects.toMatchObject({
+      name: "NoModelAvailableError",
+      skipped: [
+        { modelId: "first-retry", reason: cooling },
+        {
+          modelId: "first",
+          reason: "Provider attempt failed: Provider returned HTTP 429.",
+        },
+      ],
+    });
+    const consume = async () => {
+      for await (const _event of router.stream(request)) {
+        // drain
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      name: "NoModelAvailableError",
+      skipped: [
+        { modelId: "first", reason: cooling },
+        { modelId: "first-retry", reason: cooling },
+      ],
+    });
+    expect(requests).toBe(1);
   } finally {
     await stub.close();
     await rm(root, { recursive: true, force: true });
@@ -658,6 +710,7 @@ test("router skips models without required tools", async () => {
       require: { tools: true },
     });
     expect(result.routing.selected).toBe("with-tools");
+    expect(result.routing.reason).toBe('Selected from route "default".');
     expect(requestedModel).toBe("upstream-with-tools");
   } finally {
     await stub.close();
