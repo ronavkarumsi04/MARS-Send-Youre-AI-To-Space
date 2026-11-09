@@ -77,6 +77,11 @@ import {
 } from "@mars/watch";
 import type { LocalWorkspaceProvider } from "@mars/workspaces";
 import { z } from "zod";
+import {
+  browserTools,
+  staleTaskBrowser,
+  type WorkbenchBrowser,
+} from "./browser-context";
 import { chooseChildModel, isReviewerRole } from "./child-model";
 import {
   collaborationTools,
@@ -255,6 +260,8 @@ export interface WorkbenchHostOptions {
   specialists?: WorkbenchSpecialists;
   collaboration?: WorkbenchCollaboration;
   research?: WorkbenchResearch;
+  /** Background browser tasks; sessions get no browser tools without it. */
+  browser?: WorkbenchBrowser;
   /** Read-only prompt-optimisation proposals exposed to sessions as untrusted text. */
   optimization?: WorkbenchOptimization;
   /** Host-owned watch-skill perception and verification; absent means no watch tools. */
@@ -380,6 +387,7 @@ export async function createWorkbenchHost(
   const toolsRequired = (approvals: Approvals, collaboration: boolean) =>
     collaboration ||
     Boolean(options.research) ||
+    Boolean(options.browser) ||
     Boolean(options.watch) ||
     Boolean(options.knowledgeGraph) ||
     Object.values(approvals).some(Boolean);
@@ -502,6 +510,13 @@ export async function createWorkbenchHost(
       ),
     };
   };
+  const browserFor = (taskId: string, deadline: () => number) => {
+    const browser = options.browser;
+    if (!browser) return {};
+    const context = () => internalContext(options.scope);
+    const task = () => options.store.inspect(context(), taskId);
+    return { browser: browserTools(browser, context, task, deadline) };
+  };
   const proposalsFor = () =>
     options.optimization
       ? {
@@ -513,6 +528,12 @@ export async function createWorkbenchHost(
   // Stale-marking failures are recorded as reviewable evidence; a failing
   // sink never fails the steer.
   const staleResearch = async (taskId: string) => {
+    if (options.browser)
+      await staleTaskBrowser(
+        options.browser,
+        internalContext(options.scope),
+        () => options.store.inspect(internalContext(options.scope), taskId),
+      );
     if (!options.research) return;
     const context = internalContext(options.scope);
     const failures = await staleTaskResearch(options.research, context, taskId);
@@ -526,6 +547,9 @@ export async function createWorkbenchHost(
       .catch(() => undefined);
   };
   const reconcileResearch = async (taskId: string) => {
+    await options.browser
+      ?.reconcileTask(internalContext(options.scope), taskId)
+      .catch(() => undefined);
     if (!options.research) return;
     await options.research
       .reconcileTask(internalContext(options.scope), taskId)
@@ -642,6 +666,8 @@ export async function createWorkbenchHost(
   ): Promise<boolean> => {
     const task = await options.store.inspect(context, taskId);
     if (task.artifacts.some((item) => item.artifact_id === ref.artifact_id))
+      return true;
+    if (await options.browser?.ownsEvidence?.(context, taskId, ref))
       return true;
     for await (const event of options.store.events(context, taskId)) {
       if (event.payload.artifact_id === ref.artifact_id) return true;
@@ -1868,6 +1894,7 @@ export async function createWorkbenchHost(
     collaboration: Boolean(options.collaboration),
     delegation: Boolean(delegation),
     research: Boolean(options.research),
+    browser: Boolean(options.browser),
     proposals: Boolean(options.optimization),
     watch: Boolean(options.watch),
     knowledgeGraph: Boolean(options.knowledgeGraph),
@@ -2206,6 +2233,7 @@ export async function createWorkbenchHost(
         : {}),
       ...(approvals.read ? historyFor(context) : {}),
       ...researchFor(taskId, () => deadline),
+      ...browserFor(taskId, () => deadline),
       ...proposalsFor(),
       ...watchOption(taskId, cwd, approvals),
       ...graphOption(context, taskId, cwd, workspace, approvals),
@@ -2750,6 +2778,10 @@ export async function createWorkbenchHost(
             : {}),
           ...(launch.approvals.read ? historyFor(context) : {}),
           ...researchFor(
+            task.task_id,
+            () => launch.deadline ?? Date.now() + task.budget.max_duration_ms,
+          ),
+          ...browserFor(
             task.task_id,
             () => launch.deadline ?? Date.now() + task.budget.max_duration_ms,
           ),

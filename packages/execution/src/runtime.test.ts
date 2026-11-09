@@ -1038,6 +1038,7 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
       },
     },
     research: { submit: unused, findings: unused },
+    browser: { submit: unused, result: unused },
     proposals: { summary: unused },
     watch: {
       watch: unused,
@@ -1074,6 +1075,8 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
       "mars_review_result",
       "mars_research",
       "mars_findings",
+      "mars_browse",
+      "mars_browse_result",
       "mars_proposals",
       "mars_watch",
       "mars_watch_ask",

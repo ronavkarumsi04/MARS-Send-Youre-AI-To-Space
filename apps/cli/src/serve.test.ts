@@ -271,3 +271,29 @@ test("mars serve --help documents the research flags without making requests", a
   expect(output).toContain("BRAVE_SEARCH_API_KEY");
   expect(output).toContain(`[--port ${DEFAULT_WORKBENCH_PORT}]`);
 }, 30000);
+
+test("--browser-chromium accepts only an absolute executable path and --browser-deny-host needs it", async () => {
+  const { browserFromFlags } = await import("./serve");
+  expect(browserFromFlags({})).toBeUndefined();
+  expect(() => browserFromFlags({ denyHosts: ["example.org"] })).toThrow(
+    "require --browser-chromium",
+  );
+  for (const chromium of ["chrome", "/definitely/missing/chrome", tmpdir()])
+    expect(() => browserFromFlags({ chromium })).toThrow(
+      "--browser-chromium must be the absolute path",
+    );
+  const browser = browserFromFlags({
+    chromium: process.execPath,
+    denyHosts: ["evil.test"],
+  });
+  expect(browser?.engine.id).toBe("playwright-chromium");
+  expect(browser?.worker).toEqual({ live: true, deny_hosts: ["evil.test"] });
+  expect(browser?.allowedActions).toBeUndefined();
+  expect(() => browserFromFlags({ allowInput: true })).toThrow(
+    "require --browser-chromium",
+  );
+  expect(
+    browserFromFlags({ chromium: process.execPath, allowInput: true })
+      ?.allowedActions,
+  ).toContain("type");
+});

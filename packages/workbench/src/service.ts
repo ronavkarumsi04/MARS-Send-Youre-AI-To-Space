@@ -10,6 +10,18 @@ import {
   sep,
 } from "node:path";
 import {
+  type BrowserPolicyAction,
+  type BrowserServiceOptions,
+  createBrowserService,
+  type DurableBrowserService,
+} from "@mars/browser";
+import {
+  type BrowserEngine,
+  type BrowserWorkerConfigInput,
+  type BrowserWorkerLogEvent,
+  createBrowserWorker,
+} from "@mars/browser-worker";
+import {
   createDerivedArtifactStore,
   createRepositoryMapProvider,
   type RepositoryMapProvider,
@@ -109,6 +121,41 @@ export interface WorkbenchResearchOptions {
 }
 
 /**
+ * Background browser tasks: the durable `@mars/browser` control plane under the
+ * private state root plus the `@mars/browser-worker` driving `engine` (the
+ * Playwright adapter in production, the fake engine in tests). Every page
+ * request goes through the worker's guarded fetch.
+ */
+export interface WorkbenchBrowserOptions {
+  engine: BrowserEngine;
+  /** Worker settings; `live: true` permits the global fetch and real DNS. */
+  worker?: BrowserWorkerConfigInput;
+  /**
+   * Planner for jobs without scripted actions. Defaults to the registry's free
+   * default route; without an eligible free model only scripted jobs run.
+   */
+  model?: ModelGateway;
+  /** Host ceiling on actions a request may allow (default read-only browsing). */
+  allowedActions?: readonly BrowserPolicyAction[];
+  service?: Pick<
+    BrowserServiceOptions,
+    | "maxConcurrency"
+    | "maxActivePerTask"
+    | "maxAttempts"
+    | "leaseMs"
+    | "retryBackoffMs"
+    | "pollMs"
+  >;
+  /** Page fetch for the worker; required unless `worker.live` is true. */
+  fetch?: FetchLike;
+  resolveHost?: HostResolver;
+  env?: Record<string, string | undefined>;
+  log?: (event: BrowserWorkerLogEvent) => void;
+  /** Time given to running jobs before shutdown re-queues them (default 5 s). */
+  drainMs?: number;
+}
+
+/**
  * Optional self-hosted OmniRoute gateway as one more provider target. MARS
  * keeps model policy: only free, non-excluded catalog entries are
  * registered, the user's `allowPaid` is untouched, and every request carries
@@ -156,6 +203,8 @@ export interface WorkbenchServiceOptions {
   collaboration?: WorkbenchCollaboration;
   /** Background research worker and control plane; sessions get no research tools without it. */
   research?: WorkbenchResearchOptions;
+  /** Background browser worker and control plane; sessions get no browser tools without it. */
+  browser?: WorkbenchBrowserOptions;
   /** Pinned graphify CLI (argv prefix); sessions get no graph tools without it. */
   knowledgeGraph?: {
     command: string[];
@@ -283,6 +332,9 @@ export async function createWorkbenchService(
   const researchRoot = options.research
     ? await privateSubdirectory(root, "research")
     : undefined;
+  const browserRoot = options.browser
+    ? await privateSubdirectory(root, "browser")
+    : undefined;
   const graphRoot = options.knowledgeGraph
     ? await privateSubdirectory(root, "knowledge-graph")
     : undefined;
@@ -324,6 +376,7 @@ export async function createWorkbenchService(
   let review: ReviewRunner | undefined;
   let repositoryMap: RepositoryMapProvider | undefined;
   let research: DurableResearchService | undefined;
+  let browser: DurableBrowserService | undefined;
   let server: ReturnType<typeof serveWorkbench> | undefined;
   // One teardown order for both close() and startup failure; each step
   // skips resources that were never opened.
@@ -336,6 +389,12 @@ export async function createWorkbenchService(
           researchDrainMs === undefined
             ? undefined
             : { drainMs: researchDrainMs },
+        ),
+      () =>
+        browser?.close(
+          options.browser?.drainMs === undefined
+            ? undefined
+            : { drainMs: options.browser.drainMs },
         ),
       () => review?.stop(),
       () => omniroute?.stop(),
@@ -394,6 +453,50 @@ export async function createWorkbenchService(
         events: store,
         worker,
         hostPrivateRoots: privateRoots,
+      });
+    }
+    if (options.browser && browserRoot) {
+      const browserOptions = options.browser;
+      const privateRoots = [
+        source,
+        memoryRoot,
+        hostRoot,
+        join(root, "tasks"),
+        join(root, "workspaces"),
+      ];
+      let model = browserOptions.model;
+      if (!model) {
+        try {
+          model = createRegistryModelGateway({
+            registry,
+            paidConsent: false,
+            ...(browserOptions.env ? { env: browserOptions.env } : {}),
+          });
+        } catch {
+          model = undefined;
+        }
+      }
+      browser = await createBrowserService({
+        ...browserOptions.service,
+        rootDir: browserRoot,
+        tasks: store,
+        ...taskBudgetLedger(store),
+        artifacts: store.artifacts,
+        worker: createBrowserWorker({
+          engine: browserOptions.engine,
+          ...(model ? { model } : {}),
+          ...(browserOptions.worker ? { config: browserOptions.worker } : {}),
+          ...(browserOptions.fetch ? { fetch: browserOptions.fetch } : {}),
+          ...(browserOptions.resolveHost
+            ? { resolveHost: browserOptions.resolveHost }
+            : {}),
+          ...(browserOptions.log ? { log: browserOptions.log } : {}),
+          hostPrivateRoots: privateRoots,
+        }),
+        hostPrivateRoots: privateRoots,
+        ...(browserOptions.allowedActions
+          ? { allowedActions: browserOptions.allowedActions }
+          : {}),
       });
     }
     memory = createMemoryStore({
@@ -493,6 +596,7 @@ export async function createWorkbenchService(
         ? { collaboration: options.collaboration }
         : {}),
       ...(research ? { research } : {}),
+      ...(browser ? { browser } : {}),
       ...(knowledgeGraph ? { knowledgeGraph } : {}),
       ...(options.conventions ? { conventions: options.conventions } : {}),
       hostPrivateRoots: [
