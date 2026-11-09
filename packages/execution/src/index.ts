@@ -14,7 +14,9 @@ import { postmortem } from "@oh-my-pi/pi-utils";
 
 export {
   type BudgetLedger,
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   ExecutionLimitError,
+  type ModelFailureCode,
   selectExecutionModel,
 } from "./model-bridge";
 export * from "./runtime";

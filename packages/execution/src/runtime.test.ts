@@ -1058,3 +1058,79 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
     await f.cleanup();
   }
 }, 30000);
+
+test("a model request past the model's requestTimeoutMs fails as provider_timeout, not a generic error", async () => {
+  const f = await fixture();
+  const failures: string[] = [];
+  const selected = {
+    ...selectExecutionModel(f.registry),
+    requestTimeoutMs: 1_000,
+  };
+  const ledger: BudgetLedger = {
+    deadline: Date.now() + 60000,
+    reserved_tokens: 0,
+    reserved_usd: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+  };
+  const model = { api: "fixture", provider: "fixture", id: "stub" } as Model;
+  try {
+    const started = Date.now();
+    const bridge = createModelBridge({
+      registry: f.registry,
+      selected,
+      budget: f.task.budget,
+      ledger,
+      signal: new AbortController().signal,
+      persistLedger: async () => undefined,
+      onFailure: (code) => failures.push(code),
+      fetch: async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const abort = () =>
+            reject(new DOMException("Timed out", "AbortError"));
+          if (init?.signal?.aborted) abort();
+          else init?.signal?.addEventListener("abort", abort, { once: true });
+        }),
+      env: f.env,
+    });
+    const result = await bridge(model, {
+      messages: [{ role: "user", content: "Hello", timestamp: 1 }],
+    }).result();
+    expect(result.stopReason).toBe("error");
+    expect(failures).toEqual(["provider_timeout"]);
+    expect(Date.now() - started).toBeLessThan(20_000);
+
+    const exhausted = createModelBridge({
+      registry: f.registry,
+      selected,
+      budget: { ...f.task.budget, max_tokens: 1 },
+      ledger,
+      signal: new AbortController().signal,
+      persistLedger: async () => undefined,
+      onFailure: (code) => failures.push(code),
+      fetch: async () => sse({ content: "Should not run" }),
+      env: f.env,
+    });
+    await exhausted(model, {
+      messages: [{ role: "user", content: "Hello", timestamp: 1 }],
+    }).result();
+    expect(failures).toEqual(["provider_timeout", "budget_exhausted"]);
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test("a failed run reports a distinct failure_code", async () => {
+  const f = await fixture();
+  try {
+    const session = await f.open({
+      fetch: async () => new Response("bad request", { status: 400 }),
+    });
+    const outcome = await session.run("Fail at the provider");
+    expect(outcome.status).toBe("failed");
+    expect(outcome.failure_code).toBe("provider_error");
+    expect(outcome.error).toContain("provider_error");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);

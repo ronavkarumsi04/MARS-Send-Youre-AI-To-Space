@@ -121,6 +121,15 @@ export function toChatRequest(context: Context): ChatRequest {
   };
 }
 
+export const DEFAULT_MODEL_REQUEST_TIMEOUT_MS = 60_000;
+
+/** Why a model request failed, so a timeout is never reported as a generic error. */
+export type ModelFailureCode =
+  | "budget_exhausted"
+  | "deadline_exceeded"
+  | "provider_timeout"
+  | "provider_error";
+
 export interface ModelBridgeOptions {
   registry: ModelProviderRegistry;
   selected: ModelConfig;
@@ -130,6 +139,7 @@ export interface ModelBridgeOptions {
   env?: Record<string, string | undefined>;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   signal: AbortSignal;
+  onFailure?(code: ModelFailureCode): void;
 }
 
 export function createModelBridge(options: ModelBridgeOptions) {
@@ -160,6 +170,8 @@ export function createModelBridge(options: ModelBridgeOptions) {
     };
     void (async () => {
       let ownsReservation = false;
+      let requestTimeoutMs = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
+      let dispatchedAt: number | undefined;
       try {
         if (busy || Date.now() >= ledger.deadline)
           throw new ExecutionLimitError();
@@ -200,13 +212,15 @@ export function createModelBridge(options: ModelBridgeOptions) {
         if (streamOptions?.signal) signals.push(streamOptions.signal);
         const signal = AbortSignal.any(signals);
         signal.throwIfAborted();
+        requestTimeoutMs = Math.min(
+          selected.requestTimeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+          Math.max(1, ledger.deadline - Date.now()),
+        );
+        dispatchedAt = Date.now();
         const router = new ModelRouter(options.registry, {
           adapterOptions: {
             ...(options.env ? { env: options.env } : {}),
-            timeoutMs: Math.min(
-              60_000,
-              Math.max(1, ledger.deadline - Date.now()),
-            ),
+            timeoutMs: requestTimeoutMs,
             fetch: (input, init) =>
               (options.fetch ?? fetch)(input, {
                 ...init,
@@ -337,6 +351,17 @@ export function createModelBridge(options: ModelBridgeOptions) {
           options.signal.aborted || streamOptions?.signal?.aborted
             ? "aborted"
             : "error";
+        if (output.stopReason === "error")
+          options.onFailure?.(
+            error instanceof ExecutionLimitError
+              ? "budget_exhausted"
+              : Date.now() >= ledger.deadline
+                ? "deadline_exceeded"
+                : dispatchedAt !== undefined &&
+                    Date.now() - dispatchedAt >= requestTimeoutMs
+                  ? "provider_timeout"
+                  : "provider_error",
+          );
         output.errorMessage =
           error instanceof ExecutionLimitError || error instanceof ProviderError
             ? error.message

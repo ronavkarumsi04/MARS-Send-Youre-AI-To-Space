@@ -704,6 +704,9 @@ export async function createWorkbenchHost(
         {
           operation: EVENT_OPERATIONS.runtimeResult,
           status: outcome.status,
+          ...(outcome.failure_code === undefined
+            ? {}
+            : { failure_code: outcome.failure_code }),
           steering_event_ids: steeringEventIds,
         },
         randomUUID(),
