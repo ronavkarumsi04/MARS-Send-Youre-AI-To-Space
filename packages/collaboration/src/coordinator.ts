@@ -795,6 +795,7 @@ function createHost(store: CollaborationStore): CollaborationHost {
           delegation_pool: delegationPool,
           model_id: input.model_id ?? null,
           limits,
+          ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
         }),
       );
       return store.transaction(() => {

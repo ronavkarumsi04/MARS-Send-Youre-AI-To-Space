@@ -3391,5 +3391,15 @@ test("a room never outlives the task's fixed deadline", async () => {
         deadline: start,
       }),
     "expired",
+  ); // Reusing the key with another deadline is a changed request, not a replay.
+  await expectCode(
+    () =>
+      f.collaboration.host.openRoom(context, {
+        task: task("fixed-deadline"),
+        idempotency_key: "fixed-deadline",
+        authority,
+        deadline: start + 500,
+      }),
+    "conflict",
   );
 });
