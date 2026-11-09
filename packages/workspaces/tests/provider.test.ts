@@ -1533,6 +1533,68 @@ test("failed startup rollback retains A's backup while healthy B recovers and cl
   }
 });
 
+test("restore reports success when post-commit cleanup fails and recovery sweeps the leftovers [stub runner — not isolation evidence]", async () => {
+  // Root ignores directory permissions, so the cleanup cannot be made to fail there.
+  if (process.getuid?.() === 0) return;
+  let trash = "";
+  const fixture = await makeFixture({
+    testHooks: {
+      async restorePhase(phase) {
+        if (phase === "committed") await chmod(trash, 0o500);
+      },
+    },
+  });
+  trash = join(fixture.rootDir, "trash");
+  try {
+    const baseline = first(
+      await fixture.provider.checkpoints(context, fixture.workspace),
+    );
+    const artifact = await putText(fixture, "pre-restore contents\n");
+    await fixture.provider.write(
+      context,
+      fixture.workspace,
+      "tracked.txt",
+      artifact,
+    );
+    const changed = await fixture.provider.inspect(
+      context,
+      fixture.workspace.workspace_id,
+    );
+    let restored: Awaited<ReturnType<typeof fixture.provider.restore>>;
+    try {
+      restored = await fixture.provider.restore(
+        context,
+        baseline,
+        changed.revision,
+      );
+    } finally {
+      await chmod(trash, 0o700);
+    }
+    expect(
+      (await fixture.provider.inspect(context, fixture.workspace.workspace_id))
+        .revision,
+    ).toBe(restored.revision);
+    expect(await readdir(trash)).toHaveLength(1);
+    await fixture.provider.close();
+    const recovered = await createLocalWorkspaceProvider({
+      rootDir: fixture.rootDir,
+      sourceRoot: fixture.sourceRoot,
+      artifacts: fixture.artifacts,
+    });
+    try {
+      expect(await readdir(trash)).toEqual([]);
+      expect(
+        (await recovered.inspect(context, fixture.workspace.workspace_id))
+          .revision,
+      ).toBe(restored.revision);
+    } finally {
+      await recovered.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("in-process rollback failure retains journal and backup for later recovery [stub runner — not isolation evidence]", async () => {
   const fixture = await makeFixture({
     testHooks: {
@@ -1566,7 +1628,10 @@ test("in-process rollback failure retains journal and backup for later recovery 
     const digestBefore = await hashDirectory(tree);
     await expect(
       fixture.provider.restore(context, baseline, changed.revision),
-    ).rejects.toThrow("rollback hook failure");
+    ).rejects.toMatchObject({
+      message: "restore hook failure",
+      cause: { message: "rollback hook failure" },
+    });
     await expect(
       fixture.provider.inspect(context, fixture.workspace.workspace_id),
     ).rejects.toBeInstanceOf(IntegrityError);
@@ -2302,7 +2367,10 @@ test("remove rolls back a failed transaction and keeps the staged copy when even
     try {
       await expect(
         fixture.provider.remove(context, rolledBack, "nested/doomed.txt"),
-      ).rejects.toThrow("failed at after-remove");
+      ).rejects.toMatchObject({
+        message: "failed at after-remove",
+        cause: { code: "EACCES" },
+      });
     } finally {
       await chmod(lockedDir, 0o755);
     }
