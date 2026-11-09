@@ -37,9 +37,9 @@ let announcedNoticeSeq: number | null = null;
 
 /** Updates a region only when its text changes, or when `repeat` re-announces identical text. */
 function announce(region: HTMLElement, text: string, repeat = false): void {
-  if (region.textContent === text && !repeat) return;
   clearTimeout(repeatTimers.get(region));
   repeatTimers.delete(region);
+  if (region.textContent === text && !repeat) return;
   if (region.textContent !== text || !text) {
     region.textContent = text;
     return;
