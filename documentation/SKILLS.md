@@ -258,12 +258,15 @@ patterns, not a proof of safety.
   the frozen context is bounded by size, not relevance. The pre-existing
   `SkillService` contract (`discover`/`read`/`propose`/`evaluate`) remains
   unimplemented; `SkillLifecycleService` was added beside it.
-- **The curator is not scheduled.** Nothing in this repository calls
-  `runCurator()` except `store.test.ts`; the host or a future CLI command must
-  invoke it. Hermes' usage-interval/idle rules (`should_run_now`) are not
-  ported.
-- **No operator surface.** There are no CLI or RPC commands to list, accept,
-  reject or undo proposals, pin or restore skills, or inspect `review.jsonl`.
+- **Curator scheduling is fixed-interval.** `mars serve` runs `runCurator()`
+  once at startup and every 6 hours (`SKILL_CURATOR_INTERVAL_MS`); teardown
+  waits for an in-flight pass. Hermes' usage-interval/idle rules
+  (`should_run_now`) are not ported. `mars skills curate` runs it on demand.
+- **Operator surface is CLI-only.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|accept|reject|undo|curate>`
+  operates on the same store as `mars serve` (`--state`, `--source`,
+  `--project` defaults match it; changes are recorded with `--actor`). There
+  are no RPC methods or VS Code view yet, and no command to inspect
+  `review.jsonl`.
 - **No evaluation gate.** The master specification's "evaluate before accept"
   step between draft and accepted is a human decision today, not a measured
   one.
