@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./bounded-read": "./src/bounded-read.ts",
     "./canonical": "./src/canonical.ts",
+    "./connection-file": "./src/connection-file.ts",
     "./path-containment": "./src/path-containment.ts"
   },
   "dependencies": {

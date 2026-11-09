@@ -1,6 +1,6 @@
 import { readBoundedUtf8 } from "@mars/contracts/bounded-read";
+import { isLoopbackHost } from "@mars/contracts/connection-file";
 import { BRIDGE_ERROR_MESSAGES, type BridgeErrorKind } from "../shared/methods";
-import { isLoopbackHost } from "./connection";
 
 export type RequestContext = {
   schema_version: 1;

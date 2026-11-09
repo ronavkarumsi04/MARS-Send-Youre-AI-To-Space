@@ -1,19 +1,8 @@
 import { expect, test } from "bun:test";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  parseConnectionFile,
-  readConnectionFile,
-  resolveConnection,
-} from "../src/main/connection";
+import { resolveConnection } from "../src/main/connection";
 
 const token = "fixture-token-0123456789abcdefghijklmnopqrstuvwxyz";
 const connection = {
@@ -28,49 +17,20 @@ async function writeConnection(path: string, value = connection, mode = 0o600) {
   await chmod(path, mode);
 }
 
-test("connection bytes enforce the schema, loopback root, UTF-8, and size limit", () => {
-  expect(
-    parseConnectionFile(new TextEncoder().encode(JSON.stringify(connection)))
-      .ok,
-  ).toBe(true);
-  expect(
-    parseConnectionFile(
-      new TextEncoder().encode(JSON.stringify({ ...connection, extra: true })),
-    ).ok,
-  ).toBe(false);
-  expect(
-    parseConnectionFile(
-      new TextEncoder().encode(
-        JSON.stringify({ ...connection, url: "http://example.com/" }),
-      ),
-    ).ok,
-  ).toBe(false);
-  expect(
-    parseConnectionFile(
-      new TextEncoder().encode(
-        JSON.stringify({ ...connection, url: "http://127.0.0.1/v1" }),
-      ),
-    ).ok,
-  ).toBe(false);
-  expect(parseConnectionFile(new Uint8Array([0xff])).ok).toBe(false);
-  expect(parseConnectionFile(new Uint8Array(16 * 1024 + 1)).ok).toBe(false);
-});
-
-test("file reads reject broad permissions and symlinks; discovery handles none, one, and several", async () => {
+test("discovery handles none, one, and several connection files", async () => {
   const home = await mkdtemp(join(tmpdir(), "mars-shell-connection-"));
   const base = join(home, ".mars", "workbench");
   const directory = join(base, "one");
   await mkdir(directory, { recursive: true });
   const path = join(directory, "connection.json");
   await writeConnection(path, connection, 0o644);
-  expect(await readConnectionFile(path)).toMatchObject({
+  expect(
+    await resolveConnection({ argv: [], env: {}, homeDir: home }),
+  ).toMatchObject({
     ok: false,
     reason: expect.stringContaining("chmod 600"),
   });
   await writeConnection(path);
-  const link = join(directory, "connection-link.json");
-  await symlink(path, link);
-  expect(await readConnectionFile(link)).toMatchObject({ ok: false });
 
   const noneHome = join(home, "none");
   expect(
@@ -102,10 +62,5 @@ test("file reads reject broad permissions and symlinks; discovery handles none, 
       env: {},
       homeDir: noneHome,
     }),
-  ).toMatchObject({ ok: true });
-  expect(
-    await readFile(path, "utf8").then((contents) =>
-      parseConnectionFile(new TextEncoder().encode(contents)),
-    ),
   ).toMatchObject({ ok: true });
 });

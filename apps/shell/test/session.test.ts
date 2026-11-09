@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { LocalConnection } from "../src/main/connection";
+import type { LocalConnection } from "@mars/contracts/connection-file";
 import { createReconnectingBridge } from "../src/main/session";
 import { TransportError, type TransportRequest } from "../src/main/transport";
 import { bridgeFailure } from "../src/shared/methods";
