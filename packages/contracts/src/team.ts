@@ -4,7 +4,7 @@ import {
   SCHEMA_VERSION,
   ScopeSchema,
   TaskStatusSchema,
-} from "./index";
+} from "./core";
 
 /**
  * Team Chat records (`@mars/team`). The tenant is a `team`, never a
@@ -13,12 +13,7 @@ import {
  * session and is never accepted from a client; `TeamContextSchema` therefore
  * carries only the tenant and the request id.
  */
-// `index.ts` re-exports this file, so the shared schemas are referenced lazily
-// to stay independent of module evaluation order.
-const schemaVersion = z.lazy(() => z.literal(SCHEMA_VERSION));
-const artifactRef = z.lazy(() => ArtifactRefSchema);
-const scope = z.lazy(() => ScopeSchema);
-const taskStatus = z.lazy(() => TaskStatusSchema);
+const schemaVersion = z.literal(SCHEMA_VERSION);
 const id = z.string().min(1).max(256);
 const seq = z.number().int().nonnegative();
 const revision = z.number().int().nonnegative();
@@ -317,7 +312,7 @@ export const ReferenceSchema = z.discriminatedUnion("kind", [
       team_id: id,
       publisher_user_id: id,
       task_id: id,
-      artifact: artifactRef,
+      artifact: ArtifactRefSchema,
     })
     .strict(),
 ]);
@@ -429,7 +424,7 @@ export const AgentRequestSchema = z
     /** Fixed reason code for `failed`/`restricted`; never free text. */
     reason_code: id.nullable(),
     answer: z
-      .object({ message_id: id, evidence: artifactRef.nullable() })
+      .object({ message_id: id, evidence: ArtifactRefSchema.nullable() })
       .strict()
       .nullable(),
     created_at: timestamp,
@@ -460,7 +455,7 @@ export type TaskLinkTarget = z.infer<typeof TaskLinkTargetSchema>;
 
 /** The requester's binding to their own workbench; never shown to other members. */
 export const TaskLinkWorkbenchSchema = z
-  .object({ scope: scope, task_id: id, request_id: id })
+  .object({ scope: ScopeSchema, task_id: id, request_id: id })
   .strict();
 export type TaskLinkWorkbench = z.infer<typeof TaskLinkWorkbenchSchema>;
 
@@ -572,7 +567,7 @@ export const ShareSelectionSchema = z
     include_diff_digest: z.boolean(),
     verify_event_ids: z.array(id).max(SHARE_MAX_VERIFY_EVENT_IDS),
     /** Artifact shares are gated on a later PR; any entry answers `unavailable`. */
-    artifacts: z.array(artifactRef).max(16).optional(),
+    artifacts: z.array(ArtifactRefSchema).max(16).optional(),
   })
   .strict();
 export type ShareSelection = z.infer<typeof ShareSelectionSchema>;
@@ -612,7 +607,7 @@ export const ResultCardSchema = z
     /** The team service cannot observe a workbench; the requester vouches. */
     attested_by: id,
     summary: z.string().max(SHARE_MAX_SUMMARY_CHARS),
-    run_status: taskStatus,
+    run_status: TaskStatusSchema,
     verified: z.boolean(),
     verified_reason: ShareUnverifiedReasonSchema.nullable(),
     task_revision: revision,
