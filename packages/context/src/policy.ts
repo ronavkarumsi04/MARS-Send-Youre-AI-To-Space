@@ -64,7 +64,7 @@ export function validateContext(context: RequestContext): void {
 
 export function validateWorkspaceScope(
   context: RequestContext,
-  workspace: WorkspaceRef,
+  workspace: Pick<WorkspaceRef, "workspace_id">,
 ): void {
   if (
     context.scope.workspace_id !== undefined &&
