@@ -2294,6 +2294,13 @@ test("settling a hold frees its unspent part once and never undercounts later se
     tokens: 1050,
     usd: 0,
   });
+  await reserve(context(), task.task_id, "delegation", { tokens: 100, usd: 0 });
+  expect(await unsettled(context(), "delegation")).toEqual([task.task_id]);
+  await settle(context(), task.task_id, "delegation", { tokens: 20, usd: 0 });
+  expect(await committed(context(), task.task_id, "foreground")).toEqual({
+    tokens: 720,
+    usd: 0,
+  });
   // A task without the hold settles nothing; a fresh reservation reopens it.
   const other = makeTask("task-other");
   await store.create(context(), other);

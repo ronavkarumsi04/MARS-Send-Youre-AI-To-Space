@@ -2430,6 +2430,9 @@ export async function createTaskStore(
           tokens: Math.max(held?.tokens ?? 0, Math.ceil(amount.tokens)),
           usd: Math.max(held?.usd ?? 0, amount.usd),
         };
+        db.query(
+          "DELETE FROM budget_settlements WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
+        ).run(key, taskId, holdKey);
         if (held && next.tokens === held.tokens && next.usd === held.usd)
           return;
         const others = sumHolds(key, taskId, holdKey);
@@ -2439,9 +2442,6 @@ export async function createTaskStore(
         )
           fail("budget_exceeded", "Task budget is fully committed");
         writeHold(key, taskId, holdKey, next);
-        db.query(
-          "DELETE FROM budget_settlements WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
-        ).run(key, taskId, holdKey);
       });
       transaction.immediate();
     },
