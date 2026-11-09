@@ -45,6 +45,7 @@ const SCHEMA = `
     record_sha256 TEXT NOT NULL,
     task_id TEXT NOT NULL,
     task_revision INTEGER NOT NULL,
+    session_key TEXT,
     status TEXT NOT NULL CHECK (status IN ('queued','running','completed','failed','cancelled','expired')),
     stale INTEGER NOT NULL DEFAULT 0,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
@@ -65,6 +66,7 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS jobs_task ON jobs (scope_key, task_id);
   CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, available_at);
+  CREATE INDEX IF NOT EXISTS jobs_session ON jobs (scope_key, task_id, session_key);
   CREATE TABLE IF NOT EXISTS steps (
     scope_key TEXT NOT NULL,
     request_id TEXT NOT NULL,
@@ -88,7 +90,7 @@ const SCHEMA = `
     ref_json TEXT NOT NULL,
     kind TEXT NOT NULL,
     url TEXT NOT NULL,
-    PRIMARY KEY (scope_key, request_id, artifact_id)
+    PRIMARY KEY (scope_key, request_id, attempt, artifact_id)
   );
   CREATE TABLE IF NOT EXISTS sessions (
     scope_key TEXT NOT NULL,

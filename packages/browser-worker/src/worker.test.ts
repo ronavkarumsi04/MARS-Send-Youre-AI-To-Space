@@ -6,11 +6,14 @@ import type {
   BrowserWorkerContext,
   BrowserWorkerInput,
 } from "@mars/browser";
+import { BrowserError } from "@mars/browser";
 import type { ArtifactRef } from "@mars/contracts";
 import type { ModelGateway } from "@mars/research-worker";
 import {
   createBrowserWorker,
   createFakeBrowserEngine,
+  createGuardedBrowserFetch,
+  createPinnedFetch,
   createPlaywrightEngine,
   FAKE_PNG_SIGNATURE,
 } from "./index";
@@ -406,3 +409,98 @@ test.skipIf(!chromium)(
   },
   60_000,
 );
+
+test("a host is resolved once per request and the request is pinned to that address (DNS rebinding)", async () => {
+  let lookups = 0;
+  const pinned: string[] = [];
+  const guarded = createGuardedBrowserFetch({
+    // First answer public, every later answer private: a rebinding resolver.
+    resolve: async () => {
+      lookups += 1;
+      return lookups === 1 ? ["93.184.216.34"] : ["127.0.0.1"];
+    },
+    fetch: async (_url, _init, address) => {
+      pinned.push(address);
+      return new Response("ok", { status: 200 });
+    },
+    signal: new AbortController().signal,
+    allowHosts: undefined,
+    denyHosts: [],
+    maxBytes: 1024,
+    timeoutMs: () => 1_000,
+    userAgent: "test",
+  });
+  const first = await guarded({
+    url: "https://rebinding.example/",
+    method: "GET",
+    headers: {},
+  });
+  expect(first.ok).toBe(true);
+  expect(lookups).toBe(1);
+  expect(pinned).toEqual(["93.184.216.34"]);
+  const second = await guarded({
+    url: "https://rebinding.example/",
+    method: "GET",
+    headers: {},
+  });
+  expect(second).toEqual({ ok: false, reason: "private_address" });
+  expect(pinned).toHaveLength(1);
+});
+
+test("the live pinned fetch connects to the validated address, never a fresh DNS answer", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) =>
+      new Response(`host=${request.headers.get("host")}`, {
+        headers: { "set-cookie": "a=1", "x-test": "yes" },
+      }),
+  });
+  try {
+    const response = await createPinnedFetch()(
+      `http://pinned.invalid:${server.port}/path`,
+      { method: "GET", headers: { "user-agent": "test" } },
+      "127.0.0.1",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-test")).toBe("yes");
+    expect(await response.text()).toBe(`host=pinned.invalid:${server.port}`);
+    await expect(
+      createPinnedFetch()(
+        "http://pinned.invalid/",
+        { method: "GET" },
+        "not-ip",
+      ),
+    ).rejects.toThrow("not an IP address");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("an over-budget reply is charged once, not again as a failed call", async () => {
+  const engine = createFakeBrowserEngine();
+  const worker = createBrowserWorker({
+    engine,
+    fetch: fakeFetch,
+    resolveHost,
+    model: scriptedModel([
+      JSON.stringify({ action: { type: "scroll", direction: "down" } }),
+    ]),
+  });
+  const memory = memoryContext();
+  const report = memory.context.reportUsage;
+  memory.context.reportUsage = async (delta) => {
+    await report(delta);
+    if (memory.usage.input_tokens > 50)
+      throw new BrowserError("budget_exceeded", "over budget");
+  };
+  await expect(worker.run(input(), memory.context)).rejects.toThrow(
+    "over budget",
+  );
+  // The zero report plus the reply's 100/20, nothing for the reservation.
+  expect(memory.usage).toMatchObject({
+    input_tokens: 100,
+    output_tokens: 20,
+    reports: 2,
+  });
+});

@@ -16,7 +16,7 @@ export type WorkbenchBrowser = Pick<
   DurableBrowserService,
   "submit" | "inspect" | "readResult" | "markStale" | "reconcileTask"
 > &
-  Partial<Pick<DurableBrowserService, "allowance">>;
+  Partial<Pick<DurableBrowserService, "allowance" | "ownsEvidence">>;
 
 /** Default browser-task deadline after submission, bounded by the task's remaining time. */
 export const BROWSER_DEADLINE_MS = 5 * 60 * 1000;

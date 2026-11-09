@@ -276,7 +276,7 @@ test("--browser-chromium accepts only an absolute executable path and --browser-
   const { browserFromFlags } = await import("./serve");
   expect(browserFromFlags({})).toBeUndefined();
   expect(() => browserFromFlags({ denyHosts: ["example.org"] })).toThrow(
-    "--browser-deny-host requires --browser-chromium",
+    "require --browser-chromium",
   );
   for (const chromium of ["chrome", "/definitely/missing/chrome", tmpdir()])
     expect(() => browserFromFlags({ chromium })).toThrow(
@@ -288,4 +288,12 @@ test("--browser-chromium accepts only an absolute executable path and --browser-
   });
   expect(browser?.engine.id).toBe("playwright-chromium");
   expect(browser?.worker).toEqual({ live: true, deny_hosts: ["evil.test"] });
+  expect(browser?.allowedActions).toBeUndefined();
+  expect(() => browserFromFlags({ allowInput: true })).toThrow(
+    "require --browser-chromium",
+  );
+  expect(
+    browserFromFlags({ chromium: process.execPath, allowInput: true })
+      ?.allowedActions,
+  ).toContain("type");
 });

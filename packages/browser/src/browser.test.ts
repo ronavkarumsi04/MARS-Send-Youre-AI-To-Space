@@ -619,3 +619,113 @@ test("hold keys are namespaced per request", () => {
   expect(browserBudgetHoldKey("a")).toMatch(/^browser:[a-f0-9]{32}$/);
   expect(browserBudgetHoldKey("a")).not.toBe(browserBudgetHoldKey("b"));
 });
+
+test("without an operator grant the ceiling is read-only: requests cannot allow type or press", async () => {
+  const { service } = await setup();
+  for (const action of ["type", "press"])
+    expect(
+      await codeOf(
+        service.submit(
+          ctx(`grant-${action}`),
+          request({ allowed_actions: ["navigate", action] }),
+        ),
+      ),
+    ).toBe("forbidden");
+  const job = await service.submit(ctx("read"), request());
+  expect((await settled(service, job.request_id, ctx("read"))).status).toBe(
+    "completed",
+  );
+});
+
+test("captured evidence is owned by its task only, so the host can serve it", async () => {
+  const { service } = await setup();
+  const job = await service.submit(ctx(), request());
+  await settled(service, job.request_id);
+  const ref = (await service.readResult(ctx(), job.request_id)).result
+    ?.artifacts[0];
+  if (!ref) throw new Error("missing evidence");
+  expect(await service.ownsEvidence(ctx(), "task-1", ref)).toBe(true);
+  expect(await service.ownsEvidence(ctx(), "task-2", ref)).toBe(false);
+  expect(
+    await service.ownsEvidence(ctx(), "task-1", {
+      ...ref,
+      byte_length: ref.byte_length + 1,
+    }),
+  ).toBe(false);
+  expect(
+    await service.ownsEvidence(
+      { ...ctx(), scope: { owner_id: "other", project_id: "project-1" } },
+      "task-1",
+      ref,
+    ),
+  ).toBe(false);
+});
+
+test("a retry may cite evidence identical to what an earlier attempt captured", async () => {
+  const { service } = await setup({
+    run: async (input, context) => {
+      if (input.attempt === 1) {
+        await context.captureEvidence({
+          kind: "page_text",
+          url: input.start_url,
+          media_type: "text/plain",
+          data: new TextEncoder().encode("Mars has two moons."),
+        });
+        throw new Error("browser crashed after capturing");
+      }
+      await completing(input, context);
+    },
+  });
+  const job = await service.submit(ctx(), request());
+  const done = await settled(service, job.request_id);
+  expect(done.status).toBe("completed");
+  expect(done.attempts).toBe(2);
+});
+
+test("jobs sharing a session key run one at a time; jobs without a key stay concurrent", async () => {
+  let active = 0;
+  let peakShared = 0;
+  let peakUnshared = 0;
+  let sessionText = "";
+  const { service } = await setup({
+    run: async (input, context) => {
+      active += 1;
+      if (input.session_key) peakShared = Math.max(peakShared, active);
+      else peakUnshared = Math.max(peakUnshared, active);
+      await Bun.sleep(60);
+      if (input.session_key) {
+        const before = await context.loadSession();
+        const text = before ? new TextDecoder().decode(before) : "";
+        sessionText = `${text}${input.goal};`;
+        await context.saveSession(
+          new TextEncoder().encode(`${text}${input.goal};`),
+        );
+      }
+      active -= 1;
+      await completing(input, context);
+    },
+  });
+  const shared = await Promise.all(
+    ["a", "b"].map((goal) =>
+      service.submit(ctx(goal), request({ goal, session_key: "login" })),
+    ),
+  );
+  for (const [index, job] of shared.entries())
+    expect(
+      (await settled(service, job.request_id, ctx(["a", "b"][index]))).status,
+    ).toBe("completed");
+  expect(peakShared).toBe(1);
+  // The second job loaded the first one's save, so neither save is lost.
+  const reader = await service.submit(
+    ctx("c"),
+    request({ goal: "c", session_key: "login" }),
+  );
+  await settled(service, reader.request_id, ctx("c"));
+  expect(["a;b;c;", "b;a;c;"]).toContain(sessionText);
+  const unshared = await Promise.all(
+    ["x", "y"].map((goal) => service.submit(ctx(goal), request({ goal }))),
+  );
+  for (const [index, job] of unshared.entries())
+    await settled(service, job.request_id, ctx(["x", "y"][index]));
+  expect(peakUnshared).toBe(2);
+});

@@ -667,6 +667,8 @@ export async function createWorkbenchHost(
     const task = await options.store.inspect(context, taskId);
     if (task.artifacts.some((item) => item.artifact_id === ref.artifact_id))
       return true;
+    if (await options.browser?.ownsEvidence?.(context, taskId, ref))
+      return true;
     for await (const event of options.store.events(context, taskId)) {
       if (event.payload.artifact_id === ref.artifact_id) return true;
       if (

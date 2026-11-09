@@ -28,7 +28,11 @@ import {
   type BrowserSnapshot,
   NavigationBlockedError,
 } from "./engine";
-import { createGuardedBrowserFetch } from "./guard";
+import {
+  createGuardedBrowserFetch,
+  createPinnedFetch,
+  type PinnedFetch,
+} from "./guard";
 
 export const BROWSER_WORKER_ID = "mars-browser-worker";
 export const BROWSER_WORKER_VERSION = "0.1.0";
@@ -45,7 +49,10 @@ export interface BrowserWorkerOptions {
   model?: ModelGateway;
   config?: BrowserWorkerConfigInput;
   /** Required unless `config.live` is true. */
+  /** Test seam: an unpinned fetch (fakes). Live runs use the pinned fetch. */
   fetch?: FetchLike;
+  /** Connects to the address the guard validated; defaults to node:http(s). */
+  pinnedFetch?: PinnedFetch;
   resolveHost?: HostResolver;
   hostPrivateRoots?: readonly string[];
   now?: () => number;
@@ -112,12 +119,14 @@ export function createBrowserWorker(
   options: BrowserWorkerOptions,
 ): BrowserWorker & { readonly config: BrowserWorkerConfig } {
   const config = parseBrowserWorkerConfig(options.config);
-  if (!config.live && !options.fetch)
+  const injected = options.fetch;
+  if (!config.live && !injected && !options.pinnedFetch)
     throw new Error(
       "Browser worker needs an injected fetch unless config.live is true.",
     );
-  const fetcher: FetchLike =
-    options.fetch ?? ((input, init) => fetch(input, init));
+  const fetcher: PinnedFetch =
+    options.pinnedFetch ??
+    (injected ? (url, init) => injected(url, init) : createPinnedFetch());
   const resolveHost: HostResolver =
     options.resolveHost ??
     (config.live
@@ -426,17 +435,15 @@ export function createBrowserWorker(
           await finish(false, `Stopped before the goal was met: ${reason}.`);
           return;
         }
-        let text: string;
+        let reply: Awaited<ReturnType<ModelGateway["complete"]>>;
         try {
-          const reply = await model.complete({
+          reply = await model.complete({
             system: BROWSER_SYSTEM_PROMPT,
             user,
             maxTokens,
             timeoutMs: Math.min(60_000, Math.max(1, ledger.timeRemainingMs())),
             signal,
           });
-          await ledger.settle(reservation, reply.usage);
-          text = reply.text;
         } catch (error) {
           // A failed call may still have been billed, so it is charged in full.
           await ledger
@@ -451,6 +458,9 @@ export function createBrowserWorker(
           await finish(false, "The planning model failed.");
           return;
         }
+        // Settled exactly once; a reporting failure (e.g. over budget) ends the run.
+        await ledger.settle(reservation, reply.usage);
+        const text = reply.text;
         const parsed = parseJson(text, ModelReplySchema);
         if (!parsed) {
           invalid += 1;

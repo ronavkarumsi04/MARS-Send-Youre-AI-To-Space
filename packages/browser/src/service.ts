@@ -23,6 +23,7 @@ import {
   BrowserStepSchema,
   type BrowserUsage,
   BrowserUsageSchema,
+  DEFAULT_ALLOWED_ACTIONS,
 } from "./schemas";
 import {
   type OpenBrowserStore,
@@ -176,7 +177,10 @@ export interface BrowserServiceOptions {
   artifacts: BrowserArtifactStore;
   worker: BrowserWorker;
   hostPrivateRoots?: readonly string[];
-  /** Operator ceiling: requests may only allow a subset of these actions. */
+  /**
+   * Operator ceiling: requests may only allow a subset of these actions.
+   * Defaults to the read-only set; `type` and `press` need an explicit grant.
+   */
   allowedActions?: readonly BrowserPolicyAction[];
   maxConcurrency?: number;
   maxActivePerTask?: number;
@@ -203,6 +207,12 @@ export interface DurableBrowserService {
     context: RequestContext,
     requestId: string,
   ): Promise<BrowserJobView>;
+  /** True when `ref` is evidence one of the task's browser jobs captured. */
+  ownsEvidence(
+    context: RequestContext,
+    taskId: string,
+    ref: ArtifactRef,
+  ): Promise<boolean>;
   cancel(context: RequestContext, requestId: string): Promise<BrowserJob>;
   /** Cancels active jobs and flags results of jobs bound to an older task revision. */
   markStale(
@@ -402,7 +412,7 @@ export async function createBrowserService(
     now: options.now ?? Date.now,
   };
   const ceiling = new Set<BrowserPolicyAction>(
-    options.allowedActions ?? BROWSER_ACTION_TYPES,
+    options.allowedActions ?? DEFAULT_ALLOWED_ACTIONS,
   );
   for (const action of ceiling)
     if (!(BROWSER_ACTION_TYPES as readonly string[]).includes(action))
@@ -1060,6 +1070,24 @@ export async function createBrowserService(
           ).run(timestamp(at), candidate.seq);
           continue;
         }
+        // Jobs sharing a session run one at a time, so no save loses another's state.
+        if (
+          request.session_key &&
+          db
+            .query(
+              `SELECT 1 FROM jobs WHERE scope_key = ? AND task_id = ?
+                 AND session_key = ? AND seq <> ? AND status = 'running'
+                 AND lease_expires_at > ?`,
+            )
+            .get(
+              candidate.scope_key,
+              candidate.task_id,
+              request.session_key,
+              candidate.seq,
+              at,
+            )
+        )
+          continue;
         const token = randomUUID();
         const attempt = candidate.attempts + 1;
         const workerJson = JSON.stringify({
@@ -1364,9 +1392,9 @@ export async function createBrowserService(
         immediate(() => {
           db.query(
             `INSERT INTO jobs (scope_key, request_id, idem_request_id, scope_json,
-               record_json, record_sha256, task_id, task_revision, status,
+               record_json, record_sha256, task_id, task_revision, session_key, status,
                max_attempts, available_at, submitted_at, deadline, usage_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
           ).run(
             scopeKey,
             requestId,
@@ -1376,6 +1404,7 @@ export async function createBrowserService(
             recordSha,
             request.task_id,
             request.task_revision,
+            request.session_key ?? null,
             config.maxAttempts,
             at,
             timestamp(at),
@@ -1409,6 +1438,24 @@ export async function createBrowserService(
       if (typeof requestId !== "string")
         throw new BrowserError("invalid_input", "Invalid request id");
       return toJob(findRow(scopeKey, requestId));
+    },
+
+    async ownsEvidence(contextInput, taskId, ref) {
+      checkOpen();
+      const { scopeKey } = parseContext(contextInput);
+      const parsed = ArtifactRefSchema.safeParse(ref);
+      if (typeof taskId !== "string" || !parsed.success) return false;
+      const rows = db
+        .query(
+          `SELECT e.ref_json FROM evidence e
+           JOIN jobs j ON j.scope_key = e.scope_key AND j.request_id = e.request_id
+           WHERE e.scope_key = ? AND j.task_id = ? AND e.artifact_id = ?`,
+        )
+        .all(scopeKey, taskId, parsed.data.artifact_id) as Array<{
+        ref_json: string;
+      }>;
+      const wanted = canonicalJson(parsed.data);
+      return rows.some((row) => row.ref_json === wanted);
     },
 
     async list(contextInput, filter) {

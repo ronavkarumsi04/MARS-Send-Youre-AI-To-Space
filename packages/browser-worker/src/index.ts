@@ -14,7 +14,9 @@ export {
 export {
   browserUrlVerdict,
   createGuardedBrowserFetch,
+  createPinnedFetch,
   type GuardedBrowserFetchOptions,
+  type PinnedFetch,
 } from "./guard";
 export {
   CHROMIUM_LOCKDOWN_ARGS,

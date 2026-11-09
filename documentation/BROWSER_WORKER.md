@@ -44,23 +44,29 @@ outside the library, owned browsers killed on cancellation).
 
 - **Egress**: every request the page makes (documents, subresources,
   redirects, form posts) goes through `createGuardedBrowserFetch`: http(s)
-  only, no URL credentials, allow/deny host lists, DNS resolution with private,
-  loopback, link-local and metadata addresses refused, manual redirects
+  only, no URL credentials, allow/deny host lists, DNS resolved once per
+  request with private, loopback, link-local and metadata addresses refused,
+  and the connection pinned to that validated address (`createPinnedFetch`,
+  node:http(s) with a fixed `lookup`; TLS still verifies the URL's hostname),
+  so a second DNS answer cannot rebind it, manual redirects
   re-checked hop by hop, bounded bodies and timeouts, dangerous request
   headers stripped. The Playwright adapter routes all traffic through it and
   additionally starts Chromium with `--host-resolver-rules=MAP * ~NOTFOUND`
   so nothing bypasses the route; WebRTC non-proxied UDP, background
   networking, sync, extensions, component updates and telemetry are disabled,
   service workers are blocked and downloads refused.
-- **Actions**: positive allowlist per request, bounded by the host ceiling
-  (`WorkbenchBrowserOptions.allowedActions`). The default is read-only
-  (`navigate`, `click`, `scroll`, `back`, `screenshot`, `extract`); `type` and
-  `press` must be granted explicitly. Disallowed actions are recorded as
+- **Actions**: positive allowlist per request, bounded by the operator ceiling
+  (`WorkbenchBrowserOptions.allowedActions`, `mars serve --browser-allow-input`).
+  Both default to read-only (`navigate`, `click`, `scroll`, `back`,
+  `screenshot`, `extract`); a request, and so the model, can never grant itself
+  `type` or `press`. Disallowed actions are recorded as
   `blocked`, never run. The worker refuses to type text that looks like a
   secret or private path.
 - **Isolation**: one browser process and context per attempt; session state is
   stored per `(scope, task, session_key)` and only loaded when the key is
-  given. Cancellation, deadline, lease loss and shutdown abort the worker,
+  given; jobs sharing a key run one at a time so no save overwrites another.
+  Captured evidence is owned by its task (`ownsEvidence`), so the host's
+  artifact download serves it to that task only. Cancellation, deadline, lease loss and shutdown abort the worker,
   which kills the owned browser.
 - **Budget**: one durable hold per job in `budget_holds`; usage is reported as
   it accrues (including late reports after lease loss), and reported usage
