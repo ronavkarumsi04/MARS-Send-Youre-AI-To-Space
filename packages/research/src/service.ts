@@ -562,6 +562,35 @@ function findFindingById(
   return row;
 }
 
+/**
+ * What a task's research jobs have spent or may still spend. Active jobs hold
+ * their whole budget; finished jobs count reported usage, or their whole
+ * budget when usage is unknown; jobs that never started count nothing.
+ */
+function taskResearchCommitment(rows: readonly RequestRow[]): {
+  tokens: number;
+  usd: number;
+} {
+  let tokens = 0;
+  let usd = 0;
+  for (const row of rows) {
+    const { budget } = verifiedRequest(row);
+    const usage = usageFromJson(row.usage_json);
+    const used = usage.input_tokens + usage.output_tokens;
+    if (row.status === "queued" || row.status === "running") {
+      tokens += Math.max(budget.max_tokens, used);
+      usd += Math.max(budget.max_usd, usage.cost_usd ?? 0);
+    } else if (row.attempts > 0 || usage.reported) {
+      tokens += usage.reported ? used : budget.max_tokens;
+      usd +=
+        usage.reported && usage.cost_usd !== null
+          ? usage.cost_usd
+          : budget.max_usd;
+    }
+  }
+  return { tokens, usd };
+}
+
 function verifiedRequest(row: RequestRow): ResearchRequest {
   const parsed = parseStored(
     row.record_json,
@@ -1936,6 +1965,21 @@ export async function createResearchService(
           totalActive.count >= configured.maxActiveTotal
         ) {
           throw new ResearchError("backpressure", "Research queue is full");
+        }
+        const committed = taskResearchCommitment(
+          db
+            .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+            .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
+        );
+        if (
+          committed.tokens + request.budget.max_tokens >
+            task.budget.max_tokens ||
+          committed.usd + request.budget.max_usd > task.budget.max_usd
+        ) {
+          throw new ResearchError(
+            "budget_exceeded",
+            "Research budget exceeds the task's remaining research allowance",
+          );
         }
         db.query(
           `INSERT INTO requests

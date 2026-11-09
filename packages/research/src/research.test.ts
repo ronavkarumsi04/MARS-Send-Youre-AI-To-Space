@@ -1488,6 +1488,54 @@ describe("@mars/research durable control plane", () => {
     ).toBe("queued");
   });
 
+  test("research jobs share one task allowance across concurrent admission and finished work", async () => {
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "usage-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        await workerContext.reportUsage({
+          input_tokens: 10,
+          output_tokens: 10,
+          cost_usd: 0.01,
+        });
+      },
+    };
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      worker,
+      task: { ...base, budget: { ...base.budget, max_tokens: 100 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const tokens = (max_tokens: number) => ({
+      budget: { ...makeRequest(now).budget, max_tokens },
+    });
+    const first = await request(env.service, now, "share-a", tokens(60));
+    // The reviewed defect: a second 60-token job fit "under" the 100-token task.
+    expect(
+      await errorCode(() => request(env.service, now, "share-b", tokens(60))),
+    ).toBe("budget_exceeded");
+    const raced = await Promise.allSettled([
+      request(env.service, now, "share-c", tokens(30)),
+      request(env.service, now, "share-d", tokens(30)),
+    ]);
+    expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const second = raced.find((r) => r.status === "fulfilled") as
+      | PromiseFulfilledResult<string>
+      | undefined;
+    await env.service.pump();
+    for (const id of [first, second?.value ?? ""])
+      await waitFor(
+        async () =>
+          (await env.service.inspect(context(), id)).status === "completed",
+      );
+    // Finished jobs release unused budget: 2 × 20 used, so 60 more fits and 61 does not.
+    expect(
+      await errorCode(() => request(env.service, now, "share-e", tokens(61))),
+    ).toBe("budget_exceeded");
+    await request(env.service, now, "share-f", tokens(60));
+  });
+
   test("autoStart false only claims queued work on an explicit pump", async () => {
     let runCount = 0;
     const now = Date.now;
