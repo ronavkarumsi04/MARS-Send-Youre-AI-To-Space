@@ -290,6 +290,7 @@ function renderSearch(s: TeamChatViewState): HTMLElement {
         "clear-search",
         () => {
           searchDraft = "";
+          returnFocusTo = "search";
           post({ type: "clearSearch" });
         },
         { secondary: true },
@@ -582,6 +583,18 @@ function renderMessage(
   return item;
 }
 
+function discardButton(item: PendingSend): HTMLButtonElement {
+  return button(
+    "Discard",
+    `discard-${item.client_message_id}`,
+    () => {
+      returnFocusTo = "composer";
+      post({ type: "discardSend", clientMessageId: item.client_message_id });
+    },
+    { secondary: true },
+  );
+}
+
 function renderPending(item: PendingSend): HTMLElement {
   const status =
     item.status === "pending"
@@ -606,32 +619,15 @@ function renderPending(item: PendingSend): HTMLElement {
         post({ type: "discardSend", clientMessageId: item.client_message_id });
         returnFocusTo = "composer";
       }),
-      button(
-        "Discard",
-        `discard-${item.client_message_id}`,
-        () =>
-          post({
-            type: "discardSend",
-            clientMessageId: item.client_message_id,
-          }),
-        { secondary: true },
-      ),
+      discardButton(item),
     );
   if (item.status === "failed")
     actions.append(
-      button("Retry", `retry-${item.client_message_id}`, () =>
-        post({ type: "retrySend", clientMessageId: item.client_message_id }),
-      ),
-      button(
-        "Discard",
-        `discard-${item.client_message_id}`,
-        () =>
-          post({
-            type: "discardSend",
-            clientMessageId: item.client_message_id,
-          }),
-        { secondary: true },
-      ),
+      button("Retry", `retry-${item.client_message_id}`, () => {
+        returnFocusTo = "composer";
+        post({ type: "retrySend", clientMessageId: item.client_message_id });
+      }),
+      discardButton(item),
     );
   return h(
     "li",
@@ -794,7 +790,10 @@ function renderComposerParts(): void {
     const clear = button(
       "×",
       "clear-reply",
-      () => updateComposer({ type: "clearReply" }),
+      () => {
+        updateComposer({ type: "clearReply" });
+        textarea.focus();
+      },
       {
         secondary: true,
         title: "Remove reply context",
@@ -812,18 +811,22 @@ function renderComposerParts(): void {
   }
   replyBar.hidden = !composer.reply_to;
   chipBar.replaceChildren();
-  for (const chip of composer.chips) {
+  composer.chips.forEach((chip, index) => {
     const label = chipLabel(chip.reference, chip.repo_name);
     const remove = button(
       `${label} ×`,
       `draft-chip-${chip.key}`,
-      () => updateComposer({ type: "removeChip", key: chip.key }),
+      () => {
+        updateComposer({ type: "removeChip", key: chip.key });
+        const remaining = chipBar.querySelectorAll<HTMLElement>("button");
+        (remaining[Math.min(index, remaining.length - 1)] ?? textarea).focus();
+      },
       { secondary: true, title: "Remove reference" },
     );
     remove.setAttribute("aria-label", `Remove reference ${label}`);
     remove.className = "chip draft";
     chipBar.append(remove);
-  }
+  });
   chipBar.hidden = composer.chips.length === 0;
   picker.replaceChildren();
   if (composer.picker) {
@@ -1052,7 +1055,11 @@ function render(): void {
     Array.from(app.querySelectorAll<HTMLElement>("[data-focus-key]")).find(
       (element) => element.dataset.focusKey === key,
     );
-  let target = wanted ? byKey(wanted) : undefined;
+  // The focused control left the DOM (e.g. a resolved pending send): land
+  // on the composer instead of letting focus fall to <body>.
+  let target = wanted
+    ? (byKey(wanted) ?? (textarea.isConnected ? textarea : undefined))
+    : undefined;
   if (code && drawer && (drawerOpened || (target && !code.contains(target))))
     target = byKey("close-panel");
   target?.focus();
