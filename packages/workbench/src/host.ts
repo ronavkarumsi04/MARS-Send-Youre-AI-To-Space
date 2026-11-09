@@ -323,6 +323,20 @@ export async function createWorkbenchHost(
   )
     throw new Error("Workspace label must not be a host path.");
   const active = new Map<string, RuntimeSession>();
+  // Export and restore of one candidate never overlap: an export reports the bytes it read.
+  const candidateBusy = new Set<string>();
+  const exclusiveCandidate = async <T>(
+    taskId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    if (candidateBusy.has(taskId)) throw new WorkbenchError("conflict");
+    candidateBusy.add(taskId);
+    try {
+      return await operation();
+    } finally {
+      candidateBusy.delete(taskId);
+    }
+  };
   const jobs = new Map<string, Promise<void>>();
   const operations = new Set<Promise<unknown>>();
   let closing = false;
@@ -2741,103 +2755,118 @@ export async function createWorkbenchHost(
     },
     async export(context, params): Promise<PatchExport> {
       checkContext(context);
-      const task = await options.store.inspect(context, params.task_id);
-      if (task.status === "running" || active.has(params.task_id))
-        throw new WorkbenchError("conflict");
-      if (!options.workspace.exportPatch)
-        throw new WorkbenchError("unavailable");
-      const candidate = WorkspaceRefSchema.parse(
-        await options.workspace.reopen(context, params.task_id),
-      );
-      if (candidate.revision !== params.expected_revision)
-        throw new WorkbenchError("conflict");
-      const exported = await options.workspace.exportPatch(context, candidate);
-      if (!artifactResponseFits(exported.patch.byteLength, "text/x-diff"))
-        throw new WorkbenchError("too_large");
-      const sha256 = createHash("sha256").update(exported.patch).digest("hex");
-      if (sha256 !== params.expected_patch_sha256)
-        throw new WorkbenchError("conflict");
-      assertPublicBytes(
-        exported.patch,
-        await privatePatterns(context, params.task_id),
-      );
-      const records = await verificationRecords(
-        verificationHost,
-        context,
-        params.task_id,
-      );
-      const presentation = verificationStateFor(
-        candidate.revision,
-        records,
-        sha256,
-      );
-      const artifact = await options.store.artifacts.put(
-        context,
-        exported.patch,
-        "text/x-diff",
-      );
-      // An event, not a task update: owning the export must not move the task revision.
-      await options.store.appendEvent(
-        context,
-        params.task_id,
-        workbenchEvent({ operation: "patch.exported", artifact }),
-      );
-      return PatchExportSchema.parse({
-        candidate: {
-          workspace_id: candidate.workspace_id,
-          provider: candidate.provider,
-          revision: candidate.revision,
-        },
-        patch_sha256: sha256,
-        artifact,
-        files: exported.files,
-        verification: presentation.state,
-        verified:
-          presentation.state === "verified" &&
-          exported.round_trip.status === "passed",
-        verdict_run_id: presentation.record?.run_id ?? null,
-        round_trip: exported.round_trip,
-        unsupported: exported.unsupported.map((entry) => ({
-          path: entry.path,
-          reason: entry.reason.slice(0, 64),
-        })),
+      return exclusiveCandidate(params.task_id, async () => {
+        const task = await options.store.inspect(context, params.task_id);
+        if (task.status === "running" || active.has(params.task_id))
+          throw new WorkbenchError("conflict");
+        if (!options.workspace.exportPatch)
+          throw new WorkbenchError("unavailable");
+        const candidate = WorkspaceRefSchema.parse(
+          await options.workspace.reopen(context, params.task_id),
+        );
+        if (candidate.revision !== params.expected_revision)
+          throw new WorkbenchError("conflict");
+        const exported = await options.workspace.exportPatch(
+          context,
+          candidate,
+        );
+        const after = await options.workspace.reopen(context, params.task_id);
+        if (after.revision !== candidate.revision)
+          throw new WorkbenchError("conflict");
+        if (!artifactResponseFits(exported.patch.byteLength, "text/x-diff"))
+          throw new WorkbenchError("too_large");
+        const sha256 = createHash("sha256")
+          .update(exported.patch)
+          .digest("hex");
+        if (sha256 !== params.expected_patch_sha256)
+          throw new WorkbenchError("conflict");
+        assertPublicBytes(
+          exported.patch,
+          await privatePatterns(context, params.task_id),
+        );
+        const records = await verificationRecords(
+          verificationHost,
+          context,
+          params.task_id,
+        );
+        const presentation = verificationStateFor(
+          candidate.revision,
+          records,
+          sha256,
+        );
+        const artifact = await options.store.artifacts.put(
+          context,
+          exported.patch,
+          "text/x-diff",
+        );
+        // An event, not a task update: owning the export must not move the task revision.
+        await options.store.appendEvent(
+          context,
+          params.task_id,
+          workbenchEvent({ operation: "patch.exported", artifact }),
+        );
+        return PatchExportSchema.parse({
+          candidate: {
+            workspace_id: candidate.workspace_id,
+            provider: candidate.provider,
+            revision: candidate.revision,
+          },
+          patch_sha256: sha256,
+          artifact,
+          files: exported.files,
+          verification: presentation.state,
+          verified:
+            presentation.state === "verified" &&
+            exported.round_trip.status === "passed",
+          verdict_run_id: presentation.record?.run_id ?? null,
+          round_trip: exported.round_trip,
+          unsupported: exported.unsupported.map((entry) => ({
+            path: entry.path,
+            reason: entry.reason.slice(0, 64),
+          })),
+        });
       });
     },
     async restore(context, taskId, checkpointId, revision) {
       checkContext(context);
-      const task = await options.store.inspect(context, taskId);
-      if (task.status === "running" || active.has(taskId))
-        throw new WorkbenchError("conflict");
-      const workspace = await options.workspace.reopen(context, taskId);
-      for await (const event of options.store.events(context, taskId)) {
-        if (
-          event.event_type !== "tool.completed" ||
-          event.producer !== WORKBENCH_PRODUCER
-        )
-          continue;
-        const bytes = await options.store.artifacts.get(context, event.payload);
-        const payload = z
-          .object({
-            operation: z.literal("workspace.checkpoint"),
-            checkpoint: CheckpointRefSchema,
-          })
-          .strict()
-          .safeParse(JSON.parse(new TextDecoder().decode(bytes)));
-        if (
-          payload.success &&
-          payload.data.checkpoint.checkpoint_id === checkpointId
-        ) {
-          const checkpoint = payload.data.checkpoint;
+      return exclusiveCandidate(taskId, async () => {
+        const task = await options.store.inspect(context, taskId);
+        if (task.status === "running" || active.has(taskId))
+          throw new WorkbenchError("conflict");
+        const workspace = await options.workspace.reopen(context, taskId);
+        for await (const event of options.store.events(context, taskId)) {
           if (
-            checkpoint.workspace.workspace_id !== workspace.workspace_id ||
-            checkpoint.workspace.provider !== workspace.provider
+            event.event_type !== "tool.completed" ||
+            event.producer !== WORKBENCH_PRODUCER
           )
-            throw new WorkbenchError("conflict");
-          await options.store.artifacts.get(context, checkpoint.artifact);
-          return options.workspace.restore(context, checkpoint, revision);
+            continue;
+          const bytes = await options.store.artifacts.get(
+            context,
+            event.payload,
+          );
+          const payload = z
+            .object({
+              operation: z.literal("workspace.checkpoint"),
+              checkpoint: CheckpointRefSchema,
+            })
+            .strict()
+            .safeParse(JSON.parse(new TextDecoder().decode(bytes)));
+          if (
+            payload.success &&
+            payload.data.checkpoint.checkpoint_id === checkpointId
+          ) {
+            const checkpoint = payload.data.checkpoint;
+            if (
+              checkpoint.workspace.workspace_id !== workspace.workspace_id ||
+              checkpoint.workspace.provider !== workspace.provider
+            )
+              throw new WorkbenchError("conflict");
+            await options.store.artifacts.get(context, checkpoint.artifact);
+            return options.workspace.restore(context, checkpoint, revision);
+          }
         }
-      }
-      throw new WorkbenchError("not_found");
+        throw new WorkbenchError("not_found");
+      });
     },
   };
   const track =
