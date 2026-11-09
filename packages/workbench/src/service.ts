@@ -37,6 +37,7 @@ import {
   createResearchService,
   type DurableResearchService,
   type ResearchBudgetLedger,
+  type ResearchConcurrencySlots,
   type ResearchServiceOptions,
 } from "@mars/research";
 import {
@@ -571,10 +572,22 @@ export async function createWorkbenchService(
 
 function taskBudgetLedger(store: DurableTaskStore): {
   ledger?: ResearchBudgetLedger;
+  slots?: ResearchConcurrencySlots;
 } {
   const { reserveBudget, recordBudget, budgetCommitted } = store;
   if (!reserveBudget || !recordBudget || !budgetCommitted) return {};
+  const { acquireSlot, releaseSlot } = store;
   return {
+    ...(acquireSlot && releaseSlot
+      ? {
+          slots: {
+            acquire: (context, taskId, key, lease) =>
+              acquireSlot.call(store, context, taskId, key, lease),
+            release: (context, taskId, key) =>
+              releaseSlot.call(store, context, taskId, key),
+          },
+        }
+      : {}),
     ledger: {
       reserve: (context, taskId, key, amount) =>
         reserveBudget.call(store, context, taskId, key, amount),

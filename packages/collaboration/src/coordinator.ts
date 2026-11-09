@@ -333,7 +333,13 @@ export interface AgentPort {
 export interface CollaborationJobs {
   readonly leaseMs: number;
   currentTime(): number;
-  claim(runnerId: string): Promise<ClaimedJob | null>;
+  /** Claims the oldest runnable queued job, passing over the ids in `skip`. */
+  claim(
+    runnerId: string,
+    skip?: ReadonlySet<string>,
+  ): Promise<ClaimedJob | null>;
+  /** Returns a just-claimed job to the queue as if it had never been claimed. */
+  unclaim(jobId: string, runnerId: string, epoch: number): Promise<void>;
   requestCancel(jobId: string, runnerId: string, epoch: number): Promise<void>;
   setModelSelection(
     jobId: string,
@@ -2377,7 +2383,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
     currentTime() {
       return store.now();
     },
-    async claim(runnerId) {
+    async claim(runnerId, skip) {
       if (!runnerId.trim()) invalidInput("Runner id is required");
       return store.transaction(() => {
         const now = store.now();
@@ -2387,6 +2393,7 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           )
           .all();
         for (const job of candidates) {
+          if (skip?.has(job.job_id)) continue;
           const room = store.getRoomRow(job.room_id);
           const member = store.getMemberRow(job.agent_id);
           if (
@@ -2443,6 +2450,17 @@ function createJobsApi(store: CollaborationStore): CollaborationJobs {
           };
         }
         return null;
+      });
+    },
+    async unclaim(jobId, runnerId, epoch) {
+      store.transaction(() => {
+        store.db
+          .query(
+            `UPDATE jobs SET state = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+             attempt = attempt - 1
+             WHERE job_id = ? AND state = 'running' AND lease_owner = ? AND lease_epoch = ?`,
+          )
+          .run(jobId, runnerId, epoch);
       });
     },
     async requestCancel(jobId, runnerId, epoch) {
