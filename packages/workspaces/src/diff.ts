@@ -101,10 +101,14 @@ function makePatch(
   return out.join("");
 }
 
+// `ignoreBOM` keeps a leading U+FEFF in the decoded text, so adding or
+// removing a byte-order mark is a real line change in the patch.
+const utf8 = () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
 function isBinary(data: Uint8Array): boolean {
   if (data.subarray(0, 8000).includes(0)) return true;
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(data);
+    utf8().decode(data);
     return false;
   } catch {
     return true;
@@ -112,7 +116,7 @@ function isBinary(data: Uint8Array): boolean {
 }
 
 function decode(data: Uint8Array): string {
-  return new TextDecoder("utf-8", { fatal: true }).decode(data);
+  return utf8().decode(data);
 }
 
 function splitLines(text: string): TextLine[] {
