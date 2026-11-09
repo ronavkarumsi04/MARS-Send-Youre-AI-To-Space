@@ -654,6 +654,8 @@ export interface RuntimeSessionOptions {
   onEvent?(observation: RuntimeObservation): Promise<void>;
   /** The task's shared budget ledger hold for this run (foreground spend). */
   sharedBudget?: SharedBudget;
+  /** The task's fixed absolute deadline (epoch ms); the run never outlives it. */
+  deadline?: number;
   env?: Record<string, string | undefined>;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   /**
@@ -763,16 +765,18 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       throw new Error(
         "Cannot resume a session without its persisted execution budget.",
       );
+    const fixed = options.deadline ?? Number.POSITIVE_INFINITY;
     ledger =
       previous?.type === "custom"
         ? ledgerSchema.parse(previous.data)
         : {
-            deadline: Date.now() + task.budget.max_duration_ms,
+            deadline: Math.min(Date.now() + task.budget.max_duration_ms, fixed),
             reserved_tokens: 0,
             reserved_usd: 0,
             input_tokens: 0,
             output_tokens: 0,
           };
+    ledger.deadline = Math.min(ledger.deadline, fixed);
     if (
       ledger.reserved_tokens > task.budget.max_tokens ||
       exceedsUsd(ledger.reserved_usd, task.budget.max_usd) ||

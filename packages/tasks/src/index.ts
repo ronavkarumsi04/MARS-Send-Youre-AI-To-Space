@@ -203,6 +203,27 @@ export interface DurableTaskStore extends TaskService {
     taskId: string,
     key: string,
   ): Promise<void>;
+  /**
+   * The task's one absolute deadline (epoch ms), fixed the first time it is
+   * asked for at `now + budget.max_duration_ms`. Foreground, research and
+   * delegated work all stop at it; later calls never move it.
+   */
+  /**
+   * Marks a task running and fixes its deadline (see `fixDeadline`) in one
+   * transaction: either both persist or neither does.
+   */
+  startRun?(
+    context: RequestContext,
+    taskId: string,
+    expectedRevision: number,
+    patch: TaskPatch,
+    now: number,
+  ): Promise<{ task: Task; deadline: number }>;
+  fixDeadline?(
+    context: RequestContext,
+    taskId: string,
+    now: number,
+  ): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -769,6 +790,13 @@ export async function createTaskStore(
         slot_key TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
         PRIMARY KEY (scope_key, task_id, slot_key),
+        FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_deadlines (
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        deadline INTEGER NOT NULL,
+        PRIMARY KEY (scope_key, task_id),
         FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
       );
       CREATE TABLE IF NOT EXISTS session_bindings (
@@ -1506,6 +1534,154 @@ export async function createTaskStore(
     },
   };
 
+  const readDeadline = (key: string, taskId: string): number | undefined =>
+    (
+      db
+        .query(
+          "SELECT deadline FROM task_deadlines WHERE scope_key = ? AND task_id = ?",
+        )
+        .get(key, taskId) as { deadline: number } | null
+    )?.deadline;
+  const insertDeadline = (
+    key: string,
+    taskId: string,
+    deadline: number,
+  ): number => {
+    db.query(
+      "INSERT OR IGNORE INTO task_deadlines (scope_key, task_id, deadline) VALUES (?, ?, ?)",
+    ).run(key, taskId, deadline);
+    return readDeadline(key, taskId) as number;
+  };
+  const applyUpdate = async (
+    context: RequestContext,
+    taskId: string,
+    expectedRevision: number,
+    patchInput: TaskPatch,
+    fixAt?: number,
+  ): Promise<{ task: Task; deadline: number | undefined }> => {
+    const { context: parsedContext, scopeKey: key } = contextFor(context);
+    assertTaskId(taskId);
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw invalidInput("Invalid expected revision");
+    if (
+      patchInput === null ||
+      typeof patchInput !== "object" ||
+      Array.isArray(patchInput)
+    ) {
+      throw invalidInput("Invalid task patch");
+    }
+    const patch = patchInput as Record<string, unknown>;
+    const keys = Object.keys(patch) as (keyof Task)[];
+    if (
+      keys.length === 0 ||
+      keys.some(
+        (field) =>
+          !["status", "artifacts", "specialist_revision"].includes(field),
+      )
+    ) {
+      throw invalidInput("Task patch must contain supported fields");
+    }
+    if ("status" in patch)
+      assertSchema(TaskStatusSchema, patch.status, "Invalid task status");
+    if ("artifacts" in patch && !Array.isArray(patch.artifacts))
+      throw invalidInput("Invalid task artifacts");
+    if (
+      "specialist_revision" in patch &&
+      patch.specialist_revision !== null &&
+      (typeof patch.specialist_revision !== "string" ||
+        patch.specialist_revision.length === 0)
+    ) {
+      throw invalidInput("Invalid specialist revision");
+    }
+    const inputHash = idemKeyInput({ expectedRevision, patch });
+    const replay = getIdempotent(
+      key,
+      parsedContext.request_id,
+      "update",
+      taskId,
+      inputHash,
+    );
+    if (replay !== null)
+      return {
+        task: taskFromIdempotency(replay, key, taskId),
+        deadline: readDeadline(key, taskId),
+      };
+    const snapshot = readTask(key, taskId);
+    const prospective = assertSchema(
+      TaskSchema,
+      { ...snapshot, ...patch, revision: snapshot.revision + 1 },
+      "Invalid task patch",
+    );
+    const changed = changedFields(snapshot, prospective, keys);
+    if (Object.keys(changed).length === 0)
+      throw invalidInput("Task patch makes no changes");
+    const payload = {
+      change: "updated",
+      changes: changed,
+      from_revision: snapshot.revision,
+      to_revision: snapshot.revision + 1,
+    };
+    const prepared = preparePayloadArtifact(snapshot.scope, payload);
+    const transaction = db.transaction(() => {
+      const replay = getIdempotent(
+        key,
+        parsedContext.request_id,
+        "update",
+        taskId,
+        inputHash,
+      );
+      if (replay !== null)
+        return {
+          task: taskFromIdempotency(replay, key, taskId),
+          deadline: readDeadline(key, taskId),
+        };
+      const current = readTask(key, taskId);
+      if (current.revision !== expectedRevision)
+        fail("stale_revision", "Task revision is stale");
+      const next = assertSchema(
+        TaskSchema,
+        { ...current, ...patch, revision: current.revision + 1 },
+        "Invalid task patch",
+      );
+      const actualChanges = changedFields(current, next, keys);
+      if (Object.keys(actualChanges).length === 0)
+        throw invalidInput("Task patch makes no changes");
+      if (
+        "status" in actualChanges &&
+        !canTransition(current.status, next.status)
+      ) {
+        fail("invalid_transition", "Task status transition is not allowed");
+      }
+      validateTaskArtifacts(key, next);
+      insertArtifactRow(key, prepared.ref);
+      saveTaskRecord(key, next);
+      if (current.status !== "running" && next.status === "running")
+        setRunner(key, taskId);
+      else if (current.status === "running" && next.status !== "running")
+        clearRunner(key, taskId);
+      const deadline =
+        fixAt === undefined
+          ? undefined
+          : insertDeadline(key, taskId, fixAt + next.budget.max_duration_ms);
+      const event = lifecycleEvent(
+        parsedContext,
+        next,
+        "task.updated",
+        prepared.ref,
+      );
+      insertEventRecord(key, next, event, prepared.bytes);
+      saveIdempotent(
+        key,
+        parsedContext.request_id,
+        "update",
+        taskId,
+        inputHash,
+        next,
+      );
+      return { task: next, deadline };
+    });
+    return transaction.immediate();
+  };
   const store: DurableTaskStore = {
     artifacts: artifactStore,
     async create(context, taskInput, options) {
@@ -1681,116 +1857,24 @@ export async function createTaskStore(
       return transaction.immediate();
     },
     async update(context, taskId, expectedRevision, patchInput) {
-      const { context: parsedContext, scopeKey: key } = contextFor(context);
-      assertTaskId(taskId);
-      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
-        throw invalidInput("Invalid expected revision");
-      if (
-        patchInput === null ||
-        typeof patchInput !== "object" ||
-        Array.isArray(patchInput)
-      ) {
-        throw invalidInput("Invalid task patch");
-      }
-      const patch = patchInput as Record<string, unknown>;
-      const keys = Object.keys(patch) as (keyof Task)[];
-      if (
-        keys.length === 0 ||
-        keys.some(
-          (field) =>
-            !["status", "artifacts", "specialist_revision"].includes(field),
-        )
-      ) {
-        throw invalidInput("Task patch must contain supported fields");
-      }
-      if ("status" in patch)
-        assertSchema(TaskStatusSchema, patch.status, "Invalid task status");
-      if ("artifacts" in patch && !Array.isArray(patch.artifacts))
-        throw invalidInput("Invalid task artifacts");
-      if (
-        "specialist_revision" in patch &&
-        patch.specialist_revision !== null &&
-        (typeof patch.specialist_revision !== "string" ||
-          patch.specialist_revision.length === 0)
-      ) {
-        throw invalidInput("Invalid specialist revision");
-      }
-      const inputHash = idemKeyInput({ expectedRevision, patch });
-      const replay = getIdempotent(
-        key,
-        parsedContext.request_id,
-        "update",
+      return (await applyUpdate(context, taskId, expectedRevision, patchInput))
+        .task;
+    },
+    async startRun(context, taskId, expectedRevision, patch, now) {
+      if (!Number.isSafeInteger(now) || now <= 0)
+        throw invalidInput("Invalid deadline time");
+      if (patch?.status !== "running")
+        throw invalidInput("A run start must mark the task running");
+      const started = await applyUpdate(
+        context,
         taskId,
-        inputHash,
+        expectedRevision,
+        patch,
+        now,
       );
-      if (replay !== null) return taskFromIdempotency(replay, key, taskId);
-      const snapshot = readTask(key, taskId);
-      const prospective = assertSchema(
-        TaskSchema,
-        { ...snapshot, ...patch, revision: snapshot.revision + 1 },
-        "Invalid task patch",
-      );
-      const changed = changedFields(snapshot, prospective, keys);
-      if (Object.keys(changed).length === 0)
-        throw invalidInput("Task patch makes no changes");
-      const payload = {
-        change: "updated",
-        changes: changed,
-        from_revision: snapshot.revision,
-        to_revision: snapshot.revision + 1,
-      };
-      const prepared = preparePayloadArtifact(snapshot.scope, payload);
-      const transaction = db.transaction(() => {
-        const replay = getIdempotent(
-          key,
-          parsedContext.request_id,
-          "update",
-          taskId,
-          inputHash,
-        );
-        if (replay !== null) return taskFromIdempotency(replay, key, taskId);
-        const current = readTask(key, taskId);
-        if (current.revision !== expectedRevision)
-          fail("stale_revision", "Task revision is stale");
-        const next = assertSchema(
-          TaskSchema,
-          { ...current, ...patch, revision: current.revision + 1 },
-          "Invalid task patch",
-        );
-        const actualChanges = changedFields(current, next, keys);
-        if (Object.keys(actualChanges).length === 0)
-          throw invalidInput("Task patch makes no changes");
-        if (
-          "status" in actualChanges &&
-          !canTransition(current.status, next.status)
-        ) {
-          fail("invalid_transition", "Task status transition is not allowed");
-        }
-        validateTaskArtifacts(key, next);
-        insertArtifactRow(key, prepared.ref);
-        saveTaskRecord(key, next);
-        if (current.status !== "running" && next.status === "running")
-          setRunner(key, taskId);
-        else if (current.status === "running" && next.status !== "running")
-          clearRunner(key, taskId);
-        const event = lifecycleEvent(
-          parsedContext,
-          next,
-          "task.updated",
-          prepared.ref,
-        );
-        insertEventRecord(key, next, event, prepared.bytes);
-        saveIdempotent(
-          key,
-          parsedContext.request_id,
-          "update",
-          taskId,
-          inputHash,
-          next,
-        );
-        return next;
-      });
-      return transaction.immediate();
+      if (started.deadline === undefined)
+        fail("corrupt_record", "Started task has no deadline");
+      return { task: started.task, deadline: started.deadline };
     },
     async cancel(context, taskId) {
       const { context: parsedContext, scopeKey: key } = contextFor(context);
@@ -2393,6 +2477,17 @@ export async function createTaskStore(
       db.query(
         "DELETE FROM concurrency_slots WHERE scope_key = ? AND task_id = ? AND slot_key = ?",
       ).run(key, taskId, slotKey);
+    },
+    async fixDeadline(context, taskId, now) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      if (!Number.isSafeInteger(now) || now <= 0)
+        throw invalidInput("Invalid deadline time");
+      const transaction = db.transaction((): number => {
+        const task = readTask(key, taskId);
+        return insertDeadline(key, taskId, now + task.budget.max_duration_ms);
+      });
+      return transaction.immediate();
     },
     async close() {
       if (closed) return;

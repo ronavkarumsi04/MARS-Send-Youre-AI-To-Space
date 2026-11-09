@@ -103,6 +103,8 @@ export const OpenRoomInputSchema = z
       .strict()
       .optional(),
     model_id: nonempty.optional(),
+    /** The task's fixed absolute deadline (epoch ms); the room never outlives it. */
+    deadline: z.number().int().positive().optional(),
     limits: z
       .object({
         max_depth: z.number().int().nonnegative().optional(),

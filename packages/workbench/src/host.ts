@@ -68,6 +68,7 @@ import type {
   AppendEventInput,
   DurableTaskStore,
   SlotLease,
+  TaskPatch,
 } from "@mars/tasks";
 import {
   WATCH_EVIDENCE_PRODUCER,
@@ -1983,6 +1984,12 @@ export async function createWorkbenchHost(
   };
   // Every spender of a task holds its share of the task budget in the store's
   // ledger: the foreground run, research and the delegation pool.
+  const fixedDeadline = async (
+    context: RequestContext,
+    task: Task,
+  ): Promise<number> =>
+    (await options.store.fixDeadline?.(context, task.task_id, Date.now())) ??
+    Date.now() + task.budget.max_duration_ms;
   const foregroundBudget = (
     context: RequestContext,
     taskId: string,
@@ -2007,6 +2014,7 @@ export async function createWorkbenchHost(
     approvals: Approvals,
     modelId: string,
     coordinatorBudget: Budget,
+    deadline: number,
   ): Promise<FrozenCollaboration | undefined> => {
     if (!options.collaboration) return undefined;
     try {
@@ -2025,6 +2033,7 @@ export async function createWorkbenchHost(
             }
           : {}),
         model_id: modelId,
+        deadline,
       });
       if (
         opened.room.coordinator_runtime_budget.max_tokens <
@@ -2170,6 +2179,7 @@ export async function createWorkbenchHost(
     let deadline = launch.provisionalDeadline;
     const runtime = await runtimeFactory({
       ...foregroundBudget(context, taskId),
+      deadline: launch.provisionalDeadline,
       task: runtimeTask(running, collaboration),
       cwd,
       stateDir: launch.stateDir,
@@ -2209,7 +2219,10 @@ export async function createWorkbenchHost(
         await persistObservation(event);
       },
     });
-    deadline = Date.now() + running.budget.max_duration_ms;
+    deadline = Math.min(
+      Date.now() + running.budget.max_duration_ms,
+      launch.provisionalDeadline,
+    );
     return {
       runtime,
       deadline,
@@ -2523,26 +2536,46 @@ export async function createWorkbenchHost(
         foundInstructions,
         skills.prompt,
       );
-      const running = await options.store.update(
-        context,
-        task.task_id,
-        task.revision,
-        {
-          status: "running",
-          ...(routing?.specialist_revision
-            ? { specialist_revision: routing.specialist_revision }
-            : {}),
-        },
-      );
-      // Research deadlines follow the runtime ledger, whose clock starts when
-      // the session opens, not when the task was marked running.
-      const provisionalDeadline = Date.now() + running.budget.max_duration_ms;
+      const startPatch: TaskPatch = {
+        status: "running",
+        ...(routing?.specialist_revision
+          ? { specialist_revision: routing.specialist_revision }
+          : {}),
+      };
+      // One absolute deadline for the room, the foreground run and research,
+      // fixed in the same transaction that marks the task running.
+      const started = options.store.startRun
+        ? await options.store.startRun(
+            context,
+            task.task_id,
+            task.revision,
+            startPatch,
+            Date.now(),
+          )
+        : undefined;
+      const running =
+        started?.task ??
+        (await options.store.update(
+          context,
+          task.task_id,
+          task.revision,
+          startPatch,
+        ));
+      let provisionalDeadline: number;
+      try {
+        provisionalDeadline =
+          started?.deadline ?? (await fixedDeadline(context, running));
+      } catch (error) {
+        await settleFailedRun(task.task_id);
+        throw error;
+      }
       const collaboration = await openLaunchRoom(
         context,
         running,
         params.approvals,
         model.id,
         coordinatorBudget,
+        provisionalDeadline,
       );
       let runtime: RuntimeSession | undefined;
       try {
@@ -2684,6 +2717,7 @@ export async function createWorkbenchHost(
       try {
         runtime = await runtimeFactory({
           ...foregroundBudget(context, running.task_id),
+          deadline: await fixedDeadline(context, running),
           task: runtimeTask(running, launch.collaboration),
           cwd,
           stateDir: taskState(task),

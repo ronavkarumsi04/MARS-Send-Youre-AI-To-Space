@@ -782,7 +782,12 @@ function createHost(store: CollaborationStore): CollaborationHost {
         store.limits.max_depth,
       );
       const created = store.now();
-      const deadline = created + task.budget.max_duration_ms;
+      const deadline = Math.min(
+        created + task.budget.max_duration_ms,
+        input.deadline ?? Number.POSITIVE_INFINITY,
+      );
+      if (deadline <= created)
+        throw new CollaborationError("expired", "Task deadline has passed");
       const digest = sha256(
         json({
           task,
@@ -790,6 +795,7 @@ function createHost(store: CollaborationStore): CollaborationHost {
           delegation_pool: delegationPool,
           model_id: input.model_id ?? null,
           limits,
+          ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
         }),
       );
       return store.transaction(() => {

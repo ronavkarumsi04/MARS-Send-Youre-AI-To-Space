@@ -949,6 +949,47 @@ test
   },
 );
 
+test("a failed start fixes no deadline; without startRun a deadline failure settles the task", async () => {
+  const f = await fixture();
+  const api = await f.makeHost();
+  await api.create(context(), task());
+  await api.create(context(), task("second"));
+  const startRun = f.store.startRun?.bind(f.store);
+  const fix = f.store.fixDeadline?.bind(f.store);
+  if (!startRun || !fix) throw new Error("startRun missing");
+  let failStart = true;
+  f.store.startRun = async (...args) => {
+    if (failStart) throw new Error("database is locked");
+    return startRun(...args);
+  };
+  const start = (taskId: string) =>
+    api.start(context(), {
+      task_id: taskId,
+      expected_revision: 0,
+      approvals: { read: true, write: true, execute: false },
+    });
+  const status = async (taskId: string) =>
+    (await f.store.list(context())).find((item) => item.task_id === taskId)
+      ?.status;
+  // Marking running and fixing the deadline fail together: nothing changes.
+  await expect(start("task")).rejects.toThrow("database is locked");
+  expect(await status("task")).toBe("pending");
+  failStart = false;
+  expect((await start("task")).status).toBe("running");
+  expect(f.sessions[0]?.options.deadline).toBe(
+    await fix(context(), "task", Date.now() + 3_600_000),
+  );
+  // A store without startRun falls back; a deadline failure settles the run.
+  delete f.store.startRun;
+  f.store.fixDeadline = async () => {
+    throw new Error("database is locked");
+  };
+  await expect(start("second")).rejects.toThrow("database is locked");
+  expect(await status("second")).toBe("failed");
+  expect(f.sessions).toHaveLength(1);
+  f.store.fixDeadline = fix;
+});
+
 test("host persists launch metadata, runs only through the runtime and publishes output", async () => {
   const f = await fixture();
   const api = await f.makeHost();
@@ -964,6 +1005,14 @@ test("host persists launch metadata, runs only through the runtime and publishes
   ).toBe("running");
   expect(f.sessions).toHaveLength(1);
   expect(f.sessions[0]?.options.cwd).toBe(join(f.root, "isolated"));
+  // The run gets the task's fixed deadline; asking again later never moves it.
+  const fixed = await f.store.fixDeadline?.(
+    context(),
+    "task",
+    Date.now() + 3_600_000,
+  );
+  expect(fixed).toBeDefined();
+  expect(f.sessions[0]?.options.deadline).toBe(fixed);
   await expect(
     f.sessions[0]?.options.tools.execute(["anything"]),
   ).rejects.toMatchObject({ code: "forbidden" });
