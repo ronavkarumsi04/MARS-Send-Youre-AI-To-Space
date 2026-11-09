@@ -235,6 +235,12 @@ function parseStored<S extends z.ZodTypeAny>(
   if (!parsed.success) fail("corrupt", `${file} has an invalid structure`);
   return parsed.data;
 }
+function parseJournal(text: string, file: string): Change[] {
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => parseStored(line, ChangeSchema, file));
+}
 function validateName(name: string) {
   if (
     typeof name !== "string" ||
@@ -382,6 +388,7 @@ export class SkillStore implements SkillLifecycleService {
       TransactionSchema,
       ".skills-transaction.json",
     );
+    parseJournal(tx.journal, ".skills-transaction.json journal");
     for (const skill of Object.values(tx.state.skills)) {
       validateContent(skill.name, skill.content);
       const destination = this.location(skill);
@@ -419,6 +426,10 @@ export class SkillStore implements SkillLifecycleService {
     return text === undefined
       ? fresh()
       : parseStored(text, LifecycleSchema, ".lifecycle.json");
+  }
+  private async readJournal() {
+    const text = (await this.read("changes.jsonl")) ?? "";
+    return { text, changes: parseJournal(text, "changes.jsonl") };
   }
   private async load(): Promise<State> {
     const { skills, ...rest } = await this.readLifecycle();
@@ -492,7 +503,7 @@ export class SkillStore implements SkillLifecycleService {
         fail("conflict", "Unmanaged or conflicting skill directories exist");
     }
     const journal =
-      ((await this.read("changes.jsonl")) ?? "") +
+      (await this.readJournal()).text +
       changes.map((c) => `${JSON.stringify(c)}\n`).join("");
     await this.atomic(
       ".skills-transaction.json",
@@ -757,10 +768,7 @@ export class SkillStore implements SkillLifecycleService {
       this.check(state, options);
       if (!reviewId.trim()) fail("invalid", "reviewId is required");
       if (state.undone.includes(reviewId)) return [];
-      const history: Change[] = ((await this.read("changes.jsonl")) ?? "")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => parseStored(line, ChangeSchema, "changes.jsonl"));
+      const history = (await this.readJournal()).changes;
       const skillOps = [
         "create",
         "update",
