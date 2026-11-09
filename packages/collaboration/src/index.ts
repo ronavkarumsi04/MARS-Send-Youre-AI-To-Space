@@ -24,6 +24,7 @@ export {
   type OhMyPiAdapterOptions,
 } from "./omp-adapter";
 export {
+  type ChildConcurrencySlots,
   type ChildLaunch,
   type ChildOutcome,
   type ChildProgress,

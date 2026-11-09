@@ -21,6 +21,7 @@ export {
   RESEARCH_BUDGET_HOLD_PREFIX,
   type ResearchArtifactStore,
   type ResearchBudgetLedger,
+  type ResearchConcurrencySlots,
   type ResearchEventSink,
   type ResearchInternalError,
   type ResearchInternalErrorSite,

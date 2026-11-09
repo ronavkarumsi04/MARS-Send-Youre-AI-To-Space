@@ -100,6 +100,11 @@ export interface ChildRunnerOptions {
   runnerId?: string;
   heartbeatMs?: number;
   /**
+   * The task's shared concurrency slots. A claimed child starts only once it
+   * holds one; otherwise it is returned to the queue and retried later.
+   */
+  slots?: ChildConcurrencySlots;
+  /**
    * Called with the original error when a run fails outside the adapter's
    * outcome, after the runner has tried to record that failure, and again
    * with the finalize error when it could not. The run waits for each report;
@@ -110,6 +115,15 @@ export interface ChildRunnerOptions {
     error: unknown,
     context: { job_id: string },
   ) => void | Promise<void>;
+}
+
+export interface ChildConcurrencySlots {
+  acquire(
+    taskId: string,
+    key: string,
+    lease: { now: number; expiresAt: number },
+  ): Promise<boolean>;
+  release(taskId: string, key: string): Promise<void>;
 }
 
 interface LocalRun {
@@ -260,6 +274,8 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
   )
     throw new CollaborationError("invalid_input", "Invalid heartbeat interval");
   const localRuns = new Map<string, LocalRun>();
+  // Jobs handed back for want of a task slot, and when to try them again.
+  const deferred = new Map<string, number>();
   let stopped = false;
 
   async function startClaimed(
@@ -280,6 +296,7 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
     let timer: ReturnType<typeof setInterval> | undefined;
     let disarmDeadline: (() => void) | undefined;
     let contextDeadline: number | undefined;
+    let slot: { taskId: string; key: string } | undefined;
     let usageBaseline: ChildUsage = {
       input_tokens: 0,
       output_tokens: 0,
@@ -352,6 +369,22 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
           claimed.lease_epoch,
           normalizedProgress,
         );
+        if (slot && options.slots) {
+          const now = options.collaboration.host.jobs.currentTime();
+          const held = await options.slots
+            .acquire(slot.taskId, slot.key, {
+              now,
+              expiresAt: now + options.collaboration.host.jobs.leaseMs,
+            })
+            .catch(() => true);
+          if (!held) {
+            // The slot lapsed and was taken: stop and let the lease expire so
+            // the job is recovered like any other lost lease.
+            leaseLost = true;
+            await cancelRun("lease_lost");
+            return;
+          }
+        }
         if (isBudgetStop) await cancelRun("budget");
         else if (result.stop) await cancelRun("cancelled");
       } catch (error) {
@@ -378,6 +411,24 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
       try {
         const context =
           await options.collaboration.host.jobs.getLaunchContext(jobId);
+        if (options.slots) {
+          const now = options.collaboration.host.jobs.currentTime();
+          const key = `delegation:${jobId}:${claimed.lease_epoch}`;
+          const admitted = await options.slots.acquire(context.task_id, key, {
+            now,
+            expiresAt: now + options.collaboration.host.jobs.leaseMs,
+          });
+          if (!admitted) {
+            await options.collaboration.host.jobs.unclaim(
+              jobId,
+              runnerId,
+              claimed.lease_epoch,
+            );
+            deferred.set(jobId, now + heartbeatMs);
+            return;
+          }
+          slot = { taskId: context.task_id, key };
+        }
         contextDeadline = context.member.budget.deadline;
         usageBaseline = context.charged_usage;
         let modelId: string | null = context.model_id;
@@ -550,6 +601,10 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
         await reportError(error);
       } finally {
         if (timer) clearInterval(timer);
+        if (slot && options.slots)
+          await options.slots
+            .release(slot.taskId, slot.key)
+            .catch(() => undefined);
         disarmDeadline?.();
         if (controller.signal.aborted)
           await childRun?.cancel().catch(() => undefined);
@@ -578,7 +633,13 @@ export function createChildRunner(options: ChildRunnerOptions): ChildRunner {
     if (stopped) return 0;
     let claimedCount = 0;
     while (!stopped) {
-      const claim = await options.collaboration.host.jobs.claim(runnerId);
+      const now = options.collaboration.host.jobs.currentTime();
+      for (const [id, retryAt] of deferred)
+        if (retryAt <= now) deferred.delete(id);
+      const claim = await options.collaboration.host.jobs.claim(
+        runnerId,
+        new Set(deferred.keys()),
+      );
       if (!claim) break;
       claimedCount += 1;
       await startClaimed(claim);

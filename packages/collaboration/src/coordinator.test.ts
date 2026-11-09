@@ -173,6 +173,139 @@ async function expectCode(
   expect(error).toMatchObject({ code });
 }
 
+test("a child without a free task slot is requeued and retried", async () => {
+  const f = await fixture();
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("slot-wait"),
+  );
+  let free = false;
+  const acquired: string[] = [];
+  const released: string[] = [];
+  let starts = 0;
+  const runner = createChildRunner({
+    collaboration: f.collaboration,
+    runnerId: "slot-runner",
+    heartbeatMs: 20,
+    slots: {
+      async acquire(_taskId, key) {
+        if (free) acquired.push(key);
+        return free;
+      },
+      async release(_taskId, key) {
+        released.push(key);
+      },
+    },
+    adapter: {
+      async start() {
+        starts += 1;
+        return {
+          session_ref: "slot-session",
+          base_revision: null,
+          outcome: Promise.resolve<ChildOutcome>({
+            status: "completed",
+            summary: "Completed once a slot freed.",
+            artifacts: [],
+            usage: { input_tokens: 1, output_tokens: 1, usd: 0, steps: 1 },
+          }),
+          async cancel() {},
+        };
+      },
+    },
+  });
+  await runner.tick();
+  await runner.idle();
+  expect(starts).toBe(0);
+  // Deferred: the requeued job is not hot-looped before its retry time.
+  await runner.tick();
+  await runner.idle();
+  expect(starts).toBe(0);
+  free = true;
+  f.advance(30);
+  await runner.tick();
+  await runner.idle();
+  expect(starts).toBe(1);
+  expect(acquired.length).toBeGreaterThan(0);
+  expect(released).toEqual([acquired[0] as string]);
+  const children = await f.collaboration.agents.children(
+    context,
+    f.coordinator,
+  );
+  expect(
+    children.children.find((member) => member.agent_id === child.agent_id),
+  ).toMatchObject({ state: "completed" });
+});
+
+test("a child whose task slot lapsed and was taken stops", async () => {
+  const f = await fixture();
+  const child = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("slot-lost"),
+  );
+  let acquires = 0;
+  let cancelled = false;
+  let finish!: (outcome: ChildOutcome) => void;
+  const runner = createChildRunner({
+    collaboration: f.collaboration,
+    runnerId: "slot-lost-runner",
+    heartbeatMs: 10,
+    slots: {
+      async acquire() {
+        acquires += 1;
+        return acquires === 1;
+      },
+      async release() {},
+    },
+    adapter: {
+      async start() {
+        return {
+          session_ref: "slot-lost-session",
+          base_revision: null,
+          outcome: new Promise<ChildOutcome>((resolve) => {
+            finish = resolve;
+          }),
+          async cancel() {
+            cancelled = true;
+            finish({
+              status: "cancelled",
+              summary: "Stopped.",
+              artifacts: [],
+              usage: { input_tokens: 0, output_tokens: 0, usd: 0, steps: 0 },
+            });
+          },
+        };
+      },
+    },
+  });
+  await runner.tick();
+  await runner.idle();
+  expect(acquires).toBeGreaterThan(1);
+  expect(cancelled).toBe(true);
+  const children = await f.collaboration.agents.children(
+    context,
+    f.coordinator,
+  );
+  expect(
+    children.children.find((member) => member.agent_id === child.agent_id)
+      ?.state,
+  ).not.toBe("completed");
+  // The lease then lapses and recovery fails the child closed, charging its
+  // remaining budget because the adapter cannot reconcile usage.
+  f.advance(f.collaboration.host.jobs.leaseMs + 1);
+  expect(await runner.recover()).toMatchObject({
+    examined: 1,
+    failed_closed: 1,
+  });
+  const after = await f.collaboration.agents.children(context, f.coordinator);
+  expect(
+    after.children.find((member) => member.agent_id === child.agent_id),
+  ).toMatchObject({ state: "failed" });
+  const stats = await f.collaboration.host.stats(context, f.room.room_id);
+  expect(stats.usage_unaccounted).toBe(1);
+});
+
 test("long child deadlines do not expire after a clamped timer chunk", async () => {
   const dayMs = 24 * 60 * 60 * 1000;
   const f = await fixture({ taskDurationMs: 60 * dayMs });

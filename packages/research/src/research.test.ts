@@ -30,6 +30,7 @@ import {
   isTerminalResearchStatus,
   RESEARCH_STORE_FORMAT_VERSION,
   type ResearchBudgetLedger,
+  type ResearchConcurrencySlots,
   type ResearchWorker,
   type ResearchWorkerContext,
   RetryableResearchError,
@@ -1614,6 +1615,124 @@ describe("@mars/research durable control plane", () => {
     ).toBe("budget_exceeded");
   });
 
+  test("running research shares the task's concurrency slots", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_concurrency: 3 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const store = env.tasks;
+    const slots: ResearchConcurrencySlots = {
+      acquire: async (c, t, k, l) =>
+        (await store.acquireSlot?.(c, t, k, l)) ?? true,
+      release: async (c, t, k) => store.releaseSlot?.(c, t, k),
+    };
+    let started = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const service = await createResearchService({
+      rootDir: path.join(env.root, "research"),
+      tasks: store,
+      artifacts: store.artifacts,
+      worker: {
+        id: "blocking",
+        version: "1",
+        async run() {
+          started += 1;
+          await gate;
+        },
+      },
+      autoStart: false,
+      maxConcurrency: 4,
+      pollMs: 10,
+      slots,
+    });
+    services.push(service);
+    const lease = { now: now(), expiresAt: now() + 60_000 };
+    // A delegated child holds one of the two background slots.
+    expect(
+      await store.acquireSlot?.(context(), "task-1", "delegation:child", lease),
+    ).toBe(true);
+    const budget = { ...makeRequest(now).budget, max_concurrency: 1 };
+    await request(service, now, "slot-a", { budget });
+    await request(service, now, "slot-b", { budget });
+    await service.pump();
+    expect(started).toBe(1);
+    await service.pump();
+    expect(started).toBe(1);
+    await store.releaseSlot?.(context(), "task-1", "delegation:child");
+    await service.pump();
+    expect(started).toBe(2);
+    expect(
+      await store.acquireSlot?.(context(), "task-1", "delegation:child", lease),
+    ).toBe(false);
+    open();
+    const single = makeTask("task-single", scope);
+    await store.create(context("create-single"), {
+      ...single,
+      budget: { ...single.budget, max_concurrency: 1 },
+    });
+    expect(
+      await errorCode(() =>
+        request(service, now, "slot-c", { budget }, "task-single"),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
+  test("late usage over budget fails a request requeued after a lost slot", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_concurrency: 3 } },
+      service: { autoStart: false },
+    });
+    let acquired = 0;
+    const slots: ResearchConcurrencySlots = {
+      acquire: async () => ++acquired === 1,
+      release: async () => undefined,
+    };
+    let reported: unknown = "pending";
+    const service = await createResearchService({
+      rootDir: path.join(env.root, "research"),
+      tasks: env.tasks,
+      artifacts: env.tasks.artifacts,
+      worker: {
+        id: "late-over-budget",
+        version: "1",
+        async run(_input, workerContext) {
+          await new Promise<void>((resolve) => {
+            if (workerContext.signal.aborted) resolve();
+            workerContext.signal.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+          reported = await workerContext
+            .reportUsage({ input_tokens: 500, output_tokens: 500 })
+            .then(
+              () => "ok",
+              (error: unknown) => error,
+            );
+        },
+      },
+      leaseMs: 60,
+      pollMs: 10,
+      slots,
+    });
+    services.push(service);
+    const id = await request(service, now, "late-over", {
+      budget: { ...makeRequest(now).budget, max_tokens: 100 },
+    });
+    await waitFor(() => reported !== "pending");
+    expect(reported).toBe("ok");
+    const job = await service.inspect(context(), id);
+    expect(job.status).toBe("failed");
+    expect(job.error_code).toBe("budget_exceeded");
+    expect(job.usage).toMatchObject({ input_tokens: 500, output_tokens: 500 });
+  });
+
   test("research holds share the task ledger across instances and restarts", async () => {
     const now = Date.now;
     const base = makeTask("task-1", scope);
@@ -2074,6 +2193,39 @@ describe("@mars/research durable control plane", () => {
         "completed",
     );
     expect((await resumed.inspect(context(), interruptedId)).attempts).toBe(2);
+  });
+
+  test("usage reported after the deadline is still recorded", async () => {
+    let clock = Date.now();
+    let reported: unknown = "pending";
+    const lateWorker: ResearchWorker = {
+      id: "late-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        clock += 24 * 60 * 60 * 1000;
+        reported = await workerContext
+          .reportUsage({ input_tokens: 3, output_tokens: 4, cost_usd: 0.01 })
+          .then(
+            () => "ok",
+            (error: unknown) => error,
+          );
+      },
+    };
+    const env = await setup({
+      worker: lateWorker,
+      now: () => clock,
+      service: { maxAttempts: 1 },
+    });
+    const id = await request(env.service, env.now, "late-usage");
+    await waitFor(() => reported !== "pending");
+    expect(reported).toBe("ok");
+    const job = await env.service.inspect(context(), id);
+    expect(job.usage).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 4,
+      cost_usd: 0.01,
+      reported: true,
+    });
   });
 
   test("persists reported budget failures and marks unreported usage honestly", async () => {

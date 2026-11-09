@@ -2207,6 +2207,52 @@ function createHashScope(value: RequestContext["scope"]): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+test("concurrency slots leave one slot for the foreground run", async () => {
+  const store = await openStore(makeRoot());
+  const task = makeTask();
+  await store.create(context(), {
+    ...task,
+    budget: { ...task.budget, max_concurrency: 3 },
+  });
+  const acquire = store.acquireSlot?.bind(store);
+  const release = store.releaseSlot?.bind(store);
+  if (!acquire || !release) throw new Error("slots missing");
+  const lease = (now: number) => ({ now, expiresAt: now + 100 });
+  expect(await acquire(context(), task.task_id, "research:a", lease(0))).toBe(
+    true,
+  );
+  expect(await acquire(context(), task.task_id, "delegation:b", lease(0))).toBe(
+    true,
+  );
+  expect(await acquire(context(), task.task_id, "research:c", lease(10))).toBe(
+    false,
+  );
+  // Renewing a held slot never counts it twice.
+  expect(await acquire(context(), task.task_id, "research:a", lease(50))).toBe(
+    true,
+  );
+  await release(context(), task.task_id, "delegation:b");
+  expect(await acquire(context(), task.task_id, "research:c", lease(60))).toBe(
+    true,
+  );
+  // An expired slot (a crashed holder) frees its place.
+  expect(await acquire(context(), task.task_id, "research:d", lease(155))).toBe(
+    true,
+  );
+  expect(await acquire(context(), task.task_id, "research:e", lease(155))).toBe(
+    false,
+  );
+  await expect(
+    acquire(context(), task.task_id, "bad key", lease(0)),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  const single = makeTask("task-single");
+  await store.create(context("create-single"), single);
+  expect(await acquire(context(), single.task_id, "research:a", lease(0))).toBe(
+    false,
+  );
+  await store.close();
+});
+
 test("budget holds share one task budget across spenders", async () => {
   const store = await openStore(makeRoot());
   const task = makeTask();

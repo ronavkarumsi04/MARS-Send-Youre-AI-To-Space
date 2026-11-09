@@ -173,6 +173,20 @@ export interface ResearchBudgetLedger {
   ): Promise<{ tokens: number; usd: number }>;
 }
 
+/**
+ * The task's shared concurrency slots. A claimed job runs only while it holds
+ * a slot; one slot is always left for the task's foreground run.
+ */
+export interface ResearchConcurrencySlots {
+  acquire(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    lease: { now: number; expiresAt: number },
+  ): Promise<boolean>;
+  release(context: RequestContext, taskId: string, key: string): Promise<void>;
+}
+
 export const RESEARCH_BUDGET_HOLD_PREFIX = "research:";
 
 export function researchBudgetHoldKey(idemRequestId: string): string {
@@ -205,6 +219,7 @@ export type ResearchInternalErrorSite =
   | "flush_events"
   | "execute_claim"
   | "ledger"
+  | "slots"
   | "pump";
 
 export interface ResearchInternalError {
@@ -218,6 +233,8 @@ export interface ResearchServiceOptions {
   tasks: ResearchTaskReader;
   /** When set, research admission also counts the task's other spenders. */
   ledger?: ResearchBudgetLedger;
+  /** When set, running jobs share the task's concurrency limit. */
+  slots?: ResearchConcurrencySlots;
   artifacts: ResearchArtifactStore;
   worker: ResearchWorker;
   events?: ResearchEventSink;
@@ -337,6 +354,13 @@ interface LocalRun {
   deadlineTimer: ReturnType<typeof setTimeout>;
   forced: boolean;
   settled: Promise<void>;
+  slot?: SlotRef;
+}
+
+interface SlotRef {
+  context: RequestContext;
+  taskId: string;
+  key: string;
 }
 
 interface ParsedContext {
@@ -1136,7 +1160,40 @@ export async function createResearchService(
           currentTime(),
         ),
     );
-    if (updated.changes !== 1) abortForRowState(entry);
+    if (updated.changes !== 1) {
+      abortForRowState(entry);
+      return;
+    }
+    const slot = entry.slot;
+    if (slot && options.slots) {
+      const now = currentTime();
+      void options.slots
+        .acquire(slot.context, slot.taskId, slot.key, {
+          now,
+          expiresAt: now + configured.leaseMs,
+        })
+        .then((held) => {
+          if (!held) loseSlot(entry);
+        })
+        .catch((error: unknown) => reportInternalError("slots", error));
+    }
+  };
+
+  // A run whose slot lapsed and was taken stops and goes back to the queue.
+  const loseSlot = (entry: LocalRun): void => {
+    if (!dbOpen || entry.controller.signal.aborted) return;
+    immediate(db, () =>
+      db
+        .query(
+          `UPDATE requests
+           SET status = 'queued', lease_owner = NULL, lease_token = NULL,
+               lease_expires_at = NULL
+           WHERE scope_key = ? AND request_id = ? AND lease_token = ?
+             AND status = 'running'`,
+        )
+        .run(entry.scopeKey, entry.requestId, entry.token),
+    );
+    entry.controller.abort("lease_lost");
   };
 
   const workerGuard = (entry: LocalRun, requireDb = true): RequestRow => {
@@ -1175,7 +1232,9 @@ export async function createResearchService(
   const guarded = <T>(entry: LocalRun, operation: (row: RequestRow) => T): T =>
     immediate(db, () => operation(workerGuard(entry)));
 
-  const claimNext = (): ClaimedJob | null => {
+  const claimNext = (
+    skip: ReadonlySet<string> = new Set(),
+  ): ClaimedJob | null => {
     return immediate(db, () => {
       const now = currentTime();
       db.query(
@@ -1202,7 +1261,7 @@ export async function createResearchService(
         .all(now, now) as RequestRow[];
       for (const candidate of candidates) {
         const key = `${candidate.scope_key}\n${candidate.request_id}`;
-        if (localRuns.has(key)) continue;
+        if (localRuns.has(key) || skip.has(key)) continue;
         const request = verifiedRequest(candidate);
         if (now >= Date.parse(candidate.deadline)) {
           db.query(
@@ -1662,7 +1721,28 @@ export async function createResearchService(
           throw new ResearchError("invalid_input", "Invalid reported usage");
         }
         let exceeded = false;
-        guarded(entry, (row) => {
+        let late: RequestRow | undefined;
+        let lateExceeded = false;
+        immediate(db, () => {
+          let row: RequestRow;
+          try {
+            row = workerGuard(entry);
+          } catch (error) {
+            // A call that fails after this attempt lost its authority (deadline,
+            // cancellation, lost lease) may still have been billed. Its usage
+            // is still added to the request, without reopening the attempt.
+            const stored =
+              !entry.forced && dbOpen
+                ? (db
+                    .query(
+                      "SELECT * FROM requests WHERE scope_key = ? AND request_id = ?",
+                    )
+                    .get(entry.scopeKey, entry.requestId) as RequestRow | null)
+                : null;
+            if (!stored) throw error;
+            row = stored;
+            late = stored;
+          }
           const request = verifiedRequest(row);
           const usage = usageFromJson(row.usage_json);
           const inputTokens = usage.input_tokens + delta.input_tokens;
@@ -1681,7 +1761,22 @@ export async function createResearchService(
             inputTokens + outputTokens > request.budget.max_tokens ||
             (reportedCost !== null &&
               exceedsUsd(reportedCost, request.budget.max_usd));
-          if (exceeded) {
+          if (late) {
+            db.query(
+              `UPDATE requests SET usage_json = ?
+               WHERE scope_key = ? AND request_id = ?`,
+            ).run(JSON.stringify(nextUsage), entry.scopeKey, entry.requestId);
+            if (exceeded)
+              db.query(
+                `UPDATE requests SET status = 'failed',
+                   error_code = 'budget_exceeded', finished_at = ?,
+                   lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+                 WHERE scope_key = ? AND request_id = ?
+                   AND status IN ('queued', 'running')`,
+              ).run(timestamp(currentTime()), entry.scopeKey, entry.requestId);
+            lateExceeded = exceeded;
+            exceeded = false;
+          } else if (exceeded) {
             db.query(
               `UPDATE requests SET usage_json = ?, status = 'failed',
                  error_code = 'budget_exceeded', finished_at = ?,
@@ -1707,6 +1802,20 @@ export async function createResearchService(
             );
           }
         });
+        if (late) {
+          const stored = db
+            .query(
+              "SELECT * FROM requests WHERE scope_key = ? AND request_id = ?",
+            )
+            .get(entry.scopeKey, entry.requestId) as RequestRow | null;
+          if (stored) await syncResearchHolds([stored]);
+          // A replacement attempt running here stops now, not at its next heartbeat.
+          const replacement = localRuns.get(entry.key);
+          if (lateExceeded && replacement && replacement !== entry)
+            replacement.controller.abort("budget_exceeded");
+          wake();
+          return;
+        }
         if (exceeded) {
           entry.controller.abort("budget_exceeded");
           wake();
@@ -1739,6 +1848,7 @@ export async function createResearchService(
       ),
       forced: false,
       settled: Promise.resolve(),
+      ...(options.slots ? { slot: slotFor(claim.row, claim.attempt) } : {}),
     };
     entry.heartbeat.unref?.();
     entry.deadlineTimer.unref?.();
@@ -1774,6 +1884,11 @@ export async function createResearchService(
       clearInterval(entry.heartbeat);
       clearTimeout(entry.deadlineTimer);
       localRuns.delete(key);
+      const slot = entry.slot;
+      if (slot && options.slots)
+        void options.slots
+          .release(slot.context, slot.taskId, slot.key)
+          .catch((error: unknown) => reportInternalError("slots", error));
       wake();
     };
     const afterRun = async (): Promise<void> => {
@@ -1807,6 +1922,60 @@ export async function createResearchService(
     void entry.settled;
   };
 
+  // Keyed per attempt, so a stale attempt never renews or frees its successor's.
+  const slotFor = (row: RequestRow, attempt: number): SlotRef => ({
+    context: scopeCanonicalContext(
+      row.scope_json,
+      `research:${row.request_id}:slot`,
+    ),
+    taskId: row.task_id,
+    key: `${researchBudgetHoldKey(row.idem_request_id)}:${attempt}`,
+  });
+
+  let slotRetry: ReturnType<typeof setTimeout> | undefined;
+  // A job the task has no free slot for goes back to the queue unchanged and
+  // is retried after a poll interval, since slots can free in other services.
+  const admitSlot = async (claim: ClaimedJob): Promise<boolean> => {
+    const slots = options.slots;
+    if (!slots) return true;
+    const slot = slotFor(claim.row, claim.attempt);
+    const now = currentTime();
+    const admitted = await slots
+      .acquire(slot.context, slot.taskId, slot.key, {
+        now,
+        expiresAt: now + configured.leaseMs,
+      })
+      .catch((error: unknown) => {
+        reportInternalError("slots", error);
+        return false;
+      });
+    if (admitted) return true;
+    immediate(db, () =>
+      db
+        .query(
+          `UPDATE requests
+           SET status = 'queued', attempts = ?, lease_owner = NULL,
+               lease_token = NULL, lease_expires_at = NULL
+           WHERE scope_key = ? AND request_id = ? AND lease_token = ?
+             AND status = 'running'`,
+        )
+        .run(
+          claim.attempt - 1,
+          claim.row.scope_key,
+          claim.row.request_id,
+          claim.token,
+        ),
+    );
+    if (!slotRetry && configured.autoStart) {
+      slotRetry = setTimeout(() => {
+        slotRetry = undefined;
+        schedulePump();
+      }, configured.pollMs);
+      slotRetry.unref?.();
+    }
+    return false;
+  };
+
   const pump = async (): Promise<void> => {
     if (state !== "open" || pumping) return;
     pumping = true;
@@ -1822,9 +1991,14 @@ export async function createResearchService(
         ).run(timestamp(now), timestamp(now));
       });
       await flushEvents();
+      const refused = new Set<string>();
       while (localRuns.size < configured.maxConcurrency && state === "open") {
-        const claim = claimNext();
+        const claim = claimNext(refused);
         if (!claim) break;
+        if (!(await admitSlot(claim))) {
+          refused.add(`${claim.row.scope_key}\n${claim.row.request_id}`);
+          continue;
+        }
         void executeClaim(claim).catch((error: unknown) =>
           reportInternalError("execute_claim", error),
         );
@@ -1993,6 +2167,12 @@ export async function createResearchService(
             "Research budget exceeds task budget",
           );
         }
+      }
+      if (options.slots && task.budget.max_concurrency < 2) {
+        throw new ResearchError(
+          "budget_exceeded",
+          "Task concurrency leaves no slot for research",
+        );
       }
       const now = currentTime();
       const deadlineTime = Date.parse(request.deadline);
@@ -2407,6 +2587,7 @@ export async function createResearchService(
       const drainDeadline = Date.now() + drainMs;
       state = "closing";
       if (autoPump) clearInterval(autoPump);
+      if (slotRetry) clearTimeout(slotRetry);
       wake();
       closePromise = (async () => {
         const runDrainMs = Math.max(0, drainDeadline - Date.now());

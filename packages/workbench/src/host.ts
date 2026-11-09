@@ -64,7 +64,11 @@ import {
   OMNIROUTE_PROVIDER_ID,
 } from "@mars/providers-omniroute";
 import type { Turn } from "@mars/review";
-import type { AppendEventInput, DurableTaskStore } from "@mars/tasks";
+import type {
+  AppendEventInput,
+  DurableTaskStore,
+  SlotLease,
+} from "@mars/tasks";
 import {
   WATCH_EVIDENCE_PRODUCER,
   type WatchEvidenceRecord,
@@ -1739,6 +1743,7 @@ export async function createWorkbenchHost(
               : {}),
           }),
     );
+    const { acquireSlot, releaseSlot } = options.store;
     runner = createChildRunner({
       collaboration: {
         host: collaboration.host,
@@ -1746,6 +1751,27 @@ export async function createWorkbenchHost(
         close: async () => undefined,
       },
       adapter,
+      ...(acquireSlot && releaseSlot
+        ? {
+            slots: {
+              acquire: (taskId: string, key: string, lease: SlotLease) =>
+                acquireSlot.call(
+                  options.store,
+                  internalContext(options.scope),
+                  taskId,
+                  key,
+                  lease,
+                ),
+              release: (taskId: string, key: string) =>
+                releaseSlot.call(
+                  options.store,
+                  internalContext(options.scope),
+                  taskId,
+                  key,
+                ),
+            },
+          }
+        : {}),
       // Children never inherit the coordinator's model: a paid coordinator
       // would otherwise hand children a model they are not allowed to use.
       // With a specialist registry the child is routed like a launch, and a

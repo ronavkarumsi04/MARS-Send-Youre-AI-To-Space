@@ -455,8 +455,18 @@ export function createResearchWorker(
             signal,
           });
         } catch (error) {
-          ledger.release(reservation);
-          if (isAbort(error) || signal.aborted) throw error;
+          // A failed or timed-out call may still have been billed, so it is
+          // charged its whole reservation rather than released.
+          const charged = ledger.settle(reservation, {
+            input_tokens: estimate,
+            output_tokens: maxTokens,
+            cost_usd: reservation.usd,
+          });
+          if (isAbort(error) || signal.aborted) {
+            await charged.catch(() => undefined);
+            throw error;
+          }
+          await charged;
           log("model_failed", { purpose });
           return undefined;
         }
