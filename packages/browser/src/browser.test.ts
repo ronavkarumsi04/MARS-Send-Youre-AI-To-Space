@@ -406,6 +406,18 @@ test("deadlines expire running jobs and abort the worker", async () => {
   expect(reason).toBe("deadline_exceeded");
 });
 
+test("a zero retry backoff is accepted, as research accepts it; negative limits are not", async () => {
+  const flaky: Run = async (input, context) => {
+    if (input.attempt === 1) throw new Error("crash");
+    await completing(input, context);
+  };
+  const { service } = await setup({ run: flaky, service: { retryBackoffMs: 0 } });
+  const job = await service.submit(ctx(), request());
+  expect((await settled(service, job.request_id)).attempts).toBe(2);
+  expect(await codeOf(setup({ service: { retryBackoffMs: -1 } }))).toBe("invalid_input");
+  expect(await codeOf(setup({ service: { leaseMs: 0 } }))).toBe("invalid_input");
+});
+
 test("hold keys are namespaced per request", () => {
   expect(browserBudgetHoldKey("a")).toMatch(/^browser:[a-f0-9]{32}$/);
   expect(browserBudgetHoldKey("a")).not.toBe(browserBudgetHoldKey("b"));

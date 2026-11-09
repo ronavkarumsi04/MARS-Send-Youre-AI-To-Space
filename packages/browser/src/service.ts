@@ -344,10 +344,18 @@ export function browserJobCommitment(
   };
 }
 
-function positiveInt(value: number | undefined, fallback: number, name: string) {
+function positiveInt(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+  min = 1,
+) {
   const result = value ?? fallback;
-  if (!Number.isSafeInteger(result) || result < 1)
-    throw new BrowserError("invalid_input", `${name} must be a positive integer`);
+  if (!Number.isSafeInteger(result) || result < min)
+    throw new BrowserError(
+      "invalid_input",
+      `${name} must be an integer of at least ${min}`,
+    );
   return result;
 }
 
@@ -359,7 +367,12 @@ export async function createBrowserService(
     maxActivePerTask: positiveInt(options.maxActivePerTask, 4, "maxActivePerTask"),
     maxAttempts: positiveInt(options.maxAttempts, 2, "maxAttempts"),
     leaseMs: positiveInt(options.leaseMs, 30_000, "leaseMs"),
-    retryBackoffMs: positiveInt(options.retryBackoffMs, 1_000, "retryBackoffMs"),
+    retryBackoffMs: positiveInt(
+      options.retryBackoffMs,
+      1_000,
+      "retryBackoffMs",
+      0,
+    ),
     maxEvidenceBytes: positiveInt(
       options.maxEvidenceBytes,
       4 * 1024 * 1024,
