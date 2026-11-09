@@ -19,7 +19,7 @@ import {
   fixtureWorkbench,
   ref,
 } from "./fixture";
-import { measure } from "./perf";
+import type { measure } from "./perf";
 import { initialState, renderScreen, type SessionState } from "./screen";
 
 const NOW = new Date("2026-11-04T12:00:00.000Z");
@@ -350,7 +350,19 @@ describe("§8 snapshot matrix", () => {
 
 describe("§8.1 budgets (fixture, 10,000 events)", () => {
   test("first frame ≤ 150 ms, frames ≤ 16 ms, idle CPU < 1 %, client memory ≤ 150 MB", async () => {
-    const result = await measure();
+    // A separate process, so timers left by other test files in this bun
+    // test process don't count as the client's idle CPU or memory.
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "perf.ts")],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (code !== 0) throw new Error(`perf.ts exited ${code}: ${stderr}`);
+    const result = JSON.parse(stdout) as Awaited<ReturnType<typeof measure>>;
     expect(result.events).toBe(10_000);
     expect(result.entries).toBeLessThanOrEqual(2_001);
     expect(result.first_frame_ms).toBeLessThanOrEqual(150);
