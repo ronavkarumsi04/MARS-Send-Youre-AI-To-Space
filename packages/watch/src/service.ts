@@ -12,6 +12,7 @@ import {
   VERIFIABLE_ASSURANCE,
   VerificationContractInputSchema,
   VerifyRunResultSchema,
+  WATCH_EVIDENCE_OPERATION,
   WATCH_SKILL_VERSION,
   type WatchAssurance,
   type WatchDoctor,
@@ -537,7 +538,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
       ) => {
         const parsed = WatchEvidenceRecordSchema.parse({
           schema_version: 1,
-          operation: "watch.evidence",
+          operation: WATCH_EVIDENCE_OPERATION,
           recorded_at: new Date(now()).toISOString(),
           cli_version: version(),
           ...input,

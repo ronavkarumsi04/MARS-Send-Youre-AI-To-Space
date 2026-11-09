@@ -9,14 +9,27 @@ import {
   unlink,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { ScopeSchema } from "@mars/contracts";
 import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
 import { canonicalJSON, sha256 } from "./canonical";
 import { fail, IntegrationTrustError } from "./errors";
 import type { AuditEvent, AuditEventInput, TrustState } from "./schemas";
-import { CodeSchema, DigestSchema, KindSchema } from "./schemas";
+import {
+  AuditEventInputSchema,
+  AuditEventSchema,
+  DigestSchema,
+  RevisionSchema,
+  TrustStateSchema,
+} from "./schemas";
 
+const StoredRecordSchema = z
+  .object({
+    revision: RevisionSchema,
+    state: TrustStateSchema,
+    last_audit_sha256: DigestSchema,
+    state_sha256: DigestSchema,
+  })
+  .strict();
 const STALE_LOCK_MS = 30000,
   LOCK_WAIT_MS = 2000,
   LOCK_POLL_MS = 20;
@@ -31,24 +44,10 @@ export interface TrustStore {
 export function emptyState(): TrustState {
   return { reviews: [], grants: [], consumed_nonces: [], events: [] };
 }
-const EventInputSchema = z
-  .object({
-    at: z.string().datetime({ offset: true }),
-    type: CodeSchema,
-    scope: ScopeSchema,
-    kind: KindSchema,
-    integration_id: CodeSchema,
-    review_id: CodeSchema.optional(),
-    grant_id: CodeSchema.optional(),
-    actor: CodeSchema,
-    reason_code: CodeSchema,
-    binding_sha256: DigestSchema,
-  })
-  .strict();
 function append(state: TrustState, events: AuditEventInput[]): TrustState {
   const next = structuredClone(state);
   for (const input of events) {
-    const parsed = EventInputSchema.safeParse(input);
+    const parsed = AuditEventInputSchema.safeParse(input);
     if (!parsed.success) fail("store_corrupt");
     const event = {
       ...parsed.data,
@@ -146,25 +145,25 @@ export class FileTrustStore implements TrustStore {
       }
       await this.mode(path, 0o600);
       await this.mode(audit, 0o600);
-      const record = JSON.parse(raw),
+      const parsed = StoredRecordSchema.safeParse(JSON.parse(raw)),
         lines = await readFile(audit, "utf8");
-      if (!Array.isArray(record.state.events)) fail("store_corrupt");
+      if (!parsed.success) fail("store_corrupt");
+      const record = parsed.data;
       const events = lines
         .split("\n")
         .slice(0, record.state.events.length)
-        .map((line) => JSON.parse(line)) as AuditEvent[];
+        .map((line) => {
+          const event = AuditEventSchema.safeParse(JSON.parse(line));
+          if (!event.success) fail("store_corrupt");
+          return event.data;
+        });
       if (
-        !Number.isSafeInteger(record.revision) ||
-        record.revision < 1 ||
         record.last_audit_sha256 !== verify(events) ||
         record.state_sha256 !== sha256(canonicalJSON(record.state)) ||
         canonicalJSON(record.state.events) !== canonicalJSON(events)
       )
         fail("store_corrupt");
-      return {
-        revision: record.revision as number,
-        state: record.state as TrustState,
-      };
+      return { revision: record.revision, state: record.state };
     } catch (e) {
       if (e instanceof IntegrationTrustError) throw e;
       fail("store_corrupt", e);

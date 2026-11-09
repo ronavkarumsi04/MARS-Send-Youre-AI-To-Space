@@ -32,6 +32,7 @@ import {
   canTransitionCandidate,
   constantScore,
   createCommandWorkerLauncher,
+  createFileArtifactStore,
   createFixtureScoringBackend,
   createMemoryArtifactStore,
   createOptimizationService,
@@ -345,6 +346,46 @@ describe("targets and holdout", () => {
     expect((error as NodeJS.ErrnoException).code).toBe("EISDIR");
     const hasError = await store.hasTarget(context, targetId).catch((e) => e);
     expect((hasError as NodeJS.ErrnoException).code).toBe("EISDIR");
+  });
+
+  test("artifact and candidate reads map only ENOENT to absent", async () => {
+    const root = await newRoot();
+    const artifacts = createFileArtifactStore(root);
+    const ref = await artifacts.put(
+      context,
+      new TextEncoder().encode("artifact"),
+      "text/plain",
+    );
+    const artifactFile = path.join(
+      root,
+      scopeKey(context.scope),
+      "artifacts",
+      `${ref.sha256}.bin`,
+    );
+    await rm(artifactFile);
+    await expect(artifacts.get(context, ref)).rejects.toThrow(
+      "artifact_missing",
+    );
+    await mkdir(artifactFile);
+    const artifactError = await artifacts.get(context, ref).catch((e) => e);
+    expect(artifactError).not.toBeInstanceOf(OptimizationError);
+    expect((artifactError as NodeJS.ErrnoException).code).toBe("EISDIR");
+
+    const store = new OptimizationStore(root);
+    expect(await store.listCandidates(context, "target-absent")).toEqual([]);
+    const targetDir = path.join(
+      root,
+      scopeKey(context.scope),
+      "targets",
+      "target-demo",
+    );
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(path.join(targetDir, "candidates"), "");
+    const listError = await store
+      .listCandidates(context, "target-demo")
+      .catch((e) => e);
+    expect(listError).not.toBeInstanceOf(OptimizationError);
+    expect((listError as NodeJS.ErrnoException).code).toBe("ENOTDIR");
   });
 });
 

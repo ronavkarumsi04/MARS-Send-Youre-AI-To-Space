@@ -1,9 +1,10 @@
-import type {
-  BridgeErrorKind,
-  BridgeResult,
-  ReadMethod,
+import {
+  type BridgeErrorKind,
+  bridgeError,
+  bridgeFailure,
+  READ_METHODS,
+  type ReadMethod,
 } from "../shared/methods";
-import { READ_METHODS } from "../shared/methods";
 import { type Bridge, createBridge } from "./bridge";
 import type { ConnectionResult, LocalConnection } from "./connection";
 import type { RpcTransport } from "./transport";
@@ -13,11 +14,6 @@ const RETRYABLE_ERRORS = new Set<BridgeErrorKind>([
   "unavailable",
   "unauthorized",
 ]);
-
-const unavailable = (): BridgeResult<unknown> => ({
-  ok: false,
-  error: { kind: "unavailable", message: "Workbench is unavailable." },
-});
 
 function isReadMethod(value: unknown): value is ReadMethod {
   return (
@@ -31,10 +27,7 @@ export function createReconnectingBridge(options: {
 }): Bridge {
   let activeBridge: Bridge | undefined;
   const refusalBridge = createBridge({
-    connectionError: {
-      kind: "not_connected",
-      message: "Workbench is unavailable.",
-    },
+    connectionError: bridgeError("not_connected"),
   });
 
   return {
@@ -45,13 +38,7 @@ export function createReconnectingBridge(options: {
         try {
           connection = await options.resolve();
         } catch {
-          return {
-            ok: false,
-            error: {
-              kind: "not_connected",
-              message: "Workbench is unavailable.",
-            },
-          };
+          return bridgeFailure("not_connected");
         }
         if (!connection.ok)
           return {
@@ -64,12 +51,12 @@ export function createReconnectingBridge(options: {
             connectionScope: connection.connection.scope,
           });
         } catch {
-          return unavailable();
+          return bridgeFailure("unavailable");
         }
       }
 
       const bridge = activeBridge;
-      if (!bridge) return unavailable();
+      if (!bridge) return bridgeFailure("unavailable");
       try {
         const result = await bridge.call(method, params);
         if (!result.ok && RETRYABLE_ERRORS.has(result.error.kind))
@@ -77,7 +64,7 @@ export function createReconnectingBridge(options: {
         return result;
       } catch {
         activeBridge = undefined;
-        return unavailable();
+        return bridgeFailure("unavailable");
       }
     },
   };

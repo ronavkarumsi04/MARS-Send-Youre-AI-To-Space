@@ -10,6 +10,7 @@ import {
 } from "./core";
 
 export * from "./core";
+export * from "./event-operations";
 export * from "./invisible";
 export * from "./path-policy";
 export * from "./workbench-read";

@@ -1,14 +1,5 @@
-import {
-  BRIDGE_CHANNEL,
-  type BridgeErrorKind,
-  type BridgeResult,
-} from "../shared/methods";
+import { BRIDGE_CHANNEL, bridgeFailure } from "../shared/methods";
 import type { Bridge } from "./bridge";
-
-const REFUSED: BridgeResult<never> = {
-  ok: false,
-  error: { kind: "refused", message: "Workbench request was refused." },
-};
 
 export type IpcEventLike = {
   senderFrame?: { url?: string } | null;
@@ -63,16 +54,13 @@ export function registerBridge(
 ): void {
   ipcMain.handle(BRIDGE_CHANNEL, async (event, payload) => {
     try {
-      if (!trustedSender(event, options.trustedOrigin)) return REFUSED;
+      if (!trustedSender(event, options.trustedOrigin))
+        return bridgeFailure("refused");
       const request = requestPayload(payload);
-      if (!request) return REFUSED;
+      if (!request) return bridgeFailure("refused");
       return await bridge.call(request.method, request.params);
     } catch {
-      const error: { kind: BridgeErrorKind; message: string } = {
-        kind: "protocol",
-        message: "Workbench returned an invalid response.",
-      };
-      return { ok: false, error };
+      return bridgeFailure("protocol");
     }
   });
 }
