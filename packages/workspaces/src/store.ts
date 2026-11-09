@@ -17,9 +17,32 @@ import { ArtifactRefSchema } from "@mars/contracts";
 import { z } from "zod";
 import { IntegrityError, ProviderLockedError } from "./errors";
 
+const WORKSPACE_ID_SOURCE = "ws_[a-f0-9]{32}";
+export const WORKSPACE_ID_PATTERN = new RegExp(`^${WORKSPACE_ID_SOURCE}$`);
+/** Matches a `staging/` or `trash/` entry name and captures its workspace id. */
+export const WORKSPACE_ENTRY_PATTERN = new RegExp(
+  `^(${WORKSPACE_ID_SOURCE})-[A-Za-z0-9-]+$`,
+);
+const WORKSPACE_STAGE_PATTERN = new RegExp(
+  `^${WORKSPACE_ID_SOURCE}-[a-f0-9]{32}$`,
+);
+export const CHECKPOINT_ID_PATTERN = /^cp_[a-f0-9]{32}$/;
+
+export function newToken(): string {
+  return randomUUID().replaceAll("-", "");
+}
+
+export function newWorkspaceId(): string {
+  return `ws_${newToken()}`;
+}
+
+export function newCheckpointId(): string {
+  return `cp_${newToken()}`;
+}
+
 const checkpointRecordSchema = z
   .object({
-    checkpoint_id: z.string().regex(/^cp_[a-f0-9]{32}$/),
+    checkpoint_id: z.string().regex(CHECKPOINT_ID_PATTERN),
     artifact: ArtifactRefSchema,
     revision: z.string().regex(/^\d+\.[a-f0-9]{16}$/),
     created_at: z.string().datetime({ offset: true }),
@@ -29,8 +52,8 @@ const checkpointRecordSchema = z
 const journalSchema = z
   .object({
     phase: z.literal("backed-up"),
-    staging: z.string().regex(/^ws_[a-f0-9]{32}-[a-f0-9]{32}$/),
-    backup: z.string().regex(/^ws_[a-f0-9]{32}-[a-f0-9]{32}$/),
+    staging: z.string().regex(WORKSPACE_STAGE_PATTERN),
+    backup: z.string().regex(WORKSPACE_STAGE_PATTERN),
     previous: z
       .object({
         counter: z.number().int().nonnegative(),
@@ -51,7 +74,7 @@ const journalSchema = z
 export const workspaceMetaSchema = z
   .object({
     schema_version: z.literal(1),
-    workspace_id: z.string().regex(/^ws_[a-f0-9]{32}$/),
+    workspace_id: z.string().regex(WORKSPACE_ID_PATTERN),
     provider: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/),
     owner_id: z.string().min(1),
     project_id: z.string().min(1),
@@ -60,7 +83,7 @@ export const workspaceMetaSchema = z
     revision: z.string().regex(/^\d+\.[a-f0-9]{16}$/),
     tree_digest: z.string().regex(/^[a-f0-9]{64}$/),
     created_at: z.string().datetime({ offset: true }),
-    baseline_checkpoint_id: z.string().regex(/^cp_[a-f0-9]{32}$/),
+    baseline_checkpoint_id: z.string().regex(CHECKPOINT_ID_PATTERN),
     checkpoints: z.array(checkpointRecordSchema),
     blob_index: z
       .record(z.string().regex(/^[a-f0-9]{64}$/), ArtifactRefSchema)
@@ -315,7 +338,7 @@ export async function listMetas(rootDir: string): Promise<WorkspaceMeta[]> {
   const base = join(rootDir, "meta");
   const result: WorkspaceMeta[] = [];
   for (const entry of await readdir(base, { withFileTypes: true })) {
-    if (!/^ws_[a-f0-9]{32}$/.test(entry.name)) continue;
+    if (!WORKSPACE_ID_PATTERN.test(entry.name)) continue;
     if (!entry.isDirectory()) throw new IntegrityError("workspace state lost");
     result.push(await loadMeta(rootDir, entry.name));
   }

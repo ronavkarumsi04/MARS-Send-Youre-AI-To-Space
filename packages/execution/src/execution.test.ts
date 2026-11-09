@@ -3,12 +3,23 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
-import { probeExecution } from "./index";
+import { EXECUTION_PACKAGE_VERSION, probeExecution } from "./index";
+
+test("execution package version matches every pinned Oh My Pi dependency", async () => {
+  const manifest = await Bun.file(
+    new URL("../package.json", import.meta.url),
+  ).json();
+  const pins = Object.entries(manifest.dependencies as Record<string, string>)
+    .filter(([name]) => name.startsWith("@oh-my-pi/"))
+    .map(([, version]) => version);
+  expect(pins.length).toBeGreaterThan(0);
+  for (const pin of pins) expect(pin).toBe(EXECUTION_PACKAGE_VERSION);
+});
 
 test("initializes the actual SDK and native addon without tools or model calls", async () => {
   expect(await probeExecution()).toEqual({
     runtime: "oh-my-pi",
-    package_version: "18.14.0",
+    package_version: EXECUTION_PACKAGE_VERSION,
     session_initialized: true,
     executable_tools: [],
     persistent_session: false,

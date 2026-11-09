@@ -12,7 +12,7 @@ import {
   SLASH_COMMANDS,
   STRINGS,
 } from "@mars/ui-core";
-import { type SessionClient, SessionRpcError } from "./client";
+import { isUnsupported, type SessionClient, SessionRpcError } from "./client";
 import { exportMarkdown } from "./export";
 import type { SessionState } from "./screen";
 import {
@@ -25,6 +25,16 @@ import {
   tasksView,
   type ViewContext,
 } from "./views";
+
+/** A host without the method or the resource shows nothing; every other failure reaches tick()'s errorCode. */
+function absentIfUnsupported(error: unknown): null {
+  if (
+    isUnsupported(error) ||
+    (error instanceof SessionRpcError && error.code === "not_found")
+  )
+    return null;
+  throw error;
+}
 
 export interface ControllerOptions {
   taskId?: string;
@@ -101,7 +111,7 @@ export class SessionController {
       row.payload =
         (await this.client
           .json(task.task_id, row.event.payload)
-          .catch(() => undefined)) ?? null;
+          .catch(absentIfUnsupported)) ?? null;
     }
     if (this.journal.status !== "unavailable") {
       const pending = pendingJournalIds(
@@ -129,7 +139,7 @@ export class SessionController {
     }
     this.state.verification = await this.client
       .verification(task.task_id)
-      .catch(() => null);
+      .catch(absentIfUnsupported);
     if (this.finalText === null && task.status === "completed") {
       const text = inspected.task.artifacts.findLast((ref) =>
         ref.media_type.startsWith("text/plain"),

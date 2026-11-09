@@ -47,7 +47,7 @@ export interface VaultScan {
   memoryStale: boolean;
   skillsStale: boolean;
   notes: ScannedNote[];
-  /** Markdown files inside facts/ or skills/ that the vault neither tracks nor recognises. */
+  /** Markdown files inside facts/ or skills/ without MARS frontmatter (no frontmatter or no `mars_kind`). */
   untracked: number;
 }
 
@@ -92,6 +92,18 @@ async function readNoteInside(
 function kindOf(note: ParsedNote): NoteKind | null {
   const parsed = NoteKindSchema.safeParse(note.frontmatter.mars_kind);
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Whether unparseable text still opens a frontmatter block that declares
+ * `mars_kind`: a broken MARS note rather than the user's own Markdown.
+ */
+function declaresMarsKind(text: string): boolean {
+  const source = text.replaceAll("\r\n", "\n");
+  if (!source.startsWith("---\n")) return false;
+  const end = source.indexOf("\n---\n", 4);
+  const block = end < 0 ? source : source.slice(0, end + 1);
+  return /^[ \t]*mars_kind[ \t]*:/m.test(block);
 }
 
 /**
@@ -222,16 +234,40 @@ export async function scanVault(
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw error;
       }
+      const invalid = (reason: string): ScannedNote => ({
+        path,
+        kind: expected,
+        id: null,
+        state: "invalid",
+        derived: false,
+        tracked: null,
+        note: null,
+        reason,
+      });
       let note: ParsedNote;
       try {
         note = parseNote(text);
-      } catch {
+      } catch (error) {
+        if (!declaresMarsKind(text)) {
+          untracked += 1;
+          continue;
+        }
+        notes.push(
+          invalid(error instanceof Error ? error.message : "unparseable note"),
+        );
+        continue;
+      }
+      if (note.frontmatter.mars_kind === undefined) {
         untracked += 1;
         continue;
       }
       const kind = kindOf(note);
       if (kind !== expected) {
-        untracked += 1;
+        notes.push(
+          invalid(
+            `mars_kind ${String(note.frontmatter.mars_kind)} does not belong in ${dir}/; expected ${expected}`,
+          ),
+        );
         continue;
       }
       const idField = kind === "memory_fact" ? "entry_id" : "name";
