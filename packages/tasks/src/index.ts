@@ -180,6 +180,24 @@ export interface DurableTaskStore extends TaskService {
     key: string,
     amount: BudgetAmount,
   ): Promise<void>;
+  /**
+   * Settles a spender's hold once its spending can no longer grow (a closed
+   * room's delegation pool): the first settle sets the hold to `spent`, which
+   * frees the unspent rest for the other spenders; later settles only raise it,
+   * so a stale or concurrent settle never undercounts. Any successful
+   * `reserveBudget` on the key reopens the hold, even one it already covers.
+   */
+  settleBudget?(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    spent: BudgetAmount,
+  ): Promise<void>;
+  /** Task ids holding `key` that has not been settled since it was reserved. */
+  unsettledBudgetHolds?(
+    context: RequestContext,
+    key: string,
+  ): Promise<string[]>;
   /** Sum of the task's holds, optionally leaving out one spender's own hold. */
   budgetCommitted?(
     context: RequestContext,
@@ -781,6 +799,14 @@ export async function createTaskStore(
         tokens INTEGER NOT NULL,
         usd REAL NOT NULL,
         updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_key, task_id, hold_key),
+        FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS budget_settlements (
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        hold_key TEXT NOT NULL,
+        settled_at TEXT NOT NULL,
         PRIMARY KEY (scope_key, task_id, hold_key),
         FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
       );
@@ -2404,6 +2430,11 @@ export async function createTaskStore(
           tokens: Math.max(held?.tokens ?? 0, Math.ceil(amount.tokens)),
           usd: Math.max(held?.usd ?? 0, amount.usd),
         };
+        // Every successful reservation reopens a settled hold, including one
+        // the hold already covers: its next settle sets the hold again.
+        db.query(
+          "DELETE FROM budget_settlements WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
+        ).run(key, taskId, holdKey);
         if (held && next.tokens === held.tokens && next.usd === held.usd)
           return;
         const others = sumHolds(key, taskId, holdKey);
@@ -2415,6 +2446,56 @@ export async function createTaskStore(
         writeHold(key, taskId, holdKey, next);
       });
       transaction.immediate();
+    },
+    async settleBudget(context, taskId, holdKey, spent) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      assertHold(holdKey, spent);
+      const transaction = db.transaction(() => {
+        readTask(key, taskId);
+        const amount = { tokens: Math.ceil(spent.tokens), usd: spent.usd };
+        const settled = db
+          .query(
+            "SELECT 1 FROM budget_settlements WHERE scope_key = ? AND task_id = ? AND hold_key = ?",
+          )
+          .get(key, taskId, holdKey);
+        if (settled) {
+          const held = holdRow(key, taskId, holdKey);
+          if (held && held.tokens >= amount.tokens && held.usd >= amount.usd)
+            return;
+          writeHold(key, taskId, holdKey, {
+            tokens: Math.max(held?.tokens ?? 0, amount.tokens),
+            usd: Math.max(held?.usd ?? 0, amount.usd),
+          });
+          return;
+        }
+        if (
+          !holdRow(key, taskId, holdKey) &&
+          amount.tokens === 0 &&
+          amount.usd === 0
+        )
+          return;
+        writeHold(key, taskId, holdKey, amount);
+        db.query(
+          "INSERT INTO budget_settlements (scope_key, task_id, hold_key, settled_at) VALUES (?, ?, ?, ?)",
+        ).run(key, taskId, holdKey, new Date().toISOString());
+      });
+      transaction.immediate();
+    },
+    async unsettledBudgetHolds(context, holdKey) {
+      const { scopeKey: key } = contextFor(context);
+      if (typeof holdKey !== "string" || !BUDGET_HOLD_KEY_PATTERN.test(holdKey))
+        throw invalidInput("Invalid budget hold");
+      const rows = db
+        .query(
+          `SELECT h.task_id AS task_id FROM budget_holds h
+           WHERE h.scope_key = ? AND h.hold_key = ? AND NOT EXISTS (
+             SELECT 1 FROM budget_settlements s
+             WHERE s.scope_key = h.scope_key AND s.task_id = h.task_id AND s.hold_key = h.hold_key)
+           ORDER BY h.task_id`,
+        )
+        .all(key, holdKey) as { task_id: string }[];
+      return rows.map((row) => row.task_id);
     },
     async recordBudget(context, taskId, holdKey, amount) {
       const { scopeKey: key } = contextFor(context);

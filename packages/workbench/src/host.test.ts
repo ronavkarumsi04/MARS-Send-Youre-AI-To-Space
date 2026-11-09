@@ -5765,3 +5765,176 @@ test("browser jobs stop at the task's fixed deadline, also after a resume", asyn
   await second.disposed;
   await api.close();
 });
+
+const delegationHoldFixture = async () => {
+  const f = await fixture();
+  const collaboration = await createCollaboration({
+    rootDir: join(f.root, "collaboration"),
+    hostPrivateRoots: [join(f.root, "private")],
+  });
+  const finishers: ((outcome: ChildOutcome) => void)[] = [];
+  const makeHost = () =>
+    f.makeHost(undefined, undefined, undefined, undefined, {
+      host: collaboration.host,
+      agents: collaboration.agents,
+      delegation: {
+        pool: { max_tokens: 400 },
+        tickMs: 10,
+        adapter: ({ workspaceFor }) => ({
+          async start(launch) {
+            const binding = await workspaceFor(launch);
+            const outcome = new Promise<ChildOutcome>((resolve) => {
+              finishers.push(resolve);
+            });
+            return {
+              session_ref: null,
+              base_revision: binding.base_revision,
+              outcome,
+              async cancel() {},
+            };
+          },
+        }),
+      },
+    });
+  const api = await makeHost();
+  const base = task();
+  await api.create(context(), {
+    ...base,
+    budget: { ...base.budget, max_duration_ms: 60_000, max_concurrency: 3 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  const delegation = required(
+    required(session.options.collaboration).delegation,
+  );
+  const launch = JSON.parse(
+    await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+  );
+  const ledger = f.store;
+  const committed = async () =>
+    (await required(ledger.budgetCommitted)(context(), "task", "foreground"))
+      .tokens;
+  const delegateAndFinish = async (finish: boolean) => {
+    await delegation.delegate({
+      role_label: "worker",
+      instruction: "Inspect the fixture and propose nothing.",
+      max_tokens: 100,
+      max_duration_ms: 30_000,
+      max_steps: 5,
+      max_messages: 4,
+      read: true,
+    });
+    const index = finishers.length - 1;
+    const done = () =>
+      required(finishers[index])({
+        status: "completed",
+        summary: "No change needed.",
+        artifacts: [],
+        usage: { input_tokens: 10, output_tokens: 5, usd: 0, steps: 1 },
+      });
+    if (finish) {
+      done();
+      await until(async () =>
+        (await delegation.results()).includes("No change needed."),
+      );
+    }
+    return done;
+  };
+  return {
+    f,
+    api,
+    collaboration,
+    session,
+    roomId: launch.collaboration.room_id as string,
+    makeHost,
+    committed,
+    delegateAndFinish,
+  };
+};
+
+const until = async (predicate: () => Promise<boolean>) => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("condition not reached");
+};
+
+test("a closed room returns its unspent delegation pool to the task; spent child usage stays charged", async () => {
+  const { f, api, session, committed, delegateAndFinish } =
+    await delegationHoldFixture();
+  const reserve = required(f.store.reserveBudget);
+  const maxTokens = task().budget.max_tokens;
+  // The whole pool is held while the room is open.
+  expect(await committed()).toBe(400);
+  await delegateAndFinish(true);
+  expect(await committed()).toBe(400);
+  await expect(
+    reserve(context(), "task", "research:late", {
+      tokens: maxTokens - 400 + 1,
+      usd: 0,
+    }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+
+  session.finish("completed");
+  await session.disposed;
+  await until(async () => (await committed()) === 15);
+  // The unspent 385 tokens are usable by research and the foreground run; the
+  // 15 tokens the child spent are not.
+  await expect(
+    reserve(context(), "task", "research:late", {
+      tokens: maxTokens - 15 + 1,
+      usd: 0,
+    }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  await reserve(context(), "task", "research:late", {
+    tokens: maxTokens - 15 - 100,
+    usd: 0,
+  });
+  await reserve(context(), "task", "foreground", { tokens: 100, usd: 0 });
+  await expect(
+    reserve(context(), "task", "foreground", { tokens: 101, usd: 0 }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  await api.close();
+});
+
+test("a draining room keeps the delegation pool held until its last child finishes", async () => {
+  const { api, session, collaboration, roomId, committed, delegateAndFinish } =
+    await delegationHoldFixture();
+  const finishChild = await delegateAndFinish(false);
+  session.finish("completed");
+  await session.disposed;
+  expect((await collaboration.host.inspectRoom(context(), roomId)).status).toBe(
+    "draining",
+  );
+  expect(await committed()).toBe(400);
+  finishChild();
+  await until(async () => (await committed()) === 15);
+  expect((await collaboration.host.inspectRoom(context(), roomId)).status).toBe(
+    "closed",
+  );
+  await api.close();
+});
+
+test("a room that closed while the host was down settles its delegation hold on restart", async () => {
+  const { api, collaboration, roomId, makeHost, committed, delegateAndFinish } =
+    await delegationHoldFixture();
+  await delegateAndFinish(true);
+  await api.close();
+  // Another process closes the room while no host is running.
+  expect(
+    (await collaboration.host.closeRoom(context(), roomId, "cancel")).status,
+  ).toBe("closed");
+  expect(await committed()).toBe(400);
+  const restarted = await makeHost();
+  expect(await committed()).toBe(15);
+  await restarted.close();
+  // A further restart finds nothing left to settle and never lowers the hold.
+  const again = await makeHost();
+  expect(await committed()).toBe(15);
+  await again.close();
+});
