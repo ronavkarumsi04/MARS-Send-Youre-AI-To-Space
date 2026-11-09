@@ -287,4 +287,39 @@ describe("bounded response bodies", () => {
     });
     expect(await t.send({ method: "tasks.list", params: {} })).toBe("héllo");
   });
+
+  test("rejects streamed bodies that are not valid UTF-8", async () => {
+    const t = new HttpRpcTransport({
+      rpcUrl: "http://127.0.0.1:7331/v1/rpc",
+      getToken: () => Promise.resolve(TOKEN),
+      fetch: streamed(
+        [
+          new TextEncoder().encode('{"result":"'),
+          new Uint8Array([0xff, 0x22, 0x7d]),
+        ],
+        () => {},
+      ),
+      maxResponseBytes: 2048,
+    });
+    const error = await rejection(t.send({ method: "tasks.list", params: {} }));
+    expect(error.kind).toBe("protocol");
+    expect(error.message).toContain("UTF-8");
+  });
+
+  test("text-only bodies are bounded by UTF-8 bytes, not characters", async () => {
+    const body = JSON.stringify({ result: "é".repeat(40) });
+    const bytes = new TextEncoder().encode(body).byteLength;
+    const send = (maxResponseBytes: number) =>
+      new HttpRpcTransport({
+        rpcUrl: "http://127.0.0.1:7331/v1/rpc",
+        getToken: () => Promise.resolve(TOKEN),
+        fetch: () => reply(200, body),
+        maxResponseBytes,
+      }).send({ method: "tasks.list", params: {} });
+    expect(body.length).toBeLessThan(bytes - 1);
+    const error = await rejection(send(bytes - 1));
+    expect(error.kind).toBe("protocol");
+    expect(error.message).toContain("too large");
+    expect(await send(bytes)).toBe("é".repeat(40));
+  });
 });

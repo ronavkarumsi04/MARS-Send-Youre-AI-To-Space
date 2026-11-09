@@ -11,9 +11,14 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { z } from "zod";
 import { SessionView } from "./app";
 import { compact } from "./cards";
-import { READ_METHODS, SessionClient } from "./client";
+import { READ_METHODS, SessionClient, SessionRpcError } from "./client";
 import { SessionController } from "./controller";
-import { FINAL_TEXT, type FixtureOptions, fixtureWorkbench } from "./fixture";
+import {
+  FINAL_TEXT,
+  type FixtureOptions,
+  fixtureWorkbench,
+  ref,
+} from "./fixture";
 import { measure } from "./perf";
 import { initialState, renderScreen, type SessionState } from "./screen";
 
@@ -141,6 +146,58 @@ describe("mars session is read-only", () => {
       (body) => body.method === "tasks.journal",
     ).length;
     expect(asked).toBe(1);
+  });
+
+  test("a host without tasks.verification or payload artifacts shows them as absent", async () => {
+    const { state } = await session({
+      status: "running",
+      failures: {
+        "tasks.verification": new SessionRpcError(
+          "method_not_found",
+          "Unknown method.",
+          400,
+        ),
+        "tasks.artifact": new SessionRpcError(
+          "not_found",
+          "Artifact not found.",
+          404,
+        ),
+      },
+    });
+    expect(state.connection).toBe("connected");
+    expect(state.verification).toBeNull();
+    expect(state.projection?.entries.length).toBeGreaterThan(0);
+  });
+
+  test("verification and payload failures reach the error code instead of reading as absent", async () => {
+    for (const method of ["tasks.verification", "tasks.artifact"] as const)
+      for (const code of ["unauthorized", "protocol", "unreachable"])
+        await expect(
+          session({
+            status: "running",
+            failures: { [method]: new SessionRpcError(code, "Failed.") },
+          }),
+        ).rejects.toMatchObject({ code });
+  });
+
+  test("a payload artifact that is not JSON is a protocol error", async () => {
+    const bytes = new TextEncoder().encode("not json");
+    const { transport } = fixtureWorkbench();
+    const client = new SessionClient(async (body) =>
+      body.method === "tasks.artifact"
+        ? {
+            data_base64: Buffer.from(bytes).toString("base64"),
+            media_type: "application/json",
+          }
+        : transport(body),
+    );
+    await client.describe();
+    await expect(
+      client.json(
+        FIXTURE_TASK_ID,
+        ref("artifact-bad", bytes, "application/json"),
+      ),
+    ).rejects.toMatchObject({ code: "protocol" });
   });
 
   test("Esc only closes overlays", async () => {

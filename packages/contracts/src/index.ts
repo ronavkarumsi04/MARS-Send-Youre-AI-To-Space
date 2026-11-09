@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+export * from "./event-operations";
 export * from "./invisible";
 export * from "./path-policy";
 export * from "./workbench-read";
