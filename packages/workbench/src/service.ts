@@ -60,7 +60,11 @@ import {
 import type { WorkbenchCollaboration } from "./collaboration-context";
 import type { WorkbenchConventions } from "./conventions-context";
 import { createWorkbenchHost, type WorkbenchHostOptions } from "./host";
-import { serveWorkbench, WorkbenchError } from "./server";
+import {
+  DEFAULT_WORKBENCH_PORT,
+  serveWorkbench,
+  WorkbenchError,
+} from "./server";
 import type { WorkbenchSpecialists } from "./specialist-routing";
 
 /**
@@ -514,7 +518,7 @@ export async function createWorkbenchService(
     server = serveWorkbench({
       api: host,
       token,
-      port: options.port ?? 7331,
+      port: options.port ?? DEFAULT_WORKBENCH_PORT,
     });
     const url = `http://127.0.0.1:${server.port}`;
     const connectionFile = join(root, "connection.json");

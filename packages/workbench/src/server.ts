@@ -139,6 +139,7 @@ export class WorkbenchError extends Error {
   }
 }
 
+export const DEFAULT_WORKBENCH_PORT = 7331;
 const MAX_REQUEST_BYTES = 512 * 1024;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_PAGE_EVENTS = 1000;
@@ -368,7 +369,7 @@ export function serveWorkbench(options: WorkbenchServerOptions) {
     );
   const tokenHash = digest(`Bearer ${options.token}`);
   const scope = ScopeSchema.parse(options.api.scope);
-  const port = options.port ?? 7331;
+  const port = options.port ?? DEFAULT_WORKBENCH_PORT;
   if (!Number.isInteger(port) || port < 0 || port > 65_535)
     throw new Error("Invalid workbench port.");
   return Bun.serve({
