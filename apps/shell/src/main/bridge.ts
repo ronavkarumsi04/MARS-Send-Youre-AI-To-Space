@@ -6,9 +6,8 @@ import {
   type BridgeResult,
   bridgeError,
   bridgeFailure,
+  isReadMethod,
   type JournalResult,
-  READ_METHODS,
-  type ReadMethod,
 } from "../shared/methods";
 import { ParamsSchema, ResultSchema } from "./protocol";
 import {
@@ -41,14 +40,6 @@ function sameConnectionScope(
 
 function scopeForTask(task: Task, scope: Scope): boolean {
   return sameScope(task.scope, scope);
-}
-
-function isReadMethod(value: unknown): value is ReadMethod {
-  if (typeof value !== "string") return false;
-  const lookup = Object.fromEntries(
-    READ_METHODS.map((method) => [method, true]),
-  );
-  return Object.hasOwn(lookup, value);
 }
 
 export type BridgeOptions = {

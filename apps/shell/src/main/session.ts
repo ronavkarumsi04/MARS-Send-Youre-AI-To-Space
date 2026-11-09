@@ -6,8 +6,7 @@ import {
   type BridgeErrorKind,
   bridgeError,
   bridgeFailure,
-  READ_METHODS,
-  type ReadMethod,
+  isReadMethod,
 } from "../shared/methods";
 import { type Bridge, createBridge } from "./bridge";
 import type { RpcTransport } from "./transport";
@@ -17,12 +16,6 @@ const RETRYABLE_ERRORS = new Set<BridgeErrorKind>([
   "unavailable",
   "unauthorized",
 ]);
-
-function isReadMethod(value: unknown): value is ReadMethod {
-  return (
-    typeof value === "string" && READ_METHODS.includes(value as ReadMethod)
-  );
-}
 
 export function createReconnectingBridge(options: {
   resolve: () => Promise<ConnectionResult>;
