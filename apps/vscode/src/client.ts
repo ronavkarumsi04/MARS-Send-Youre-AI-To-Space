@@ -3,6 +3,8 @@ import {
   type ArtifactRef,
   type CheckpointRef,
   type EventEnvelope,
+  type PatchExport,
+  PatchExportSchema,
   type RequiredCheck,
   RequiredCheckSchema,
   type Scope,
@@ -320,6 +322,37 @@ export class MarsClient {
     )
       throw invalid("artifact content (hash, size or media type mismatch)");
     return { ref, media_type: data.media_type, bytes };
+  }
+
+  /**
+   * Exports the candidate patch the client is looking at. The host refuses
+   * with `conflict` when the revision or the exact patch bytes moved.
+   */
+  async exportPatch(
+    taskId: string,
+    expected: { revision: string; patchSha256: string },
+    signal?: AbortSignal,
+  ): Promise<PatchExport> {
+    const result = validate(
+      PatchExportSchema,
+      await this.call(
+        RPC_METHODS.export,
+        {
+          task_id: taskId,
+          expected_revision: expected.revision,
+          expected_patch_sha256: expected.patchSha256,
+        },
+        signal,
+      ),
+      "export",
+    );
+    this.checkWorkspace(result.candidate);
+    if (
+      result.candidate.revision !== expected.revision ||
+      result.patch_sha256 !== expected.patchSha256
+    )
+      throw invalid("export (candidate identity mismatch)");
+    return result;
   }
 
   async diff(taskId: string, signal?: AbortSignal): Promise<DiffResult> {

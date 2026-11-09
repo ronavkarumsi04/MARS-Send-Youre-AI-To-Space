@@ -303,6 +303,19 @@ class WorkbenchViewProvider
       },
       openReview: (server, target) =>
         openReviewTarget(reviewHost, server, target),
+      savePatch: async (bytes, suggestedName) => {
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+        const uri = await vscode.window.showSaveDialog({
+          ...(folder
+            ? { defaultUri: vscode.Uri.joinPath(folder, suggestedName) }
+            : {}),
+          filters: { Patch: ["patch", "diff"] },
+          saveLabel: "Export verified patch",
+        });
+        if (!uri) return null;
+        await vscode.workspace.fs.writeFile(uri, bytes);
+        return uri.fsPath;
+      },
       openArtifact: async (artifact: VerifiedArtifact, title: string) => {
         const decoded = decodeArtifactText(artifact);
         const text =

@@ -6,6 +6,7 @@ import {
   artifactFor,
   budget,
   checkpoint,
+  describeResult,
   FakeServer,
   flush,
   harness,
@@ -842,6 +843,195 @@ describe("verification badge", () => {
       label: "Verification failed",
     });
     expect(badge?.reasons).toEqual(["Required file missing: repair.txt"]);
+    ctx.controller.dispose();
+  });
+});
+
+describe("verified patch flow", () => {
+  const checks = [{ id: "sum-test", label: "Sum unit test" }];
+  const patch =
+    "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-x\n+\uFEFFx\n";
+  const patchArtifact = artifactFor(patch, "patch-1", "text/x-diff");
+  const sha = patchArtifact.ref.sha256;
+  const verdict = (revision: string, patchSha = sha) => ({
+    schema_version: 1,
+    operation: "verification.verdict",
+    run_id: "run-1",
+    task_id: "task-1",
+    task_revision: 1,
+    candidate: { ...workspace, revision },
+    verdict: "passed",
+    verified: true,
+    checks: [
+      {
+        kind: "host_test",
+        path: "sum-test",
+        check_id: "sum-test",
+        expected_sha256: "c".repeat(64),
+        observed_sha256: "d".repeat(64),
+        status: "passed",
+        reason: null,
+        duration_ms: 1,
+        exit_code: 0,
+      },
+    ],
+    reasons: [],
+    diagnostics: [],
+    duration_ms: 1,
+    recorded_at: "2026-11-03T00:00:00Z",
+    patch_sha256: patchSha,
+  });
+  const hostServer = () => {
+    const server = new FakeServer();
+    server.on("workbench.describe", () => ({
+      ...describeResult,
+      capabilities: { execute: true, checkpoint: true },
+      checks,
+    }));
+    return server;
+  };
+
+  test("Start sends only host-advertised check ids as host_test checks, and refuses them without execute approval", async () => {
+    const ctx = setup({ server: hostServer() });
+    ctx.server.tasks.set("task-1", makeTask());
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    expect(ctx.last().connection.checks).toEqual(checks);
+    const start = (execute: boolean, checkIds: string[]) =>
+      ctx.controller.handleMessage({
+        type: "startTask",
+        taskId: "task-1",
+        approvals: { read: true, write: true, execute },
+        checkIds,
+      });
+    await start(false, ["sum-test"]);
+    expect(ctx.last().notice?.kind).toBe("permission");
+    await start(true, ["not-offered"]);
+    expect(ctx.last().notice?.kind).toBe("error");
+    expect(ctx.server.methods()).not.toContain("tasks.start");
+    await start(true, ["sum-test"]);
+    const call = ctx.server.calls.find((item) => item.method === "tasks.start");
+    expect(
+      (call?.params as { required_checks?: unknown }).required_checks,
+    ).toEqual([{ kind: "host_test", check_id: "sum-test" }]);
+    expect(ctx.confirms.at(-1)?.detail).toContain(
+      "Required checks: Sum unit test",
+    );
+    ctx.controller.dispose();
+  });
+
+  test("a refresh re-asks the verdict, so another window's candidate change turns Verified stale", async () => {
+    const ctx = setup({ server: hostServer() });
+    ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
+    let candidate = "rev-2";
+    ctx.server.on("tasks.verification", () => ({
+      candidate: { ...workspace, revision: candidate },
+      state: "verified",
+      record: verdict("rev-2"),
+      reasons: [],
+      records: [verdict("rev-2")],
+      patch_sha256: sha,
+    }));
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    expect(ctx.last().selected?.verification?.state).toBe("verified");
+    candidate = "rev-3";
+    await ctx.controller.handleMessage({ type: "refresh" });
+    await flush();
+    expect(ctx.last().selected?.verification).toMatchObject({
+      state: "stale",
+      candidate: "rev-3",
+      bound: "rev-2",
+    });
+    ctx.controller.dispose();
+  });
+
+  test("the same revision with different patch bytes is stale, not Verified", async () => {
+    const ctx = setup({ server: hostServer() });
+    ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
+    ctx.server.on("tasks.verification", () => ({
+      candidate: { ...workspace, revision: "rev-2" },
+      state: "verified",
+      record: verdict("rev-2"),
+      reasons: [],
+      records: [verdict("rev-2")],
+      patch_sha256: "e".repeat(64),
+    }));
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    expect(ctx.last().selected?.verification?.state).toBe("stale");
+    await ctx.controller.handleMessage({
+      type: "exportPatch",
+      taskId: "task-1",
+    });
+    expect(ctx.server.methods()).not.toContain("tasks.export");
+    expect(ctx.saved).toHaveLength(0);
+    ctx.controller.dispose();
+  });
+
+  test("export saves the exact verified bytes; a moved candidate is refused and the verdict re-asked", async () => {
+    const ctx = setup({ server: hostServer() });
+    ctx.server.tasks.set("task-1", makeTask({ status: "completed" }));
+    ctx.server.artifacts.set("patch-1", patchArtifact.data_base64);
+    ctx.server.on("tasks.verification", () => ({
+      candidate: { ...workspace, revision: "rev-2" },
+      state: "verified",
+      record: verdict("rev-2"),
+      reasons: [],
+      records: [verdict("rev-2")],
+      patch_sha256: sha,
+    }));
+    ctx.server.on("tasks.export", (p) => {
+      if (p.expected_revision !== "rev-2" || p.expected_patch_sha256 !== sha)
+        throw new RpcError("conflict", "moved", "revision_conflict", 409);
+      return {
+        candidate: { ...workspace, revision: "rev-2" },
+        patch_sha256: sha,
+        artifact: patchArtifact.ref,
+        files: 1,
+        verification: "verified",
+        verified: true,
+        verdict_run_id: "run-1",
+        round_trip: { status: "passed", reason: null },
+        unsupported: [],
+      };
+    });
+    await ctx.controller.handleMessage({ type: "ready" });
+    await ctx.controller.handleMessage({
+      type: "selectTask",
+      taskId: "task-1",
+    });
+    await ctx.controller.handleMessage({
+      type: "exportPatch",
+      taskId: "task-1",
+    });
+    expect(ctx.saved).toHaveLength(1);
+    expect(Buffer.from(ctx.saved[0]?.bytes ?? []).toString("utf8")).toBe(patch);
+    expect(ctx.last().notice?.text).toContain("round trip passed");
+
+    ctx.server.on("tasks.export", () => {
+      throw new RpcError("conflict", "moved", "revision_conflict", 409);
+    });
+    const asked = ctx.server
+      .methods()
+      .filter((m) => m === "tasks.verification").length;
+    await ctx.controller.handleMessage({
+      type: "exportPatch",
+      taskId: "task-1",
+    });
+    expect(ctx.saved).toHaveLength(1);
+    expect(
+      ctx.server.methods().filter((m) => m === "tasks.verification").length,
+    ).toBe(asked + 1);
     ctx.controller.dispose();
   });
 });

@@ -57,6 +57,8 @@ export interface WorkbenchUi {
     server: DescribeResult,
     target: ReviewTarget,
   ): Promise<ReviewOutcome>;
+  /** Asks where to save a patch and writes the exact bytes; null when cancelled. */
+  savePatch(bytes: Uint8Array, suggestedName: string): Promise<string | null>;
 }
 
 export interface ControllerOptions {
@@ -92,6 +94,7 @@ function verificationBadge(view: VerificationView): VerificationBadge {
   const presentation = verificationStateFor(
     view.candidate?.revision ?? null,
     view.records,
+    view.patch_sha256 ?? null,
   );
   return {
     state: presentation.state,
@@ -102,6 +105,7 @@ function verificationBadge(view: VerificationView): VerificationBadge {
     reasons: presentation.reasons,
     diagnostics: presentation.record?.diagnostics ?? [],
     recorded_at: presentation.record?.recorded_at ?? null,
+    patch_sha256: view.patch_sha256 ?? null,
   };
 }
 
@@ -117,6 +121,7 @@ function disconnected(
     workspaceId: null,
     canExecute: false,
     canCheckpoint: false,
+    checks: [],
   };
 }
 
@@ -142,6 +147,7 @@ export class WorkbenchController {
   private selection: Selection | undefined;
   private poller: EventPoller | undefined;
   private generation = 0;
+  private verificationSeq = 0;
   private busy: string | null = null;
   private notice: Notice | null = null;
   private noticeSeq = 0;
@@ -198,7 +204,13 @@ export class WorkbenchController {
       case "createTask":
         return this.createTask(message);
       case "startTask":
-        return this.start(message.taskId, message.approvals);
+        return this.start(
+          message.taskId,
+          message.approvals,
+          message.checkIds ?? [],
+        );
+      case "exportPatch":
+        return this.exportPatch(message.taskId);
       case "resumeTask":
         return this.resume(message.taskId);
       case "steerTask":
@@ -413,6 +425,7 @@ export class WorkbenchController {
         workspaceId: server.scope.workspace_id ?? null,
         canExecute: server.capabilities.execute,
         canCheckpoint: server.capabilities.checkpoint,
+        checks: (server.checks ?? []).map((check) => ({ ...check })),
       };
       this.notice = null;
     } catch (error) {
@@ -458,6 +471,10 @@ export class WorkbenchController {
         this.replaceTask(fresh);
         if (!this.poller && !TERMINAL.includes(fresh.status))
           this.startPolling(selected.generation, fresh.task_id);
+        // Another client may have restored or changed the candidate without
+        // touching the task; a finished task's verdict is always re-asked.
+        else if (TERMINAL.includes(fresh.status))
+          void this.loadVerification(fresh.task_id);
       }
     }
     this.emit();
@@ -509,11 +526,20 @@ export class WorkbenchController {
 
   private async loadVerification(taskId: string): Promise<void> {
     const generation = this.generation;
+    const seq = ++this.verificationSeq;
     const view = await this.request(null, (client, signal) =>
       client.verification(taskId, signal),
     );
     const selected = this.current(taskId);
-    if (!view || !selected || generation !== this.generation) return;
+    // Only the newest answer may paint the badge; an older reply can speak
+    // about a candidate that has since moved.
+    if (
+      !view ||
+      !selected ||
+      generation !== this.generation ||
+      seq !== this.verificationSeq
+    )
+      return;
     selected.verification = verificationBadge(view);
     this.emit();
   }
@@ -686,7 +712,11 @@ export class WorkbenchController {
     await this.select(created.task_id);
   }
 
-  async start(taskId: string, approvals: Approvals): Promise<void> {
+  async start(
+    taskId: string,
+    approvals: Approvals,
+    checkIds: readonly string[] = [],
+  ): Promise<void> {
     const selected = this.current(taskId);
     if (!selected) return;
     const task = selected.task;
@@ -706,9 +736,37 @@ export class WorkbenchController {
       this.emit();
       return;
     }
+    const offered = new Map(
+      this.connection.checks.map((check) => [check.id, check]),
+    );
+    const checks = [...new Set(checkIds)].map((id) => offered.get(id));
+    if (checks.some((check) => !check)) {
+      this.setNotice(
+        "error",
+        "A selected check is not offered by this server; refresh and choose again.",
+      );
+      this.emit();
+      return;
+    }
+    if (checks.length && !approvals.execute) {
+      this.setNotice(
+        "permission",
+        "Host checks run commands in the sandbox; approve Execute to select them.",
+      );
+      this.emit();
+      return;
+    }
+    const selectedChecks = checks.filter(
+      (check): check is NonNullable<typeof check> => Boolean(check),
+    );
     const modelId = this.options.modelId();
     const detail = [
       `Task: ${task.task_id} (revision ${task.revision})`,
+      `Required checks: ${
+        selectedChecks.length
+          ? selectedChecks.map((check) => check.label).join(", ")
+          : "none (the result will be Unverified)"
+      }`,
       `Request: ${summarize(task.request, 300)}`,
       `Model: ${modelId ?? "server default free-cloud route"}`,
       `Approvals: read ${yesNo(approvals.read)}, write ${yesNo(approvals.write)}, execute ${yesNo(approvals.execute)}`,
@@ -730,6 +788,14 @@ export class WorkbenchController {
           expectedRevision: task.revision,
           approvals,
           ...(modelId ? { modelId } : {}),
+          ...(selectedChecks.length
+            ? {
+                requiredChecks: selectedChecks.map((check) => ({
+                  kind: "host_test" as const,
+                  check_id: check.id,
+                })),
+              }
+            : {}),
         },
         signal,
       ),
@@ -884,7 +950,74 @@ export class WorkbenchController {
     if (diff && selected && generation === this.generation) {
       selected.diff = diff.files;
       this.emit();
+      // The diff shown and the badge must speak about the same candidate.
+      if (TERMINAL.includes(selected.task.status))
+        await this.loadVerification(taskId);
     }
+  }
+
+  // ---------------------------------------------------------- export
+
+  /**
+   * Saves the exact patch the host verified. The request names the revision
+   * and patch bytes behind the badge; the host refuses if either moved, and
+   * the saved bytes are the artifact whose digest matched.
+   */
+  async exportPatch(taskId: string): Promise<void> {
+    const selected = this.current(taskId);
+    const badge = selected?.verification;
+    if (
+      !selected ||
+      !badge ||
+      badge.state !== "verified" ||
+      !badge.candidate ||
+      !badge.patch_sha256
+    ) {
+      this.setNotice(
+        "error",
+        "Only a verified candidate can be exported; refresh the verdict first.",
+      );
+      this.emit();
+      return;
+    }
+    const expected = {
+      revision: badge.candidate,
+      patchSha256: badge.patch_sha256,
+    };
+    const exported = await this.request("Exporting patch", (client, signal) =>
+      client.exportPatch(taskId, expected, signal),
+    );
+    if (!exported) {
+      await this.loadVerification(taskId);
+      return;
+    }
+    if (!exported.verified) {
+      this.setNotice(
+        "error",
+        `Not exported: candidate is ${exported.verification}${
+          exported.round_trip.status === "passed"
+            ? ""
+            : ` and the patch round trip ${exported.round_trip.status}${exported.round_trip.reason ? ` (${exported.round_trip.reason})` : ""}`
+        }.`,
+      );
+      this.emit();
+      await this.loadVerification(taskId);
+      return;
+    }
+    const artifact = await this.request("Exporting patch", (client, signal) =>
+      client.artifact(taskId, exported.artifact, signal),
+    );
+    if (!artifact) return;
+    const saved = await this.options.ui.savePatch(
+      artifact.bytes,
+      `${taskId}-${expected.revision}.patch`,
+    );
+    if (saved === null) return;
+    this.setNotice(
+      "info",
+      `Exported the verified patch (${exported.files} files, sha256 ${exported.patch_sha256.slice(0, 12)}…, git apply round trip passed) to ${saved}.`,
+    );
+    this.emit();
   }
 
   async openDiff(taskId: string, index: number): Promise<void> {
