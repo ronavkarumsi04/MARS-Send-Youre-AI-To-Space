@@ -215,6 +215,10 @@ function fixture(overrides: Partial<WorkbenchOperations> = {}) {
         records: [],
       };
     },
+    async export() {
+      calls.push("export");
+      throw new Error("fixture: export is not exercised here");
+    },
     async restore() {
       calls.push("restore");
       return workspace;

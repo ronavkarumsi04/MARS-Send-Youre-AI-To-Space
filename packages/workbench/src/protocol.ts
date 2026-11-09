@@ -150,6 +150,19 @@ export const StartParamsSchema = z
   .strict();
 export type StartParams = z.infer<typeof StartParamsSchema>;
 
+/**
+ * Export names the candidate the client is looking at; the host refuses
+ * with `conflict` when the workspace revision or the exact patch bytes moved.
+ */
+export const ExportParamsSchema = z
+  .object({
+    task_id: id,
+    expected_revision: id,
+    expected_patch_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type ExportParams = z.infer<typeof ExportParamsSchema>;
+
 function method<M extends string, P extends z.AnyZodObject>(
   name: M,
   params: P,
@@ -197,6 +210,7 @@ export const RpcRequestSchema = z.discriminatedUnion("method", [
   method("tasks.evidence", taskId),
   method("tasks.checkpoint", taskId),
   method("tasks.verification", taskId),
+  method("tasks.export", ExportParamsSchema),
   method(
     "tasks.restore",
     z

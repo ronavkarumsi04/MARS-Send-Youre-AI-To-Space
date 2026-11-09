@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -22,6 +22,7 @@ import type {
   ArtifactRef,
   Budget,
   ExecutionProvider,
+  PatchExport,
   RequestContext,
   RequiredCheck,
   Scope,
@@ -33,6 +34,7 @@ import {
   EVENT_OPERATIONS,
   isTerminalTaskStatus,
   JournalEntryIdsSchema,
+  PatchExportSchema,
   verificationStateFor,
   WorkbenchProviderSchema,
   WorkbenchVaultSchema,
@@ -2699,6 +2701,62 @@ export async function createWorkbenchHost(
       );
       return view;
     },
+    async export(context, params): Promise<PatchExport> {
+      checkContext(context);
+      const task = await options.store.inspect(context, params.task_id);
+      if (task.status === "running" || active.has(params.task_id))
+        throw new WorkbenchError("conflict");
+      if (!options.workspace.exportPatch)
+        throw new WorkbenchError("unavailable");
+      const candidate = WorkspaceRefSchema.parse(
+        await options.workspace.reopen(context, params.task_id),
+      );
+      if (candidate.revision !== params.expected_revision)
+        throw new WorkbenchError("conflict");
+      const exported = await options.workspace.exportPatch(context, candidate);
+      const sha256 = createHash("sha256").update(exported.patch).digest("hex");
+      if (sha256 !== params.expected_patch_sha256)
+        throw new WorkbenchError("conflict");
+      assertPublicBytes(
+        exported.patch,
+        await privatePatterns(context, params.task_id),
+      );
+      const records = await verificationRecords(
+        verificationHost,
+        context,
+        params.task_id,
+      );
+      const presentation = verificationStateFor(
+        candidate.revision,
+        records,
+        sha256,
+      );
+      const artifact = await options.store.artifacts.put(
+        context,
+        exported.patch,
+        "text/x-diff",
+      );
+      return PatchExportSchema.parse({
+        candidate: {
+          workspace_id: candidate.workspace_id,
+          provider: candidate.provider,
+          revision: candidate.revision,
+        },
+        patch_sha256: sha256,
+        artifact,
+        files: exported.files,
+        verification: presentation.state,
+        verified:
+          presentation.state === "verified" &&
+          exported.round_trip.status === "passed",
+        verdict_run_id: presentation.record?.run_id ?? null,
+        round_trip: exported.round_trip,
+        unsupported: exported.unsupported.map((entry) => ({
+          path: entry.path,
+          reason: entry.reason.slice(0, 64),
+        })),
+      });
+    },
     async restore(context, taskId, checkpointId, revision) {
       checkContext(context);
       const task = await options.store.inspect(context, taskId);
@@ -2782,6 +2840,7 @@ export async function createWorkbenchHost(
     evidence: track(api.evidence),
     checkpoint: track(api.checkpoint),
     verification: track(api.verification),
+    export: track(api.export),
     restore: serialize((_, taskId) => taskId, api.restore),
     async close() {
       closing = true;

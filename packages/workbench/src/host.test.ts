@@ -66,6 +66,7 @@ import {
   type WorkbenchReview,
   type WorkspaceHost,
 } from "./host";
+import { HostCheckDefinitionSchema } from "./host-checks";
 import type { WorkbenchMemory } from "./memory-context";
 import type { DiffResult } from "./protocol.js";
 import type { WorkbenchResearch } from "./research-context";
@@ -424,7 +425,11 @@ async function fixture() {
       | "image"
       | "providerStatus"
       | "vault"
-    > & { canExecute?: boolean } = {},
+      | "checks"
+    > & {
+      canExecute?: boolean;
+      workspaceOverrides?: Partial<WorkspaceHost>;
+    } = {},
   ) =>
     createWorkbenchHost({
       ...extras,
@@ -432,7 +437,10 @@ async function fixture() {
       workspaceLabel: "fixture",
       stateRoot: root,
       store,
-      workspace,
+      // Tests patch `f.workspace` in place, so share it unless overridden.
+      workspace: extras.workspaceOverrides
+        ? { ...workspace, ...extras.workspaceOverrides }
+        : workspace,
       registry: modelRegistry,
       canExecute: extras.canExecute ?? false,
       ...(memory ? { memory } : {}),
@@ -617,6 +625,9 @@ async function fixture() {
     readHangs,
     writeModes,
     prepareIds,
+    get diffFiles(): DiffResult["files"] {
+      return diffFiles;
+    },
     set diffFiles(files: DiffResult["files"]) {
       diffFiles = files;
     },
@@ -3550,10 +3561,21 @@ test("a completed foreground task is recorded for review exactly once, bracketed
     { review },
   );
   await api.create(context(), task());
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("checkpoint"),
+      "application/octet-stream",
+    ),
+  );
   await api.start(context(), {
     task_id: "task",
     expected_revision: 0,
     approvals: { read: true, write: false, execute: false },
+    required_checks: [
+      { kind: "file_content", path: "ok.txt", content: "checkpoint" },
+    ],
   });
   const session = required(f.sessions[0]);
   expect(calls).toEqual([{ kind: "begin", sessionId: "upstream" }]);
@@ -3609,6 +3631,59 @@ test("cancelled, failed and paused turns are never recorded as review successes"
   }
 });
 
+test("only a persisted verdict feeds review: a failed check records a failure and an unverified run records nothing", async () => {
+  const f = await fixture();
+  const { review, calls } = fakeReview();
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { review },
+  );
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("wrong edit"),
+      "application/octet-stream",
+    ),
+  );
+  await api.create(context(), task());
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+    required_checks: [
+      { kind: "file_content", path: "ok.txt", content: "checkpoint" },
+    ],
+  });
+  required(f.sessions[0]).finish("completed");
+  await required(f.sessions[0]).disposed;
+  expect((await api.verification(context(), "task")).state).toBe("failed");
+  const failed = calls.filter((call) => call.kind === "record");
+  expect(failed).toHaveLength(1);
+  const turn = required(failed[0]);
+  if (turn.kind !== "record") throw new Error("Missing fixture value");
+  expect(turn.turn.success).toBe(false);
+
+  await api.create(context(), task("task-2"));
+  await api.start(context(), {
+    task_id: "task-2",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  required(f.sessions[1]).finish("completed");
+  await required(f.sessions[1]).disposed;
+  expect((await api.verification(context(), "task-2")).state).toBe(
+    "unverified",
+  );
+  expect(calls.filter((call) => call.kind === "record")).toHaveLength(1);
+  await api.close();
+});
+
 test("review hooks that throw never fail the task or leak into its events", async () => {
   const f = await fixture();
   const { review, calls } = fakeReview(true);
@@ -3622,10 +3697,21 @@ test("review hooks that throw never fail the task or leak into its events", asyn
     { review },
   );
   await api.create(context(), task());
+  f.readArtifacts.set(
+    "ok.txt",
+    await f.store.artifacts.put(
+      context(),
+      new TextEncoder().encode("checkpoint"),
+      "application/octet-stream",
+    ),
+  );
   await api.start(context(), {
     task_id: "task",
     expected_revision: 0,
     approvals: { read: true, write: false, execute: false },
+    required_checks: [
+      { kind: "file_content", path: "ok.txt", content: "checkpoint" },
+    ],
   });
   const session = required(f.sessions[0]);
   session.finish("completed");
@@ -4946,5 +5032,249 @@ test("a child whose specialist routing fails records the fallback as task eviden
     },
   ]);
   session.finish("completed");
+  await api.close();
+});
+
+async function hostCheckFixture() {
+  const f = await fixture();
+  const dir = await mkdtemp(join(tmpdir(), "mars-host-checks-"));
+  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const testFile = join(dir, "sum.test.ts");
+  await writeFile(testFile, "expect(sum(1, 2)).toBe(3);\n");
+  const definition = HostCheckDefinitionSchema.parse({
+    id: "sum-test",
+    label: "Sum unit test",
+    argv: ["bun", "test", "tests/sum.test.ts"],
+    protected_files: [{ path: "tests/sum.test.ts", source: testFile }],
+    exclude_paths: ["bunfig.toml"],
+  });
+  const runs: { argv: readonly string[]; overlay: string[] }[] = [];
+  let exitCode = 0;
+  const host = (overrides: Partial<WorkspaceHost> = {}, sandbox = true) =>
+    f.makeHost(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        checks: [definition],
+        canExecute: true,
+        workspaceOverrides: {
+          ...(sandbox ? { runCheck } : {}),
+          ...overrides,
+        },
+      },
+    );
+  async function runCheck(
+    _context: Parameters<NonNullable<WorkspaceHost["runCheck"]>>[0],
+    workspace: WorkspaceRef,
+    request: Parameters<NonNullable<WorkspaceHost["runCheck"]>>[2],
+  ) {
+    runs.push({
+      argv: request.argv,
+      overlay: request.overlay.map((file) => file.path),
+    });
+    return {
+      workspace,
+      exit_code: exitCode,
+      stdout: new TextEncoder().encode(exitCode ? "1 fail" : "1 pass"),
+      stderr: new Uint8Array(),
+      timed_out: false,
+      cancelled: false,
+    };
+  }
+  return {
+    f,
+    testFile,
+    runs,
+    host,
+    setExit(code: number) {
+      exitCode = code;
+    },
+  };
+}
+
+const runHostCheckTask = async (
+  f: Awaited<ReturnType<typeof fixture>>,
+  api: Awaited<ReturnType<typeof f.makeHost>>,
+  taskId: string,
+  sessionIndex: number,
+) => {
+  await api.create(context(), task(taskId));
+  await api.start(context(), {
+    task_id: taskId,
+    expected_revision: 0,
+    approvals: { read: true, write: true, execute: true },
+    required_checks: [{ kind: "host_test", check_id: "sum-test" }],
+  });
+  required(f.sessions[sessionIndex]).finish("completed");
+  await required(f.sessions[sessionIndex]).disposed;
+  return api.verification(context(), taskId);
+};
+
+test("host checks are advertised by id only and refused without execute approval, a sandbox, or a known id", async () => {
+  const { f, host } = await hostCheckFixture();
+  const api = await host();
+  const described = await api.describe();
+  expect(described.checks).toEqual([
+    { id: "sum-test", label: "Sum unit test" },
+  ]);
+  expect(JSON.stringify(described)).not.toContain("tests/sum.test.ts");
+  await api.create(context(), task());
+  const start = (check_id: string, execute: boolean) =>
+    api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: true, write: true, execute },
+      required_checks: [{ kind: "host_test", check_id }],
+    });
+  await expect(start("sum-test", false)).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  await expect(start("unknown-test", true)).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  await api.close();
+  const noSandbox = await host({}, false);
+  await noSandbox.create(context(), task("task-2"));
+  await expect(
+    noSandbox.start(context(), {
+      task_id: "task-2",
+      expected_revision: 0,
+      approvals: { read: true, write: true, execute: true },
+      required_checks: [{ kind: "host_test", check_id: "sum-test" }],
+    }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  expect(f.sessions).toHaveLength(0);
+  await noSandbox.close();
+});
+
+test("a protected host check binds its verdict to the exact patch bytes; a failing exit, an owned-path edit, or a changed patch never reads as verified", async () => {
+  const { f, runs, host, setExit, testFile } = await hostCheckFixture();
+  const api = await host();
+  f.diffFiles = [
+    { path: "src/sum.ts", status: "modified", patch: "-a - b\n+a + b\n" },
+  ];
+  const passed = await runHostCheckTask(f, api, "task", 0);
+  expect(passed.state).toBe("verified");
+  expect(passed.record?.verified).toBe(true);
+  expect(passed.record?.patch_sha256).toBe(passed.patch_sha256 ?? "missing");
+  expect(passed.record?.checks[0]).toMatchObject({
+    kind: "host_test",
+    check_id: "sum-test",
+    status: "passed",
+    exit_code: 0,
+  });
+  expect(runs[0]).toEqual({
+    argv: ["bun", "test", "tests/sum.test.ts"],
+    overlay: ["tests/sum.test.ts"],
+  });
+  const launch = JSON.parse(
+    await readFile(join(f.root, "tasks", "task", "launch.json"), "utf8").catch(
+      () => "{}",
+    ),
+  );
+  if (launch.required_checks)
+    expect(launch.required_checks[0].definition_sha256).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+
+  // Same revision, different bytes: the old verdict is stale, not verified.
+  f.diffFiles = [
+    { path: "src/sum.ts", status: "modified", patch: "-a - b\n+a * b\n" },
+  ];
+  expect((await api.verification(context(), "task")).state).toBe("stale");
+
+  setExit(1);
+  const failed = await runHostCheckTask(f, api, "task-2", 1);
+  expect(failed.state).toBe("failed");
+  expect(failed.reasons.join(" ")).toContain("exited 1");
+
+  setExit(0);
+  f.diffFiles = [
+    { path: "bunfig.toml", status: "added", patch: "+preload = ['x']\n" },
+  ];
+  const owned = await runHostCheckTask(f, api, "task-3", 2);
+  expect(owned.state).toBe("failed");
+  expect(owned.reasons.join(" ")).toContain("owned by host check");
+  expect(runs).toHaveLength(2);
+
+  // A definition edited after launch is inconclusive for that run.
+  await api.create(context(), task("task-4"));
+  await api.start(context(), {
+    task_id: "task-4",
+    expected_revision: 0,
+    approvals: { read: true, write: true, execute: true },
+    required_checks: [{ kind: "host_test", check_id: "sum-test" }],
+  });
+  await writeFile(testFile, "expect(true).toBe(true);\n");
+  f.diffFiles = [];
+  required(f.sessions[3]).finish("completed");
+  await required(f.sessions[3]).disposed;
+  const changed = await api.verification(context(), "task-4");
+  expect(changed.state).toBe("inconclusive");
+  expect(changed.reasons.join(" ")).toContain("changed since launch");
+  await api.close();
+});
+
+test("export returns the exact verified patch bytes and refuses a moved revision or different bytes", async () => {
+  const { f, host } = await hostCheckFixture();
+  const patchText = () => f.diffFiles.map((file) => file.patch).join("");
+  const api = await host({
+    async exportPatch(_context, workspace) {
+      return {
+        workspace,
+        patch: new TextEncoder().encode(patchText()),
+        files: f.diffFiles.length,
+        round_trip: { status: "passed", reason: null },
+        unsupported: [],
+      };
+    },
+  });
+  f.diffFiles = [
+    {
+      path: "src/sum.ts",
+      status: "modified",
+      patch: "\uFEFF-a - b\r\n+a + b\r\n",
+    },
+  ];
+  const view = await runHostCheckTask(f, api, "task", 0);
+  expect(view.state).toBe("verified");
+  const sha = view.patch_sha256 ?? "missing";
+  await expect(
+    api.export(context(), {
+      task_id: "task",
+      expected_revision: "r0",
+      expected_patch_sha256: sha,
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await expect(
+    api.export(context(), {
+      task_id: "task",
+      expected_revision: "r1",
+      expected_patch_sha256: "0".repeat(64),
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  const exported = await api.export(context(), {
+    task_id: "task",
+    expected_revision: "r1",
+    expected_patch_sha256: sha,
+  });
+  expect(exported).toMatchObject({
+    patch_sha256: sha,
+    verification: "verified",
+    verified: true,
+    files: 1,
+    round_trip: { status: "passed", reason: null },
+  });
+  expect(exported.artifact.sha256).toBe(sha);
+  // `ignoreBOM` so the leading U+FEFF is compared rather than stripped.
+  expect(
+    new TextDecoder("utf-8", { ignoreBOM: true }).decode(
+      await f.store.artifacts.get(context(), exported.artifact),
+    ),
+  ).toBe(patchText());
   await api.close();
 });

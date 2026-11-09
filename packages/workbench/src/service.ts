@@ -60,6 +60,7 @@ import {
 import type { WorkbenchCollaboration } from "./collaboration-context";
 import type { WorkbenchConventions } from "./conventions-context";
 import { createWorkbenchHost, type WorkbenchHostOptions } from "./host";
+import { loadHostChecks } from "./host-checks";
 import {
   DEFAULT_WORKBENCH_PORT,
   serveWorkbench,
@@ -141,6 +142,8 @@ export interface WorkbenchServiceOptions {
   scope: Scope;
   port?: number;
   image?: string;
+  /** Host-owned protected check definitions (JSON); clients select them by id at Start. */
+  checksFile?: string;
   /** Optional existing vault to report read-only status; never imported/exported by the workbench. */
   vaultDir?: string;
   trustProjectConfig?: boolean;
@@ -412,6 +415,9 @@ export async function createWorkbenchService(
       ? createDockerSandbox({ image: options.image })
       : undefined;
     await sandbox?.verify();
+    const checks = options.checksFile
+      ? await loadHostChecks(options.checksFile)
+      : [];
     workspace = await createLocalWorkspaceProvider({
       rootDir: join(root, "workspaces"),
       sourceRoot: source,
@@ -458,6 +464,7 @@ export async function createWorkbenchService(
       store,
       registry,
       canExecute: Boolean(sandbox),
+      ...(checks.length ? { checks } : {}),
       ...(options.image ? { image: options.image } : {}),
       ...(providerStatus ? { providerStatus } : {}),
       ...(options.vaultDir
@@ -503,6 +510,8 @@ export async function createWorkbenchService(
         collect: provider.collect.bind(provider),
         stop: provider.stop.bind(provider),
         diff: provider.diff.bind(provider),
+        ...(sandbox ? { runCheck: provider.runCheck.bind(provider) } : {}),
+        exportPatch: provider.exportPatch.bind(provider),
         cwd: provider.workspacePath.bind(provider),
         async reopen(context, taskId) {
           const workspace = await provider.discover(context, taskId);
