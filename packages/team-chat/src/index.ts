@@ -9,7 +9,11 @@ export {
   EMPTY_COMPOSER,
   type KeyIntent,
   keyIntent,
+  mentionOptionId,
+  nextPickerStatus,
+  type PickerAnnouncement,
   type PickerState,
+  pickerAnnouncement,
   type ReplyContext,
   reduceComposer,
 } from "./composer";

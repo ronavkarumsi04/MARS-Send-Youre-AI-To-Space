@@ -165,6 +165,72 @@ export function keyIntent(
   return "none";
 }
 
+export interface PickerAnnouncement {
+  /** Identity of the open result set; "" when closed. Re-announce only when it changes. */
+  results: string;
+  /** Key of the highlighted candidate; "" when none. */
+  highlighted: string;
+  /** Polite status text; "" when closed. */
+  text: string;
+}
+
+/**
+ * Status for the open picker. `results` changes whenever the candidate set
+ * changes (even at the same count), not on arrow moves, which
+ * `aria-activedescendant` conveys.
+ */
+export function pickerAnnouncement(
+  picker: PickerState | null,
+): PickerAnnouncement {
+  if (!picker) return { results: "", highlighted: "", text: "" };
+  const { candidates } = picker;
+  const results = ["open", ...candidates.map((c) => c.key)].join("\n");
+  const highlighted = candidates[picker.selected];
+  if (!highlighted)
+    return {
+      results,
+      highlighted: "",
+      text: "No matching file, symbol or range.",
+    };
+  const n = candidates.length;
+  return {
+    results,
+    highlighted: highlighted.key,
+    text: `${n} ${n === 1 ? "suggestion" : "suggestions"}, ${highlighted.label} (${highlighted.kind}) highlighted. Use Up and Down arrows to choose, Enter or Tab to attach.`,
+  };
+}
+
+/**
+ * Next picker live-region text, or null to leave it. A new result set is
+ * announced; a highlight move within the same set clears the now-stale text
+ * instead of re-announcing (`aria-activedescendant` conveys the move).
+ */
+export function nextPickerStatus(
+  previous: PickerAnnouncement,
+  next: PickerAnnouncement,
+): string | null {
+  if (next.results !== previous.results) return next.text;
+  if (next.highlighted !== previous.highlighted) return "";
+  return null;
+}
+
+/**
+ * DOM id of a picker option. Derived from the candidate key, so the
+ * textarea's `aria-activedescendant` changes whenever the highlighted
+ * candidate does, even when its index stays the same.
+ */
+export function mentionOptionId(
+  index: number,
+  candidate: MentionCandidate,
+): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < candidate.key.length; i++) {
+    hash ^= candidate.key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `mention-${index}-${(hash >>> 0).toString(36)}`;
+}
+
 export type ComposerProblem = "empty" | "too_long";
 
 /** Why the draft cannot be sent as-is, or null. Checked before the draft is cleared. */

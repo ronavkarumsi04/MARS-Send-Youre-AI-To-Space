@@ -10,6 +10,9 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
+  mentionOptionId,
+  nextPickerStatus,
+  pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
   reduceComposer,
@@ -97,7 +100,9 @@ function reportViewport(): void {
 window.addEventListener("focus", reportViewport);
 window.addEventListener("blur", reportViewport);
 
-const textarea = h("textarea", { label: "Message" });
+const textarea = h("textarea", { label: "Message", role: "combobox" });
+textarea.setAttribute("aria-haspopup", "listbox");
+textarea.setAttribute("aria-autocomplete", "list");
 textarea.rows = 3;
 textarea.placeholder =
   "Message… type @ to reference a file, symbol or line range";
@@ -326,8 +331,8 @@ function renderSearch(s: TeamChatViewState): HTMLElement {
 }
 
 function renderInbox(s: TeamChatViewState): HTMLElement {
-  const viewerSelect = h("select", { label: "Fixture viewer" });
-  viewerSelect.dataset.focusKey = "viewer";
+  const viewerSelect = h("select", { key: "viewer" });
+  viewerSelect.id = "viewer-select";
   for (const user of s.viewers) {
     const option = h("option", {}, `${user.display_name} (@${user.handle})`);
     option.value = user.user_id;
@@ -339,6 +344,8 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
     textarea.value = "";
     post({ type: "fixtureSwitchViewer", userId: viewerSelect.value });
   });
+  const viewerLabel = h("label", { class: "small muted" }, "Viewing as");
+  viewerLabel.htmlFor = viewerSelect.id;
   const list = h("ul", { class: "conversations", label: "Conversations" });
   for (const conversation of s.conversations) {
     const active =
@@ -429,12 +436,7 @@ function renderInbox(s: TeamChatViewState): HTMLElement {
         : null,
     ),
     s.viewers.length > 0
-      ? h(
-          "div",
-          { class: "viewer-row" },
-          h("label", { class: "small muted" }, "Viewing as"),
-          viewerSelect,
-        )
+      ? h("div", { class: "viewer-row" }, viewerLabel, viewerSelect)
       : h(
           "div",
           { class: "viewer-row small muted" },
@@ -510,6 +512,10 @@ function renderChips(
   return row;
 }
 
+function messageFocusKey(messageId: string): string {
+  return `message-${messageId}`;
+}
+
 function renderMessage(
   s: TeamChatViewState,
   message: MessageView,
@@ -526,6 +532,7 @@ function renderMessage(
           );
           target?.scrollIntoView({ block: "center" });
           target?.classList.add("flash");
+          target?.focus({ preventScroll: true });
         },
         { secondary: true, title: "Jump to the replied message" },
       )
@@ -535,6 +542,7 @@ function renderMessage(
     "li",
     {
       class: `message ${mine ? "mine" : ""} ${s.selected?.highlight_message_id === message.message_id ? "highlight" : ""}`,
+      key: messageFocusKey(message.message_id),
     },
     h(
       "div",
@@ -569,6 +577,8 @@ function renderMessage(
     renderReactions(s, message),
   );
   item.dataset.messageId = message.message_id;
+  // Jump targets (reply quote, search hit) receive focus programmatically.
+  item.tabIndex = -1;
   return item;
 }
 
@@ -754,6 +764,11 @@ const picker = h("ul", {
   label: "Mention picker",
 });
 picker.id = "mention-picker";
+/** Polite status for picker results; separate from the message announcer. */
+const pickerStatus = h("div", { class: "announcer", role: "status" });
+pickerStatus.setAttribute("aria-live", "polite");
+pickerStatus.setAttribute("aria-atomic", "true");
+let announcedPicker = pickerAnnouncement(null);
 const sendButton = button("Send", "send", () => send());
 const composerAlert = h("p", {
   class: "notice error composer-error",
@@ -770,6 +785,7 @@ composerRoot.append(
   h("div", { class: "composer-input" }, picker, textarea, sendButton),
   composerAlert,
   hint,
+  pickerStatus,
 );
 
 function renderComposerParts(): void {
@@ -797,12 +813,14 @@ function renderComposerParts(): void {
   replyBar.hidden = !composer.reply_to;
   chipBar.replaceChildren();
   for (const chip of composer.chips) {
+    const label = chipLabel(chip.reference, chip.repo_name);
     const remove = button(
-      `${chipLabel(chip.reference, chip.repo_name)} ×`,
+      `${label} ×`,
       `draft-chip-${chip.key}`,
       () => updateComposer({ type: "removeChip", key: chip.key }),
       { secondary: true, title: "Remove reference" },
     );
+    remove.setAttribute("aria-label", `Remove reference ${label}`);
     remove.className = "chip draft";
     chipBar.append(remove);
   }
@@ -812,7 +830,11 @@ function renderComposerParts(): void {
     const { candidates, selected } = composer.picker;
     if (candidates.length === 0)
       picker.append(
-        h("li", { class: "muted small" }, "No matching file, symbol or range."),
+        h(
+          "li",
+          { class: "muted small", role: "presentation" },
+          "No matching file, symbol or range.",
+        ),
       );
     candidates.forEach((candidate, index) => {
       const option = h(
@@ -825,7 +847,7 @@ function renderComposerParts(): void {
         h("span", { class: "mono" }, candidate.label),
         h("span", { class: "muted small" }, candidate.detail),
       );
-      option.id = `mention-${index}`;
+      option.id = mentionOptionId(index, candidate);
       option.setAttribute("aria-selected", String(index === selected));
       option.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -843,7 +865,13 @@ function renderComposerParts(): void {
       });
       picker.append(option);
     });
-    textarea.setAttribute("aria-activedescendant", `mention-${selected}`);
+    const active = candidates[selected];
+    if (active)
+      textarea.setAttribute(
+        "aria-activedescendant",
+        mentionOptionId(selected, active),
+      );
+    else textarea.removeAttribute("aria-activedescendant");
     textarea.setAttribute("aria-expanded", "true");
   } else {
     textarea.removeAttribute("aria-activedescendant");
@@ -851,6 +879,10 @@ function renderComposerParts(): void {
   }
   textarea.setAttribute("aria-controls", picker.id);
   picker.hidden = !composer.picker;
+  const announcement = pickerAnnouncement(composer.picker);
+  const status = nextPickerStatus(announcedPicker, announcement);
+  if (status !== null) pickerStatus.textContent = status;
+  announcedPicker = announcement;
   composerAlert.textContent = composerError ?? "";
   composerAlert.hidden = composerError === null;
   sendButton.disabled =
@@ -1007,6 +1039,7 @@ function render(): void {
       scrolledToHit = highlightId;
       target.scrollIntoView({ block: "center" });
       stickToBottom = false;
+      returnFocusTo = messageFocusKey(highlightId);
     }
   } else if (!highlightId) scrolledToHit = null;
   jumpButton.hidden = stickToBottom;
