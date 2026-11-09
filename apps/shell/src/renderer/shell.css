@@ -8,13 +8,13 @@
   --border: #178fb9;
   --borderMuted: #3d424a;
   --success: #89d281;
-  --error: #fc3a4b;
+  --error: #fd7581;
   --warning: #e4c00f;
-  --muted: #777d88;
+  --muted: #9ca0a8;
   --dim: #5f6673;
   --selectedBg: #31363f;
   --customMessageBg: #2a2530;
-  --untrustedLabel: #b281d6;
+  --untrustedLabel: #ba8eda;
   font-family: Inter, system-ui, sans-serif;
   font-size: 12px;
   line-height: 1.45;
@@ -29,17 +29,17 @@
     --cardBg: #ffffff;
     --infoBg: #fffae6;
     --fg: #3b3b3b;
-    --accent: #5a8080;
+    --accent: #425d5d;
     --border: #547da7;
     --borderMuted: #b0b0b0;
-    --success: #588458;
-    --error: #aa5555;
-    --warning: #9a7326;
-    --muted: #6c6c6c;
+    --success: #406040;
+    --error: #884444;
+    --warning: #70541c;
+    --muted: #575757;
     --dim: #767676;
     --selectedBg: #d0d0e0;
     --customMessageBg: #ede7f6;
-    --untrustedLabel: #7e57c2;
+    --untrustedLabel: #67479f;
   }
 }
 
