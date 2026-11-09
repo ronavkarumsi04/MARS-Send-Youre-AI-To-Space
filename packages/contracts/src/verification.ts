@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ArtifactRefSchema } from "./core";
 
 /**
  * Host-owned verification verdicts. A task's execution status (`completed`)
@@ -31,12 +32,26 @@ const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 export const REQUIRED_CHECK_DEFAULT_TIMEOUT_MS = 10_000;
 export const REQUIRED_CHECK_MAX_TIMEOUT_MS = 60_000;
 
+const checkTimeout = z
+  .number()
+  .int()
+  .positive()
+  .max(REQUIRED_CHECK_MAX_TIMEOUT_MS)
+  .optional();
+
+/** Identifier of a host-defined check (`HostCheckDefinition.id`). */
+export const HostCheckIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+
 /**
  * One check the host runs after the agent stops. `file_content` passes when
  * `path` exists in the candidate workspace and its bytes match `sha256` (or
  * the UTF-8 encoding of `content`, from which the digest is derived).
  */
-export const RequiredCheckSchema = z
+export const FileContentCheckSchema = z
   .object({
     kind: z.literal("file_content"),
     path: relativePath,
@@ -45,12 +60,7 @@ export const RequiredCheckSchema = z
       .string()
       .max(64 * 1024)
       .optional(),
-    timeout_ms: z
-      .number()
-      .int()
-      .positive()
-      .max(REQUIRED_CHECK_MAX_TIMEOUT_MS)
-      .optional(),
+    timeout_ms: checkTimeout,
   })
   .strict()
   .refine(
@@ -59,6 +69,28 @@ export const RequiredCheckSchema = z
       message: "A file_content check needs sha256 or content",
     },
   );
+
+/**
+ * A protected test the host defines and resolves outside the candidate's
+ * writable tree. A client only names it by `check_id`; the command, the
+ * protected files and the expected result never travel in the request.
+ * Launch freezes the definition digest so a changed definition cannot
+ * vouch for an earlier run.
+ */
+export const HostTestCheckSchema = z
+  .object({
+    kind: z.literal("host_test"),
+    check_id: HostCheckIdSchema,
+    /** Set by the host at launch; ignored (recomputed) when a client sends it. */
+    definition_sha256: sha256.optional(),
+    timeout_ms: checkTimeout,
+  })
+  .strict();
+
+export const RequiredCheckSchema = z.union([
+  FileContentCheckSchema,
+  HostTestCheckSchema,
+]);
 export type RequiredCheck = z.infer<typeof RequiredCheckSchema>;
 
 export const VerificationVerdictSchema = z.enum([
@@ -79,8 +111,13 @@ export type VerificationCandidate = z.infer<typeof VerificationCandidateSchema>;
 
 export const VerificationCheckResultSchema = z
   .object({
-    kind: z.literal("file_content"),
+    kind: z.enum(["file_content", "host_test"]),
+    /** The checked file, or for `host_test` the check id. */
     path: relativePath,
+    /** `host_test` only: the definition id, exit code and captured output digest. */
+    check_id: HostCheckIdSchema.optional(),
+    exit_code: z.number().int().optional(),
+    output_sha256: sha256.optional(),
     expected_sha256: sha256,
     observed_sha256: sha256.nullable(),
     status: VerificationVerdictSchema,
@@ -118,6 +155,14 @@ export const VerificationEvidenceRecordSchema = z
     diagnostics: z.array(z.string().max(1024)).max(16),
     duration_ms: z.number().int().nonnegative(),
     recorded_at: z.string().datetime({ offset: true }),
+    /**
+     * Raw SHA-256 of the exact patch bytes (concatenated file patches) the checks ran
+     * against. Optional so records written before it existed still parse;
+     * such records bind to the revision only.
+     */
+    patch_sha256: sha256.optional(),
+    /** Digest of the frozen required-check manifest the verdict answers. */
+    check_manifest_sha256: sha256.optional(),
   })
   .strict()
   .refine(
@@ -195,6 +240,8 @@ function latest(
 export function verificationStateFor(
   candidateRevision: string | null,
   records: readonly VerificationEvidenceRecord[],
+  /** Digest of the patch presented with the candidate; a record bound to other bytes is stale. */
+  candidatePatchSha256?: string | null,
 ): VerificationPresentation {
   if (records.length === 0)
     return { state: "unverified", record: null, reasons: [] };
@@ -204,7 +251,10 @@ export function verificationStateFor(
     (record) =>
       record.candidate === null ||
       (candidateRevision !== null &&
-        record.candidate.revision === candidateRevision),
+        record.candidate.revision === candidateRevision &&
+        (record.patch_sha256 === undefined ||
+          candidatePatchSha256 === undefined ||
+          record.patch_sha256 === candidatePatchSha256)),
   );
   const current = latest(matching);
   if (!current) {
@@ -236,6 +286,61 @@ export const VerificationViewSchema = z
     record: VerificationEvidenceRecordSchema.nullable(),
     reasons: z.array(z.string().max(1024)).max(64),
     records: z.array(VerificationEvidenceRecordSchema).max(50),
+    /** Raw SHA-256 of the candidate's current patch bytes; null when no patch could be read. */
+    patch_sha256: sha256.nullable().optional(),
   })
   .strict();
 export type VerificationView = z.infer<typeof VerificationViewSchema>;
+
+/** What `workbench.describe` advertises about a host check: never its command or files. */
+export const HostCheckSummarySchema = z
+  .object({
+    id: HostCheckIdSchema,
+    label: z.string().min(1).max(200),
+    description: z.string().max(1024).optional(),
+  })
+  .strict();
+export type HostCheckSummary = z.infer<typeof HostCheckSummarySchema>;
+
+/**
+ * Result of `tasks.export`: the exact patch bytes of the current candidate,
+ * stored as a content-addressed artifact, with the host verdict for exactly
+ * that candidate and a host-run reconstruction proof (baseline copy +
+ * `git apply --check` + `git apply` + byte comparison).
+ */
+export const PatchExportSchema = z
+  .object({
+    candidate: VerificationCandidateSchema,
+    patch_sha256: sha256,
+    artifact: ArtifactRefSchema,
+    files: z.number().int().nonnegative(),
+    /** Host verdict for exactly this candidate and these bytes. */
+    verification: VerificationStateSchema,
+    verified: z.boolean(),
+    verdict_run_id: z.string().min(1).max(256).nullable(),
+    round_trip: z
+      .object({
+        status: z.enum(["passed", "failed", "unavailable"]),
+        reason: z.string().max(1024).nullable(),
+      })
+      .strict(),
+    /** Files the patch cannot carry (symlinks, special files, ignored secrets). */
+    unsupported: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1).max(4096),
+            reason: z.string().max(64),
+          })
+          .strict(),
+      )
+      .max(1000),
+  })
+  .strict()
+  .refine((value) => value.artifact.sha256 === value.patch_sha256, {
+    message: "The export artifact is the exact patch bytes",
+  })
+  .refine((value) => !value.verified || value.verification === "verified", {
+    message: "Only a verified candidate may be exported as verified",
+  });
+export type PatchExport = z.infer<typeof PatchExportSchema>;

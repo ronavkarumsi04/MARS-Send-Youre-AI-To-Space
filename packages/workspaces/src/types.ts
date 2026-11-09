@@ -109,8 +109,65 @@ export interface LocalExecutionResult extends ExecutionResult {
   stderr_truncated: boolean;
 }
 
+/** One host-owned file written over the candidate copy before a check runs. */
+export interface CheckOverlayFile {
+  path: string;
+  data: Uint8Array;
+}
+
+export interface CheckRunRequest {
+  argv: readonly string[];
+  /** Protected files; they replace whatever the candidate has at these paths. */
+  overlay: readonly CheckOverlayFile[];
+  /** Left out of the copy: exact paths, or directory prefixes ending in `/`. */
+  exclude?: readonly string[];
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+export interface CheckRunResult {
+  /** The exact candidate the check ran against; never advanced by the check. */
+  workspace: WorkspaceRef;
+  exit_code: number;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
+  timed_out: boolean;
+  cancelled: boolean;
+}
+
+export interface PatchExportResult {
+  workspace: WorkspaceRef;
+  patch: Uint8Array;
+  files: number;
+  round_trip: {
+    status: "passed" | "failed" | "unavailable";
+    reason: string | null;
+  };
+  unsupported: { path: string; reason: string }[];
+}
+
 export interface LocalWorkspaceProvider extends ExecutionProvider {
   readonly providerId: string;
+  /**
+   * Runs a host-defined check in the sandbox against a disposable copy of
+   * the candidate at `workspace.revision`, with `overlay` written on top.
+   * The candidate itself is never mounted, so the check cannot change it.
+   */
+  runCheck(
+    context: RequestContext,
+    workspace: WorkspaceRef,
+    request: CheckRunRequest,
+  ): Promise<CheckRunResult>;
+  /**
+   * The exact patch bytes of the candidate at `workspace.revision`, plus a
+   * reconstruction proof: the baseline is materialised in a scratch
+   * directory, the patch is checked and applied with `git apply`, and every
+   * resulting file is compared byte for byte (and mode) with the candidate.
+   */
+  exportPatch(
+    context: RequestContext,
+    workspace: WorkspaceRef,
+  ): Promise<PatchExportResult>;
   execute(
     context: RequestContext,
     workspace: WorkspaceRef,

@@ -8,6 +8,7 @@ import type {
   VerificationVerdict,
   WorkspaceRef,
 } from "@mars/contracts";
+import { HostCheckIdSchema } from "@mars/contracts";
 import { z } from "zod";
 
 const taskId = z.string().min(1).max(200);
@@ -46,8 +47,11 @@ export const WebviewMessageSchema = z.discriminatedUnion("type", [
       approvals: z
         .object({ read: z.boolean(), write: z.boolean(), execute: z.boolean() })
         .strict(),
+      /** Ids of host-advertised checks; the controller resolves them, never the webview. */
+      checkIds: z.array(HostCheckIdSchema).max(8).optional(),
     })
     .strict(),
+  z.object({ type: z.literal("exportPatch"), taskId }).strict(),
   z.object({ type: z.literal("resumeTask"), taskId }).strict(),
   z
     .object({
@@ -114,6 +118,8 @@ export interface ConnectionView {
   workspaceId: string | null;
   canExecute: boolean;
   canCheckpoint: boolean;
+  /** Host-defined protected checks offered at Start (id and label only). */
+  checks: { id: string; label: string; description?: string | undefined }[];
 }
 
 export interface EventView {
@@ -170,6 +176,8 @@ export interface VerificationBadge {
   reasons: string[];
   diagnostics: string[];
   recorded_at: string | null;
+  /** Raw SHA-256 of the candidate patch bytes the badge speaks about. */
+  patch_sha256: string | null;
 }
 
 export interface SelectedView {

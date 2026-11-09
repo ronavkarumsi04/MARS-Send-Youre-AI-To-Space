@@ -5,12 +5,15 @@ import {
   link,
   lstat,
   mkdir,
+  mkdtemp,
   open,
   readdir,
   realpath,
   rename,
   rm,
+  writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   type ArtifactRef,
@@ -984,6 +987,201 @@ export async function createLocalWorkspaceProvider(
           undo: (priorPath) => rename(priorPath, absolute),
           phaseHook: () => options.testHooks?.removePhase?.("after-remove"),
         });
+      });
+    },
+    async runCheck(context, workspace, request) {
+      return withWorkspace(context, workspace, async (current) => {
+        if (workspace.revision !== current.revision)
+          throw new RevisionConflictError();
+        if (!isValidArgv(request.argv))
+          throw new WorkspacePolicyError("Invalid command arguments");
+        if (!options.sandbox)
+          throw new SandboxUnavailableError("No sandbox is configured");
+        const snapshot = await treeSnapshot(current, true, true);
+        if (snapshot.digest !== current.tree_digest)
+          throw new WorkspaceModifiedError();
+        try {
+          await options.sandbox.verify();
+        } catch (error) {
+          if (error instanceof SandboxUnavailableError) throw error;
+          throw new SandboxUnavailableError("Sandbox verification failed", {
+            cause: error,
+          });
+        }
+        // The copy holds only snapshot files (ignored secrets never leave the
+        // candidate) and lives outside every workspace tree.
+        const copy = await mkdtemp(join(tmpdir(), "mars-check-"));
+        try {
+          const place = async (
+            path: string,
+            data: Uint8Array,
+            mode: number,
+          ) => {
+            const target = await resolveSafePath(
+              copy,
+              validateRelativePath(path, limits, extraIgnores),
+            );
+            await mkdir(dirname(target), { recursive: true });
+            await rm(target, { force: true });
+            await writeFile(target, data, { mode });
+          };
+          const excluded = (path: string) =>
+            (request.exclude ?? []).some((rule) =>
+              rule.endsWith("/") ? path.startsWith(rule) : path === rule,
+            );
+          for (const file of snapshot.files)
+            if (file.data && !excluded(file.path))
+              await place(file.path, file.data, file.mode);
+          for (const file of request.overlay)
+            await place(file.path, file.data, 0o644);
+          const timeoutMs = Math.min(request.timeoutMs, limits.maxExecutionMs);
+          const controller = new AbortController();
+          const abort = (): void => controller.abort(request.signal?.reason);
+          request.signal?.addEventListener("abort", abort, { once: true });
+          if (request.signal?.aborted) abort();
+          try {
+            const result = await options.sandbox.run({
+              workspaceDir: copy,
+              argv: [...request.argv],
+              timeoutMs,
+              maxOutputBytes: limits.maxOutputBytes,
+              signal: controller.signal,
+              runId: newToken(),
+              labels: {
+                "mars.workspace": current.workspace_id,
+                "mars.check": "1",
+                ...rootLabels,
+              },
+            });
+            return {
+              workspace: currentRef(current),
+              exit_code: result.timedOut
+                ? 124
+                : result.cancelled
+                  ? 130
+                  : result.exitCode,
+              stdout: result.stdout.subarray(0, limits.maxOutputBytes),
+              stderr: result.stderr.subarray(0, limits.maxOutputBytes),
+              timed_out: result.timedOut,
+              cancelled: result.cancelled,
+            };
+          } finally {
+            request.signal?.removeEventListener("abort", abort);
+          }
+        } finally {
+          await rm(copy, { recursive: true, force: true });
+        }
+      });
+    },
+    async exportPatch(context, workspace) {
+      return withWorkspace(context, workspace, async (current) => {
+        if (workspace.revision !== current.revision)
+          throw new RevisionConflictError();
+        const base = await baselineRef(context, current);
+        const { files: baseFiles } = await getCheckpoint(
+          context,
+          current,
+          base,
+        );
+        const snapshot = await treeSnapshot(current, true, true);
+        if (snapshot.digest !== current.tree_digest)
+          throw new WorkspaceModifiedError();
+        const diff = createWorkspaceDiff(baseFiles, snapshot.files);
+        const patch = new TextEncoder().encode(
+          diff.files.map((file) => file.patch).join(""),
+        );
+        const binary = diff.files
+          .filter((file) => /^Binary files .* differ$/m.test(file.patch))
+          .map((file) => file.path);
+        const unsupported = [
+          ...current.skipped.map((entry) => ({
+            path: entry.path,
+            reason: entry.reason,
+          })),
+          ...binary.map((path) => ({ path, reason: "binary content" })),
+        ];
+        const scratch = await mkdtemp(join(tmpdir(), "mars-export-"));
+        const roundTrip = async (): Promise<{
+          status: "passed" | "failed" | "unavailable";
+          reason: string | null;
+        }> => {
+          if (binary.length)
+            return {
+              status: "unavailable",
+              reason: `Binary files have no text patch: ${binary.slice(0, 20).join(", ")}`,
+            };
+          const tree = join(scratch, "tree");
+          await mkdir(tree, { recursive: true });
+          for (const file of baseFiles) {
+            if (!file.data) continue;
+            const target = join(tree, file.path);
+            await mkdir(dirname(target), { recursive: true });
+            await writeFile(target, file.data, { mode: file.mode });
+            await chmod(target, file.mode);
+          }
+          if (patch.byteLength > 0) {
+            const patchFile = join(scratch, "candidate.patch");
+            await writeFile(patchFile, patch);
+            for (const args of [["--check"], []]) {
+              let proc: ReturnType<typeof Bun.spawnSync>;
+              try {
+                proc = Bun.spawnSync(
+                  ["git", "apply", "--unsafe-paths", ...args, patchFile],
+                  {
+                    cwd: tree,
+                    stdout: "pipe",
+                    stderr: "pipe",
+                    env: { PATH: process.env.PATH ?? "" },
+                  },
+                );
+              } catch {
+                return {
+                  status: "unavailable",
+                  reason: "git is not available",
+                };
+              }
+              if (proc.exitCode !== 0)
+                return {
+                  status: "failed",
+                  reason: `git apply ${args.join(" ") || "(apply)"} exited ${proc.exitCode}: ${new TextDecoder().decode(proc.stderr ?? new Uint8Array()).slice(0, 512)}`,
+                };
+            }
+          }
+          const rebuilt = await snapshotTree(tree, {
+            limits,
+            extraIgnores,
+            includeData: false,
+            tolerateUnsupportedNames: true,
+          });
+          const expected = new Map(
+            snapshot.files.map((file) => [file.path, file]),
+          );
+          const mismatches: string[] = [];
+          for (const file of rebuilt.files) {
+            const want = expected.get(file.path);
+            expected.delete(file.path);
+            if (!want || want.sha256 !== file.sha256 || want.mode !== file.mode)
+              mismatches.push(file.path);
+          }
+          mismatches.push(...expected.keys());
+          return mismatches.length
+            ? {
+                status: "failed",
+                reason: `Reconstructed tree differs at: ${mismatches.slice(0, 20).join(", ")}`,
+              }
+            : { status: "passed", reason: null };
+        };
+        try {
+          return {
+            workspace: currentRef(current),
+            patch,
+            files: diff.files.length,
+            round_trip: await roundTrip(),
+            unsupported,
+          };
+        } finally {
+          await rm(scratch, { recursive: true, force: true });
+        }
       });
     },
     async execute(context, workspace, argv, budget, executeOptions) {

@@ -41,7 +41,7 @@ After the root setup, configure a tool-capable model using the existing `models`
 bun apps/cli/src/main.ts serve --source /absolute/path/to/project
 ```
 
-Supported flags: `--source`, `--state`, `--port`, `--owner`, `--project`, `--image`, `--trust-project`, `--help`. Defaults: current source directory, owner `local`, stable project id derived from the canonical source path, state `~/.mars/workbench/<project-id>`, port `7331`. Port `0` selects an ephemeral port. Source and state roots must not contain one another. Do not put private state inside the project.
+Supported flags: `--source`, `--state`, `--port`, `--owner`, `--project`, `--image`, `--checks`, `--trust-project`, `--help`. Defaults: current source directory, owner `local`, stable project id derived from the canonical source path, state `~/.mars/workbench/<project-id>`, port `7331`. Port `0` selects an ephemeral port. Source and state roots must not contain one another. Do not put private state inside the project.
 
 The single startup JSON line reports the loopback URL, connection-file path and whether execution is enabled. It never prints the bearer token. Private state is mode 0700; `connection.json` is mode 0600. Each service start rotates its strong bearer token. Old connection files must be reimported after restart. The file contains `{schema_version:1,url,token,scope:{owner_id,project_id}}` and must stay outside any agent workspace.
 
@@ -52,6 +52,10 @@ Build and launch the [VS Code extension](../apps/vscode/README.md), then use **M
 Without `--image`, read/write tasks are available but command execution is disabled. With `--image REPO@sha256:DIGEST`, the configured image must already be present locally and Docker must verify successfully; there is no automatic image pull or host-shell fallback. Use an image with the runtimes needed by the project. Task-specific execute approval is also required.
 
 The provider runs commands non-root, without network, with read-only container root, dropped capabilities and bounded resources. Only the private workspace is mounted. Workspace content is untrusted and must never be executed by host-side integrations. Source secret files are excluded from the initial copy; model/provider credentials remain in the host credential environment, never in the task copy. Permission metadata is not itself a sandbox. See [provider boundaries](../packages/workspaces/README.md).
+
+## Host checks and verified patch export
+
+`--checks FILE` loads host-owned protected checks (`{"schema_version":1,"checks":[{"id","label","description?","argv","protected_files":[{"path","source"}],"exclude_paths","timeout_ms"}]}`; relative `source` paths resolve against the file). Clients see only id, label and description and select checks by id at Start; selecting one needs execute approval and `--image`. Each check runs in the sandbox on a disposable copy of the candidate with the protected files written over it and `exclude_paths` removed, so candidate edits to the test or its config never run (an edit to a path the check owns fails the check). The verdict is bound to the workspace revision, the check definition digest and the SHA-256 of the exact patch bytes. **Export verified patch…** in VS Code (RPC `tasks.export`) saves exactly those bytes after the host re-checks the revision and digest and proves a `git apply` round trip over the baseline.
 
 ## Recovery and privacy
 

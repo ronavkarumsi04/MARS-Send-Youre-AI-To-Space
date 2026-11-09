@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { applyPatch, discoverInstructions } from "@mars/codex-tools";
 import { registerRuntimeCleanup } from "@mars/execution";
@@ -146,6 +147,7 @@ export async function runServer(args: string[]): Promise<void> {
       owner: { type: "string" },
       project: { type: "string" },
       image: { type: "string" },
+      checks: { type: "string" },
       "trust-project": { type: "boolean" },
       "no-conventions": { type: "boolean" },
       "research-search": { type: "string" },
@@ -165,7 +167,7 @@ export async function runServer(args: string[]): Promise<void> {
   if (values.help) {
     console.log(
       [
-        `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--trust-project] [--no-conventions]`,
+        `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--checks HOST_CHECKS.json] [--trust-project] [--no-conventions]`,
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
         "Without a pre-pulled digest-pinned image, command execution is disabled. No model request is made at startup. Connection credentials are written only to the private connection file.",
@@ -232,6 +234,7 @@ export async function runServer(args: string[]): Promise<void> {
     port:
       values.port === undefined ? DEFAULT_WORKBENCH_PORT : Number(values.port),
     ...(values.image ? { image: values.image } : {}),
+    ...(values.checks ? { checksFile: resolve(values.checks) } : {}),
     ...(research ? { research } : {}),
     ...(values.graphify?.length
       ? {

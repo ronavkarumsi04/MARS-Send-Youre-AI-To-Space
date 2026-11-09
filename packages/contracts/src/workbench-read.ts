@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HostCheckSummarySchema } from "./verification";
 
 const count = z.number().int().nonnegative();
 const id = z.string().min(1).max(256);
@@ -57,6 +58,8 @@ export const WorkbenchDescribeFields = {
   graph: WorkbenchGraphSchema.nullable().optional(),
   vault: WorkbenchVaultSchema.nullable().optional(),
   providers: z.array(WorkbenchProviderSchema).max(1000).optional(),
+  /** Host-defined checks a client may select at Start, by id only. */
+  checks: z.array(HostCheckSummarySchema).max(64).optional(),
 };
 export const WorkbenchInspectFields = {
   model_tier: z.enum(["free", "paid", "local"]).nullable().optional(),

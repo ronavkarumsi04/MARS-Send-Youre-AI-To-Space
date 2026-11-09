@@ -235,6 +235,16 @@ const approvals = {
   execute: focusKey(h("input"), "approve-execute"),
 };
 for (const box of Object.values(approvals)) box.type = "checkbox";
+const checkBoxes = new Map<string, HTMLInputElement>();
+function checkBox(id: string): HTMLInputElement {
+  let box = checkBoxes.get(id);
+  if (!box) {
+    box = focusKey(h("input"), `check-${id}`);
+    box.type = "checkbox";
+    checkBoxes.set(id, box);
+  }
+  return box;
+}
 
 function resetApprovals(taskId: string): void {
   if (approvalTask === taskId) return;
@@ -242,6 +252,7 @@ function resetApprovals(taskId: string): void {
   approvals.read.checked = true;
   approvals.write.checked = false;
   approvals.execute.checked = false;
+  for (const box of checkBoxes.values()) box.checked = false;
   steerBox.value = "";
 }
 
@@ -615,6 +626,27 @@ function renderSelected(s: ViewState, sel: SelectedView): HTMLElement {
           approvals.execute,
         ),
       ),
+      ...(s.connection.checks.length
+        ? [
+            h("h3", {}, "Required checks (host-defined)"),
+            h(
+              "div",
+              { class: "row" },
+              ...s.connection.checks.map((check) => {
+                const box = checkBox(check.id);
+                box.disabled = !s.connection.canExecute;
+                box.title = check.description ?? check.label;
+                return checkbox(check.label, box);
+              }),
+            ),
+          ]
+        : [
+            h(
+              "p",
+              { class: "muted small" },
+              "This server defines no required checks; the result will be Unverified.",
+            ),
+          ]),
       button("Start…", "start", () =>
         vscode.postMessage({
           type: "startTask",
@@ -624,6 +656,9 @@ function renderSelected(s: ViewState, sel: SelectedView): HTMLElement {
             write: approvals.write.checked,
             execute: approvals.execute.checked,
           },
+          checkIds: s.connection.checks
+            .filter((check) => checkBox(check.id).checked)
+            .map((check) => check.id),
         }),
       ),
     );
@@ -642,6 +677,12 @@ function renderSelected(s: ViewState, sel: SelectedView): HTMLElement {
         "cancel",
         () => vscode.postMessage({ type: "cancelTask", taskId }),
         { danger: true },
+      ),
+    );
+  if (sel.verification?.state === "verified" && sel.verification.patch_sha256)
+    actions.append(
+      button("Export verified patch…", "export", () =>
+        vscode.postMessage({ type: "exportPatch", taskId }),
       ),
     );
   controls.append(actions);

@@ -222,6 +222,7 @@ export interface Harness {
   opened: string[];
   copied: string[];
   reviews: ReviewTarget[];
+  saved: { name: string; bytes: Uint8Array }[];
   ui: WorkbenchUi;
   connect: () => Promise<ConnectResult>;
   last(): ViewState;
@@ -234,6 +235,7 @@ export function harness(server = new FakeServer()): Harness {
   const opened: string[] = [];
   const copied: string[] = [];
   const reviews: ReviewTarget[] = [];
+  const saved: Harness["saved"] = [];
   let id = 0;
   const ui: WorkbenchUi = {
     confirm: async (message, detail, action) => {
@@ -255,6 +257,10 @@ export function harness(server = new FakeServer()): Harness {
       reviews.push(target);
       return { ok: true };
     },
+    savePatch: async (bytes, name) => {
+      saved.push({ name, bytes });
+      return `/tmp/${name}`;
+    },
   };
   return {
     server,
@@ -264,6 +270,7 @@ export function harness(server = new FakeServer()): Harness {
     opened,
     copied,
     reviews,
+    saved,
     ui,
     connect: async () => ({
       ok: true,

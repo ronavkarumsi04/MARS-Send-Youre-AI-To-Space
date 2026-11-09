@@ -6,6 +6,8 @@ import {
   EventEnvelopeSchema,
   type JournalResult,
   JournalResultSchema,
+  type PatchExport,
+  PatchExportSchema,
   type RequestContext,
   type Scope,
   ScopeSchema,
@@ -27,6 +29,7 @@ import {
   DiffResultSchema,
   type EvidenceResult,
   EvidenceResultSchema,
+  type ExportParams,
   type InspectResult,
   InspectResultSchema,
   type RpcRequest,
@@ -81,6 +84,8 @@ export interface WorkbenchOperations {
     context: RequestContext,
     taskId: string,
   ): Promise<VerificationView>;
+  /** The exact candidate patch, bound to the expected revision and patch bytes. */
+  export(context: RequestContext, params: ExportParams): Promise<PatchExport>;
   restore(
     context: RequestContext,
     taskId: string,
@@ -141,7 +146,7 @@ export class WorkbenchError extends Error {
 
 export const DEFAULT_WORKBENCH_PORT = 7331;
 const MAX_REQUEST_BYTES = 512 * 1024;
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_PAGE_EVENTS = 1000;
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
@@ -294,6 +299,8 @@ async function dispatch(
       return VerificationViewSchema.parse(
         await api.verification(context, request.params.task_id),
       );
+    case "tasks.export":
+      return PatchExportSchema.parse(await api.export(context, request.params));
     case "tasks.restore":
       return WorkspaceRefSchema.parse(
         await api.restore(
