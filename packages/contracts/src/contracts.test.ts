@@ -12,6 +12,7 @@ import {
   TaskSchema,
   TaskStatusSchema,
   TeamContextSchema,
+  usdMicros,
 } from "./index";
 
 const scope = { owner_id: "owner-1", project_id: "project-1" };
@@ -148,4 +149,11 @@ describe("shared primitives", () => {
       }).success,
     ).toBe(true);
   });
+});
+
+test("usdMicros compares decimal dollar sums exactly", () => {
+  expect(0.1 + 0.2 > 0.3).toBe(true);
+  expect(usdMicros(0.1 + 0.2)).toBe(usdMicros(0.3));
+  expect(usdMicros(0.3) - usdMicros(0.1)).toBe(200_000);
+  expect(usdMicros(0)).toBe(0);
 });

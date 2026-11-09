@@ -1542,6 +1542,55 @@ describe("@mars/research durable control plane", () => {
     );
   });
 
+  test("exact decimal dollar amounts fit the task allowance and a job's own budget", async () => {
+    const now = Date.now;
+    const worker: ResearchWorker = {
+      id: "cents-worker",
+      version: "1",
+      async run(_input, workerContext) {
+        for (const cost_usd of [0.1, 0.2])
+          await workerContext.reportUsage({
+            input_tokens: 1,
+            output_tokens: 1,
+            cost_usd,
+          });
+      },
+    };
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      worker,
+      task: { ...base, budget: { ...base.budget, max_usd: 0.6 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const usd = (max_usd: number) => ({
+      budget: { ...makeRequest(now).budget, max_usd },
+    });
+    // 0.1 + 0.2 reported against a $0.30 job budget is an exact fit, not an overrun.
+    const spent = await request(env.service, now, "cents-a", usd(0.3));
+    await env.service.pump();
+    await waitFor(
+      async () =>
+        (await env.service.inspect(context(), spent)).status === "completed",
+    );
+    expect(await env.service.inspect(context(), spent)).toMatchObject({
+      error_code: null,
+    });
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.3,
+    );
+    await request(env.service, now, "cents-b", usd(0.1));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(
+      0.2,
+    );
+    await request(env.service, now, "cents-c", usd(0.2));
+    expect((await env.service.allowance(context(), "task-1")).max_usd).toBe(0);
+    expect(
+      await errorCode(() =>
+        request(env.service, now, "cents-d", usd(0.000001)),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
   test("autoStart false only claims queued work on an explicit pump", async () => {
     let runCount = 0;
     const now = Date.now;

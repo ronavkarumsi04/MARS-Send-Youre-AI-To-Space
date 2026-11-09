@@ -942,6 +942,26 @@ describe("review regressions", () => {
     expect(reported).toEqual([600]);
   });
 
+  test("ledger reserves an exact decimal dollar fit", () => {
+    const ledger = new UsageLedger(
+      {
+        max_tokens: 10_000,
+        max_usd: 0.3,
+        max_duration_ms: 60_000,
+        max_depth: 1,
+        max_concurrency: 2,
+      },
+      Date.now() + 60_000,
+      0,
+      Date.now,
+      async () => {},
+      new AbortController().signal,
+    );
+    expect(ledger.reserve(10, 10, 0.1)).toBeDefined();
+    expect(ledger.reserve(10, 10, 0.2)).toBeDefined();
+    expect(ledger.reserve(10, 10, 0.000001)).toBeUndefined();
+  });
+
   test("an unknown model cost is refused before the call, not treated as free", async () => {
     const model = fakeModel({ plan: PLAN, extracts: EXTRACTS });
     const { instance, logs } = worker({

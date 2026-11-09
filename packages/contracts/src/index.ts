@@ -33,6 +33,15 @@ export const BudgetSchema = z
   .strict();
 export type Budget = z.infer<typeof BudgetSchema>;
 
+/**
+ * A USD amount in whole micro-dollars. Budget checks compare in this unit so
+ * decimal amounts that fit exactly ($0.10 + $0.20 against $0.30) are not
+ * refused because of binary floating-point error.
+ */
+export function usdMicros(usd: number): number {
+  return Math.round(usd * 1_000_000);
+}
+
 export const EventEnvelopeSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),

@@ -6,6 +6,7 @@ import {
   type ModelConfig,
   type Task,
   TaskSchema,
+  usdMicros,
 } from "@mars/contracts";
 import { isStrictlyInside } from "@mars/contracts/path-containment";
 import { OUTPUT_FORMAT_PROMPT } from "@mars/output-format";
@@ -771,7 +772,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
           };
     if (
       ledger.reserved_tokens > task.budget.max_tokens ||
-      ledger.reserved_usd > task.budget.max_usd ||
+      usdMicros(ledger.reserved_usd) > usdMicros(task.budget.max_usd) ||
       Date.now() >= ledger.deadline
     )
       throw new ExecutionLimitError();

@@ -13,6 +13,7 @@ import {
   type ResearchService,
   ScopeSchema,
   type Task,
+  usdMicros,
 } from "@mars/contracts";
 import { type AppendEventInput, canonicalJson } from "@mars/tasks";
 import { validateCitationUrl } from "./citations";
@@ -574,7 +575,7 @@ function findFindingById(
  */
 function taskResearchCommitment(rows: readonly RequestRow[]): {
   tokens: number;
-  usd: number;
+  usdMicros: number;
 } {
   let tokens = 0;
   let usd = 0;
@@ -584,16 +585,20 @@ function taskResearchCommitment(rows: readonly RequestRow[]): {
     const used = usage.input_tokens + usage.output_tokens;
     if (row.status === "queued" || row.status === "running") {
       tokens += Math.max(budget.max_tokens, used);
-      usd += Math.max(budget.max_usd, usage.cost_usd ?? 0);
+      usd += Math.max(
+        usdMicros(budget.max_usd),
+        usdMicros(usage.cost_usd ?? 0),
+      );
     } else if (row.attempts > 0 || usage.reported) {
       tokens += usage.reported ? used : budget.max_tokens;
-      usd +=
+      usd += usdMicros(
         usage.reported && usage.cost_usd !== null
           ? usage.cost_usd
-          : budget.max_usd;
+          : budget.max_usd,
+      );
     }
   }
-  return { tokens, usd };
+  return { tokens, usdMicros: usd };
 }
 
 function verifiedRequest(row: RequestRow): ResearchRequest {
@@ -1601,7 +1606,8 @@ export async function createResearchService(
           };
           exceeded =
             inputTokens + outputTokens > request.budget.max_tokens ||
-            (reportedCost !== null && reportedCost > request.budget.max_usd);
+            (reportedCost !== null &&
+              usdMicros(reportedCost) > usdMicros(request.budget.max_usd));
           if (exceeded) {
             db.query(
               `UPDATE requests SET usage_json = ?, status = 'failed',
@@ -1979,7 +1985,8 @@ export async function createResearchService(
         if (
           committed.tokens + request.budget.max_tokens >
             task.budget.max_tokens ||
-          committed.usd + request.budget.max_usd > task.budget.max_usd
+          committed.usdMicros + usdMicros(request.budget.max_usd) >
+            usdMicros(task.budget.max_usd)
         ) {
           throw new ResearchError(
             "budget_exceeded",
@@ -2051,7 +2058,9 @@ export async function createResearchService(
       );
       return {
         max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
-        max_usd: Math.max(0, task.budget.max_usd - committed.usd),
+        max_usd:
+          Math.max(0, usdMicros(task.budget.max_usd) - committed.usdMicros) /
+          1_000_000,
       };
     },
 
