@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import {
@@ -149,6 +149,39 @@ export interface ResearchTaskReader {
   inspect(context: RequestContext, taskId: string): Promise<Task>;
 }
 
+/**
+ * The task's shared budget ledger. Each research job owns one hold, keyed by
+ * its submission id, so admission is atomic in the ledger across instances.
+ */
+export interface ResearchBudgetLedger {
+  reserve(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: { tokens: number; usd: number },
+  ): Promise<void>;
+  record(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    amount: { tokens: number; usd: number },
+  ): Promise<void>;
+  committed(
+    context: RequestContext,
+    taskId: string,
+    excludeKey?: string,
+  ): Promise<{ tokens: number; usd: number }>;
+}
+
+export const RESEARCH_BUDGET_HOLD_PREFIX = "research:";
+
+export function researchBudgetHoldKey(idemRequestId: string): string {
+  return `${RESEARCH_BUDGET_HOLD_PREFIX}${createHash("sha256")
+    .update(idemRequestId)
+    .digest("hex")
+    .slice(0, 32)}`;
+}
+
 export interface ResearchArtifactStore {
   put(
     context: RequestContext,
@@ -171,6 +204,7 @@ export type ResearchInternalErrorSite =
   | "run_settled"
   | "flush_events"
   | "execute_claim"
+  | "ledger"
   | "pump";
 
 export interface ResearchInternalError {
@@ -182,6 +216,8 @@ export interface ResearchInternalError {
 export interface ResearchServiceOptions {
   rootDir: string;
   tasks: ResearchTaskReader;
+  /** When set, research admission also counts the task's other spenders. */
+  ledger?: ResearchBudgetLedger;
   artifacts: ResearchArtifactStore;
   worker: ResearchWorker;
   events?: ResearchEventSink;
@@ -483,6 +519,15 @@ function isErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+function mapLedgerError(error: unknown): ResearchError {
+  if ((error as { code?: unknown } | null)?.code === "budget_exceeded")
+    return new ResearchError(
+      "budget_exceeded",
+      "Research budget exceeds what the task has left after its other work",
+    );
+  return mapTaskError(error);
+}
+
 function mapTaskError(error: unknown): ResearchError {
   if (isErrorCode(error, "not_found")) {
     return new ResearchError("not_found", NOT_FOUND_MESSAGE);
@@ -698,6 +743,37 @@ export async function createResearchService(
         };
   const store: OpenResearchStore = await openResearchStore(storeOptions);
   const db = store.db;
+  /**
+   * Sets each job's hold to its commitment. An active job commits at least what
+   * it reserved and a terminal job's commitment is final, so a stale read never
+   * releases capacity a job may still spend; holds only fall once a job ends.
+   */
+  const syncResearchHolds = async (
+    rows: readonly RequestRow[],
+  ): Promise<void> => {
+    const ledger = options.ledger;
+    if (!ledger) return;
+    for (const row of rows) {
+      let scope: RequestContext["scope"];
+      try {
+        scope = JSON.parse(row.scope_json) as RequestContext["scope"];
+      } catch {
+        continue;
+      }
+      await ledger
+        .record(
+          {
+            schema_version: 1,
+            scope,
+            request_id: `research-hold-${row.request_id}`,
+          },
+          row.task_id,
+          researchBudgetHoldKey(row.idem_request_id),
+          taskResearchCommitment([row]),
+        )
+        .catch((error: unknown) => reportInternalError("ledger", error));
+    }
+  };
   const instanceId = Bun.randomUUIDv7();
   const privateNeedles = privatePathForms(
     store.rootDir,
@@ -1938,62 +2014,65 @@ export async function createResearchService(
         }
       }
       const record = canonicalRecord(request);
-      const insertResult = immediate(db, () => {
-        const existing = db
-          .query(
-            `SELECT request_id, input_sha256 FROM requests
+      const insert = () =>
+        immediate(db, () => {
+          const existing = db
+            .query(
+              `SELECT request_id, input_sha256 FROM requests
              WHERE scope_key = ? AND idem_request_id = ?`,
-          )
-          .get(parsedContext.scopeKey, parsedContext.context.request_id) as {
-          request_id: string;
-          input_sha256: string;
-        } | null;
-        if (existing) {
-          if (existing.input_sha256 !== inputHash) {
+            )
+            .get(parsedContext.scopeKey, parsedContext.context.request_id) as {
+            request_id: string;
+            input_sha256: string;
+          } | null;
+          if (existing) {
+            if (existing.input_sha256 !== inputHash) {
+              throw new ResearchError(
+                "conflict",
+                "Request id was already used with different input",
+              );
+            }
+            return { request_id: existing.request_id, inserted: false };
+          }
+          const scopeActive = db
+            .query(
+              `SELECT COUNT(*) AS count FROM requests
+             WHERE scope_key = ? AND status IN ('queued', 'running')`,
+            )
+            .get(parsedContext.scopeKey) as { count: number };
+          const totalActive = db
+            .query(
+              "SELECT COUNT(*) AS count FROM requests WHERE status IN ('queued', 'running')",
+            )
+            .get() as { count: number };
+          if (
+            scopeActive.count >= configured.maxActivePerScope ||
+            totalActive.count >= configured.maxActiveTotal
+          ) {
+            throw new ResearchError("backpressure", "Research queue is full");
+          }
+          const committed = taskResearchCommitment(
+            db
+              .query(
+                "SELECT * FROM requests WHERE scope_key = ? AND task_id = ?",
+              )
+              .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
+          );
+          if (
+            committed.tokens + request.budget.max_tokens >
+              task.budget.max_tokens ||
+            exceedsUsd(
+              committed.usd + request.budget.max_usd,
+              task.budget.max_usd,
+            )
+          ) {
             throw new ResearchError(
-              "conflict",
-              "Request id was already used with different input",
+              "budget_exceeded",
+              "Research budget exceeds the task's remaining research allowance",
             );
           }
-          return { request_id: existing.request_id, inserted: false };
-        }
-        const scopeActive = db
-          .query(
-            `SELECT COUNT(*) AS count FROM requests
-             WHERE scope_key = ? AND status IN ('queued', 'running')`,
-          )
-          .get(parsedContext.scopeKey) as { count: number };
-        const totalActive = db
-          .query(
-            "SELECT COUNT(*) AS count FROM requests WHERE status IN ('queued', 'running')",
-          )
-          .get() as { count: number };
-        if (
-          scopeActive.count >= configured.maxActivePerScope ||
-          totalActive.count >= configured.maxActiveTotal
-        ) {
-          throw new ResearchError("backpressure", "Research queue is full");
-        }
-        const committed = taskResearchCommitment(
-          db
-            .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
-            .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
-        );
-        if (
-          committed.tokens + request.budget.max_tokens >
-            task.budget.max_tokens ||
-          exceedsUsd(
-            committed.usd + request.budget.max_usd,
-            task.budget.max_usd,
-          )
-        ) {
-          throw new ResearchError(
-            "budget_exceeded",
-            "Research budget exceeds the task's remaining research allowance",
-          );
-        }
-        db.query(
-          `INSERT INTO requests
+          db.query(
+            `INSERT INTO requests
            (scope_key, request_id, scope_json, idem_request_id, input_sha256,
             record_json, record_sha256, task_id, task_revision, status, stale,
             cancel_requested, attempts, max_attempts, submitted_at,
@@ -2002,31 +2081,83 @@ export async function createResearchService(
             stale_event_state)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, ?, ?, ?, ?,
                    ?, NULL, NULL, NULL, ?, NULL, NULL, NULL, ?)`,
-        ).run(
-          parsedContext.scopeKey,
-          requestId,
-          parsedContext.scopeJson,
-          parsedContext.context.request_id,
-          inputHash,
-          record.record_json,
-          record.record_sha256,
-          request.task_id,
-          request.task_revision,
-          configured.maxAttempts,
-          timestamp(now),
-          request.deadline,
-          new Date(effectiveDeadline).toISOString(),
-          now,
-          JSON.stringify({
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: null,
-            reported: false,
-          } satisfies ResearchUsage),
-          "none",
-        );
-        return { request_id: requestId, inserted: true };
-      });
+          ).run(
+            parsedContext.scopeKey,
+            requestId,
+            parsedContext.scopeJson,
+            parsedContext.context.request_id,
+            inputHash,
+            record.record_json,
+            record.record_sha256,
+            request.task_id,
+            request.task_revision,
+            configured.maxAttempts,
+            timestamp(now),
+            request.deadline,
+            new Date(effectiveDeadline).toISOString(),
+            now,
+            JSON.stringify({
+              input_tokens: 0,
+              output_tokens: 0,
+              cost_usd: null,
+              reported: false,
+            } satisfies ResearchUsage),
+            "none",
+          );
+          return { request_id: requestId, inserted: true };
+        });
+      const ledger = options.ledger;
+      let insertResult: ReturnType<typeof insert>;
+      if (!ledger) insertResult = insert();
+      else {
+        const holdKey = researchBudgetHoldKey(parsedContext.context.request_id);
+        const submitted = () =>
+          db
+            .query(
+              "SELECT 1 FROM requests WHERE scope_key = ? AND idem_request_id = ? AND task_id = ?",
+            )
+            .get(
+              parsedContext.scopeKey,
+              parsedContext.context.request_id,
+              request.task_id,
+            ) !== null;
+        const replay = submitted();
+        if (!replay) {
+          // Settled jobs release their unused holds before this one is admitted.
+          await syncResearchHolds(
+            db
+              .query(
+                "SELECT * FROM requests WHERE scope_key = ? AND task_id = ?",
+              )
+              .all(parsedContext.scopeKey, request.task_id) as RequestRow[],
+          );
+          try {
+            await ledger.reserve(
+              parsedContext.context,
+              request.task_id,
+              holdKey,
+              {
+                tokens: request.budget.max_tokens,
+                usd: request.budget.max_usd,
+              },
+            );
+          } catch (error) {
+            throw mapLedgerError(error);
+          }
+        }
+        try {
+          insertResult = insert();
+        } catch (error) {
+          if (!replay && !submitted())
+            await ledger
+              .record(parsedContext.context, request.task_id, holdKey, {
+                tokens: 0,
+                usd: 0,
+              })
+              .catch(() => undefined);
+          throw error;
+        }
+      }
       wake();
       if (insertResult.inserted) schedulePump();
       return insertResult.request_id;
@@ -2050,11 +2181,24 @@ export async function createResearchService(
       } catch (error) {
         throw mapTaskError(error);
       }
-      const committed = taskResearchCommitment(
-        db
-          .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
-          .all(parsedContext.scopeKey, taskId) as RequestRow[],
-      );
+      const rows = db
+        .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+        .all(parsedContext.scopeKey, taskId) as RequestRow[];
+      let committed = taskResearchCommitment(rows);
+      if (options.ledger) {
+        await syncResearchHolds(rows);
+        let all: { tokens: number; usd: number };
+        try {
+          all = await options.ledger.committed(parsedContext.context, taskId);
+        } catch (error) {
+          throw mapLedgerError(error);
+        }
+        // The ledger already holds every research job; never count less than the jobs commit.
+        committed = {
+          tokens: Math.max(all.tokens, committed.tokens),
+          usd: Math.max(all.usd, committed.usd),
+        };
+      }
       return {
         max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
         max_usd: remainingUsd(task.budget.max_usd, committed.usd),
@@ -2322,6 +2466,12 @@ export async function createResearchService(
       return closePromise;
     },
   };
+
+  // Holds for jobs submitted before this store had a ledger, or by an earlier
+  // process, are restored before any other spender can reserve around them.
+  await syncResearchHolds(
+    db.query("SELECT * FROM requests").all() as RequestRow[],
+  );
 
   if (configured.autoStart) {
     autoPump = setInterval(() => {

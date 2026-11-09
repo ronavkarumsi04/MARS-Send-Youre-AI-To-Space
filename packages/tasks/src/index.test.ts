@@ -2206,3 +2206,47 @@ function createHashScope(value: RequestContext["scope"]): string {
   );
   return createHash("sha256").update(canonical).digest("hex");
 }
+
+test("budget holds share one task budget across spenders", async () => {
+  const store = await openStore(makeRoot());
+  const task = makeTask();
+  await store.create(context(), task);
+  const reserve = store.reserveBudget?.bind(store);
+  const record = store.recordBudget?.bind(store);
+  const committed = store.budgetCommitted?.bind(store);
+  if (!reserve || !record || !committed) throw new Error("ledger missing");
+  await reserve(context(), task.task_id, "foreground", {
+    tokens: 600,
+    usd: 0.1,
+  });
+  await reserve(context(), task.task_id, "research", { tokens: 400, usd: 0.2 });
+  await expect(
+    reserve(context(), task.task_id, "delegation", { tokens: 1, usd: 0 }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  // Re-reserving an amount a hold already covers is a no-op, never a refusal.
+  await reserve(context(), task.task_id, "research", { tokens: 300, usd: 0.2 });
+  expect(await committed(context(), task.task_id)).toEqual({
+    tokens: 1000,
+    usd: 0.30000000000000004,
+  });
+  // Settling records the actual spend, freeing the rest for other spenders.
+  await record(context(), task.task_id, "research", { tokens: 100, usd: 0 });
+  expect(await committed(context(), task.task_id, "research")).toEqual({
+    tokens: 600,
+    usd: 0.1,
+  });
+  await reserve(context(), task.task_id, "delegation", {
+    tokens: 300,
+    usd: 0.9,
+  });
+  await expect(
+    reserve(context(), task.task_id, "foreground", { tokens: 601, usd: 0.1 }),
+  ).rejects.toMatchObject({ code: "budget_exceeded" });
+  await expect(
+    reserve(context(), "missing-task", "foreground", { tokens: 1, usd: 0 }),
+  ).rejects.toMatchObject({ code: "not_found" });
+  await expect(
+    reserve(context(), task.task_id, "bad key", { tokens: 1, usd: 0 }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await store.close();
+});

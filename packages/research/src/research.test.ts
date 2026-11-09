@@ -29,6 +29,7 @@ import {
   type FindingProposal,
   isTerminalResearchStatus,
   RESEARCH_STORE_FORMAT_VERSION,
+  type ResearchBudgetLedger,
   type ResearchWorker,
   type ResearchWorkerContext,
   RetryableResearchError,
@@ -1611,6 +1612,92 @@ describe("@mars/research durable control plane", () => {
         request(env.service, now, "tiny-c", usd(0.0000004)),
       ),
     ).toBe("budget_exceeded");
+  });
+
+  test("research holds share the task ledger across instances and restarts", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_tokens: 1000 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const tokens = (max_tokens: number) => ({
+      budget: { ...makeRequest(now).budget, max_tokens },
+    });
+    // Submitted before the service had a ledger.
+    await request(env.service, now, "legacy", tokens(300));
+    const store = env.tasks;
+    const ledger: ResearchBudgetLedger = {
+      reserve: (c, t, k, a) =>
+        store.reserveBudget?.(c, t, k, a) ?? Promise.resolve(),
+      record: (c, t, k, a) =>
+        store.recordBudget?.(c, t, k, a) ?? Promise.resolve(),
+      committed: async (c, t, k) =>
+        (await store.budgetCommitted?.(c, t, k)) ?? { tokens: 0, usd: 0 },
+    };
+    const open = async () => {
+      const service = await createResearchService({
+        rootDir: path.join(env.root, "research"),
+        tasks: store,
+        artifacts: store.artifacts,
+        worker: publishingWorker(now),
+        autoStart: false,
+        maxConcurrency: 4,
+        ledger,
+      });
+      services.push(service);
+      return service;
+    };
+    const first = await open();
+    const second = await open();
+    // Startup restored the legacy job's hold before the foreground reserves.
+    expect((await ledger.committed(context(), "task-1")).tokens).toBe(300);
+    await store.reserveBudget?.(context(), "task-1", "foreground", {
+      tokens: 600,
+      usd: 0,
+    });
+    await expect(
+      store.reserveBudget?.(context(), "task-1", "foreground", {
+        tokens: 701,
+        usd: 0,
+      }),
+    ).rejects.toMatchObject({ code: "budget_exceeded" });
+    // Two instances racing for the last 100 tokens: exactly one is admitted.
+    const raced = await Promise.allSettled([
+      request(first, now, "race-a", tokens(80)),
+      request(second, now, "race-b", tokens(80)),
+    ]);
+    expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      await errorCode(() =>
+        Promise.reject(
+          (raced.find((r) => r.status === "rejected") as PromiseRejectedResult)
+            .reason,
+        ),
+      ),
+    ).toBe("budget_exceeded");
+    // Allowance never lowers a job's hold from a snapshot taken before it.
+    const [left] = await Promise.all([
+      second.allowance(context(), "task-1"),
+      request(first, now, "small", tokens(10)),
+    ]);
+    expect(left.max_tokens === 20 || left.max_tokens === 10).toBe(true);
+    expect((await ledger.committed(context(), "task-1")).tokens).toBe(990);
+    expect((await second.allowance(context(), "task-1")).max_tokens).toBe(10);
+    // One submission id racing into two tasks: the refused task's hold is released.
+    const other = makeTask("task-2", scope);
+    await store.create(context("create-task-2"), {
+      ...other,
+      budget: { ...other.budget, max_tokens: 1000 },
+    });
+    const dup = await Promise.allSettled([
+      request(first, now, "dup", tokens(5), "task-1"),
+      request(second, now, "dup", tokens(5), "task-2"),
+    ]);
+    expect(dup.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const held = async (taskId: string) =>
+      (await ledger.committed(context(), taskId)).tokens;
+    expect((await held("task-1")) - 990 + (await held("task-2"))).toBe(5);
   });
 
   test("autoStart false only claims queued work on an explicit pump", async () => {

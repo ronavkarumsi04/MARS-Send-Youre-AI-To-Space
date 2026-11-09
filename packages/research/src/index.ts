@@ -18,7 +18,9 @@ export {
   type EvidenceCapture,
   type FindingProposal,
   isTerminalResearchStatus,
+  RESEARCH_BUDGET_HOLD_PREFIX,
   type ResearchArtifactStore,
+  type ResearchBudgetLedger,
   type ResearchEventSink,
   type ResearchInternalError,
   type ResearchInternalErrorSite,
@@ -31,5 +33,6 @@ export {
   type ResearchWorkerContext,
   type ResearchWorkerInput,
   RetryableResearchError,
+  researchBudgetHoldKey,
 } from "./service";
 export { RESEARCH_STORE_FORMAT_VERSION } from "./store";

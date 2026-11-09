@@ -566,6 +566,37 @@ test("pre-dispatch reservation and persistence failure fail closed without provi
         }).result()
       ).stopReason,
     ).toBe("error");
+    const failures: string[] = [];
+    const sharedLedger = { ...ledger };
+    const refusedByTask = createModelBridge({
+      registry: f.registry,
+      selected,
+      budget: f.task.budget,
+      ledger: sharedLedger,
+      signal: new AbortController().signal,
+      persistLedger: async () => undefined,
+      sharedBudget: {
+        reserve: async () => {
+          throw Object.assign(new Error("full"), { code: "budget_exceeded" });
+        },
+        record: async () => undefined,
+      },
+      onFailure: (code) => failures.push(code),
+      fetch: async () => {
+        calls++;
+        return sse({ content: "Should not run" });
+      },
+      env: f.env,
+    });
+    expect(
+      (
+        await refusedByTask(model, {
+          messages: [{ role: "user", content: "Hello", timestamp: 1 }],
+        }).result()
+      ).stopReason,
+    ).toBe("error");
+    expect(failures).toEqual(["budget_exhausted"]);
+    expect(sharedLedger.reserved_tokens).toBe(ledger.reserved_tokens);
     expect(calls).toBe(0);
   } finally {
     await f.cleanup();

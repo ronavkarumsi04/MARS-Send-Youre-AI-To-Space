@@ -27,6 +27,13 @@ export interface BudgetLedger {
   output_tokens: number;
 }
 
+export interface SharedBudget {
+  /** Raise this run's hold to the given running totals, or throw if the task cannot afford it. */
+  reserve(amount: { tokens: number; usd: number }): Promise<void>;
+  /** Set this run's hold to its settled running totals. */
+  record(amount: { tokens: number; usd: number }): Promise<void>;
+}
+
 export class ExecutionLimitError extends Error {
   constructor() {
     super("Task execution budget exhausted or unverifiable.");
@@ -137,6 +144,8 @@ export interface ModelBridgeOptions {
   budget: Budget;
   ledger: BudgetLedger;
   persistLedger(ledger: BudgetLedger): Promise<void>;
+  /** The task's shared ledger; refusing a reservation ends the run as budget exhausted. */
+  sharedBudget?: SharedBudget;
   env?: Record<string, string | undefined>;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   signal: AbortSignal;
@@ -200,6 +209,16 @@ export function createModelBridge(options: ModelBridgeOptions) {
           (inputAllowance * inputRate + maxTokens * outputRate) / 1_000_000;
         if (exceedsUsd(ledger.reserved_usd + reservedCost, budget.max_usd))
           throw new ExecutionLimitError();
+        if (options.sharedBudget) {
+          try {
+            await options.sharedBudget.reserve({
+              tokens: ledger.reserved_tokens + inputAllowance + maxTokens,
+              usd: ledger.reserved_usd + reservedCost,
+            });
+          } catch {
+            throw new ExecutionLimitError();
+          }
+        }
         const before = { ...ledger };
         ledger.reserved_tokens += inputAllowance + maxTokens;
         ledger.reserved_usd += reservedCost;
@@ -305,6 +324,12 @@ export function createModelBridge(options: ModelBridgeOptions) {
             ledger.input_tokens += inputTokens;
             ledger.output_tokens += outputTokens;
             await options.persistLedger({ ...ledger });
+            await options.sharedBudget
+              ?.record({
+                tokens: ledger.reserved_tokens,
+                usd: ledger.reserved_usd,
+              })
+              .catch(() => undefined);
             output.usage = {
               input: inputTokens,
               output: outputTokens,

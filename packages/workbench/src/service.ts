@@ -36,6 +36,7 @@ import {
 import {
   createResearchService,
   type DurableResearchService,
+  type ResearchBudgetLedger,
   type ResearchServiceOptions,
 } from "@mars/research";
 import {
@@ -51,7 +52,7 @@ import {
 } from "@mars/research-worker";
 import { createRegistryReviewGateway, ReviewRunner } from "@mars/review";
 import { SkillStore } from "@mars/skills";
-import { createTaskStore } from "@mars/tasks";
+import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import {
   createDockerSandbox,
   createLocalWorkspaceProvider,
@@ -387,6 +388,7 @@ export async function createWorkbenchService(
         ...researchOptions.service,
         rootDir: researchRoot,
         tasks: store,
+        ...taskBudgetLedger(store),
         artifacts: store.artifacts,
         events: store,
         worker,
@@ -565,4 +567,21 @@ export async function createWorkbenchService(
     await teardown(0);
     throw error;
   }
+}
+
+function taskBudgetLedger(store: DurableTaskStore): {
+  ledger?: ResearchBudgetLedger;
+} {
+  const { reserveBudget, recordBudget, budgetCommitted } = store;
+  if (!reserveBudget || !recordBudget || !budgetCommitted) return {};
+  return {
+    ledger: {
+      reserve: (context, taskId, key, amount) =>
+        reserveBudget.call(store, context, taskId, key, amount),
+      record: (context, taskId, key, amount) =>
+        recordBudget.call(store, context, taskId, key, amount),
+      committed: (context, taskId, excludeKey) =>
+        budgetCommitted.call(store, context, taskId, excludeKey),
+    },
+  };
 }

@@ -54,6 +54,7 @@ import {
   type RuntimeSessionOptions,
   type RuntimeTools,
   type RuntimeWatch,
+  type SharedBudget,
   selectExecutionModel,
 } from "@mars/execution";
 import type { StatusReport } from "@mars/memory-vault";
@@ -1954,6 +1955,24 @@ export async function createWorkbenchHost(
       ),
     };
   };
+  // Every spender of a task holds its share of the task budget in the store's
+  // ledger: the foreground run, research and the delegation pool.
+  const foregroundBudget = (
+    context: RequestContext,
+    taskId: string,
+  ): { sharedBudget?: SharedBudget } => {
+    const store = options.store;
+    const { reserveBudget, recordBudget } = store;
+    if (!reserveBudget || !recordBudget) return {};
+    return {
+      sharedBudget: {
+        reserve: (amount) =>
+          reserveBudget.call(store, context, taskId, "foreground", amount),
+        record: (amount) =>
+          recordBudget.call(store, context, taskId, "foreground", amount),
+      },
+    };
+  };
   // A room that cannot be opened at the sized coordinator budget fails the
   // already-running task.
   const openLaunchRoom = async (
@@ -1991,6 +2010,27 @@ export async function createWorkbenchHost(
           .catch(() => undefined);
         throw new Error("Room budget below the sized coordinator budget");
       }
+      const pool = {
+        tokens: Math.max(
+          0,
+          running.budget.max_tokens -
+            opened.room.coordinator_runtime_budget.max_tokens,
+        ),
+        usd: Math.max(
+          0,
+          running.budget.max_usd -
+            opened.room.coordinator_runtime_budget.max_usd,
+        ),
+      };
+      if ((pool.tokens > 0 || pool.usd > 0) && options.store.reserveBudget)
+        await options.store
+          .reserveBudget(context, running.task_id, "delegation", pool)
+          .catch(async (error) => {
+            await options.collaboration?.host
+              .closeRoom(context, opened.room.room_id, "cancel")
+              .catch(() => undefined);
+            throw error;
+          });
       return {
         room_id: opened.room.room_id,
         capability: opened.coordinator,
@@ -2103,6 +2143,7 @@ export async function createWorkbenchHost(
     let bound = false;
     let deadline = launch.provisionalDeadline;
     const runtime = await runtimeFactory({
+      ...foregroundBudget(context, taskId),
       task: runtimeTask(running, collaboration),
       cwd,
       stateDir: launch.stateDir,
@@ -2616,6 +2657,7 @@ export async function createWorkbenchHost(
       let runtime: RuntimeSession | undefined;
       try {
         runtime = await runtimeFactory({
+          ...foregroundBudget(context, running.task_id),
           task: runtimeTask(running, launch.collaboration),
           cwd,
           stateDir: taskState(task),

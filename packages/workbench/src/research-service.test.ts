@@ -402,7 +402,7 @@ test("mars_research sizes each job to the task's remaining research allowance", 
     () => Date.now() + 60_000,
   );
   expect(await tools.submit({ question: "q" })).toContain("rr_1");
-  expect(submitted[0]).toEqual({ ...budget, max_tokens: 40, max_usd: 1 });
+  expect(submitted[0]).toEqual({ ...budget, max_tokens: 20, max_usd: 1 });
   left = { max_tokens: 0, max_usd: 1 };
   await expect(tools.submit({ question: "q" })).rejects.toThrow(
     "research allowance is used up",

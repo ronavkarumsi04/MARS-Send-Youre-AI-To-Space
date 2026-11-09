@@ -17,6 +17,7 @@ export {
   DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   ExecutionLimitError,
   type ModelFailureCode,
+  type SharedBudget,
   selectExecutionModel,
 } from "./model-bridge";
 export * from "./runtime";
