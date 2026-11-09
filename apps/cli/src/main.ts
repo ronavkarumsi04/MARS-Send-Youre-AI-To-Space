@@ -1,6 +1,9 @@
 import { parseArgs } from "node:util";
 import type { ModelConfig, ProviderConfig } from "@mars/contracts";
-import { probeExecution } from "@mars/execution";
+import {
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+  probeExecution,
+} from "@mars/execution";
 import {
   discoverModels,
   loadModelRegistry,
@@ -203,7 +206,13 @@ async function runModels(args: string[]): Promise<void> {
     const modelId = positionals[0];
     if (!modelId)
       throw new Error("Usage: mars models test <modelId> [--prompt].");
-    const response = await new ModelRouter(registry).complete(
+    const response = await new ModelRouter(registry, {
+      adapterOptions: {
+        timeoutMs:
+          registry.getModel(modelId)?.requestTimeoutMs ??
+          DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+      },
+    }).complete(
       {
         messages: [
           {

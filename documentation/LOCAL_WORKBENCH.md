@@ -57,6 +57,8 @@ The provider runs commands non-root, without network, with read-only container r
 
 `--checks FILE` loads host-owned protected checks (`{"schema_version":1,"checks":[{"id","label","description?","argv","protected_files":[{"path","source"}],"exclude_paths","timeout_ms"}]}`; relative `source` paths resolve against the file). Clients see only id, label and description and select checks by id at Start; selecting one needs execute approval and `--image`. Each check runs in the sandbox on a disposable copy of the candidate with the protected files written over it and `exclude_paths` removed, so candidate edits to the test or its config never run (an edit to a path the check owns fails the check). The verdict is bound to the workspace revision, the check definition digest and the SHA-256 of the exact patch bytes. **Export verified patch…** in VS Code (RPC `tasks.export`) saves exactly those bytes after the host re-checks the revision and digest and proves a `git apply` round trip over the baseline.
 
+`tasks.evidence` returns Watch verify records only. Pass `include_host_verification: true` to also receive `host_verification` (the `tasks.verification` view), so Watch assurance and host required-check verdicts arrive in one response but stay separate fields; older hosts reject the parameter.
+
 ## Recovery and privacy
 
 Start/resume require exact revisions and saved task/workspace/model/approval identity. Resume reopens the same workspace and original private SDK journal; missing or corrupt state fails closed, never recreating from source. Checkpoints and artifacts are task-owned. Restore is refused while a task is running. Keep state intact for recovery, including unresolved restore backup/journal directories.

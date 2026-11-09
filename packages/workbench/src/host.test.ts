@@ -5371,3 +5371,112 @@ test("export serves any patch whose tasks.artifact response fits the server cap 
   });
   await api.close();
 });
+
+test("evidence keeps Watch records apart and adds the host verdict only when asked", async () => {
+  const { f, host } = await hostCheckFixture();
+  const api = await host();
+  await runHostCheckTask(f, api, "task", 0);
+  const plain = await api.evidence(context(), "task");
+  expect("host_verification" in plain).toBe(false);
+  const both = await api.evidence(context(), "task", true);
+  expect(both.host_verification).toEqual(
+    await api.verification(context(), "task"),
+  );
+  expect(both.verify_records).toEqual(plain.verify_records);
+  await api.close();
+});
+
+test("evidence binds Watch records and the host verdict to one candidate read", async () => {
+  const { f, host } = await hostCheckFixture();
+  let reads = 0;
+  let moving = false;
+  const api = await host({
+    async reopen(context, taskId) {
+      const ref = await f.workspace.reopen(context, taskId);
+      return moving ? { ...ref, revision: `moved-${++reads}` } : ref;
+    },
+  });
+  await runHostCheckTask(f, api, "task", 0);
+  moving = true;
+  const both = await api.evidence(context(), "task", true);
+  expect(both.host_verification?.candidate).toEqual(both.workspace);
+  expect(reads).toBe(1);
+  await api.close();
+});
+
+test("restore never overlaps verification or export of the same candidate", async () => {
+  const { f, host } = await hostCheckFixture();
+  const outcomes: string[] = [];
+  const attemptRestore = () =>
+    api.restore(context(), "task", "checkpoint", "r1").then(
+      () => "restored",
+      (error: { code?: string }) => error.code ?? "error",
+    );
+  let release: (() => void) | undefined;
+  let moveDuringExport = false;
+  let moved = false;
+  const api: Awaited<ReturnType<typeof host>> = await host({
+    async reopen(context, taskId) {
+      const ref = await f.workspace.reopen(context, taskId);
+      return moved ? { ...ref, revision: "r2" } : ref;
+    },
+    async runCheck(_context, workspace) {
+      outcomes.push(`verify:${await attemptRestore()}`);
+      return {
+        workspace,
+        exit_code: 0,
+        stdout: new TextEncoder().encode("1 pass"),
+        stderr: new Uint8Array(),
+        timed_out: false,
+        cancelled: false,
+      };
+    },
+    async exportPatch(_context, workspace) {
+      if (moveDuringExport) {
+        moved = true;
+      } else {
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        outcomes.push(`export:${await attemptRestore()}`);
+        await gate;
+      }
+      return {
+        workspace,
+        patch: new TextEncoder().encode(""),
+        files: 0,
+        round_trip: { status: "passed", reason: null },
+        unsupported: [],
+      };
+    },
+  });
+  await api.create(context(), task());
+  await api.checkpoint(context(), "task");
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: true, execute: true },
+    required_checks: [{ kind: "host_test", check_id: "sum-test" }],
+  });
+  required(f.sessions[0]).finish("completed");
+  await required(f.sessions[0]).disposed;
+  const view = await api.verification(context(), "task");
+  const params = {
+    task_id: "task",
+    expected_revision: "r1",
+    expected_patch_sha256: view.patch_sha256 ?? "missing",
+  };
+  const exporting = api.export(context(), params);
+  while (!release) await Bun.sleep(1);
+  release();
+  await exporting;
+  expect(outcomes).toEqual(["verify:conflict", "export:conflict"]);
+  expect(f.restoreCalls).toBe(0);
+  // A candidate that moves while it is being exported is refused, not exported.
+  moveDuringExport = true;
+  await expect(api.export(context(), params)).rejects.toMatchObject({
+    code: "conflict",
+  });
+  expect(await attemptRestore()).toBe("restored");
+  await api.close();
+});

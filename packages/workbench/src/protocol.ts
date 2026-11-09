@@ -5,6 +5,7 @@ import {
   SCHEMA_VERSION,
   ScopeSchema,
   TaskSchema,
+  VerificationViewSchema,
   WorkbenchDescribeFields,
   WorkbenchInspectFields,
   WorkspaceRefSchema,
@@ -128,6 +129,8 @@ export const EvidenceResultSchema = z
     workspace: WorkspaceRefSchema,
     diff_sha256: sha256Hex,
     verify_records: z.array(EvidenceRecordSchema).max(1000),
+    /** Host required-check verdict, kept apart from Watch records; only when requested. */
+    host_verification: VerificationViewSchema.optional(),
   })
   .strict();
 export type EvidenceResult = z.infer<typeof EvidenceResultSchema>;
@@ -207,7 +210,15 @@ export const RpcRequestSchema = z.discriminatedUnion("method", [
     z.object({ task_id: id, artifact: ArtifactRefSchema }).strict(),
   ),
   method("tasks.diff", taskId),
-  method("tasks.evidence", taskId),
+  method(
+    "tasks.evidence",
+    z
+      .object({
+        task_id: id,
+        include_host_verification: z.literal(true).optional(),
+      })
+      .strict(),
+  ),
   method("tasks.checkpoint", taskId),
   method("tasks.verification", taskId),
   method("tasks.export", ExportParamsSchema),

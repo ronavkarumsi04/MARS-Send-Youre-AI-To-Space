@@ -369,13 +369,21 @@ export class MarsClient {
     return result;
   }
 
+  /** `includeHostVerification` needs a host that serves `tasks.export`; older hosts reject it. */
   async evidence(
     taskId: string,
     signal?: AbortSignal,
+    includeHostVerification = false,
   ): Promise<EvidenceResult> {
     const result = validate(
       EvidenceResultSchema,
-      await this.call(RPC_METHODS.evidence, { task_id: taskId }, signal),
+      await this.call(
+        RPC_METHODS.evidence,
+        includeHostVerification
+          ? { task_id: taskId, include_host_verification: true }
+          : { task_id: taskId },
+        signal,
+      ),
       "evidence",
     );
     this.checkWorkspace(result.workspace);

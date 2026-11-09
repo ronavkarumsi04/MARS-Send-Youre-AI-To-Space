@@ -5,6 +5,7 @@ import {
   ScopeSchema,
   TaskStatusSchema,
 } from "./core";
+import { VerificationViewSchema } from "./verification";
 
 /**
  * Team Chat records (`@mars/team`). The tenant is a `team`, never a
@@ -557,6 +558,7 @@ export const SharedEvidenceSchema = z
     verify_records: z
       .array(SharedEvidenceRecordSchema)
       .max(SHARE_MAX_EVIDENCE_RECORDS),
+    host_verification: VerificationViewSchema.optional(),
   })
   .strict();
 export type SharedEvidence = z.infer<typeof SharedEvidenceSchema>;

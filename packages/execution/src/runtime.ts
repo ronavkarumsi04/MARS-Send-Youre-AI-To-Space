@@ -24,6 +24,7 @@ import {
   type BudgetLedger,
   createModelBridge,
   ExecutionLimitError,
+  type ModelFailureCode,
   selectExecutionModel,
   toChatRequest,
 } from "./model-bridge";
@@ -670,10 +671,14 @@ export function resolveSystemPrompt(override: string | undefined): string {
   return trimmed;
 }
 
+export type RuntimeFailureCode = ModelFailureCode | "no_response";
+
 export interface RuntimeOutcome {
   status: "completed" | "paused" | "cancelled" | "failed";
   content: string;
   error?: string;
+  /** Present only when status is `failed`. */
+  failure_code?: RuntimeFailureCode;
   usage: BudgetLedger;
 }
 
@@ -790,6 +795,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     await manager.ensureOnDisk();
     await manager.flush();
   };
+  let modelFailure: ModelFailureCode | undefined;
   const bridge = createModelBridge({
     registry: options.registry,
     selected,
@@ -797,6 +803,9 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     ledger,
     persistLedger,
     signal: controller.signal,
+    onFailure: (code) => {
+      modelFailure = code;
+    },
     ...(options.env ? { env: options.env } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
@@ -989,6 +998,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       )
         throw new Error("Invalid task instruction.");
       running = true;
+      modelFailure = undefined;
       try {
         await session.prompt(instruction);
         await observations;
@@ -1015,14 +1025,24 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
             : last.stopReason === "length"
               ? "paused"
               : "completed";
+        // The bridge's own classification wins; the runtime deadline abort only surfaces
+        // to the bridge as a cancel, so fall back to it when nothing was recorded.
+        const failureCode: RuntimeFailureCode =
+          modelFailure ??
+          (controller.signal.reason instanceof ExecutionLimitError ||
+          Date.now() >= ledger.deadline
+            ? "deadline_exceeded"
+            : last?.role === "assistant"
+              ? "provider_error"
+              : "no_response");
         return {
           status,
           content,
           usage: { ...ledger },
           ...(status === "failed"
             ? {
-                error:
-                  "Execution did not complete successfully; inspect the execution journal.",
+                error: `Execution did not complete successfully (${failureCode}); inspect the execution journal.`,
+                failure_code: failureCode,
               }
             : {}),
         };

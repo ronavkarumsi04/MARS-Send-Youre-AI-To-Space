@@ -205,7 +205,7 @@ export async function sendProviderRequest(
     throw new ProviderError(
       request.providerId,
       "Provider network request failed or timed out.",
-      { retryable: true },
+      { retryable: true, timedOut: controller.signal.aborted },
     );
   }
 }
@@ -238,6 +238,7 @@ export async function readJson(
     if (signal.aborted) {
       throw new ProviderError(providerId, "Provider request timed out.", {
         retryable: true,
+        timedOut: true,
       });
     }
     throw new ProviderError(providerId, "Provider returned invalid JSON.", {
@@ -279,10 +280,12 @@ export function streamFailure(
   providerId: string,
   cause: unknown,
   emittedContent: boolean,
+  timedOut = false,
 ): ProviderError {
   if (cause instanceof ProviderError) return cause;
   return new ProviderError(providerId, "Provider stream failed or timed out.", {
     retryable: !emittedContent,
+    timedOut,
   });
 }
 

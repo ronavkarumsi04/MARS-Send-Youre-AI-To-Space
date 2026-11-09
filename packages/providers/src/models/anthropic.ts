@@ -211,7 +211,7 @@ export function createAnthropicAdapter(
     request: ChatRequest,
     model: ModelConfig,
   ): AsyncGenerator<StreamEvent> {
-    const { response, cleanup } = await send(
+    const { response, cleanup, signal } = await send(
       anthropicRequestBody(request, model, true),
       "text/event-stream",
     );
@@ -291,7 +291,7 @@ export function createAnthropicAdapter(
           }
         }
       } catch (cause) {
-        throw streamFailure(provider.id, cause, emittedContent);
+        throw streamFailure(provider.id, cause, emittedContent, signal.aborted);
       }
 
       if (!messageStopped) {

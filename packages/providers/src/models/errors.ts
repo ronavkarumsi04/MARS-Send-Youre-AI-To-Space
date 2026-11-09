@@ -4,6 +4,8 @@ export interface ProviderErrorOptions {
   status?: number;
   retryable: boolean;
   retryAfterMs?: number;
+  /** The adapter's own request timeout fired; never set for caller aborts or HTTP errors. */
+  timedOut?: boolean;
   cause?: unknown;
 }
 
@@ -12,6 +14,7 @@ export class ProviderError extends Error {
   readonly status: number | undefined;
   readonly retryable: boolean;
   readonly retryAfterMs: number | undefined;
+  readonly timedOut: boolean;
 
   constructor(
     providerId: string,
@@ -24,6 +27,7 @@ export class ProviderError extends Error {
     this.status = options.status;
     this.retryable = options.retryable;
     this.retryAfterMs = options.retryAfterMs;
+    this.timedOut = options.timedOut ?? false;
   }
 }
 
@@ -35,8 +39,14 @@ export interface SkippedModel {
 export class NoModelAvailableError extends Error {
   readonly skipped: SkippedModel[];
   readonly attempts: RoutingAttempt[];
+  /** The last provider attempt ended in its request timeout. */
+  readonly timedOut: boolean;
 
-  constructor(skipped: SkippedModel[], attempts: RoutingAttempt[] = []) {
+  constructor(
+    skipped: SkippedModel[],
+    attempts: RoutingAttempt[] = [],
+    timedOut = false,
+  ) {
     const details = skipped.length
       ? skipped.map(({ modelId, reason }) => `${modelId}: ${reason}`).join("; ")
       : "no candidates configured";
@@ -44,5 +54,6 @@ export class NoModelAvailableError extends Error {
     this.name = "NoModelAvailableError";
     this.skipped = skipped;
     this.attempts = attempts;
+    this.timedOut = timedOut;
   }
 }
