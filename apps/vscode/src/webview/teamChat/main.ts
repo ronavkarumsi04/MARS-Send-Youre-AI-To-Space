@@ -10,6 +10,9 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
+  mentionOptionId,
+  nextPickerStatus,
+  pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
   reduceComposer,
@@ -87,7 +90,9 @@ function reportViewport(): void {
 window.addEventListener("focus", reportViewport);
 window.addEventListener("blur", reportViewport);
 
-const textarea = h("textarea", { label: "Message" });
+const textarea = h("textarea", { label: "Message", role: "combobox" });
+textarea.setAttribute("aria-haspopup", "listbox");
+textarea.setAttribute("aria-autocomplete", "list");
 textarea.rows = 3;
 textarea.placeholder =
   "Message… type @ to reference a file, symbol or line range";
@@ -749,6 +754,11 @@ const picker = h("ul", {
   label: "Mention picker",
 });
 picker.id = "mention-picker";
+/** Polite status for picker results; separate from the message announcer. */
+const pickerStatus = h("div", { class: "announcer", role: "status" });
+pickerStatus.setAttribute("aria-live", "polite");
+pickerStatus.setAttribute("aria-atomic", "true");
+let announcedPicker = pickerAnnouncement(null);
 const sendButton = button("Send", "send", () => send());
 const composerAlert = h("p", {
   class: "notice error composer-error",
@@ -765,6 +775,7 @@ composerRoot.append(
   h("div", { class: "composer-input" }, picker, textarea, sendButton),
   composerAlert,
   hint,
+  pickerStatus,
 );
 
 function renderComposerParts(): void {
@@ -809,7 +820,11 @@ function renderComposerParts(): void {
     const { candidates, selected } = composer.picker;
     if (candidates.length === 0)
       picker.append(
-        h("li", { class: "muted small" }, "No matching file, symbol or range."),
+        h(
+          "li",
+          { class: "muted small", role: "presentation" },
+          "No matching file, symbol or range.",
+        ),
       );
     candidates.forEach((candidate, index) => {
       const option = h(
@@ -822,7 +837,7 @@ function renderComposerParts(): void {
         h("span", { class: "mono" }, candidate.label),
         h("span", { class: "muted small" }, candidate.detail),
       );
-      option.id = `mention-${index}`;
+      option.id = mentionOptionId(index, candidate);
       option.setAttribute("aria-selected", String(index === selected));
       option.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -840,7 +855,13 @@ function renderComposerParts(): void {
       });
       picker.append(option);
     });
-    textarea.setAttribute("aria-activedescendant", `mention-${selected}`);
+    const active = candidates[selected];
+    if (active)
+      textarea.setAttribute(
+        "aria-activedescendant",
+        mentionOptionId(selected, active),
+      );
+    else textarea.removeAttribute("aria-activedescendant");
     textarea.setAttribute("aria-expanded", "true");
   } else {
     textarea.removeAttribute("aria-activedescendant");
@@ -848,6 +869,10 @@ function renderComposerParts(): void {
   }
   textarea.setAttribute("aria-controls", picker.id);
   picker.hidden = !composer.picker;
+  const announcement = pickerAnnouncement(composer.picker);
+  const status = nextPickerStatus(announcedPicker, announcement);
+  if (status !== null) pickerStatus.textContent = status;
+  announcedPicker = announcement;
   composerAlert.textContent = composerError ?? "";
   composerAlert.hidden = composerError === null;
   sendButton.disabled =

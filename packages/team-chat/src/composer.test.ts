@@ -6,6 +6,9 @@ import {
   composerProblem,
   EMPTY_COMPOSER,
   keyIntent,
+  mentionOptionId,
+  nextPickerStatus,
+  pickerAnnouncement,
   reduceComposer,
 } from "./composer";
 import { FIXTURE_REPOS as R, SITE_SHA, FIXTURE_USERS as U } from "./fixture";
@@ -210,6 +213,76 @@ describe("composer reducer", () => {
       env,
     );
     expect(buildSend(chipsOnly, "conv", "cm")?.body).toBe("");
+  });
+});
+
+describe("picker announcement", () => {
+  test("announces the result count and highlighted candidate on open, nothing on arrow moves, and the no-match state", () => {
+    expect(pickerAnnouncement(EMPTY_COMPOSER.picker)).toEqual({
+      results: "",
+      highlighted: "",
+      text: "",
+    });
+    const open = type(EMPTY_COMPOSER, "@");
+    const candidates = open.picker?.candidates ?? [];
+    expect(candidates.length).toBeGreaterThan(1);
+    const first = pickerAnnouncement(open.picker);
+    expect(first.text).toBe(
+      `${candidates.length} suggestions, ${candidates[0]?.label} (${candidates[0]?.kind}) highlighted. Use Up and Down arrows to choose, Enter or Tab to attach.`,
+    );
+    const moved = reduceComposer(open, { type: "pickerMove", delta: 1 }, env);
+    expect(pickerAnnouncement(moved.picker).results).toBe(first.results);
+    const none = type(EMPTY_COMPOSER, "@zzzz-no-such-thing");
+    expect(none.picker?.candidates).toEqual([]);
+    const empty = pickerAnnouncement(none.picker);
+    expect(empty.text).toBe("No matching file, symbol or range.");
+    expect(empty.results).not.toBe("");
+    const one = open.picker
+      ? { ...open.picker, candidates: candidates.slice(0, 1) }
+      : null;
+    expect(pickerAnnouncement(one).text).toMatch(/^1 suggestion, /);
+  });
+
+  test("a same-count replacement of the results is re-announced and moves the active descendant", () => {
+    const open = type(EMPTY_COMPOSER, "@");
+    const all = open.picker?.candidates ?? [];
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    const base = open.picker as NonNullable<typeof open.picker>;
+    const before = { ...base, candidates: all.slice(0, 2), selected: 0 };
+    const after = { ...base, candidates: all.slice(2, 4), selected: 0 };
+    const a = pickerAnnouncement(before);
+    const b = pickerAnnouncement(after);
+    expect(b.results).not.toBe(a.results);
+    expect(b.text).toContain(`${all[2]?.label} (${all[2]?.kind}) highlighted`);
+    const [x, y] = [all[0], all[2]] as [
+      (typeof all)[number],
+      (typeof all)[number],
+    ];
+    expect(mentionOptionId(0, x)).not.toBe(mentionOptionId(0, y));
+    expect(mentionOptionId(0, x)).toBe(mentionOptionId(0, x));
+    const ids = all.map((c, i) => mentionOptionId(i, c));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) expect(id).toMatch(/^mention-\d+-[0-9a-z]+$/);
+  });
+});
+
+describe("picker status updates", () => {
+  test("announces new result sets, clears stale highlight text on arrow moves, and stays put otherwise", () => {
+    const closed = pickerAnnouncement(null);
+    const open = type(EMPTY_COMPOSER, "@ver");
+    const opened = pickerAnnouncement(open.picker);
+    expect(nextPickerStatus(closed, opened)).toBe(opened.text);
+    expect(nextPickerStatus(opened, opened)).toBeNull();
+    const moved = pickerAnnouncement(
+      reduceComposer(open, { type: "pickerMove", delta: 1 }, env).picker,
+    );
+    expect(moved.highlighted).not.toBe(opened.highlighted);
+    expect(nextPickerStatus(opened, moved)).toBe("");
+    expect(nextPickerStatus(moved, moved)).toBeNull();
+    const refined = pickerAnnouncement(type(open, "@verd").picker);
+    expect(nextPickerStatus(moved, refined)).toBe(refined.text);
+    expect(refined.text).toContain("Verdict (symbol) highlighted");
+    expect(nextPickerStatus(refined, closed)).toBe("");
   });
 });
 
