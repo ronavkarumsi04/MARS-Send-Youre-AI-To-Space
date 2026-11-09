@@ -17,7 +17,8 @@ export type WorkbenchResearch = Pick<
   | "list"
   | "markStale"
   | "cancel"
->;
+> &
+  Partial<Pick<DurableResearchService, "allowance">>;
 
 /** Default research deadline after submission, bounded by the task's max duration. */
 export const RESEARCH_DEADLINE_MS = 10 * 60 * 1000;
@@ -115,6 +116,20 @@ export function researchTools(
       const deadline = new Date(
         now() + Math.min(RESEARCH_DEADLINE_MS, remaining),
       ).toISOString();
+      // Size the job to what the task's research allowance still holds, so a
+      // second job is not refused merely because the first took the whole budget.
+      const left = await service.allowance?.(context(), task.task_id);
+      const budget = left
+        ? {
+            ...task.budget,
+            max_tokens: Math.min(task.budget.max_tokens, left.max_tokens),
+            max_usd: Math.min(task.budget.max_usd, left.max_usd),
+          }
+        : task.budget;
+      if (budget.max_tokens < 1)
+        throw new Error(
+          "The task's research allowance is used up; no more research can be queued.",
+        );
       const requestId = await service.submit(context(), {
         question: input.question,
         task_id: task.task_id,
@@ -122,7 +137,7 @@ export function researchTools(
         known_context: [],
         source_requirements: input.source_requirements ?? [],
         deadline,
-        budget: task.budget,
+        budget,
       });
       return `Queued research request ${requestId} (deadline ${deadline}). Read its findings later with mars_findings.`;
     },

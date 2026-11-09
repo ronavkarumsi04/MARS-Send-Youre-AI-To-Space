@@ -1533,7 +1533,13 @@ describe("@mars/research durable control plane", () => {
     expect(
       await errorCode(() => request(env.service, now, "share-e", tokens(61))),
     ).toBe("budget_exceeded");
+    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
+      60,
+    );
     await request(env.service, now, "share-f", tokens(60));
+    expect((await env.service.allowance(context(), "task-1")).max_tokens).toBe(
+      0,
+    );
   });
 
   test("autoStart false only claims queued work on an explicit pump", async () => {

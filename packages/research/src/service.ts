@@ -213,6 +213,11 @@ export interface DurableResearchService extends ResearchService {
     findingId: string,
     expectedTaskRevision: number,
   ): Promise<ResearchFinding>;
+  /** Tokens and USD a new research job for the task may still reserve. */
+  allowance(
+    context: RequestContext,
+    taskId: string,
+  ): Promise<{ max_tokens: number; max_usd: number }>;
   reconcileTask(
     context: RequestContext,
     taskId: string,
@@ -2028,6 +2033,28 @@ export async function createResearchService(
       }
       return toJob(findRequest(db, parsedContext.scopeKey, requestId));
     },
+    async allowance(contextInput, taskId) {
+      checkOpen();
+      const parsedContext = parseContext(contextInput);
+      if (typeof taskId !== "string" || taskId.length === 0)
+        throw new ResearchError("invalid_input", "Invalid task id");
+      let task: Task;
+      try {
+        task = await options.tasks.inspect(parsedContext.context, taskId);
+      } catch (error) {
+        throw mapTaskError(error);
+      }
+      const committed = taskResearchCommitment(
+        db
+          .query("SELECT * FROM requests WHERE scope_key = ? AND task_id = ?")
+          .all(parsedContext.scopeKey, taskId) as RequestRow[],
+      );
+      return {
+        max_tokens: Math.max(0, task.budget.max_tokens - committed.tokens),
+        max_usd: Math.max(0, task.budget.max_usd - committed.usd),
+      };
+    },
+
     async list(contextInput, filter) {
       checkOpen();
       const parsedContext = parseContext(contextInput);
