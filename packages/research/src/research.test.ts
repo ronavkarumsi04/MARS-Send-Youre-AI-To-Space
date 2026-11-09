@@ -30,6 +30,7 @@ import {
   isTerminalResearchStatus,
   RESEARCH_STORE_FORMAT_VERSION,
   type ResearchBudgetLedger,
+  type ResearchConcurrencySlots,
   type ResearchWorker,
   type ResearchWorkerContext,
   RetryableResearchError,
@@ -1610,6 +1611,73 @@ describe("@mars/research durable control plane", () => {
     expect(
       await errorCode(() =>
         request(env.service, now, "tiny-c", usd(0.0000004)),
+      ),
+    ).toBe("budget_exceeded");
+  });
+
+  test("running research shares the task's concurrency slots", async () => {
+    const now = Date.now;
+    const base = makeTask("task-1", scope);
+    const env = await setup({
+      task: { ...base, budget: { ...base.budget, max_concurrency: 3 } },
+      service: { autoStart: false, maxConcurrency: 4 },
+    });
+    const store = env.tasks;
+    const slots: ResearchConcurrencySlots = {
+      acquire: async (c, t, k, l) =>
+        (await store.acquireSlot?.(c, t, k, l)) ?? true,
+      release: async (c, t, k) => store.releaseSlot?.(c, t, k),
+    };
+    let started = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const service = await createResearchService({
+      rootDir: path.join(env.root, "research"),
+      tasks: store,
+      artifacts: store.artifacts,
+      worker: {
+        id: "blocking",
+        version: "1",
+        async run() {
+          started += 1;
+          await gate;
+        },
+      },
+      autoStart: false,
+      maxConcurrency: 4,
+      pollMs: 10,
+      slots,
+    });
+    services.push(service);
+    const lease = { now: now(), expiresAt: now() + 60_000 };
+    // A delegated child holds one of the two background slots.
+    expect(
+      await store.acquireSlot?.(context(), "task-1", "delegation:child", lease),
+    ).toBe(true);
+    const budget = { ...makeRequest(now).budget, max_concurrency: 1 };
+    await request(service, now, "slot-a", { budget });
+    await request(service, now, "slot-b", { budget });
+    await service.pump();
+    expect(started).toBe(1);
+    await service.pump();
+    expect(started).toBe(1);
+    await store.releaseSlot?.(context(), "task-1", "delegation:child");
+    await service.pump();
+    expect(started).toBe(2);
+    expect(
+      await store.acquireSlot?.(context(), "task-1", "delegation:child", lease),
+    ).toBe(false);
+    open();
+    const single = makeTask("task-single", scope);
+    await store.create(context("create-single"), {
+      ...single,
+      budget: { ...single.budget, max_concurrency: 1 },
+    });
+    expect(
+      await errorCode(() =>
+        request(service, now, "slot-c", { budget }, "task-single"),
       ),
     ).toBe("budget_exceeded");
   });

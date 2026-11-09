@@ -186,7 +186,29 @@ export interface DurableTaskStore extends TaskService {
     taskId: string,
     excludeKey?: string,
   ): Promise<BudgetAmount>;
+  /**
+   * Shared per-task concurrency slots for background work (research jobs,
+   * delegated children). One slot of `max_concurrency` is always left for the
+   * foreground run. Acquiring a held slot renews it; slots lapse at
+   * `expiresAt`, so a crashed holder frees its slot when its lease would.
+   */
+  acquireSlot?(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    lease: SlotLease,
+  ): Promise<boolean>;
+  releaseSlot?(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+  ): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface SlotLease {
+  now: number;
+  expiresAt: number;
 }
 
 export interface BudgetAmount {
@@ -739,6 +761,14 @@ export async function createTaskStore(
         usd REAL NOT NULL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (scope_key, task_id, hold_key),
+        FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS concurrency_slots (
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        slot_key TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (scope_key, task_id, slot_key),
         FOREIGN KEY (scope_key, task_id) REFERENCES tasks(scope_key, task_id)
       );
       CREATE TABLE IF NOT EXISTS session_bindings (
@@ -2320,6 +2350,49 @@ export async function createTaskStore(
       assertTaskId(taskId);
       readTask(key, taskId);
       return sumHolds(key, taskId, excludeKey ?? "");
+    },
+    async acquireSlot(context, taskId, slotKey, lease) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      if (
+        typeof slotKey !== "string" ||
+        !BUDGET_HOLD_KEY_PATTERN.test(slotKey) ||
+        !lease ||
+        !Number.isFinite(lease.now) ||
+        !Number.isFinite(lease.expiresAt) ||
+        lease.expiresAt <= lease.now
+      )
+        throw invalidInput("Invalid concurrency slot");
+      const transaction = db.transaction((): boolean => {
+        const task = readTask(key, taskId);
+        db.query(
+          "DELETE FROM concurrency_slots WHERE scope_key = ? AND task_id = ? AND expires_at <= ?",
+        ).run(key, taskId, lease.now);
+        const renewed = db
+          .query(
+            "UPDATE concurrency_slots SET expires_at = ? WHERE scope_key = ? AND task_id = ? AND slot_key = ?",
+          )
+          .run(lease.expiresAt, key, taskId, slotKey);
+        if (renewed.changes === 1) return true;
+        const held = db
+          .query(
+            "SELECT COUNT(*) AS count FROM concurrency_slots WHERE scope_key = ? AND task_id = ?",
+          )
+          .get(key, taskId) as { count: number };
+        if (held.count + 1 > task.budget.max_concurrency - 1) return false;
+        db.query(
+          "INSERT INTO concurrency_slots (scope_key, task_id, slot_key, expires_at) VALUES (?, ?, ?, ?)",
+        ).run(key, taskId, slotKey, lease.expiresAt);
+        return true;
+      });
+      return transaction.immediate();
+    },
+    async releaseSlot(context, taskId, slotKey) {
+      const { scopeKey: key } = contextFor(context);
+      assertTaskId(taskId);
+      db.query(
+        "DELETE FROM concurrency_slots WHERE scope_key = ? AND task_id = ? AND slot_key = ?",
+      ).run(key, taskId, slotKey);
     },
     async close() {
       if (closed) return;

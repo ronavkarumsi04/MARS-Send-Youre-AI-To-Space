@@ -173,6 +173,20 @@ export interface ResearchBudgetLedger {
   ): Promise<{ tokens: number; usd: number }>;
 }
 
+/**
+ * The task's shared concurrency slots. A claimed job runs only while it holds
+ * a slot; one slot is always left for the task's foreground run.
+ */
+export interface ResearchConcurrencySlots {
+  acquire(
+    context: RequestContext,
+    taskId: string,
+    key: string,
+    lease: { now: number; expiresAt: number },
+  ): Promise<boolean>;
+  release(context: RequestContext, taskId: string, key: string): Promise<void>;
+}
+
 export const RESEARCH_BUDGET_HOLD_PREFIX = "research:";
 
 export function researchBudgetHoldKey(idemRequestId: string): string {
@@ -205,6 +219,7 @@ export type ResearchInternalErrorSite =
   | "flush_events"
   | "execute_claim"
   | "ledger"
+  | "slots"
   | "pump";
 
 export interface ResearchInternalError {
@@ -218,6 +233,8 @@ export interface ResearchServiceOptions {
   tasks: ResearchTaskReader;
   /** When set, research admission also counts the task's other spenders. */
   ledger?: ResearchBudgetLedger;
+  /** When set, running jobs share the task's concurrency limit. */
+  slots?: ResearchConcurrencySlots;
   artifacts: ResearchArtifactStore;
   worker: ResearchWorker;
   events?: ResearchEventSink;
@@ -337,6 +354,13 @@ interface LocalRun {
   deadlineTimer: ReturnType<typeof setTimeout>;
   forced: boolean;
   settled: Promise<void>;
+  slot?: SlotRef;
+}
+
+interface SlotRef {
+  context: RequestContext;
+  taskId: string;
+  key: string;
 }
 
 interface ParsedContext {
@@ -1136,7 +1160,20 @@ export async function createResearchService(
           currentTime(),
         ),
     );
-    if (updated.changes !== 1) abortForRowState(entry);
+    if (updated.changes !== 1) {
+      abortForRowState(entry);
+      return;
+    }
+    const slot = entry.slot;
+    if (slot && options.slots) {
+      const now = currentTime();
+      void options.slots
+        .acquire(slot.context, slot.taskId, slot.key, {
+          now,
+          expiresAt: now + configured.leaseMs,
+        })
+        .catch((error: unknown) => reportInternalError("slots", error));
+    }
   };
 
   const workerGuard = (entry: LocalRun, requireDb = true): RequestRow => {
@@ -1175,7 +1212,9 @@ export async function createResearchService(
   const guarded = <T>(entry: LocalRun, operation: (row: RequestRow) => T): T =>
     immediate(db, () => operation(workerGuard(entry)));
 
-  const claimNext = (): ClaimedJob | null => {
+  const claimNext = (
+    skip: ReadonlySet<string> = new Set(),
+  ): ClaimedJob | null => {
     return immediate(db, () => {
       const now = currentTime();
       db.query(
@@ -1202,7 +1241,7 @@ export async function createResearchService(
         .all(now, now) as RequestRow[];
       for (const candidate of candidates) {
         const key = `${candidate.scope_key}\n${candidate.request_id}`;
-        if (localRuns.has(key)) continue;
+        if (localRuns.has(key) || skip.has(key)) continue;
         const request = verifiedRequest(candidate);
         if (now >= Date.parse(candidate.deadline)) {
           db.query(
@@ -1739,6 +1778,7 @@ export async function createResearchService(
       ),
       forced: false,
       settled: Promise.resolve(),
+      ...(options.slots ? { slot: slotFor(claim.row) } : {}),
     };
     entry.heartbeat.unref?.();
     entry.deadlineTimer.unref?.();
@@ -1774,6 +1814,11 @@ export async function createResearchService(
       clearInterval(entry.heartbeat);
       clearTimeout(entry.deadlineTimer);
       localRuns.delete(key);
+      const slot = entry.slot;
+      if (slot && options.slots)
+        void options.slots
+          .release(slot.context, slot.taskId, slot.key)
+          .catch((error: unknown) => reportInternalError("slots", error));
       wake();
     };
     const afterRun = async (): Promise<void> => {
@@ -1807,6 +1852,59 @@ export async function createResearchService(
     void entry.settled;
   };
 
+  const slotFor = (row: RequestRow): SlotRef => ({
+    context: scopeCanonicalContext(
+      row.scope_json,
+      `research:${row.request_id}:slot`,
+    ),
+    taskId: row.task_id,
+    key: researchBudgetHoldKey(row.idem_request_id),
+  });
+
+  let slotRetry: ReturnType<typeof setTimeout> | undefined;
+  // A job the task has no free slot for goes back to the queue unchanged and
+  // is retried after a poll interval, since slots can free in other services.
+  const admitSlot = async (claim: ClaimedJob): Promise<boolean> => {
+    const slots = options.slots;
+    if (!slots) return true;
+    const slot = slotFor(claim.row);
+    const now = currentTime();
+    const admitted = await slots
+      .acquire(slot.context, slot.taskId, slot.key, {
+        now,
+        expiresAt: now + configured.leaseMs,
+      })
+      .catch((error: unknown) => {
+        reportInternalError("slots", error);
+        return false;
+      });
+    if (admitted) return true;
+    immediate(db, () =>
+      db
+        .query(
+          `UPDATE requests
+           SET status = 'queued', attempts = ?, lease_owner = NULL,
+               lease_token = NULL, lease_expires_at = NULL
+           WHERE scope_key = ? AND request_id = ? AND lease_token = ?
+             AND status = 'running'`,
+        )
+        .run(
+          claim.attempt - 1,
+          claim.row.scope_key,
+          claim.row.request_id,
+          claim.token,
+        ),
+    );
+    if (!slotRetry && configured.autoStart) {
+      slotRetry = setTimeout(() => {
+        slotRetry = undefined;
+        schedulePump();
+      }, configured.pollMs);
+      slotRetry.unref?.();
+    }
+    return false;
+  };
+
   const pump = async (): Promise<void> => {
     if (state !== "open" || pumping) return;
     pumping = true;
@@ -1822,9 +1920,14 @@ export async function createResearchService(
         ).run(timestamp(now), timestamp(now));
       });
       await flushEvents();
+      const refused = new Set<string>();
       while (localRuns.size < configured.maxConcurrency && state === "open") {
-        const claim = claimNext();
+        const claim = claimNext(refused);
         if (!claim) break;
+        if (!(await admitSlot(claim))) {
+          refused.add(`${claim.row.scope_key}\n${claim.row.request_id}`);
+          continue;
+        }
         void executeClaim(claim).catch((error: unknown) =>
           reportInternalError("execute_claim", error),
         );
@@ -1993,6 +2096,12 @@ export async function createResearchService(
             "Research budget exceeds task budget",
           );
         }
+      }
+      if (options.slots && task.budget.max_concurrency < 2) {
+        throw new ResearchError(
+          "budget_exceeded",
+          "Task concurrency leaves no slot for research",
+        );
       }
       const now = currentTime();
       const deadlineTime = Date.parse(request.deadline);
@@ -2407,6 +2516,7 @@ export async function createResearchService(
       const drainDeadline = Date.now() + drainMs;
       state = "closing";
       if (autoPump) clearInterval(autoPump);
+      if (slotRetry) clearTimeout(slotRetry);
       wake();
       closePromise = (async () => {
         const runDrainMs = Math.max(0, drainDeadline - Date.now());
