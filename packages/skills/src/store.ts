@@ -502,8 +502,9 @@ export class SkillStore implements SkillLifecycleService {
       )
         fail("conflict", "Unmanaged or conflicting skill directories exist");
     }
+    const { text } = await this.readJournal();
     const journal =
-      (await this.readJournal()).text +
+      (text && !text.endsWith("\n") ? `${text}\n` : text) +
       changes.map((c) => `${JSON.stringify(c)}\n`).join("");
     await this.atomic(
       ".skills-transaction.json",

@@ -521,6 +521,20 @@ describe("persisted state validation", () => {
     expect(await read("skills/test/SKILL.md")).toBe(content("test"));
   });
 
+  it("appends after a journal whose last entry has no trailing newline", async () => {
+    await store.create("test", content("test"), options);
+    await writeFile(
+      join(root, "changes.jsonl"),
+      (await read("changes.jsonl")).trimEnd(),
+    );
+    await store.pin("test", true, options);
+    expect((await store.get("test"))?.pinned).toBe(true);
+    expect((await read("changes.jsonl")).trim().split("\n")).toHaveLength(2);
+    await expect(read(".skills-transaction.json")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("does not append new changes to a malformed journal", async () => {
     await store.create("test", content("test"), options);
     const corrupt = `${await read("changes.jsonl")}{"ts":1}\n`;
