@@ -656,6 +656,41 @@ describe("research worker", () => {
     expect(env.published).toHaveLength(0);
   });
 
+  test("a failed model call is charged its whole reservation, never released", async () => {
+    let calls = 0;
+    const gateway: ModelGateway = {
+      id: "fixture-model",
+      estimateCostUsd: () => 0.01,
+      async complete() {
+        calls += 1;
+        throw new Error("request timed out");
+      },
+    };
+    const { instance, logs } = worker({
+      model: gateway,
+      config: { max_model_output_tokens: 500 },
+    });
+    const env = fakeContext();
+    await instance.run(
+      makeInput({
+        budget: {
+          max_tokens: 1000,
+          max_usd: 1,
+          max_duration_ms: 60_000,
+          max_depth: 1,
+          max_concurrency: 1,
+        },
+      }),
+      env.context,
+    );
+    expect(calls).toBe(1);
+    expect(logs.some((e) => e.event === "model_failed")).toBe(true);
+    expect(env.usage.reports).toBe(1);
+    expect(env.usage.output_tokens).toBe(500);
+    expect(env.usage.input_tokens).toBeGreaterThan(0);
+    expect(env.usage.cost_usd).toBe(0.01);
+  });
+
   test("never fetches private, loopback, rebinding or redirect-to-private targets", async () => {
     const search = fakeSearch({
       "mars distance from sun": [
