@@ -55,20 +55,97 @@ function numberInput(
   return input;
 }
 
+function focusKey<T extends HTMLElement>(element: T, key: string): T {
+  element.dataset.focusKey = key;
+  return element;
+}
+
+interface FocusSnapshot {
+  key: string;
+  selection: {
+    start: number;
+    end: number;
+    direction: "forward" | "backward" | "none";
+  } | null;
+}
+
+/** Text controls report a selection; number inputs and checkboxes throw or return null. */
+function readSelection(element: HTMLElement): FocusSnapshot["selection"] {
+  if (
+    !(element instanceof HTMLInputElement) &&
+    !(element instanceof HTMLTextAreaElement)
+  )
+    return null;
+  try {
+    const { selectionStart, selectionEnd, selectionDirection } = element;
+    if (selectionStart === null || selectionEnd === null) return null;
+    return {
+      start: selectionStart,
+      end: selectionEnd,
+      direction: selectionDirection ?? "none",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function captureFocus(): FocusSnapshot | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return null;
+  const key = active.dataset.focusKey;
+  return key ? { key, selection: readSelection(active) } : null;
+}
+
+function restoreFocus(root: HTMLElement, snapshot: FocusSnapshot): void {
+  const target = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-focus-key]"),
+  ).find((element) => element.dataset.focusKey === snapshot.key);
+  if (!target) return;
+  if (document.activeElement !== target) target.focus({ preventScroll: true });
+  const selection = snapshot.selection;
+  if (
+    selection &&
+    (target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement)
+  ) {
+    try {
+      target.setSelectionRange(
+        selection.start,
+        selection.end,
+        selection.direction,
+      );
+    } catch {
+      // The control no longer supports selection; focus alone is restored.
+    }
+  }
+}
+
 // ---------------------------------------------------------------- persistent form
 
 const newTask = (() => {
-  const request = h("textarea");
+  const request = focusKey(h("textarea"), "new-task-request");
   request.rows = 4;
   request.placeholder = "What should MARS do?";
-  const criteria = h("textarea");
+  const criteria = focusKey(h("textarea"), "new-task-criteria");
   criteria.rows = 3;
   criteria.placeholder = "One acceptance criterion per line";
-  const tokens = numberInput("e.g. 200000", "1", "1");
-  const usd = numberInput("0 for free models only", "0", "0.01");
-  const seconds = numberInput("e.g. 1800", "1", "1");
-  const depth = numberInput("e.g. 0", "0", "1");
-  const concurrency = numberInput("e.g. 1", "1", "1");
+  const tokens = focusKey(
+    numberInput("e.g. 200000", "1", "1"),
+    "new-task-max-tokens",
+  );
+  const usd = focusKey(
+    numberInput("0 for free models only", "0", "0.01"),
+    "new-task-max-usd",
+  );
+  const seconds = focusKey(
+    numberInput("e.g. 1800", "1", "1"),
+    "new-task-max-duration",
+  );
+  const depth = focusKey(numberInput("e.g. 0", "0", "1"), "new-task-max-depth");
+  const concurrency = focusKey(
+    numberInput("e.g. 1", "1", "1"),
+    "new-task-max-concurrency",
+  );
   const details = h("details", { class: "new-task" });
   const summary = h("summary", { key: "new-task-summary" }, "New task");
   const create = button("Create task", "create-task", () => {
@@ -117,10 +194,14 @@ const newTask = (() => {
   return { details, request, create };
 })();
 
-const steerBox = h("textarea");
+const steerBox = focusKey(h("textarea"), "steer");
 steerBox.rows = 2;
 steerBox.placeholder = "Steer the running task…";
-const approvals = { read: h("input"), write: h("input"), execute: h("input") };
+const approvals = {
+  read: focusKey(h("input"), "approve-read"),
+  write: focusKey(h("input"), "approve-write"),
+  execute: focusKey(h("input"), "approve-execute"),
+};
 for (const box of Object.values(approvals)) box.type = "checkbox";
 
 function resetApprovals(taskId: string): void {
@@ -625,8 +706,7 @@ function checkbox(text: string, input: HTMLInputElement): HTMLElement {
 
 function render(): void {
   if (!state) return;
-  const focusKey = (document.activeElement as HTMLElement | null)?.dataset
-    ?.focusKey;
+  const focused = captureFocus();
   const s = state;
   const notice = s.notice
     ? h(
@@ -648,12 +728,7 @@ function render(): void {
     connected ? renderTasks(s) : "",
     connected && s.selected ? renderSelected(s, s.selected) : "",
   );
-  if (focusKey) {
-    const target = Array.from(
-      app.querySelectorAll<HTMLElement>("[data-focus-key]"),
-    ).find((element) => element.dataset.focusKey === focusKey);
-    target?.focus();
-  }
+  if (focused) restoreFocus(app, focused);
 }
 
 window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
