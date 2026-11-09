@@ -1176,10 +1176,6 @@ export async function createLocalWorkspaceProvider(
           );
           delete current.restore_journal;
           await saveMeta(rootDir, current);
-          await invokeRestoreHook("committed");
-          await rm(backupDir, { recursive: true, force: true });
-          await rm(stagingDir, { recursive: true, force: true });
-          return currentRef(current);
         } catch (error) {
           if ((error as Error)?.name !== "SimulatedCrash") {
             try {
@@ -1197,6 +1193,15 @@ export async function createLocalWorkspaceProvider(
           }
           throw error;
         }
+        await invokeRestoreHook("committed");
+        // The restore is committed; leftovers are swept by startup recovery.
+        await rm(backupDir, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
+        await rm(stagingDir, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
+        return currentRef(current);
       });
     },
     async diff(context, workspace, diffOptions): Promise<WorkspaceDiff> {
