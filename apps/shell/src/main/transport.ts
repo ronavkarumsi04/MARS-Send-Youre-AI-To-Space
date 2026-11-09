@@ -1,3 +1,7 @@
+import {
+  BoundedReadError,
+  readBoundedUtf8,
+} from "@mars/contracts/bounded-read";
 import { isLoopbackHost } from "@mars/contracts/connection-file";
 import type { BridgeErrorKind } from "../shared/methods";
 
@@ -58,43 +62,12 @@ async function readBounded(
   response: Response,
   maxBytes: number,
 ): Promise<string> {
-  const declared = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > maxBytes)
-    throw new TransportError("protocol", "Workbench response is too large.");
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes)
-      throw new TransportError("protocol", "Workbench response is too large.");
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      throw new TransportError("protocol", "Workbench response is malformed.");
-    }
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let total = 0;
-  let text = "";
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new TransportError(
-          "protocol",
-          "Workbench response is too large.",
-        );
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    return text + decoder.decode();
+    return await readBoundedUtf8(response, maxBytes);
   } catch (error) {
-    if (error instanceof TransportError) throw error;
+    if (error instanceof BoundedReadError && error.failure === "too_large")
+      throw new TransportError("protocol", "Workbench response is too large.");
     throw new TransportError("protocol", "Workbench response is malformed.");
-  } finally {
-    reader.releaseLock();
   }
 }
 
