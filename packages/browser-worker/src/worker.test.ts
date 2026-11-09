@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { deflateSync } from "node:zlib";
 import type {
   BrowserEvidenceCapture,
   BrowserResult,
@@ -459,6 +460,15 @@ test("the live pinned fetch connects to the validated address, never a fresh DNS
           Bun.gzipSync(new TextEncoder().encode("decoded page")),
           { headers: { "content-encoding": "gzip" } },
         );
+      if (route === "/identity")
+        return new Response("plain page", {
+          headers: { "content-encoding": "Identity" },
+        });
+      if (route === "/layered")
+        return new Response(
+          Bun.gzipSync(deflateSync(new TextEncoder().encode("two layers"))),
+          { headers: { "content-encoding": "deflate, GZIP" } },
+        );
       if (route === "/zstd")
         return new Response("x", { headers: { "content-encoding": "zstd" } });
       return new Response(`host=${request.headers.get("host")}`, {
@@ -488,6 +498,8 @@ test("the live pinned fetch connects to the validated address, never a fresh DNS
     const gzipped = await pinned("/gzip");
     expect(gzipped.headers.get("content-encoding")).toBeNull();
     expect(await gzipped.text()).toBe("decoded page");
+    expect(await (await pinned("/identity")).text()).toBe("plain page");
+    expect(await (await pinned("/layered")).text()).toBe("two layers");
     await expect(pinned("/zstd")).rejects.toThrow(
       "Unsupported content encoding",
     );

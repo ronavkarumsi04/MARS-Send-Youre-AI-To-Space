@@ -166,18 +166,30 @@ export function createPinnedFetch(): PinnedFetch {
           if (empty) response.resume();
           try {
             let body: Readable = response;
-            const encoding = headers.get("content-encoding")?.trim();
-            if (!empty && encoding && encoding !== "identity") {
-              const decoder = DECODERS[encoding.toLowerCase()];
-              if (!decoder) {
+            // Codings are listed in the order applied, so decode in reverse.
+            const codings = (headers.get("content-encoding") ?? "")
+              .split(",")
+              .map((coding) => coding.trim().toLowerCase())
+              .filter((coding) => coding !== "" && coding !== "identity")
+              .reverse();
+            if (!empty && codings.length > 0) {
+              const decoders = codings.map((coding) => DECODERS[coding]);
+              if (decoders.some((decoder) => decoder === undefined)) {
                 response.destroy();
                 reject(new Error("Unsupported content encoding."));
                 return;
               }
-              body = response.pipe(decoder());
-              response.on("error", (error) => body.destroy(error));
+              for (const decoder of decoders) {
+                if (!decoder) continue;
+                const source = body;
+                body = source.pipe(decoder());
+                const sink = body;
+                source.on("error", (error) => sink.destroy(error));
+              }
+            }
+            if (!empty) {
               headers.delete("content-encoding");
-              headers.delete("content-length");
+              if (codings.length > 0) headers.delete("content-length");
             }
             resolve(
               new Response(
