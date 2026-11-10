@@ -126,6 +126,15 @@
         "zod": "3.25.76",
       },
     },
+    "packages/datasets": {
+      "name": "@mars/datasets",
+      "version": "0.0.1",
+      "dependencies": {
+        "@mars/contracts": "workspace:*",
+        "@mars/tasks": "workspace:*",
+        "zod": "3.25.76",
+      },
+    },
     "packages/evaluation": {
       "name": "@mars/evaluation",
       "version": "0.0.1",
@@ -498,6 +507,8 @@
     "@mars/context": ["@mars/context@workspace:packages/context"],
 
     "@mars/contracts": ["@mars/contracts@workspace:packages/contracts"],
+
+    "@mars/datasets": ["@mars/datasets@workspace:packages/datasets"],
 
     "@mars/evaluation": ["@mars/evaluation@workspace:packages/evaluation"],
 
