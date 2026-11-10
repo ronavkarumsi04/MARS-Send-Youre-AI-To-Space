@@ -10,6 +10,8 @@ const sha256 = (text: string) =>
 export const normalizeRequest = (text: string) =>
   text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 
+export const requestSha256 = (text: string) => sha256(normalizeRequest(text));
+
 const Id = z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,127}$/);
 
 export const HeldOutTaskSchema = z
@@ -64,6 +66,7 @@ export function heldOutSplitSha256(split: HeldOutSplit): string {
 export interface TrainingLineageView {
   task_ids: readonly string[];
   requests?: readonly string[];
+  request_sha256s?: readonly string[];
   dataset_sha256s?: readonly string[];
 }
 
@@ -88,6 +91,7 @@ export function findHeldOutLeakage(
 ): HeldOutLeak[] {
   const ids = new Set(training.task_ids);
   const requests = new Set((training.requests ?? []).map(normalizeRequest));
+  const requestSha256s = new Set(training.request_sha256s ?? []);
   const splitSha = heldOutSplitSha256(split);
   const datasetLeak = (training.dataset_sha256s ?? []).includes(splitSha);
   const leaks: HeldOutLeak[] = [];
@@ -96,7 +100,8 @@ export function findHeldOutLeakage(
       leaks.push({ task_id: task.task_id, reason: "training-task" });
     else if (
       task.request !== undefined &&
-      requests.has(normalizeRequest(task.request))
+      (requests.has(normalizeRequest(task.request)) ||
+        requestSha256s.has(requestSha256(task.request)))
     )
       leaks.push({ task_id: task.task_id, reason: "training-request" });
     else if (datasetLeak)
