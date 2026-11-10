@@ -9,6 +9,7 @@ import {
   loadModelRegistry,
   ModelRouter,
 } from "@mars/providers";
+import { remoteWorkspaceDoctor } from "@mars/workspaces-remote";
 import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
 import { runEvolution } from "./evolution";
@@ -252,7 +253,13 @@ try {
     const doctorArgs = parseArgs({
       args: process.argv.slice(3),
       strict: true,
-      options: { "team-state": { type: "string" } },
+      options: {
+        "team-state": { type: "string" },
+        "agent-server": { type: "string" },
+        "agent-server-key-env": { type: "string" },
+        "agent-server-root": { type: "string" },
+        "agent-server-allow-insecure-http": { type: "boolean" },
+      },
     }).values;
     const report = {
       product: "MARS - Send You're AI To Space",
@@ -293,6 +300,23 @@ try {
       },
       omniroute: await omnirouteDoctorReport(),
       team: teamDoctorReport(doctorArgs["team-state"]),
+      remote_workspace: await remoteWorkspaceDoctor(
+        {
+          ...(doctorArgs["agent-server"] !== undefined
+            ? { agentServer: doctorArgs["agent-server"] }
+            : {}),
+          ...(doctorArgs["agent-server-key-env"] !== undefined
+            ? { keyEnv: doctorArgs["agent-server-key-env"] }
+            : {}),
+          ...(doctorArgs["agent-server-root"] !== undefined
+            ? { remoteRoot: doctorArgs["agent-server-root"] }
+            : {}),
+          ...(doctorArgs["agent-server-allow-insecure-http"]
+            ? { allowInsecureHttp: true }
+            : {}),
+        },
+        process.env,
+      ),
       limitations: [
         "Initialization probe only; no agent task or model request was run.",
         "Live-provider and real IDE workbench acceptance remain unverified; memory and learning (skills plus proposal-only background review) are implemented with offline evidence only; training is not implemented.",
@@ -300,6 +324,7 @@ try {
         "Background browser tasks run only when mars serve is started with --browser-chromium; no live browsing or planner model run has been verified.",
         "OmniRoute is an optional provider target enabled by mars serve --omniroute; the doctor probe is one GET /v1/models and no model request. No live OmniRoute or upstream provider call has been verified; catalog quotas are upstream approximations.",
         "Python services must use separate versioned environments.",
+        "The remote workspace provider (mars serve --workspace-provider remote) is verified only against a FAKE OpenHands Agent Server; a remote server interface is not an OS isolation guarantee and MARS reports os_isolation none for it.",
         "Team Chat runs only under mars team serve with the dev authenticator and the team.enabled flag (default off); no live window, second machine or identity provider has been verified.",
       ],
     };

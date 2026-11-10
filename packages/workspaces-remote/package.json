@@ -1,0 +1,12 @@
+{
+  "name": "@mars/workspaces-remote",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@mars/contracts": "workspace:*",
+    "@mars/workspaces": "workspace:*",
+    "zod": "3.25.76"
+  }
+}

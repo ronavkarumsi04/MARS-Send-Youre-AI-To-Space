@@ -1,13 +1,27 @@
+export { createWorkspaceDiff } from "./diff";
 export * from "./errors";
 export { createInMemoryArtifactStore } from "./memory-artifacts";
+export {
+  isIgnored,
+  isSecret,
+  resolveSafePath,
+  validateRelativePath,
+} from "./paths";
 export { createLocalWorkspaceProvider } from "./provider";
 export type { ResolvedDockerConfig } from "./sandbox";
 export {
   buildDockerRunArgs,
   createDockerSandbox,
+  isValidArgv,
   resolveDockerConfig,
 } from "./sandbox";
-export { DEFAULT_WORKSPACE_LIMITS } from "./tree";
+export type { TreeFile, TreeSnapshot } from "./tree";
+export {
+  assertArtifactBytes,
+  compareStrings,
+  DEFAULT_WORKSPACE_LIMITS,
+  snapshotTree,
+} from "./tree";
 export type {
   ArtifactRef,
   ArtifactStore,
