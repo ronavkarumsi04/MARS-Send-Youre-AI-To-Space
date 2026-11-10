@@ -709,6 +709,7 @@ export async function createWorkbenchHost(
           .object({
             operation: z.literal("patch.exported"),
             artifact: ArtifactRefSchema,
+            round_trip: z.enum(["passed", "failed", "unavailable"]).optional(),
           })
           .strict()
           .safeParse(parsed);
@@ -3159,7 +3160,11 @@ export async function createWorkbenchHost(
         await options.store.appendEvent(
           context,
           params.task_id,
-          workbenchEvent({ operation: "patch.exported", artifact }),
+          workbenchEvent({
+            operation: "patch.exported",
+            artifact,
+            round_trip: exported.round_trip.status,
+          }),
         );
         return PatchExportSchema.parse({
           candidate: {
