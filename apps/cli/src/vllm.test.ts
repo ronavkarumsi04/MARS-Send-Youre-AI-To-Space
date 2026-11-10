@@ -118,6 +118,7 @@ describe("attach", () => {
       { env: {} },
     );
     expect(report.models).toEqual(["vllm/mars-base", `vllm/${ADAPTER}`]);
+    expect(registry.unavailableReason("vllm")).toBeUndefined();
     expect(report.attested).toBe(true);
     expect(report.lora_mode).toBe("static");
     expect(registry.getModel(`vllm/${ADAPTER}`)?.capabilities.tools).toBe(true);

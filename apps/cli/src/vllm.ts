@@ -210,7 +210,8 @@ export async function attachVllm(
     const extended = extendRegistryWithVllm(registry, {
       url: flags.url,
       allowRemote: flags.allowRemote,
-      apiKeyEnv: flags.apiKeyEnv,
+      // Keyless vLLM (the default) must stay routable: only require the key when it is set.
+      ...(env[flags.apiKeyEnv]?.trim() ? { apiKeyEnv: flags.apiKeyEnv } : {}),
       models,
       env,
     });
