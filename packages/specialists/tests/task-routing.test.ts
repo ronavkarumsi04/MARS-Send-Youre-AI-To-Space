@@ -182,6 +182,21 @@ describe("specialist task routing", () => {
     ]);
   });
 
+  test("a caller exclusion of the pin forces fallback", async () => {
+    const { router } = await adapterSetup();
+    await router.routeStep(context, { request: routingRequest() });
+    const result = await router.routeStep(context, {
+      request: routingRequest({
+        exclude_refs: [ADAPTER_REF, "specialist:other@1"],
+      }),
+    });
+    expect(result.step.mode).toBe("fallback");
+    expect(result.step.selected?.ref).toBe(BASELINE_REF);
+    expect(
+      result.step.rejected.find((item) => item.ref === ADAPTER_REF)?.reasons,
+    ).toContain("excluded");
+  });
+
   test("a throwing attestor never yields an adapter route", async () => {
     const { router, fake } = await adapterSetup();
     fake.state.throws = true;

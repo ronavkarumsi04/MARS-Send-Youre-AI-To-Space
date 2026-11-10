@@ -201,7 +201,7 @@ export class SpecialistTaskRouter {
       ): Promise<RoutingDecision> => {
         const exclude = [
           ...new Set([...(request.exclude_refs ?? []), ...lost]),
-        ].filter((ref) => ref !== extra.override?.ref);
+        ];
         const decision = await this.registry.route(context, {
           ...budgeted,
           ...(exclude.length > 0 ? { exclude_refs: exclude } : {}),
