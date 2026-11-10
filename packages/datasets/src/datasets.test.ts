@@ -211,11 +211,17 @@ test("held-out tasks, secrets, private paths, duplicates and mismatched patches 
 
 test("the build is deterministic and refuses an empty result", () => {
   const examples = ["a", "b", "c", "d"].map((id) => example(id));
-  const first = buildDataset({ dataset_id: "d", examples, held_out: [] });
+  const first = buildDataset({
+    dataset_id: "d",
+    examples,
+    held_out: [],
+    private_patterns: ["/state"],
+  });
   const second = buildDataset({
     dataset_id: "d",
     examples: [...examples].reverse(),
     held_out: [],
+    private_patterns: ["/state"],
   });
   expect(second.manifest).toEqual(first.manifest);
   expect(
@@ -226,6 +232,16 @@ test("the build is deterministic and refuses an empty result", () => {
       dataset_id: "d",
       examples,
       held_out: [{ source: "all", task_ids: ["a", "b", "c", "d"] }],
+      private_patterns: ["/state"],
     }),
   ).toThrow(DatasetError);
+  // Without host roots, private paths could not be filtered: refuse.
+  expect(() =>
+    buildDataset({
+      dataset_id: "d",
+      examples,
+      held_out: [],
+      private_patterns: [" "],
+    }),
+  ).toThrow("private_patterns");
 });

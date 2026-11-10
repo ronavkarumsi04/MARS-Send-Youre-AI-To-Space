@@ -65,8 +65,11 @@ export interface BuildDatasetInput {
   dataset_id: string;
   examples: readonly VerifiedExample[];
   held_out: readonly HeldOutSet[];
-  /** Host-private roots (state dirs, workspaces); examples mentioning them are dropped. */
-  private_patterns?: readonly string[];
+  /**
+   * Host-private roots (state dirs, workspaces, home); examples mentioning
+   * them are dropped. Required and non-empty: the builder cannot know them.
+   */
+  private_patterns: readonly string[];
   validation_fraction?: number;
   seed?: string;
   max_example_chars?: number;
@@ -113,8 +116,10 @@ export function buildDataset(input: BuildDatasetInput): BuiltDataset {
     input.held_out.flatMap((set) => (set.requests ?? []).map(normalize)),
   );
   const privatePatterns = (input.private_patterns ?? []).filter(
-    (pattern) => pattern.length > 0,
+    (pattern) => pattern.trim().length > 0,
   );
+  if (privatePatterns.length === 0)
+    throw new DatasetError("invalid", "private_patterns must name host roots.");
   const ordered = [...input.examples].sort((a, b) =>
     key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0,
   );

@@ -33,6 +33,8 @@ in the manifest.
   normalized request text so a renamed copy of a held-out task is caught;
 - re-checks the kept examples for leakage and fails with
   `DatasetError("leakage")` rather than writing a contaminated dataset;
+- requires `private_patterns` (the host's state, workspace and home roots)
+  and refuses to build without them;
 - drops examples whose patch bytes no longer match their digest, that contain
   a secret shape (`secretShapeRegexes`) or a host-private root, that exceed
   `max_example_chars`, or that duplicate another example;
