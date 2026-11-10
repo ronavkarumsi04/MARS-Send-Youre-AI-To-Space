@@ -6,3 +6,4 @@ export * from "./registry";
 export * from "./routing";
 export * from "./schemas";
 export * from "./store";
+export * from "./task-routing";

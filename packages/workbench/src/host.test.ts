@@ -42,7 +42,7 @@ import { loadModelRegistry } from "@mars/providers";
 import { ResearchError } from "@mars/research";
 import { ReviewRunner, type Turn } from "@mars/review";
 import { CommandError, type SkillOutcome, SkillStore } from "@mars/skills";
-import type { RoutingRequest } from "@mars/specialists";
+import { type RoutingRequest, SpecialistTaskRouter } from "@mars/specialists";
 import { createTaskStore } from "@mars/tasks";
 import { WorkspaceModifiedError } from "@mars/workspaces";
 import {
@@ -1841,6 +1841,110 @@ test.each(["specialist", "baseline", "manual"])(
     await api.close();
   },
 );
+
+test("step routing replaces a specialist rolled back mid-task with its fallback on resume", async () => {
+  const f = await fixture();
+  const routed = await f.routedRegistry();
+  const specialists = new MemoryArtifacts();
+  const registry = createSpecialistRegistry(
+    join(f.root, "specialists"),
+    specialists,
+    {
+      catalog: routed,
+      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+    },
+  );
+  await registry.registerBaseline(
+    context(),
+    makeBaseline(scope, {
+      model_id: "fixture/free",
+      provider_id: "fixture",
+      provider_model: "fixture",
+    }),
+  );
+  const promoted = await makeSpecialistFixture(specialists, {
+    scope,
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+  });
+  await registry.registerSpecialist(context(), promoted.registration);
+  await registry.promote(context(), "specialist-1", "1", null);
+  const next = await makeSpecialistFixture(specialists, {
+    scope,
+    revision: "2",
+    currentRevision: "1",
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+  });
+  await registry.registerSpecialist(context(), next.registration);
+  await registry.promote(context(), "specialist-1", "2", "1");
+  const api = await f.makeHost(routed, undefined, undefined, {
+    router: registry,
+    steps: new SpecialistTaskRouter(registry),
+    domain: "coding/mechanical-edit",
+  });
+  const input = task();
+  await api.create(context(), {
+    ...input,
+    budget: { ...input.budget, max_usd: 1 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  expect(session.options.modelId).toBe("fixture/specialist");
+  session.finish("paused");
+  await session.disposed;
+
+  await registry.rollback(context(), "specialist-1", "2");
+  await api.resume(
+    context(),
+    "task",
+    (await api.inspect(context(), "task")).revision,
+  );
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  const launch = JSON.parse(
+    await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+  );
+  expect(launch.model_id).toBe("fixture/free");
+  expect(launch.routing).toMatchObject({
+    outcome: "baseline",
+    ref: "baseline:baseline@1",
+    specialist_revision: null,
+    model_id: null,
+  });
+  const evidence = await taskEvents(f, "task", "routing");
+  expect(evidence.map((item) => [item.phase, item.status, item.ref])).toEqual([
+    ["launch", "routed", "specialist:specialist-1@2"],
+    ["resume", "fallback", "baseline:baseline@1"],
+  ]);
+  expect(evidence[1]).toMatchObject({
+    fallback_from: "specialist:specialist-1@2",
+    step_reasons: ["pinned_rolled_back"],
+    lost_refs: ["specialist:specialist-1@2"],
+  });
+  resumed.finish("paused");
+  await resumed.disposed;
+
+  await api.resume(
+    context(),
+    "task",
+    (await api.inspect(context(), "task")).revision,
+  );
+  const again = required(f.sessions[2]);
+  expect(again.options.modelId).toBe("fixture/free");
+  expect(
+    (await taskEvents(f, "task", "routing")).map((item) => item.status),
+  ).toEqual(["routed", "fallback"]);
+  again.finish("completed");
+  await again.disposed;
+  await api.close();
+});
 
 test("routing aliases free-form task ids and sizes context like the model bridge", async () => {
   const f = await fixture();

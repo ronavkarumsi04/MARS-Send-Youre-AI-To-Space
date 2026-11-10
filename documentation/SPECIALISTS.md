@@ -51,6 +51,32 @@ behavior.
    routing. Baseline, unavailable and rejected outcomes use the ordinary
    free-only registry default; a registry error leaves the task pending with
    `unavailable`.
+   For per-step routing, wrap the registry in `SpecialistTaskRouter` and pass
+   it as `specialists.steps`. `routeStep(context, { request, usage?,
+   deadline_at? })` routes against the task budget minus durable `usage` and
+   the time left before the fixed deadline. The first step routes normally
+   and pins its target. Every later step re-checks the pin with an override
+   route, so evidence, serving attestation and budget gates are evaluated
+   again. A pin that was rolled back, superseded, retired or rejected (for
+   example `serving_unattested` or `budget_cost_exceeded`) goes into
+   `lost_refs` and is never selected again for that task. The step then walks
+   the pin's `fallback_specialist_revision` chain (`resolveFallbackChain`
+   rules) before the ordinary baseline fallback. An adapter target without
+   `serving_attestation: "verified"` is refused even if a registry returns
+   one. Exhausted tokens, USD or deadline give `budget_exhausted` without
+   routing. Per-task state is stored in SQLite (`task_routing_state`),
+   committed with a step compare-and-set, and serialized per task and role
+   in-process. Each step returns a `mars.specialist-routing-step/v1` record
+   with mode, decision ids, selected target, `fallback_from`, rejected refs
+   and reasons, `step_reasons` and remaining budget. With `steps` configured,
+   the workbench routes launches and children through it and appends each
+   step as an `operation: "routing"` task event (`phase` `launch`, `child` or
+   `resume`). On resume of a specialist launch it re-routes with the task's
+   durable usage and deadline. If the pin is lost, it switches the session
+   to the fallback model and rewrites the launch routing; an exhausted budget
+   or a routing error leaves the task paused with `unavailable`.
+   `Task.specialist_revision` keeps the launch-time specialist, and the
+   routing events record the replacement.
 3. Execution passes `{ model: selected.model_id }` to the existing
    `ModelRouter` through the execution/model-bridge, keeping the selected
    model pinned for that attempt. The specialist package does not perform

@@ -109,6 +109,7 @@ import {
 import { type HostCheckDefinition, summarizeHostChecks } from "./host-checks";
 import { childWorkspaceTaskId, createChildRecords } from "./host-children";
 import {
+  type Launch,
   type LaunchLocation,
   readLaunch,
   readLaunchIfPresent,
@@ -178,7 +179,10 @@ import {
 } from "./skills-operator";
 import {
   type FrozenRouting,
+  type RoutedTaskStep,
   routeLaunch,
+  routeTaskStep,
+  routingStepEvidence,
   type WorkbenchSpecialists,
 } from "./specialist-routing";
 import {
@@ -1913,6 +1917,19 @@ export async function createWorkbenchHost(
                   instruction: request.instruction,
                 }) + MIN_INITIAL_OUTPUT_RESERVE,
                 reviewer ? "reviewer" : "worker",
+                (step) =>
+                  options.store
+                    .appendEvent(
+                      internalContext(options.scope),
+                      request.task_id,
+                      workbenchEvent(
+                        routingStepEvidence(step, {
+                          phase: "child",
+                          child_task_id: request.child_task_id,
+                        }),
+                      ),
+                    )
+                    .then(() => undefined),
               );
               await rememberChildRouting(request.child_task_id, routing).catch(
                 () => undefined,
@@ -2039,10 +2056,81 @@ export async function createWorkbenchHost(
         initialRequestAllowance(
           launchSurface(params.approvals, baseInstruction),
         ) + MIN_INITIAL_OUTPUT_RESERVE,
+        "worker",
+        (step) =>
+          options.store
+            .appendEvent(
+              context,
+              task.task_id,
+              workbenchEvent(routingStepEvidence(step, { phase: "launch" })),
+            )
+            .then(() => undefined),
       );
     } catch {
       throw new WorkbenchError("unavailable");
     }
+  };
+  /**
+   * With step routing, a resumed specialist launch re-checks its pin against
+   * durable usage and the fixed deadline. A pin that was rolled back or lost
+   * serving attestation is replaced by its fallback and the launch rewritten,
+   * so the resumed session never runs on an ineligible specialist.
+   */
+  const rerouteResume = async (
+    context: RequestContext,
+    task: Task,
+    launch: Launch,
+    instruction: string,
+  ): Promise<Launch> => {
+    const specialists = options.specialists;
+    const steps = specialists?.steps;
+    if (!specialists || !steps || launch.routing?.outcome !== "specialist")
+      return launch;
+    const needsTools = toolsRequired(
+      launch.approvals,
+      Boolean(launch.collaboration),
+    );
+    let routed: RoutedTaskStep;
+    try {
+      const usage = { tokens: 0, usd: 0 };
+      for await (const event of options.store.events(context, task.task_id)) {
+        if (!event.usage) continue;
+        usage.tokens += event.usage.input_tokens + event.usage.output_tokens;
+        usage.usd += event.usage.cost_usd ?? 0;
+      }
+      routed = await routeTaskStep(
+        context,
+        task,
+        needsTools,
+        { ...specialists, steps },
+        initialRequestAllowance(launchSurface(launch.approvals, instruction)) +
+          MIN_INITIAL_OUTPUT_RESERVE,
+        "worker",
+        {
+          usage,
+          ...(launch.deadline ? { deadline_at: launch.deadline } : {}),
+        },
+      );
+      await options.store.appendEvent(
+        context,
+        task.task_id,
+        workbenchEvent(routingStepEvidence(routed.step, { phase: "resume" })),
+      );
+    } catch {
+      throw new WorkbenchError("unavailable");
+    }
+    const routing = routed.routing;
+    if (!routing) throw new WorkbenchError("unavailable");
+    if (routing.ref === launch.routing.ref) return launch;
+    const model = selectModel(routing.model_id ?? undefined, needsTools);
+    const next: Launch = {
+      ...launch,
+      model_id: model.id,
+      model_classification: classifyModel(model.id) ?? undefined,
+      routing,
+    };
+    await rewriteLaunch(launchLocation, task, next);
+    return next;
   };
   const freezeLaunchMemory = async (
     context: RequestContext,
@@ -2858,8 +2946,8 @@ export async function createWorkbenchHost(
         throw new WorkbenchError("conflict");
       const binding = await options.store.upstreamSession(context, taskId);
       if (!binding) throw new WorkbenchError("conflict");
-      const launch = await readLaunch(launchLocation, task);
-      if (launch.approvals.execute && !options.canExecute)
+      const savedLaunch = await readLaunch(launchLocation, task);
+      if (savedLaunch.approvals.execute && !options.canExecute)
         throw new WorkbenchError("forbidden");
       const { queued } = await runtimeResults(context, taskId);
       let instruction = "Continue the task from the saved session.";
@@ -2876,6 +2964,12 @@ export async function createWorkbenchHost(
       }
       if (queued.length && !steeringEventIds.length)
         throw new WorkbenchError("too_large");
+      const launch = await rerouteResume(
+        context,
+        task,
+        savedLaunch,
+        instruction,
+      );
       selectModel(
         launch.model_id,
         toolsRequired(launch.approvals, Boolean(launch.collaboration)),

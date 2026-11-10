@@ -4,6 +4,8 @@ import {
   ID_PATTERN,
   type RoutingDecision,
   type RoutingRequest,
+  type TaskRoutingInput,
+  type TaskRoutingStep,
 } from "@mars/specialists";
 import { z } from "zod";
 
@@ -15,8 +17,21 @@ export interface SpecialistRouter {
   ): Promise<RoutingDecision>;
 }
 
+/**
+ * Optional per-step routing (`SpecialistTaskRouter`). When present, launches,
+ * children and resumes route through it so a specialist that is rolled back
+ * or loses serving attestation mid-task is replaced by its fallback.
+ */
+export interface SpecialistStepRouter {
+  routeStep(
+    context: RequestContext,
+    input: TaskRoutingInput,
+  ): Promise<{ step: TaskRoutingStep }>;
+}
+
 export interface WorkbenchSpecialists {
   router: SpecialistRouter;
+  steps?: SpecialistStepRouter;
   /** Task coverage key (\`area/kind\`) this workbench's tasks are evaluated under. */
   domain: string;
   complexity?: "light" | "medium" | "heavy";
@@ -91,7 +106,21 @@ export async function routeLaunch(
   specialists: WorkbenchSpecialists,
   minContextTokens: number,
   role: RoutingRequest["role"] = "worker",
+  record?: (step: TaskRoutingStep) => Promise<void>,
 ): Promise<FrozenRouting> {
+  if (specialists.steps) {
+    const { routing, step } = await routeTaskStep(
+      context,
+      task,
+      toolsRequired,
+      specialists as WorkbenchSpecialists & { steps: SpecialistStepRouter },
+      minContextTokens,
+      role,
+    );
+    await record?.(step);
+    if (!routing) throw new Error(`routing_${step.mode}`);
+    return routing;
+  }
   const decision = await specialists.router.route(
     context,
     routingRequest(task, toolsRequired, specialists, minContextTokens, role),
@@ -112,4 +141,71 @@ export async function routeLaunch(
     // keep the ordinary free-only default so routing can never widen paid use.
     model_id: specialist?.model_id ?? null,
   });
+}
+
+export interface RoutedTaskStep {
+  /** Null when the step produced no decision (budget or deadline exhausted). */
+  routing: FrozenRouting | null;
+  step: TaskRoutingStep;
+}
+
+/** Routes one step of a task and freezes it like a launch decision. */
+export async function routeTaskStep(
+  context: RequestContext,
+  task: Pick<Task, "task_id" | "budget">,
+  toolsRequired: boolean,
+  specialists: WorkbenchSpecialists & { steps: SpecialistStepRouter },
+  minContextTokens: number,
+  role: RoutingRequest["role"] = "worker",
+  progress: Omit<TaskRoutingInput, "request"> = {},
+): Promise<RoutedTaskStep> {
+  const request = routingRequest(
+    task,
+    toolsRequired,
+    specialists,
+    minContextTokens,
+    role,
+  );
+  const { step } = await specialists.steps.routeStep(context, {
+    request,
+    ...progress,
+  });
+  if (!step.decision_id || step.mode === "budget_exhausted") {
+    return { routing: null, step };
+  }
+  const selected = step.selected;
+  const specialist = selected?.kind === "specialist" ? selected : null;
+  const outcome = selected ? selected.kind : "unavailable";
+  return {
+    step,
+    routing: FrozenRoutingSchema.parse({
+      decision_id: step.decision_id,
+      routing_task_id: request.task_id,
+      outcome,
+      ref: selected?.ref ?? null,
+      specialist_revision: specialist?.ref ?? null,
+      model_id: specialist?.model_id ?? null,
+    }),
+  };
+}
+
+/** Task-evidence payload for one routing step (refs and reason codes only). */
+export function routingStepEvidence(
+  step: TaskRoutingStep,
+  extra: { child_task_id?: string; phase: "launch" | "child" | "resume" },
+): Record<string, unknown> {
+  return {
+    operation: "routing",
+    status: step.mode,
+    phase: extra.phase,
+    ...(extra.child_task_id ? { child_task_id: extra.child_task_id } : {}),
+    step: step.step,
+    role: step.role,
+    decision_id: step.decision_id,
+    ref: step.selected?.ref ?? null,
+    fallback_from: step.fallback_from,
+    step_reasons: step.step_reasons,
+    rejected: step.rejected,
+    lost_refs: step.lost_refs,
+  };
 }
