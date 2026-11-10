@@ -407,11 +407,8 @@ export function createTrainingService(
         },
       };
       await jobs.put(interrupted);
-      // Its worker's watchdog exits when the owning host dies; drop its scratch data.
-      await rm(path.join(options.workRoot, scopeKey(context.scope), jobId), {
-        recursive: true,
-        force: true,
-      }).catch(() => {});
+      // Its worker's watchdog exits when the owning host dies. Scratch data is
+      // left in place: another live instance sharing this store may own it.
       return interrupted;
     }
     return found;
