@@ -622,6 +622,28 @@ describe("specialist evidence and persistence", () => {
     expect(lineageView.verdict.codes).toContain("lineage_digest_mismatch");
   });
 
+  test("registers and verifies signed lineage request digests", async () => {
+    const { registry, artifacts } = await setupRegistry();
+    const requestSha256s = ["a".repeat(64)];
+    const lineage = await makeLineageArtifact(artifacts, context.scope, {
+      requestSha256s,
+    });
+    const signedLineage = JSON.parse(
+      new TextDecoder().decode(await artifacts.get(context, lineage)),
+    ) as { request_sha256s?: string[] };
+    expect(signedLineage.request_sha256s).toEqual(requestSha256s);
+
+    const fixture = await makeSpecialistFixture(artifacts, {
+      datasetLineage: lineage,
+    });
+    const view = await registry.registerSpecialist(
+      context,
+      fixture.registration,
+    );
+    expect(view.status).toBe("evaluated");
+    expect(view.verdict.codes).toEqual([]);
+  });
+
   test("rejects held-out leakage, non-independent evaluators, and non-improving candidates", async () => {
     const { registry, artifacts } = await setupRegistry();
     const leakedLineage = await makeLineageArtifact(artifacts, context.scope, {
