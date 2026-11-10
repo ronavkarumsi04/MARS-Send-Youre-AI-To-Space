@@ -71,6 +71,36 @@ class DatasetTests(unittest.TestCase):
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_orphaned_worker_exits_even_if_cleaner_cannot_start(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            pid_file = Path(root) / "worker.pid"
+            worker = (
+                "import os, sys, time\n"
+                f"sys.path.insert(0, {str(PYTHON_DIR)!r})\n"
+                "from mars_training_worker import worker\n"
+                "def broken(_):\n    raise OSError('no processes')\n"
+                "worker._spawn_scratch_cleaner = broken\n"
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                f"worker._start_watchdog(None, {root!r})\n"
+                "time.sleep(60)\n"
+            )
+            host = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {worker!r}], start_new_session=True)\n"
+                f"while not __import__('os').path.exists({str(pid_file)!r}): time.sleep(0.05)\n"
+            )
+            subprocess.run([sys.executable, "-c", host], timeout=30, check=True)
+            pid = int(pid_file.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
     def test_orphaned_worker_removes_scratch_and_exits(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             scratch = Path(root) / "job"

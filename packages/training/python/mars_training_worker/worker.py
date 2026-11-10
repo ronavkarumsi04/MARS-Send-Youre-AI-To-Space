@@ -327,11 +327,15 @@ def _start_watchdog(deadline_seconds: Any, scratch_dir: Any = None) -> None:
             time.sleep(0.5)
             orphaned = os.getppid() != parent
             if orphaned or (limit is not None and time.monotonic() > limit):
-                if orphaned and isinstance(scratch_dir, str) and scratch_dir:
-                    _spawn_scratch_cleaner(scratch_dir)
-                if os.getpgrp() == os.getpid():
-                    os.killpg(os.getpid(), signal.SIGKILL)
-                os._exit(3)
+                try:
+                    if orphaned and isinstance(scratch_dir, str) and scratch_dir:
+                        _spawn_scratch_cleaner(scratch_dir)
+                except Exception:  # noqa: BLE001 - cleanup is best effort; the kill below is not
+                    pass
+                finally:
+                    if os.getpgrp() == os.getpid():
+                        os.killpg(os.getpid(), signal.SIGKILL)
+                    os._exit(3)
 
     threading.Thread(target=watch, name="mars-watchdog", daemon=True).start()
 
