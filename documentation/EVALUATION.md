@@ -194,3 +194,57 @@ Unverified:
   ([`MILESTONE_0.md`](MILESTONE_0.md)).
 
 Milestone 4 acceptance (spec section 16) is therefore **not claimed**.
+
+## Milestone 7 — held-out specialist adapter-vs-base evaluation
+
+`SpecialistRegistry.requestEvaluation` stores a
+`mars.specialist-comparison-request/v1` manifest and submits it through
+`EvaluationService.submitComparison`. `createSpecialistComparisonService`
+(`packages/evaluation/src/specialist-comparison.ts`) is that service for
+specialists:
+
+- **Request → job.** Submission parses the request, resolves the registered
+  revision (`subjectResolverFromRegistry` over `SpecialistRegistry.inspect`)
+  and refuses with a `SpecialistComparisonError` unless the scope and
+  `candidate_sha256` match. Refusals happen before a job exists, so the
+  registry records no evaluation job for them.
+- **Held-out exclusion.** The held-out split is a `mars.held-out-split/v1`
+  file served by `createHeldOutGuard` from `@mars/datasets`. The candidate's
+  dataset lineage (train + validation task ids and dataset digests) goes
+  through `findHeldOutLeakage`: any held-out task id, normalized request text
+  (the same normalization `buildDataset` uses) or the split's own digest in the
+  lineage refuses the job with `heldout_leakage`. An adapter without lineage
+  is refused (`lineage_missing`), and an evaluator whose id equals the
+  lineage's training producer is refused (`evaluator_not_independent`). Only
+  split tasks covered by the request's domains, roles and complexities run.
+- **Matched conditions.** Every arm (`base` and `prompt_optimized_baseline`
+  on the registered base model, `current_specialist` when a production
+  revision exists, `candidate`) runs the same tasks, repeats, seed (derived
+  from the candidate digest and split digest) and an equal share of the job
+  budget; an arm that overspends its share fails the job. A task passes when a
+  strict majority of its repeats score 1.
+- **Job → verdict.** The service writes a signed
+  `mars.specialist-evaluation-report/v1` (HMAC, exactly as
+  `createHmacEvidenceVerifier` checks it) and a
+  `mars.specialist-comparison-verdict/v1` whose `outcome` is `improved` only
+  when every gate passes with a positive delta vs base. Equal pass rates are
+  recorded as `no_improvement` (`no_delta_vs_base`); a lower rate is
+  `regressed`. Both artifacts are returned by `inspect` and handed to the
+  `SpecialistVerdictSink`. Jobs persist under
+  `<stateDir>/specialist-comparisons/`; a job left running by a restarted
+  process is marked failed, never resumed silently.
+- **CLI.** `runSpecialistsEvaluate` in `apps/cli/src/specialists-eval.ts`
+  (not yet registered in `main.ts`) refuses with `SpecialistsEvalRefusal`
+  when `--model-key-env NAME` is unset, `--serving URL` is absent or does not
+  answer `GET /v1/models`, or no serving-backed evaluator is wired. Messages
+  name flags and variable names, never the key.
+
+Offline-verified: the round trip, leakage refusals, no-improvement and
+regressed verdicts, budget overrun, restart, scope isolation and every CLI
+refusal, with `createFixtureArmEvaluator` (simulated, `model_requests: 0`)
+and the registry's own `verifyEvidence` accepting the signed report.
+Simulated reports carry `synthetic_fixture: true`, so a registry without
+`allowSyntheticFixtures` rejects them. Blocked: a serving-backed arm
+evaluator (real vLLM with base + adapter, a GPU host and a model key), and the
+registry-side sink that persists the verdict against the revision
+(integration work).
