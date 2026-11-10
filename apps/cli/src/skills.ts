@@ -18,7 +18,7 @@ export const SKILLS_USAGE = [
   "  pin NAME | unpin NAME                 exempt a skill from curation, or stop exempting it",
   "  archive NAME | restore NAME           archive a skill (nothing is deleted) or bring it back",
   "  proposals [--status pending|accepted|rejected]  proposals from background review",
-  "  accept PROPOSAL_ID                    apply a pending proposal; fails if the store moved since it was made",
+  "  accept PROPOSAL_ID                    apply a pending proposal; fails if a skill it targets changed since it was made",
   "  reject PROPOSAL_ID --reason TEXT      close a pending proposal without writing skills",
   "  undo REVIEW_ID                        undo every skill change one background review made; fails if a touched skill changed since",
   "  curate                                mark idle skills stale (14 days) and archive them (30 days); pinned skills are exempt",
