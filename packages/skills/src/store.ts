@@ -167,7 +167,7 @@ const ProposalSchema = z
     }),
   );
 
-const REVIEW_SOURCE = /^background_review:[^:]+:([^:]+)$/;
+const REVIEW_SOURCE = /^background_review:.+:([^:]+)$/;
 
 /** The review a background-review proposal came from, so accepting it can be undone by review id. */
 export function reviewIdFromSource(source: string): string | undefined {

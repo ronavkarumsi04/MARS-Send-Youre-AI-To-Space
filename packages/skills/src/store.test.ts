@@ -388,6 +388,15 @@ describe("skill lifecycle owner", () => {
     const undone = await store.undoReview("review-9", options);
     expect(undone.length).toBeGreaterThan(0);
     expect((await store.get("test"))?.status).toBe("archived");
+    // Session ids may contain colons; the review id is the last segment.
+    const colon = await store.submitProposal({
+      source: "background_review:agent:session:2:review-10",
+      rationale: "Lesson",
+      ops: [{ op: "create", name: "other", content: content("other") }],
+    });
+    await store.accept(colon.id, options);
+    expect(await store.undoReview("review-10", options)).not.toHaveLength(0);
+    expect((await store.get("other"))?.status).toBe("archived");
   });
 
   it("logs provenance, review id and revision chains for a batch", async () => {
