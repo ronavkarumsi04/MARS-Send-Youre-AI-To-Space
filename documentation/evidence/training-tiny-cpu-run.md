@@ -12,8 +12,8 @@ artifact and wrote an HMAC-signed `mars.specialist-dataset-lineage/v1` record.
 `trl-internal-testing/tiny-Qwen2ForCausalLM-2.5` (2,440,232 parameters,
 hidden size 8, random-init test weights); the data is the 9 + 3 example
 SYNTHETIC fixture in `packages/training/fixtures/synthetic/`. Loss stayed at
-~11.92 (≈ ln(vocab)); the generated text is noise
-(`Sugar𝔅(mysqli.Nullable(mysqli…`). No held-out agent-level evaluation was
+~11.93 (≈ ln(vocab)); the generated text is noise
+(`Sugar𝔅(mysqli.Nullable(mysqli(…`). No held-out agent-level evaluation was
 run: no model API key is configured on this VM, so that acceptance item stays
 **BLOCKED**. The lineage was signed with an ephemeral per-run key
 (`live-ephemeral`), not a production authority.
@@ -41,16 +41,16 @@ bun test v1.4.4 (38afee6c8)
 
 packages/training/src/live.acceptance.test.ts:
 live evidence: /tmp/mars-training-live/live-evidence.json
-(pass) LIVE: tiny CPU LoRA SFT saves an adapter that reloads on the base and generates [13154.16ms]
+(pass) LIVE: tiny CPU LoRA SFT saves an adapter that reloads on the base and generates [13090.68ms]
 
  1 pass
  0 fail
  12 expect() calls
-Ran 1 test across 1 file. [13.19s]
+Ran 1 test across 1 file. [13.12s]
 
-real	0m13.192s
-user	0m18.036s
-sys	0m2.997s
+real	0m13.122s
+user	0m18.124s
+sys	0m2.940s
 ```
 
 ## Key results (full record: `training-tiny-cpu-run.json`)
@@ -58,15 +58,16 @@ sys	0m2.997s
 | Field | Value |
 | --- | --- |
 | validate | `{ ready: true, missing: [] }` |
-| estimate | `estimated_usd: null` (local, unmetered); hardware `cpu:8-logical-cores`, `method:lora-fp32`, `token_bound:4096` |
+| estimate | `estimated_usd: null` (local, unmetered); hardware `cpu:8-logical-cores`, `method:lora-fp32`, `token_bound:5896` |
 | job status | `completed`, `cost_usd: null`, 7 artifacts |
-| steps / train_seconds | 8 / 0.919 s |
+| steps / train_seconds | 8 / 0.952 s |
 | train_loss / eval_loss | 11.9256 / 11.9219 |
 | trainable / total params | 3,968 / 2,440,232 (LoRA r=8, all-linear) |
 | reload: max \|logit diff\| vs trained | 0 |
 | reload: max \|logit diff\| vs base | 0.0535 (adapter changes the base) |
 | generated tokens | 8 |
 | adapter weights | `8fa8e29f…` (19,320 bytes) |
-| adapter_config | `726760ff…` (pins `base_model_name_or_path` + `revision`) |
+| adapter_config | `0b23d0cb…` (pins `base_model_name_or_path` + `revision`) |
 | chat template | `cd8e9439…` (matches manifest pin) |
-| lineage | `193c9cfb…`, `provenance.synthetic_fixture: true` |
+| lineage | `eec2c428…`, `provenance.synthetic_fixture: true` |
+| dataset_manifest_sha256 | `None` (the fixture manifest pins no `@mars/datasets` manifest) |

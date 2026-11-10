@@ -15,12 +15,12 @@
     "hardware": [
       "cpu:8-logical-cores",
       "method:lora-fp32",
-      "token_bound:4096"
+      "token_bound:5896"
     ]
   },
   "job": {
     "job": {
-      "job_id": "train-ed459f5e-7707-4877-8eaa-e84ad40359d8",
+      "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
       "input_manifest": {
         "artifact_id": "art-71b43561669f30d4e1510c4395373ec2",
         "sha256": "71b43561669f30d4e1510c4395373ec213787d068c10c498d11f010e19ca2fa4",
@@ -31,8 +31,8 @@
     "status": "completed",
     "artifacts": [
       {
-        "artifact_id": "art-2f0b89e32606419c9a39bca8230b4c7f",
-        "sha256": "2f0b89e32606419c9a39bca8230b4c7fa2b69f087955aa2aca2d7e723c3332ca",
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
         "media_type": "application/json",
         "byte_length": 1277
       },
@@ -43,8 +43,8 @@
         "byte_length": 19320
       },
       {
-        "artifact_id": "art-726760ff40fc9c9a0b7529c7babfc7d2",
-        "sha256": "726760ff40fc9c9a0b7529c7babfc7d2f9f83879da6b4d4c53a5b5eab8ab8718",
+        "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+        "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
         "media_type": "application/vnd.mars.peft-adapter-config+json",
         "byte_length": 1658
       },
@@ -61,23 +61,23 @@
         "byte_length": 2507
       },
       {
-        "artifact_id": "art-193c9cfbd09b27c69c7e873716b8c455",
-        "sha256": "193c9cfbd09b27c69c7e873716b8c4555a6cfc0c5978af057bdcb834ca8ff9b7",
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
         "media_type": "application/json",
         "byte_length": 1312
       },
       {
-        "artifact_id": "art-38bd60947b01d05a57e1cf6d3f83c018",
-        "sha256": "38bd60947b01d05a57e1cf6d3f83c01863012697c640493b19ae82c6367442b5",
+        "artifact_id": "art-5a8b1e5634425c8210ca07b490111625",
+        "sha256": "5a8b1e5634425c8210ca07b4901116257c514deb5460d626bbf1e6b169d302d3",
         "media_type": "application/json",
-        "byte_length": 3747
+        "byte_length": 3778
       }
     ],
     "cost_usd": null
   },
   "report": {
     "schema": "mars.training-run/v1",
-    "job_id": "train-ed459f5e-7707-4877-8eaa-e84ad40359d8",
+    "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
     "manifest": {
       "artifact_id": "art-71b43561669f30d4e1510c4395373ec2",
       "sha256": "71b43561669f30d4e1510c4395373ec213787d068c10c498d11f010e19ca2fa4",
@@ -85,6 +85,7 @@
       "byte_length": 1894
     },
     "config_sha256": "ca3cdb9b11b09b7ee1767e3b33b20620e854238516598dd6c74ea98ef7898112",
+    "dataset_manifest_sha256": null,
     "worker_versions": {
       "python": "3.12.16",
       "torch": "2.15.0+cpu",
@@ -101,7 +102,7 @@
       "global_steps": 8,
       "train_loss": 11.925555109977722,
       "eval_loss": 11.92186450958252,
-      "train_seconds": 0.919,
+      "train_seconds": 0.952,
       "trainable_params": 3968,
       "total_params": 2440232,
       "train_examples": 9,
@@ -118,8 +119,8 @@
     },
     "artifacts": {
       "adapter_bundle": {
-        "artifact_id": "art-2f0b89e32606419c9a39bca8230b4c7f",
-        "sha256": "2f0b89e32606419c9a39bca8230b4c7fa2b69f087955aa2aca2d7e723c3332ca",
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
         "media_type": "application/json",
         "byte_length": 1277
       },
@@ -130,8 +131,8 @@
         "byte_length": 19320
       },
       "adapter_config": {
-        "artifact_id": "art-726760ff40fc9c9a0b7529c7babfc7d2",
-        "sha256": "726760ff40fc9c9a0b7529c7babfc7d2f9f83879da6b4d4c53a5b5eab8ab8718",
+        "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+        "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
         "media_type": "application/vnd.mars.peft-adapter-config+json",
         "byte_length": 1658
       },
@@ -148,8 +149,8 @@
         "byte_length": 2507
       },
       "dataset_lineage": {
-        "artifact_id": "art-193c9cfbd09b27c69c7e873716b8c455",
-        "sha256": "193c9cfbd09b27c69c7e873716b8c4555a6cfc0c5978af057bdcb834ca8ff9b7",
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
         "media_type": "application/json",
         "byte_length": 1312
       }
@@ -170,14 +171,14 @@
         "byte_length": 2507
       },
       "adapter": {
-        "artifact_id": "art-2f0b89e32606419c9a39bca8230b4c7f",
-        "sha256": "2f0b89e32606419c9a39bca8230b4c7fa2b69f087955aa2aca2d7e723c3332ca",
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
         "media_type": "application/json",
         "byte_length": 1277
       },
       "dataset_lineage": {
-        "artifact_id": "art-193c9cfbd09b27c69c7e873716b8c455",
-        "sha256": "193c9cfbd09b27c69c7e873716b8c4555a6cfc0c5978af057bdcb834ca8ff9b7",
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
         "media_type": "application/json",
         "byte_length": 1312
       },
@@ -219,8 +220,8 @@
       "byte_length": 19320
     },
     "adapter_config": {
-      "artifact_id": "art-726760ff40fc9c9a0b7529c7babfc7d2",
-      "sha256": "726760ff40fc9c9a0b7529c7babfc7d2f9f83879da6b4d4c53a5b5eab8ab8718",
+      "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+      "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
       "media_type": "application/vnd.mars.peft-adapter-config+json",
       "byte_length": 1658
     },
@@ -271,20 +272,20 @@
     "rank_pattern": {},
     "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec",
     "target_modules": [
-      "model.layers.1.self_attn.v_proj",
+      "model.layers.0.mlp.up_proj",
       "model.layers.1.mlp.up_proj",
+      "model.layers.1.mlp.down_proj",
       "model.layers.0.mlp.down_proj",
-      "model.layers.1.self_attn.q_proj",
-      "model.layers.0.self_attn.k_proj",
-      "model.layers.1.self_attn.k_proj",
       "model.layers.0.self_attn.v_proj",
-      "model.layers.0.self_attn.q_proj",
+      "model.layers.1.self_attn.q_proj",
       "model.layers.0.self_attn.o_proj",
-      "model.layers.0.mlp.gate_proj",
+      "model.layers.0.self_attn.q_proj",
+      "model.layers.1.self_attn.k_proj",
+      "model.layers.0.self_attn.k_proj",
+      "model.layers.1.self_attn.v_proj",
       "model.layers.1.self_attn.o_proj",
       "model.layers.1.mlp.gate_proj",
-      "model.layers.0.mlp.up_proj",
-      "model.layers.1.mlp.down_proj"
+      "model.layers.0.mlp.gate_proj"
     ],
     "target_parameters": null,
     "task_type": "CAUSAL_LM",
@@ -297,7 +298,7 @@
   },
   "lineage": {
     "schema": "mars.specialist-dataset-lineage/v1",
-    "lineage_id": "lineage-train-ed459f5e-7707-4877-8eaa-e84ad40359d8",
+    "lineage_id": "lineage-train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
     "subject": {
       "specialist_id": "synthetic-plumbing-specialist",
       "base_model": {
@@ -318,7 +319,7 @@
       }
     ],
     "training": {
-      "job_id": "train-ed459f5e-7707-4877-8eaa-e84ad40359d8",
+      "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
       "producer_id": "mars-training-live",
       "config_sha256": "ca3cdb9b11b09b7ee1767e3b33b20620e854238516598dd6c74ea98ef7898112"
     },
@@ -350,7 +351,7 @@
     "attestation": {
       "alg": "hmac-sha256",
       "key_id": "live-ephemeral",
-      "mac_hex": "08b510e095c3a4aa75088e001bb75abe3ede5f66bf24da35095769a96df00ebf"
+      "mac_hex": "a3f009ae646e5e10652857063bc52b11ed2263879ac4d1b5751f2d90fea0b43c"
     }
   }
 }
