@@ -153,15 +153,18 @@ export function evaluateSkillGate(
       JSON.stringify([
         input.proposal_id,
         [...evidence].sort(),
-        [...input.trials]
-          .sort((a, b) => (a.task_id < b.task_id ? -1 : 1))
-          .map((t) => [
-            t.task_id,
-            t.baseline.verified,
-            t.baseline.cost_usd,
-            t.candidate.verified,
-            t.candidate.cost_usd,
-          ]),
+        // Sorted by the whole serialized trial so duplicate ids hash the same in any order.
+        input.trials
+          .map((t) =>
+            JSON.stringify([
+              t.task_id,
+              t.baseline.verified,
+              t.baseline.cost_usd,
+              t.candidate.verified,
+              t.candidate.cost_usd,
+            ]),
+          )
+          .sort(),
         config,
       ]),
     )

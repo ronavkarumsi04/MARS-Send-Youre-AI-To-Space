@@ -217,3 +217,16 @@ test("a p-value exactly at alpha passes", () => {
     ).passed,
   ).toBe(true);
 });
+
+test("the digest ignores the order of trials that share a task id", () => {
+  const a = trial("dup", false, true);
+  const b = trial("dup", true, false);
+  const input = (trials: GateTrial[]) => ({
+    proposal_id: "p",
+    evidence_task_ids: ["learned-1"],
+    trials,
+  });
+  expect(evaluateSkillGate(input([a, b])).digest).toBe(
+    evaluateSkillGate(input([b, a])).digest,
+  );
+});
