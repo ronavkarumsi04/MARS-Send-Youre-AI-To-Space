@@ -64,7 +64,7 @@ import {
   type WorkerLogEvent,
 } from "@mars/research-worker";
 import { createRegistryReviewGateway, ReviewRunner } from "@mars/review";
-import { SkillStore } from "@mars/skills";
+import { SkillOutcomeLedger, SkillStore } from "@mars/skills";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import {
   createDockerSandbox,
@@ -342,6 +342,7 @@ export async function createWorkbenchService(
     ? await privateSubdirectory(root, "knowledge-graph")
     : undefined;
   const skillsRoot = await privateSubdirectory(root, "skills");
+  const outcomesRoot = await privateSubdirectory(root, "skill-outcomes");
   const reviewRoot = await privateSubdirectory(root, "review");
   const hostRoot = join(root, "sessions");
   await mkdir(hostRoot, { recursive: true, mode: 0o700 });
@@ -365,7 +366,13 @@ export async function createWorkbenchService(
     store = await createTaskStore({
       rootDir: join(root, "tasks"),
       workspaceRoots: [source],
-      hostPrivateRoots: [root, memoryRoot, skillsRoot, reviewRoot],
+      hostPrivateRoots: [
+        root,
+        memoryRoot,
+        skillsRoot,
+        outcomesRoot,
+        reviewRoot,
+      ],
     });
   } catch (error) {
     await omniroute?.stop().catch(() => undefined);
@@ -377,6 +384,7 @@ export async function createWorkbenchService(
   let host: Awaited<ReturnType<typeof createWorkbenchHost>> | undefined;
   let memory: DurableMemoryStore | undefined;
   let review: ReviewRunner | undefined;
+  let skillOutcomes: SkillOutcomeLedger | undefined;
   let curatorTimer: ReturnType<typeof setInterval> | undefined;
   let curating: Promise<unknown> | undefined;
   let repositoryMap: RepositoryMapProvider | undefined;
@@ -407,6 +415,7 @@ export async function createWorkbenchService(
       () => omniroute?.stop(),
       () => repositoryMap?.close(),
       () => memory?.close(),
+      () => skillOutcomes?.close(),
       () => workspace?.close(),
       () => store.close(),
     ];
@@ -508,9 +517,19 @@ export async function createWorkbenchService(
     }
     memory = createMemoryStore({
       rootDir: memoryRoot,
-      hostPrivateRoots: [source, root, memoryRoot, skillsRoot, reviewRoot],
+      hostPrivateRoots: [
+        source,
+        root,
+        memoryRoot,
+        skillsRoot,
+        outcomesRoot,
+        reviewRoot,
+      ],
     });
     const skills = new SkillStore(skillsRoot);
+    skillOutcomes = new SkillOutcomeLedger(
+      join(outcomesRoot, "outcomes.sqlite"),
+    );
     // The curator only marks idle skills stale or archives them (never
     // deletes, pinned skills exempt); a failed pass waits for the next one.
     const curate = () => {
@@ -609,6 +628,7 @@ export async function createWorkbenchService(
       memory,
       memoryProposals: memory,
       skills,
+      skillOutcomes,
       ...(review ? { review } : {}),
       repositoryMap,
       ...(options.specialists ? { specialists: options.specialists } : {}),
@@ -623,6 +643,7 @@ export async function createWorkbenchService(
         memoryRoot,
         skillsRoot,
         reviewRoot,
+        outcomesRoot,
         source,
         ...(researchRoot ? [researchRoot] : []),
         ...(graphRoot ? [graphRoot] : []),
