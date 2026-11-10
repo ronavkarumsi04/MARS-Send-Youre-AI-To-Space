@@ -54,7 +54,8 @@ Two JSONL files in TRL conversational format
 line) and a `mars.training-dataset/v1` manifest: per split
 `{dataset_id, split, sha256, example_count, task_ids}`, every source
 (scope, task, verdict run, patch digest, check manifest digest), the source
-scopes, a digest of each held-out set, every exclusion with its reason, and
+scopes, a digest of each held-out set (its task ids and every request text
+it excludes, including those inferred from its tasks among the examples), every exclusion with its reason, and
 the split policy. The training job and the specialist lineage record pin the
 split digests.
 

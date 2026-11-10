@@ -281,3 +281,15 @@ test("examples sharing a request stay in the same split under every seed", () =>
     expect(validation.includes("p")).toBe(validation.includes("q"));
   }
 });
+
+test("the held-out digest covers request texts inferred from held-out examples", () => {
+  const digest = (heldRequest: string) =>
+    buildDataset({
+      dataset_id: "d",
+      examples: [example("a"), example("b"), example("h", heldRequest)],
+      held_out: [{ source: "gate-trials", task_ids: ["h"] }],
+      private_patterns: ["/state"],
+    }).manifest.held_out[0]?.sha256;
+  expect(digest("Fix h")).not.toBe(digest("Fix something else"));
+  expect(digest("Fix h")).toBe(digest("  FIX   h "));
+});

@@ -229,8 +229,15 @@ export function buildDataset(input: BuildDatasetInput): BuiltDataset {
           sha256: sha256(
             JSON.stringify({
               task_ids: [...new Set(set.task_ids)].sort(),
+              // Every request this set actually excludes, including those
+              // inferred from its tasks found among the examples.
               requests: [
-                ...new Set((set.requests ?? []).map(normalize)),
+                ...new Set([
+                  ...(set.requests ?? []).map(normalize),
+                  ...input.examples
+                    .filter((example) => set.task_ids.includes(example.task_id))
+                    .map((example) => normalize(example.request)),
+                ]),
               ].sort(),
             }),
           ),
