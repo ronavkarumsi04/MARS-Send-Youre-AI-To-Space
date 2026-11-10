@@ -44,6 +44,7 @@ export type SpecialistComparisonErrorCode =
   | "heldout_leakage"
   | "lineage_missing"
   | "lineage_mismatch"
+  | "lineage_requests_unverifiable"
   | "evaluator_not_independent"
   | "not_found"
   | "not_settled"
@@ -365,6 +366,11 @@ export interface SpecialistComparisonServiceOptions {
   artifacts: SpecialistEvidenceArtifacts;
   subjects: SpecialistSubjectResolver;
   heldOut: HeldOutGuard;
+  /** Training/validation request texts behind a dataset lineage (e.g. loaded from the dataset artifacts by sha256). Required to evaluate any revision with lineage. */
+  trainingRequests?: (
+    context: RequestContext,
+    lineage: { datasets: readonly { sha256: string }[] },
+  ) => Promise<readonly string[]>;
   evaluator: SpecialistArmEvaluator;
   signer: EvidenceSigner;
   verdicts: SpecialistVerdictSink;
@@ -526,7 +532,11 @@ export function createSpecialistComparisonService(
         "an adapter without dataset lineage cannot be proven disjoint from held-out tasks",
       );
     }
-    const training = {
+    const training: {
+      task_ids: string[];
+      requests?: string[];
+      dataset_sha256s: string[];
+    } = {
       task_ids: [] as string[],
       dataset_sha256s: [] as string[],
     };
@@ -550,11 +560,22 @@ export function createSpecialistComparisonService(
           "the evaluator produced the training run",
         );
       }
+      if (!options.trainingRequests) {
+        throw new SpecialistComparisonError(
+          "lineage_requests_unverifiable",
+          "no training-request source is configured, so held-out request overlap cannot be ruled out",
+        );
+      }
       training.task_ids = [
         ...lineage.data.train_task_ids,
         ...lineage.data.validation_task_ids,
       ];
       training.dataset_sha256s = lineage.data.datasets.map((d) => d.sha256);
+      training.requests = [
+        ...(await options.trainingRequests(context, {
+          datasets: lineage.data.datasets,
+        })),
+      ];
     }
 
     const split = options.heldOut.split();

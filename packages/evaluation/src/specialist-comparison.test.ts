@@ -93,8 +93,11 @@ function evidenceArtifacts(memory: MemoryArtifacts) {
 async function setup(
   options: {
     trainTaskIds?: string[];
+    trainRequests?: string[];
     producerId?: string;
     datasetSha256?: string;
+    heldOutSplit?: HeldOutSplit;
+    omitTrainingRequests?: boolean;
     pass?: Parameters<typeof createFixtureArmEvaluator>[0] extends infer O
       ? O extends { pass?: infer P }
         ? P
@@ -135,8 +138,14 @@ async function setup(
             revision,
           ),
       },
-      heldOut: createHeldOutGuard(split),
+      heldOut: createHeldOutGuard(options.heldOutSplit ?? split),
       evaluator,
+      ...(!options.omitTrainingRequests
+        ? {
+            trainingRequests: async () =>
+              options.trainRequests ?? ["unrelated training request"],
+          }
+        : {}),
       signer: createHmacReportSigner({
         key_id: "test-key",
         secret: EVIDENCE_SECRET,
@@ -312,6 +321,49 @@ test("held-out tasks in the training lineage are refused before any arm runs", a
   expect(selfGraded.evaluator.calls).toHaveLength(0);
 });
 
+test("held-out request text overlap is refused across task ids", async () => {
+  const request = "Rename  the Widget";
+  const heldOutSplit: HeldOutSplit = {
+    ...split,
+    tasks: [
+      {
+        task_id: "ho-x",
+        domain: DOMAIN,
+        role: "worker",
+        complexity: "medium",
+        request: "  rename the widget ",
+      },
+    ],
+  };
+  const leaked = await setup({
+    trainRequests: [request],
+    heldOutSplit,
+  });
+  const error = await leaked.registry
+    .requestEvaluation(context, "specialist-1", "1")
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(SpecialistComparisonError);
+  expect((error as SpecialistComparisonError).code).toBe("heldout_leakage");
+  expect((error as Error).message).toContain("ho-x (training-request)");
+  expect(leaked.evaluator.calls).toHaveLength(0);
+  expect(leaked.recorded).toHaveLength(0);
+  expect(
+    await leaked.registry.evaluationJobs(context, "specialist-1", "1"),
+  ).toEqual([]);
+});
+
+test("lineage without a training-request source is refused before evaluation", async () => {
+  const unverifiable = await setup({ omitTrainingRequests: true });
+  await expect(
+    unverifiable.registry.requestEvaluation(context, "specialist-1", "1"),
+  ).rejects.toMatchObject({ code: "lineage_requests_unverifiable" });
+  expect(unverifiable.evaluator.calls).toHaveLength(0);
+  expect(unverifiable.recorded).toHaveLength(0);
+  expect(
+    await unverifiable.registry.evaluationJobs(context, "specialist-1", "1"),
+  ).toEqual([]);
+});
+
 test("held-out leakage helper matches ids, normalized requests and dataset digests", () => {
   const withRequests: HeldOutSplit = {
     ...split,
@@ -371,6 +423,7 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
         subjectResolverFromRegistry(projectWide).resolve(context, id, revision),
     },
     heldOut: createHeldOutGuard(split),
+    trainingRequests: async () => ["unrelated training request"],
     evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
     signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
     verdicts: { record: async () => {} },
@@ -412,6 +465,7 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
         subjectResolverFromRegistry(projectWide).resolve(ctx, id, revision),
     },
     heldOut: createHeldOutGuard(split),
+    trainingRequests: async () => ["unrelated training request"],
     evaluator: {
       ...createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
       evaluate: ({ signal }) =>
@@ -448,6 +502,7 @@ function standaloneService(
     artifacts: evidenceArtifacts(memory),
     subjects: subjectResolverFromRegistry(registry),
     heldOut: createHeldOutGuard(split),
+    trainingRequests: async () => ["unrelated training request"],
     evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
     signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
     verdicts: { record: async () => {} },

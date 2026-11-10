@@ -212,11 +212,15 @@ specialists:
   file served by `createHeldOutGuard` from `@mars/datasets`. The candidate's
   dataset lineage (train + validation task ids and dataset digests) goes
   through `findHeldOutLeakage`: any held-out task id, normalized request text
-  (the same normalization `buildDataset` uses) or the split's own digest in the
-  lineage refuses the job with `heldout_leakage`. An adapter without lineage
-  is refused (`lineage_missing`), and an evaluator whose id equals the
-  lineage's training producer is refused (`evaluator_not_independent`). Only
-  split tasks covered by the request's domains, roles and complexities run.
+  or the split's own digest in the lineage refuses the job with
+  `heldout_leakage`. Configure the service's `trainingRequests` option to load
+  the train/validation request texts for the lineage dataset digests; the
+  service passes those texts to the leakage check. A lineage without this
+  source is refused with `lineage_requests_unverifiable`, since request overlap
+  cannot be ruled out. An adapter without lineage is refused (`lineage_missing`),
+  and an evaluator whose id equals the lineage's training producer is refused
+  (`evaluator_not_independent`). Only split tasks covered by the request's
+  domains, roles and complexities run.
 - **Matched conditions.** Every arm (`base` and `prompt_optimized_baseline`
   on the registered base model, `current_specialist` when a production
   revision exists, `candidate`) runs the same tasks, repeats, seed (derived
