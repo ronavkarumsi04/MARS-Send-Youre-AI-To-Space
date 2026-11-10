@@ -276,6 +276,22 @@ describe("attestor fails closed", () => {
       ]);
     });
 
+  test("a response body that stalls past the deadline is unattested", async () => {
+    const stalled = async () =>
+      new Response(new ReadableStream({ start() {} }), { status: 200 });
+    const client = new VllmClient({ fetch: stalled, timeoutMs: 50 });
+    await expect(client.version()).rejects.toMatchObject({
+      code: "unreachable",
+    });
+    const attestor = createVllmServingAttestor({ client, profile });
+    expect(
+      await attestor.attest(
+        context,
+        registration().profile.serving[0] as ServingBinding,
+      ),
+    ).toBeNull();
+  });
+
   test("version mismatch is unattested", async () => {
     const server = fake({
       version: "0.33.0",

@@ -76,49 +76,68 @@ export class VllmClient {
     this.timeoutMs = options.timeoutMs ?? 2_000;
   }
 
-  private async request(
+  /** One deadline covers both the headers and `read` (the body), so a stalled body fails closed. */
+  private async request<T>(
     method: "GET" | "POST",
     path: string,
-    body?: unknown,
-  ): Promise<Response> {
+    body: unknown,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
     const headers = new Headers({ Accept: "application/json" });
     if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
     if (body !== undefined) headers.set("Content-Type", "application/json");
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(
+          new VllmError("unreachable", `vLLM did not answer ${path} in time.`),
+        );
+      }, this.timeoutMs);
+    });
     try {
-      return await this.fetcher(`${this.origin}${path}`, {
-        method,
-        headers,
-        signal: controller.signal,
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
-    } catch {
-      throw new VllmError("unreachable", `vLLM did not answer ${path}.`);
+      let response: Response;
+      try {
+        response = await Promise.race([
+          this.fetcher(`${this.origin}${path}`, {
+            method,
+            headers,
+            signal: controller.signal,
+            ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          }),
+          deadline,
+        ]);
+      } catch (error) {
+        if (error instanceof VllmError) throw error;
+        throw new VllmError("unreachable", `vLLM did not answer ${path}.`);
+      }
+      return await Promise.race([read(response), deadline]);
     } finally {
       clearTimeout(timer);
     }
   }
 
-  private async json(path: string): Promise<unknown> {
-    const response = await this.request("GET", path);
-    if (response.status === 401 || response.status === 403)
-      throw new VllmError(
-        "unauthorized",
-        `vLLM refused ${path} (HTTP ${response.status}).`,
-        response.status,
-      );
-    if (!response.ok)
-      throw new VllmError(
-        "http_error",
-        `vLLM answered ${path} with HTTP ${response.status}.`,
-        response.status,
-      );
-    try {
-      return await response.json();
-    } catch {
-      throw new VllmError("malformed", `vLLM ${path} is not JSON.`);
-    }
+  private json(path: string): Promise<unknown> {
+    return this.request("GET", path, undefined, async (response) => {
+      if (response.status === 401 || response.status === 403)
+        throw new VllmError(
+          "unauthorized",
+          `vLLM refused ${path} (HTTP ${response.status}).`,
+          response.status,
+        );
+      if (!response.ok)
+        throw new VllmError(
+          "http_error",
+          `vLLM answered ${path} with HTTP ${response.status}.`,
+          response.status,
+        );
+      try {
+        return await response.json();
+      } catch {
+        throw new VllmError("malformed", `vLLM ${path} is not JSON.`);
+      }
+    });
   }
 
   async version(): Promise<string> {
@@ -161,8 +180,10 @@ export class VllmClient {
     path: "/v1/load_lora_adapter" | "/v1/unload_lora_adapter",
     body: Record<string, string>,
   ): Promise<void> {
-    const response = await this.request("POST", path, body);
-    await response.body?.cancel().catch(() => undefined);
+    const response = await this.request("POST", path, body, async (r) => {
+      await r.body?.cancel().catch(() => undefined);
+      return r;
+    });
     if (response.ok) return;
     // The routes are not mounted unless VLLM_ALLOW_RUNTIME_LORA_UPDATING is set.
     if (response.status === 404 && path === "/v1/load_lora_adapter")
