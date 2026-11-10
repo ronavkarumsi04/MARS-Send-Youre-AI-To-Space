@@ -189,9 +189,11 @@ a candidate workspace, and reads a host-owned copy of the bundle.
   scripted proposer exist.
 - `live.acceptance.test.ts`, once unblocked, covers only part of the path: it
   pairs Harbor evaluation with the scripted proposer and host-process builds.
-  Its evidence is labelled `scope: "partial"` (`LIVE_ACCEPTANCE_EVIDENCE`, also
-  written to `live-evidence.json` in the run root) and is not evidence of
-  model-driven proposing or Docker-isolated builds.
+  Its evidence is labelled `scope: "partial"` (`LIVE_ACCEPTANCE_EVIDENCE`) and is
+  not evidence of model-driven proposing or Docker-isolated builds.
+  `live-evidence.json` (run root) is written only after the run ends, records
+  `status: passed|failed`, establishes nothing for a failed run, and claims
+  rollback only when the verdict was `accepted` and rollback actually ran.
 - No claim of beating DGM; no matched-budget comparison has been run.
 - Candidates are evaluated sequentially (`max_concurrency` is not used yet).
 

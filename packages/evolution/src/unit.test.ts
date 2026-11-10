@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { EvolutionError } from "./errors";
-import { LIVE_ACCEPTANCE_EVIDENCE } from "./live-evidence";
+import { LIVE_ACCEPTANCE_EVIDENCE, liveEvidenceRecord } from "./live-evidence";
 import { RunConfigSchema } from "./schemas";
 import {
   type ArchiveMember,
@@ -324,5 +324,46 @@ describe("live acceptance evidence label", () => {
     expect(source).toContain(
       "live (partial: Harbor evaluation; scripted proposer, host-process builds)",
     );
+    expect(source).not.toContain("rollback survives reopen");
+    expect(source.lastIndexOf("live-evidence.json")).toBeGreaterThan(
+      source.indexOf("} finally {"),
+    );
+  });
+
+  test("a failed live run's evidence says it failed and establishes nothing", () => {
+    const evidence = liveEvidenceRecord({
+      status: "failed",
+      verdict: "accepted",
+      rolled_back: true,
+      verified_after_reopen: false,
+      error:
+        "harbor exited 1 with MARS_EVAL_API_KEY=sk-live-secret-value-123456",
+    });
+    expect(evidence.status).toBe("failed");
+    expect(evidence.establishes).toEqual([]);
+    expect(evidence.does_not_establish[0]).toContain("live run failed");
+    expect(evidence.error).not.toContain("sk-live-secret-value-123456");
+  });
+
+  test("rollback is claimed only when the run actually rolled back", () => {
+    const refused = liveEvidenceRecord({
+      status: "passed",
+      verdict: "no_improvement",
+      rolled_back: false,
+      verified_after_reopen: true,
+    });
+    expect(refused.establishes.join("\n")).not.toContain("rollback");
+    expect(refused.does_not_establish.join("\n")).toContain("rollback");
+    expect(refused.establishes).toContain(
+      "final-holdout promotion verdict: no_improvement",
+    );
+    const accepted = liveEvidenceRecord({
+      status: "passed",
+      verdict: "accepted",
+      rolled_back: true,
+      verified_after_reopen: true,
+    });
+    expect(accepted.establishes).toContain("rollback to the previous champion");
+    expect(accepted.does_not_establish.join("\n")).not.toContain("rollback (");
   });
 });
