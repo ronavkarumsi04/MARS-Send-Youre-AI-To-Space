@@ -17,11 +17,14 @@ export interface FakeAgentServerOptions {
   version?: string;
   title?: string;
   runtime?: "local" | "docker";
+  /** Split output into events of at most this many chars (upstream: 1 MiB). */
+  maxEventChars?: number;
 }
 
 export interface FakeFaults {
   /** HTTP status returned (without side effects) for the next N calls of a route. */
-  failNext: Map<string, { status: number; count: number }>;
+  /** Fail `count` requests to a route after letting `skip` through. */
+  failNext: Map<string, { status: number; count: number; skip?: number }>;
   /** Run the next start_bash_command, then answer 503 as if the response was lost. */
   loseStartResponse: boolean;
   /** Flip one byte of every downloaded file. */
@@ -91,6 +94,8 @@ export async function startFakeAgentServer(
       cwd,
       stdout: "pipe",
       stderr: "pipe",
+      // Own process group, so stop kills the whole command tree.
+      detached: true,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: defaultCwd },
     });
     state.proc = proc;
@@ -105,13 +110,14 @@ export async function startFakeAgentServer(
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         // Upstream caps each event at MAX_CONTENT_CHAR_LENGTH (1 MiB chars).
-        for (let i = 0; i < text.length; i += 1024 * 1024)
-          push({ [key]: text.slice(i, i + 1024 * 1024) });
+        const size = options.maxEventChars ?? 1024 * 1024;
+        for (let i = 0; i < text.length; i += size)
+          push({ [key]: text.slice(i, i + size) });
       }
     };
     const timer = setTimeout(() => {
       state.stopped = true;
-      proc.kill("SIGKILL");
+      killGroup(proc);
     }, timeout * 1000);
     void Promise.all([
       pump(proc.stdout as ReadableStream<Uint8Array>, "stdout"),
@@ -149,7 +155,8 @@ export async function startFakeAgentServer(
       });
       if (faults.delayMs) await Bun.sleep(faults.delayMs);
       const fail = faults.failNext.get(route);
-      if (fail && fail.count > 0) {
+      if (fail && fail.count > 0 && fail.skip) fail.skip -= 1;
+      else if (fail && fail.count > 0) {
         fail.count -= 1;
         return detail(fail.status, "injected fault");
       }
@@ -247,7 +254,7 @@ export async function startFakeAgentServer(
         if (!state) return detail(404, "Not Found");
         if (state.proc && state.proc.exitCode === null) {
           state.stopped = true;
-          state.proc.kill("SIGKILL");
+          killGroup(state.proc);
         }
         return json({ success: true });
       }
@@ -288,8 +295,17 @@ export async function startFakeAgentServer(
       version = next;
     },
     async stop() {
-      for (const state of commands.values()) state.proc?.kill("SIGKILL");
+      for (const state of commands.values())
+        if (state.proc) killGroup(state.proc);
       await server.stop(true);
     },
   };
+}
+
+function killGroup(proc: ReturnType<typeof Bun.spawn>): void {
+  try {
+    process.kill(-proc.pid, "SIGKILL");
+  } catch {
+    proc.kill("SIGKILL");
+  }
 }

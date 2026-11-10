@@ -61,7 +61,11 @@ Plain `http://` is refused for non-loopback hosts unless
   the stored revision (`workspace_modified`).
 - **Local mirror.** The workbench runtime and repository map need a local
   `cwd`, so the provider keeps a derived mirror rebuilt only from hash-verified
-  remote bytes. It is a cache, never a source of truth.
+  remote bytes. It is a cache, never a source of truth; if it is missing (e.g.
+  a crash between the staging renames) it is rebuilt on the next operation.
+- **The remote root is created at startup** by uploading
+  `<remoteRoot>/.mars-remote-root` (upload creates parents), because the bash
+  route requires an existing `cwd`.
 - **Path confinement is re-checked client-side.** Upstream file routes accept
   any absolute path, so every remote path is built from a relative path that
   passed `validateRelativePath`, then checked by `assertRemotePath` (absolute,
@@ -75,7 +79,15 @@ Plain `http://` is refused for non-loopback hosts unless
   stop route and map to exit codes 124/130, exactly as locally. A start whose
   HTTP response is lost is not retried: the command may already be running, so
   the call fails `sandbox_unavailable` and the tree is reconciled from what
-  actually happened.
+  actually happened. If polling fails, the stop route is sent before the tree
+  is reconciled. Output pages are read with a fixed `order__gt` filter, so no
+  event is skipped. A durable `execute` journal entry (with the command id
+  once known) is written before the start; if the host dies mid-command, the
+  next operation sends stop for that id and adopts the scanned remote tree as
+  a new revision instead of stranding the workspace.
+- **Failed writes/removes** that may have changed remote bytes (e.g. upload
+  succeeded, `chmod` failed) adopt the scanned remote tree as a new revision
+  before the error is returned, so the workspace stays usable.
 - **Checkpoints** are content-addressed artifacts of the full manifest plus
   every file's bytes (hash-checked on load). **Restore** is revision fenced,
   writes a durable journal first, applies uploads/removals, verifies the

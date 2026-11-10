@@ -42,14 +42,23 @@ export const TreeManifestSchema = z
   .strict();
 export type TreeManifest = z.infer<typeof TreeManifestSchema>;
 
-const JournalSchema = z
-  .object({
-    kind: z.literal("restore"),
-    checkpoint_id: z.string(),
-    target_counter: z.number().int().nonnegative(),
-    target_digest: sha,
-  })
-  .strict();
+const JournalSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("restore"),
+      checkpoint_id: z.string(),
+      target_counter: z.number().int().nonnegative(),
+      target_digest: sha,
+    })
+    .strict(),
+  /** A remote command may be running; on recovery stop it and adopt the tree. */
+  z
+    .object({
+      kind: z.literal("execute"),
+      command_id: z.string().max(256).nullable(),
+    })
+    .strict(),
+]);
 export type RestoreJournal = z.infer<typeof JournalSchema>;
 
 export interface WorkspaceRow {

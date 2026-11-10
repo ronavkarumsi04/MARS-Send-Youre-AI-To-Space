@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -214,6 +215,11 @@ export async function createRemoteWorkspaceProvider(
   const client = options.client;
   const remoteRoot = assertRemotePath(options.remoteRoot.replace(/\/+$/, ""));
   const serverInfo = await client.verify();
+  // Upload creates missing parents, so the root exists before it is used as a cwd.
+  await client.upload(
+    `${remoteRoot}/.mars-remote-root`,
+    new TextEncoder().encode("MARS remote workspace root\n"),
+  );
   const store = openRemoteWorkspaceStore(options.rootDir);
   const mirrorRoot = join(options.rootDir, "mirror");
   const withLock = createMutex();
@@ -288,7 +294,8 @@ export async function createRemoteWorkspaceProvider(
           const row = store.get(id);
           if (!row || !inScope(context, row))
             throw new WorkspaceNotFoundError();
-          if (row.journal) await recoverRestore(context, row);
+          if (row.journal) await recoverJournal(context, row);
+          if (!existsSync(mirrorDir(row))) await syncMirror(row, row.manifest);
           return fn(row);
         });
       })(),
@@ -302,9 +309,25 @@ export async function createRemoteWorkspaceProvider(
     timeoutMs: number,
     maxOutputBytes: number,
     signal?: AbortSignal,
+    onStart?: (commandId: string) => void,
   ): Promise<RemoteRun> {
     const deadline = Date.now() + timeoutMs;
     const id = await client.startCommand(command, cwd, timeoutMs / 1000 + 1);
+    try {
+      onStart?.(id);
+      return await pollRemote(id, deadline, maxOutputBytes, signal);
+    } catch (error) {
+      await client.stopCommand(id).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async function pollRemote(
+    id: string,
+    deadline: number,
+    maxOutputBytes: number,
+    signal?: AbortSignal,
+  ): Promise<RemoteRun> {
     const stdout = { parts: [] as Uint8Array[], size: 0, truncated: false };
     const stderr = { parts: [] as Uint8Array[], size: 0, truncated: false };
     let lastOrder = -1;
@@ -317,9 +340,11 @@ export async function createRemoteWorkspaceProvider(
         await client.stopCommand(id).catch(() => undefined);
         break;
       }
+      // The order filter stays fixed while paging so page offsets stay valid.
+      const after = lastOrder;
       let pageId: string | undefined;
       do {
-        const page = await client.searchOutput(id, lastOrder, pageId);
+        const page = await client.searchOutput(id, after, pageId);
         for (const event of page.items.sort((a, b) => a.order - b.order)) {
           if (event.order <= lastOrder) continue;
           lastOrder = event.order;
@@ -699,12 +724,19 @@ export async function createRemoteWorkspaceProvider(
       );
   }
 
-  async function recoverRestore(
+  async function recoverJournal(
     context: RequestContext,
     row: WorkspaceRow,
   ): Promise<void> {
     const journal = row.journal;
     if (!journal) return;
+    if (journal.kind === "execute") {
+      if (journal.command_id)
+        await client.stopCommand(journal.command_id).catch(() => undefined);
+      row.journal = null;
+      await reconcile(row);
+      return;
+    }
     const { manifest, files } = await loadCheckpoint(
       context,
       row,
@@ -737,6 +769,22 @@ export async function createRemoteWorkspaceProvider(
     row.counter += 1;
     row.revision = revisionOf(row.counter, result.manifest.digest);
     store.update(row);
+  }
+
+  /** A failed mutation may have changed remote bytes: adopt what is there. */
+  async function mutateRemote(
+    row: WorkspaceRow,
+    next: TreeManifest,
+    known: Map<string, Uint8Array>,
+    apply: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await apply();
+    } catch (error) {
+      await reconcile(row).catch(() => undefined);
+      throw error;
+    }
+    await commitMutation(row, next, known);
   }
 
   async function commitMutation(
@@ -800,7 +848,7 @@ export async function createRemoteWorkspaceProvider(
             return withLock(existing.workspace_id, async () => {
               const row = store.get(existing.workspace_id);
               if (!row) throw new WorkspaceNotFoundError();
-              if (row.journal) await recoverRestore(context, row);
+              if (row.journal) await recoverJournal(context, row);
               return refOf(row);
             });
           }
@@ -988,9 +1036,10 @@ export async function createRemoteWorkspaceProvider(
           ],
           [...row.manifest.directories, ...ancestors(path)],
         );
-        await uploadVerified(treeRoot(row), path, data);
-        await setModes(treeRoot(row), [{ path, mode }]);
-        await commitMutation(row, next, new Map([[path, data]]));
+        await mutateRemote(row, next, new Map([[path, data]]), async () => {
+          await uploadVerified(treeRoot(row), path, data);
+          await setModes(treeRoot(row), [{ path, mode }]);
+        });
       });
     },
 
@@ -1011,8 +1060,9 @@ export async function createRemoteWorkspaceProvider(
           row.manifest.files.filter((file) => file.path !== path),
           row.manifest.directories,
         );
-        await removePaths(treeRoot(row), [path], "-f");
-        await commitMutation(row, next, new Map());
+        await mutateRemote(row, next, new Map(), () =>
+          removePaths(treeRoot(row), [path], "-f"),
+        );
       });
     },
 
@@ -1056,6 +1106,8 @@ export async function createRemoteWorkspaceProvider(
           const startedAt = now().toISOString();
           try {
             let run: RemoteRun;
+            row.journal = { kind: "execute", command_id: null };
+            store.update(row);
             try {
               run = await runRemote(
                 `cd -- ${shellQuote(treeRoot(row))} && ${argv.map(shellQuote).join(" ")}`,
@@ -1063,8 +1115,13 @@ export async function createRemoteWorkspaceProvider(
                 timeoutMs,
                 limits.maxOutputBytes,
                 controller.signal,
+                (commandId) => {
+                  row.journal = { kind: "execute", command_id: commandId };
+                  store.update(row);
+                },
               );
             } finally {
+              row.journal = null;
               await reconcile(row);
             }
             const stdoutRef = await options.artifacts.put(
@@ -1271,7 +1328,7 @@ export async function createRemoteWorkspaceProvider(
           target_digest: target.manifest.digest,
         };
         store.update(row);
-        await recoverRestore(context, row);
+        await recoverJournal(context, row);
         return refOf(row);
       });
     },

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -361,6 +362,196 @@ describe("remote provider robustness (FAKE Agent Server)", () => {
           "c048a1eb82353b0586f3ce600708394a68ebb246",
         );
         expect(JSON.stringify(report)).not.toContain(API_KEY);
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+  test(
+    "a missing remote root is created before it is used as a cwd",
+    async () => {
+      const fx = await remoteFixture({ remoteSubdir: "nested/root" });
+      try {
+        const ws = await fx.provider.prepare(context, "task-root");
+        expect(await fx.provider.read(context, ws, "README.md")).toBeTruthy();
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
+    "a failed write adopts the remote bytes instead of stranding the workspace",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-strand");
+        // Upload succeeds, then the chmod command start fails (never retried).
+        fx.fake.faults.failNext.set("/api/bash/start_bash_command", {
+          status: 500,
+          count: 1,
+          skip: 1,
+        });
+        const error = await failure(
+          fx.provider.write(
+            context,
+            ws,
+            "src/a.ts",
+            await fx.artifacts.put(
+              context,
+              new TextEncoder().encode("export const a = 9;\n"),
+              "text/plain",
+            ),
+          ),
+        );
+        expect(error.code).toBe("sandbox_unavailable");
+        const after = await fx.provider.inspect(context, ws.workspace_id);
+        expect(after.revision).not.toBe(ws.revision);
+        const ref = await fx.provider.read(context, after, "src/a.ts");
+        expect(
+          new TextDecoder().decode(await fx.artifacts.get(context, ref)),
+        ).toBe("export const a = 9;\n");
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
+    "a polling failure stops the remote command before reconciling",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-poll");
+        fx.fake.faults.failNext.set("/api/bash/bash_events/search", {
+          status: 503,
+          count: 3,
+        });
+        const error = await failure(
+          fx.provider.execute(
+            context,
+            ws,
+            ["sh", "-c", "sleep 1; echo late > late.txt"],
+            budget,
+          ),
+        );
+        expect(error.code).toBe("sandbox_unavailable");
+        expect(
+          fx.fake.log.some(
+            (entry) => entry.route === "/api/bash/bash_commands/{id}/stop",
+          ),
+        ).toBe(true);
+        await Bun.sleep(1500);
+        const after = await fx.provider.inspect(context, ws.workspace_id);
+        expect(
+          (await fx.provider.diff(context, after)).files.map((f) => f.path),
+        ).not.toContain("late.txt");
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
+    "a host restart during a command recovers by adopting the remote tree",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-restart");
+        await fx.provider.close();
+        // Simulate a crash mid-command: the execute marker is durable and the
+        // command changed the remote tree after the host went away.
+        const db = new Database(
+          join(fx.base, "state", "remote-workspaces.sqlite"),
+        );
+        db.run("UPDATE workspaces SET journal = ?1 WHERE workspace_id = ?2", [
+          JSON.stringify({ kind: "execute", command_id: "gone-command" }),
+          ws.workspace_id,
+        ]);
+        db.close();
+        await fx.tamper(context, ws, "src/b.ts", "export const b = 42;\n");
+        const reopened = await createRemoteWorkspaceProvider({
+          rootDir: join(fx.base, "state"),
+          sourceRoot: join(fx.base, "source"),
+          artifacts: fx.artifacts,
+          client: createAgentServerClient({
+            url: fx.fake.url,
+            apiKey: API_KEY,
+            retryDelayMs: 5,
+          }),
+          remoteRoot: fx.remoteRoot,
+          approveCommand: async () => true,
+          pollIntervalMs: 10,
+        });
+        try {
+          // Recovery runs on the first operation, before the revision check.
+          const after = await reopened.inspect(context, ws.workspace_id);
+          expect(after.revision).not.toBe(ws.revision);
+          const ref = await reopened.read(context, after, "src/b.ts");
+          expect(
+            new TextDecoder().decode(await fx.artifacts.get(context, ref)),
+          ).toBe("export const b = 42;\n");
+          expect(
+            fx.fake.log.some(
+              (entry) => entry.route === "/api/bash/bash_commands/{id}/stop",
+            ),
+          ).toBe(true);
+        } finally {
+          await reopened.close();
+        }
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
+    "a missing local mirror is rebuilt from verified remote bytes",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-mirror");
+        await rm(await fx.provider.workspacePath(context, ws), {
+          recursive: true,
+          force: true,
+        });
+        const exported = await fx.provider.exportPatch(context, ws);
+        expect(exported.workspace).toEqual(ws);
+        expect(await fx.provider.read(context, ws, "README.md")).toBeTruthy();
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
+    "paged command output is read without gaps",
+    async () => {
+      const fx = await remoteFixture({ fake: { maxEventChars: 7 } });
+      try {
+        const ws = await fx.provider.prepare(context, "task-paging");
+        const result = await fx.provider.execute(
+          context,
+          ws,
+          ["sh", "-c", "sleep 0.3; seq 1 400"],
+          budget,
+        );
+        expect(result.exit_code).toBe(0);
+        const expected = Array.from(
+          { length: 400 },
+          (_, i) => `${i + 1}\n`,
+        ).join("");
+        expect(
+          new TextDecoder().decode(
+            await fx.artifacts.get(context, result.stdout),
+          ),
+        ).toBe(expected);
       } finally {
         await fx.close();
       }

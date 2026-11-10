@@ -12,6 +12,7 @@ import {
   createAgentServerClient,
   createRemoteWorkspaceProvider,
   type FakeAgentServer,
+  type FakeAgentServerOptions,
   type RemoteWorkspaceProvider,
   startFakeAgentServer,
 } from "../src";
@@ -116,12 +117,15 @@ export const API_KEY = "fake-session-key-0123456789";
 export async function remoteFixture(options?: {
   limits?: Partial<WorkspaceLimits>;
   client?: Partial<AgentServerClientOptions>;
+  fake?: Partial<FakeAgentServerOptions>;
+  remoteSubdir?: string;
 }): Promise<RemoteFixture> {
   const base = await mkdtemp(join(tmpdir(), "mars-conf-remote-"));
-  const remoteRoot = join(base, "remote");
+  const remoteRoot = join(base, "remote", options?.remoteSubdir ?? "");
   const fake = await startFakeAgentServer({
-    workingDir: remoteRoot,
+    workingDir: join(base, "remote"),
     apiKey: API_KEY,
+    ...options?.fake,
   });
   const artifacts = createInMemoryArtifactStore();
   let provider: RemoteWorkspaceProvider;
