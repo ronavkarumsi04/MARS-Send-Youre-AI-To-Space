@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type {
@@ -5,7 +6,17 @@ import type {
   SkillProposal,
   SkillRecord,
 } from "@mars/contracts";
-import { SkillError, SkillStore } from "@mars/skills";
+import {
+  acceptWithGate,
+  describeGate,
+  evaluateSkillGate,
+  GATE_POLICY,
+  GateTrialsSchema,
+  SkillError,
+  type SkillGateResult,
+  SkillOutcomeLedger,
+  SkillStore,
+} from "@mars/skills";
 import { CliUsageError } from "./cli-errors";
 import { resolveWorkbenchLocation } from "./workbench-location";
 
@@ -18,7 +29,9 @@ export const SKILLS_USAGE = [
   "  pin NAME | unpin NAME                 exempt a skill from curation, or stop exempting it",
   "  archive NAME | restore NAME           archive a skill (nothing is deleted) or bring it back",
   "  proposals [--status pending|accepted|rejected]  proposals from background review",
-  "  accept PROPOSAL_ID                    apply a pending proposal; fails if a skill it targets changed since it was made (proposals saved before per-skill checks: if any skill changed)",
+  "  gate PROPOSAL_ID --trials FILE --evidence ID[,ID...]  run the held-out A/B gate on a JSON trials file and save the verdict",
+  "  gates PROPOSAL_ID                     saved gate verdicts and overrides for a proposal",
+  "  accept PROPOSAL_ID [--without-gate --reason TEXT]  apply a pending proposal; one that creates or updates a skill needs a passing gate verdict (or --without-gate with a reason, which is recorded); fails if a skill it targets changed since it was made (proposals saved before per-skill checks: if any skill changed)",
   "  reject PROPOSAL_ID --reason TEXT      close a pending proposal without writing skills",
   "  undo REVIEW_ID                        undo every skill change one background review made; fails if a touched skill changed since",
   "  curate                                mark idle skills stale (14 days) and archive them (30 days); pinned skills are exempt",
@@ -37,6 +50,8 @@ const COMMANDS: Record<string, number> = {
   archive: 1,
   restore: 1,
   proposals: 0,
+  gate: 1,
+  gates: 1,
   accept: 1,
   reject: 1,
   undo: 1,
@@ -60,7 +75,17 @@ function isControl(char: string): boolean {
   );
 }
 
-export function renderSkillProposal(proposal: SkillProposal): string {
+function renderGate(result: SkillGateResult): string {
+  return [
+    `${result.passed ? "passed" : `failed (${result.reasons.join(", ")})`}: ${result.wins} won, ${result.losses} lost, ${result.ties} tied of ${result.trials} held-out task(s)`,
+    `    pass rate ${(result.baseline_rate * 100).toFixed(1)}% -> ${(result.candidate_rate * 100).toFixed(1)}%; p=${result.p_value.toPrecision(3)} (alpha ${result.options?.alpha ?? "?"}); cost ratio ${result.cost_ratio.toFixed(2)}; digest ${result.digest}`,
+  ].join("\n");
+}
+
+export function renderSkillProposal(
+  proposal: SkillProposal,
+  gate?: string,
+): string {
   // Operators must see the exact instructions they would accept.
   const ops = proposal.ops.map((op) =>
     "content" in op && typeof op.content === "string"
@@ -78,6 +103,7 @@ export function renderSkillProposal(proposal: SkillProposal): string {
   return [
     `${proposal.id} [${proposal.status}] ${proposal.rationale}`,
     `    from ${proposal.source}; store revision ${proposal.expectedRevision.slice(0, 12)}${proposal.reason ? `; reason: ${proposal.reason}` : ""}`,
+    ...(gate === undefined ? [] : [`    gate: ${gate}`]),
     ...ops,
   ].join("\n");
 }
@@ -115,9 +141,20 @@ export async function runSkills(args: string[]): Promise<void> {
     throw new SkillsUsageError(
       `--status must be one of ${STATUSES.join(", ")}.`,
     );
-  if (command === "reject" && !values.reason?.trim())
+  if (
+    (command === "reject" || values["without-gate"]) &&
+    !values.reason?.trim()
+  )
     throw new SkillsUsageError(
-      `mars skills reject requires --reason.\n${SKILLS_USAGE}`,
+      `mars skills ${command}${values["without-gate"] ? " --without-gate" : ""} requires --reason.\n${SKILLS_USAGE}`,
+    );
+  if (values["without-gate"] && command !== "accept")
+    throw new SkillsUsageError(
+      `--without-gate only applies to accept.\n${SKILLS_USAGE}`,
+    );
+  if (command === "gate" && (!values.trials || !values.evidence?.trim()))
+    throw new SkillsUsageError(
+      `mars skills gate requires --trials and --evidence.\n${SKILLS_USAGE}`,
     );
   const { state } = await resolveWorkbenchLocation({
     source: values.source,
@@ -130,6 +167,14 @@ export async function runSkills(args: string[]): Promise<void> {
   const [first = "", second = ""] = positionals;
   const print = (json: unknown, text: string) =>
     console.log(values.json ? JSON.stringify(json, null, 2) : text);
+  let outcomes: SkillOutcomeLedger | undefined;
+  // Same private ledger mars serve writes (<state>/skill-outcomes/outcomes.sqlite).
+  const ledger = () => {
+    outcomes ??= new SkillOutcomeLedger(
+      join(state, "skill-outcomes", "outcomes.sqlite"),
+    );
+    return outcomes;
+  };
   try {
     switch (command) {
       case "list": {
@@ -171,12 +216,81 @@ export async function runSkills(args: string[]): Promise<void> {
         const proposals = (await store.listProposals()).filter(
           (p) => status === undefined || p.status === status,
         );
+        const gates = proposals.map((p) => describeGate(p, ledger()));
         print(
-          proposals,
+          proposals.map((p, i) => ({ ...p, gate: gates[i] })),
           [
             `${proposals.length} proposal(s)`,
-            ...proposals.map(renderSkillProposal),
+            ...proposals.map((p, i) => renderSkillProposal(p, gates[i])),
           ].join("\n"),
+        );
+        return;
+      }
+      case "gate": {
+        const proposal = (await store.listProposals()).find(
+          (p) => p.id === first,
+        );
+        if (!proposal || proposal.status !== "pending")
+          throw new SkillsUsageError(`No pending proposal "${first}".`);
+        let trials: ReturnType<typeof GateTrialsSchema.parse>;
+        try {
+          trials = GateTrialsSchema.parse(
+            JSON.parse(await readFile(values.trials as string, "utf8")),
+          );
+        } catch (error) {
+          throw new SkillsUsageError(
+            `Invalid trials file ${values.trials}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        const result = evaluateSkillGate(
+          {
+            proposal_id: first,
+            evidence_task_ids: (values.evidence as string)
+              .split(",")
+              .map((id) => id.trim()),
+            trials,
+          },
+          GATE_POLICY,
+        );
+        ledger().recordGate(result);
+        print(result, `gate ${first} ${renderGate(result)}`);
+        return;
+      }
+      case "gates": {
+        const verdicts = ledger().gates(first);
+        const overrides = ledger().gateOverrides(first);
+        print(
+          { gates: verdicts, overrides },
+          [
+            `${verdicts.length} gate verdict(s), ${overrides.length} override(s) for ${first}`,
+            ...verdicts.map(renderGate),
+            ...overrides.map(
+              (o) =>
+                `override requested by ${o.actor} at ${new Date(o.recorded_at).toISOString()}: ${o.reason}`,
+            ),
+          ].join("\n"),
+        );
+        return;
+      }
+      case "accept": {
+        const accepted = await acceptWithGate(
+          store,
+          ledger(),
+          first,
+          options,
+          values["without-gate"]
+            ? { reason: values.reason as string }
+            : undefined,
+        );
+        print(
+          accepted,
+          `accept ${first}: skill store revision ${accepted.revision.slice(0, 12)}; gate ${
+            accepted.gate
+              ? `passed (${accepted.gate.digest.slice(0, 12)})`
+              : accepted.overridden
+                ? "skipped (recorded)"
+                : "not required"
+          }`,
         );
         return;
       }
@@ -210,9 +324,7 @@ export async function runSkills(args: string[]): Promise<void> {
           ? await store.pin(first, command === "pin", options)
           : command === "archive"
             ? await store.archive(first, options)
-            : command === "restore"
-              ? await store.restore(first, options)
-              : await store.accept(first, options);
+            : await store.restore(first, options);
     print(
       { revision },
       `${command} ${first}: skill store revision ${revision.slice(0, 12)}`,
@@ -223,6 +335,8 @@ export async function runSkills(args: string[]): Promise<void> {
         `Skills ${command} failed: ${error.code}: ${error.message}.`,
       );
     throw error;
+  } finally {
+    outcomes?.close();
   }
 }
 
@@ -238,6 +352,9 @@ function parse(args: string[]) {
       actor: { type: "string" },
       status: { type: "string" },
       reason: { type: "string" },
+      trials: { type: "string" },
+      evidence: { type: "string" },
+      "without-gate": { type: "boolean" },
       all: { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean" },

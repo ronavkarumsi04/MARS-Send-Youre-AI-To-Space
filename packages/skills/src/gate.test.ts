@@ -4,11 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   evaluateSkillGate,
+  GATE_POLICY,
   type GateTrial,
+  gateRequired,
   harmfulSkillArchivals,
+  meetsGatePolicy,
   signTestPValue,
 } from "./gate";
+import { acceptWithGate, describeGate } from "./gated-accept";
 import { SkillOutcomeLedger } from "./outcomes";
+import { SkillStore } from "./store";
 
 const trial = (
   id: string,
@@ -229,4 +234,112 @@ test("the digest ignores the order of trials that share a task id", () => {
   expect(evaluateSkillGate(input([a, b])).digest).toBe(
     evaluateSkillGate(input([b, a])).digest,
   );
+});
+
+test("only verdicts as strict as the policy allow acceptance", () => {
+  const input = {
+    proposal_id: "p",
+    evidence_task_ids: ["learned-1"],
+    trials: winning,
+  };
+  const strict = evaluateSkillGate(input);
+  expect(strict.options).toEqual({ ...GATE_POLICY });
+  expect(meetsGatePolicy(strict)).toBe(true);
+  expect(meetsGatePolicy(evaluateSkillGate(input, { max_cost_ratio: 1 }))).toBe(
+    true,
+  );
+  const loose = evaluateSkillGate(input, { alpha: 0.5, min_trials: 2 });
+  expect(loose.passed).toBe(true);
+  expect(meetsGatePolicy(loose)).toBe(false);
+  expect(meetsGatePolicy({ ...strict, passed: false })).toBe(false);
+  const { options: _, ...legacy } = strict;
+  expect(meetsGatePolicy(legacy as typeof strict)).toBe(false);
+  expect(gateRequired([{ op: "archive" }, { op: "update" }])).toBe(true);
+  expect(gateRequired([{ op: "archive" }, { op: "restore" }])).toBe(false);
+});
+
+test("acceptance requires a passing verdict or a recorded override", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-gated-accept-"));
+  try {
+    const store = new SkillStore(join(dir, "skills"));
+    const ledger = new SkillOutcomeLedger(join(dir, "outcomes.sqlite"));
+    const operator = { actor: "tanay", source: "operator" };
+    const content = (name: string) =>
+      `---\nname: ${name}\ndescription: How to ${name}.\n---\nDo it.\n`;
+    const propose = (name: string) =>
+      store.submitProposal({
+        source: "background_review:s:r",
+        rationale: name,
+        ops: [{ op: "create", name, content: content(name) }],
+      });
+
+    const gated = await propose("gated");
+    expect(describeGate(gated, ledger)).toBe("none yet");
+    await expect(
+      acceptWithGate(store, ledger, gated.id, operator),
+    ).rejects.toMatchObject({ code: "gate-required" });
+    const loose = evaluateSkillGate(
+      { proposal_id: gated.id, evidence_task_ids: ["e"], trials: winning },
+      { alpha: 0.5 },
+    );
+    ledger.recordGate(loose);
+    await expect(
+      acceptWithGate(store, ledger, gated.id, operator),
+    ).rejects.toMatchObject({ code: "gate-required" });
+    const failing = evaluateSkillGate({
+      proposal_id: gated.id,
+      evidence_task_ids: ["e"],
+      trials: winning.slice(0, 5),
+    });
+    ledger.recordGate(failing, Date.now() + 1);
+    expect(describeGate(gated, ledger)).toBe("failed: too-few-trials");
+    const passing = evaluateSkillGate({
+      proposal_id: gated.id,
+      evidence_task_ids: ["e"],
+      trials: winning,
+    });
+    ledger.recordGate(passing, Date.now() + 2);
+    const accepted = await acceptWithGate(store, ledger, gated.id, operator);
+    expect(accepted.gate?.digest).toBe(passing.digest);
+    expect(accepted.overridden).toBe(false);
+    expect((await store.get("gated"))?.status).toBe("active");
+
+    const stale = await propose("stale");
+    await store.create("stale", content("stale"), operator);
+    await expect(
+      acceptWithGate(store, ledger, stale.id, operator, { reason: "try" }),
+    ).rejects.toMatchObject({ code: "stale-revision" });
+    expect(describeGate(stale, ledger)).toBe("none yet");
+
+    const skipped = await propose("skipped");
+    await expect(
+      acceptWithGate(store, ledger, skipped.id, operator, { reason: " " }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(await store.get("skipped")).toBeNull();
+    const forced = await acceptWithGate(store, ledger, skipped.id, operator, {
+      reason: "no model key yet",
+    });
+    expect(forced).toMatchObject({ gate: null, overridden: true });
+    expect(ledger.gateOverrides(skipped.id)).toMatchObject([
+      { actor: "tanay", reason: "no model key yet" },
+    ]);
+    expect(describeGate({ ...skipped, status: "accepted" }, ledger)).toBe(
+      "accepted without gate by tanay: no model key yet",
+    );
+
+    const archival = await store.submitProposal({
+      source: "outcome_gate",
+      rationale: "harmful",
+      ops: [{ op: "archive", name: "gated" }],
+    });
+    expect(describeGate(archival, ledger)).toBe("not required");
+    expect(
+      (await acceptWithGate(store, ledger, archival.id, operator)).gate,
+    ).toBeNull();
+    expect((await store.get("gated"))?.status).toBe("archived");
+    expect(ledger.gateOverrides(archival.id)).toEqual([]);
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

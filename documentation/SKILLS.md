@@ -302,14 +302,14 @@ count every content version; `versions` reports how many there were.
   once at startup and every 6 hours (`SKILL_CURATOR_INTERVAL_MS`); teardown
   waits for an in-flight pass. Hermes' usage-interval/idle rules
   (`should_run_now`) are not ported. `mars skills curate` runs it on demand.
-- **Operator surface is CLI-only.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|accept|reject|undo|curate>`
+- **Operator surface is CLI-only.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|gate|gates|accept|reject|undo|curate>`
   operates on the same store as `mars serve` (`--state`, `--source`,
   `--project` defaults match it; changes are recorded with `--actor`). There
   are no RPC methods or VS Code view yet, and no command to inspect
   `review.jsonl`.
-- **No evaluation gate.** The master specification's "evaluate before accept"
-  step between draft and accepted is a human decision today, not a measured
-  one.
+- **No live gate trials.** `accept` enforces the held-out gate (below), but
+  producing real paired runs needs a live model; until then trials files are
+  supplied by hand or the gate is skipped with a recorded reason.
 - **Scope.** The skill store is per state directory, unscoped by owner or
   project; memory proposals are scoped and revision-fenced by `@mars/memory`.
 - **Not ported from upstream:** OpenClaw's reviewer prompt and `skill_manage`
@@ -341,6 +341,33 @@ per digest (`gates(proposalId)` reads them back).
 *proposals* with the outcome numbers as rationale. Pinned and archived skills
 are skipped, and nothing is deleted; an operator still accepts or rejects.
 
-Not yet wired: the CLI and dashboard do not run the gate or require a passing
-verdict before `accept`, and held-out runs need a live model to produce real
+### Gated acceptance
+
+`acceptWithGate(store, ledger, id, options, override?)`
+(`packages/skills/src/gated-accept.ts`) is how operators accept proposals:
+
+- A proposal with a `create` or `update` op (`gateRequired`) is accepted only
+  when the ledger holds a passing verdict for its id computed with thresholds
+  no looser than `GATE_POLICY` (`meetsGatePolicy`: `min_trials` ≥ 10,
+  `max_regressions` ≤ 0, `alpha` ≤ 0.05, `max_cost_ratio` ≤ 1.25). Verdicts
+  record their thresholds in `options`; verdicts stored before that field
+  existed do not qualify. Otherwise it fails with `gate-required`.
+- `archive`, `restore`, `pin`, `stale` and `restoreVersion`-only proposals
+  (including `harmfulSkillArchivals`) need no gate.
+- An operator may accept without a passing verdict by giving a reason. The
+  override (proposal, actor, reason, time) is written to
+  `skill_gate_overrides` before the skill store changes.
+
+CLI:
+
+- `mars skills gate PROPOSAL_ID --trials FILE --evidence ID[,ID...]` checks
+  the trials file against `GateTrialsSchema` (a JSON array of `{ task_id,
+  baseline: { verified, cost_usd }, candidate: { verified, cost_usd } }`),
+  evaluates it under `GATE_POLICY` and stores the verdict.
+- `mars skills gates PROPOSAL_ID` lists stored verdicts and overrides, and
+  `mars skills proposals` shows each proposal's gate state.
+- `mars skills accept PROPOSAL_ID [--without-gate --reason TEXT]`.
+
+The ledger is `<state>/skill-outcomes/outcomes.sqlite`, the one `mars serve`
+writes. No dashboard yet. Held-out runs need a live model to produce real
 trials.
