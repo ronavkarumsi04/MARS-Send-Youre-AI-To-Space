@@ -813,3 +813,95 @@ test("memory proposal RPC methods answer unavailable when the host has no memory
   });
   expect(response.status).toBe(503);
 });
+
+test("skill RPC methods are validated and answer unavailable without a skill store", async () => {
+  const proposal = {
+    proposal_id: "p1",
+    source: "background_review:s:r1",
+    review_id: "r1",
+    rationale: "Lesson",
+    status: "pending" as const,
+    operations: [{ op: "create" as const, name: "triage", content: "Do it." }],
+    gate: { required: true, summary: "none yet", latest: null },
+  };
+  const skill = {
+    name: "triage",
+    status: "active" as const,
+    pinned: false,
+    content: "Do it.",
+    use_count: 0,
+    last_activity: 0,
+    outcomes: null,
+  };
+  const seen: unknown[] = [];
+  const { send } = fixture({
+    async skills() {
+      return [skill];
+    },
+    async skillProposals(_, params) {
+      seen.push(["list", params]);
+      return [proposal];
+    },
+    async acceptSkillProposal(_, params) {
+      seen.push(["accept", params]);
+      return params.proposal_id === "p1"
+        ? { ...proposal, status: "accepted" }
+        : proposal;
+    },
+    async rejectSkillProposal(_, params) {
+      seen.push(["reject", params]);
+      return { ...proposal, status: "rejected", reason: params.reason };
+    },
+    async undoSkillReview(_, params) {
+      seen.push(["undo", params]);
+      return { undone: 2 };
+    },
+  });
+  const call = async (method: string, params: unknown) => {
+    const response = await send({ method, context, params });
+    return { status: response.status, body: await response.json() };
+  };
+  expect((await call("skills.list", {})).body).toEqual({ result: [skill] });
+  expect((await call("skills.proposals.list", {})).body).toEqual({
+    result: [proposal],
+  });
+  expect(
+    (
+      await call("skills.proposals.accept", {
+        proposal_id: "p1",
+        without_gate_reason: "no model key",
+      })
+    ).body.result.status,
+  ).toBe("accepted");
+  expect(
+    (await call("skills.proposals.reject", { proposal_id: "p1", reason: "no" }))
+      .body.result.reason,
+  ).toBe("no");
+  expect(
+    (await call("skills.reviews.undo", { review_id: "r1" })).body.result,
+  ).toEqual({ undone: 2 });
+  // A host answering for another proposal, or outside the list filter, is an internal error.
+  expect(
+    (await call("skills.proposals.accept", { proposal_id: "p2" })).status,
+  ).toBe(500);
+  expect(
+    (await call("skills.proposals.list", { status: "accepted" })).status,
+  ).toBe(500);
+  for (const [method, params] of [
+    ["skills.list", { extra: true }],
+    ["skills.proposals.list", { status: "maybe" }],
+    ["skills.proposals.accept", { proposal_id: "p1", without_gate_reason: "" }],
+    ["skills.proposals.reject", { proposal_id: "p1" }],
+    ["skills.reviews.undo", {}],
+  ] as const)
+    expect((await call(method, params)).status).toBe(400);
+  expect(seen).toHaveLength(6);
+
+  const bare = fixture();
+  const response = await bare.send({
+    method: "skills.list",
+    context,
+    params: {},
+  });
+  expect(response.status).toBe(503);
+});

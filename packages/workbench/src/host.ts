@@ -173,6 +173,10 @@ import {
   withFrozenSkills,
 } from "./skills-context";
 import {
+  skillOperatorApi,
+  type WorkbenchSkillOperator,
+} from "./skills-operator";
+import {
   type FrozenRouting,
   routeLaunch,
   type WorkbenchSpecialists,
@@ -260,6 +264,8 @@ export interface WorkbenchHostOptions {
   skills?: WorkbenchSkills;
   /** Verified-outcome credit for the skill versions each task loaded; ranks future launches. */
   skillOutcomes?: WorkbenchSkillOutcomes;
+  /** Operator surface for skills and their proposals (list/accept/reject/undo review). */
+  skillOperator?: WorkbenchSkillOperator;
   review?: WorkbenchReview;
   repositoryMap?: Pick<RepositoryMapProvider, "map">;
   specialists?: WorkbenchSpecialists;
@@ -287,6 +293,11 @@ export type WorkbenchHostApi = WorkbenchOperations &
       | "acceptMemoryProposal"
       | "rejectMemoryProposal"
       | "revertMemoryProposal"
+      | "skills"
+      | "skillProposals"
+      | "acceptSkillProposal"
+      | "rejectSkillProposal"
+      | "undoSkillReview"
     >
   > & {
     close(): Promise<void>;
@@ -2405,6 +2416,25 @@ export async function createWorkbenchHost(
     resolved_by: actor ?? context.scope.owner_id,
   });
 
+  const skillOperations = skillOperatorApi(
+    () => {
+      if (!options.skillOperator) throw new WorkbenchError("unavailable");
+      return options.skillOperator;
+    },
+    (context, actor) => ({
+      actor: actor ?? context.scope.owner_id,
+      source: "operator",
+    }),
+  );
+  const checked =
+    <A extends unknown[], R>(
+      run: (context: RequestContext, ...args: A) => Promise<R>,
+    ) =>
+    async (context: RequestContext, ...args: A) => {
+      checkContext(context);
+      return run(context, ...args);
+    };
+
   const api: WorkbenchOperations &
     Required<
       Pick<
@@ -2414,9 +2444,19 @@ export async function createWorkbenchHost(
         | "acceptMemoryProposal"
         | "rejectMemoryProposal"
         | "revertMemoryProposal"
+        | "skills"
+        | "skillProposals"
+        | "acceptSkillProposal"
+        | "rejectSkillProposal"
+        | "undoSkillReview"
       >
     > = {
     scope: options.scope,
+    skills: checked(skillOperations.skills),
+    skillProposals: checked(skillOperations.skillProposals),
+    acceptSkillProposal: checked(skillOperations.acceptSkillProposal),
+    rejectSkillProposal: checked(skillOperations.rejectSkillProposal),
+    undoSkillReview: checked(skillOperations.undoSkillReview),
     async memoryProposals(context, params) {
       return proposals(context).listProposals(
         context,
@@ -3237,6 +3277,11 @@ export async function createWorkbenchHost(
     acceptMemoryProposal: track(api.acceptMemoryProposal),
     rejectMemoryProposal: track(api.rejectMemoryProposal),
     revertMemoryProposal: track(api.revertMemoryProposal),
+    skills: track(api.skills),
+    skillProposals: track(api.skillProposals),
+    acceptSkillProposal: track(api.acceptSkillProposal),
+    rejectSkillProposal: track(api.rejectSkillProposal),
+    undoSkillReview: track(api.undoSkillReview),
     async close() {
       closing = true;
       if (runnerTimer) clearInterval(runnerTimer);
