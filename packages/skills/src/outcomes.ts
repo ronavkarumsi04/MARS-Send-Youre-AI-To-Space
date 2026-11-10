@@ -20,6 +20,13 @@ export interface SkillOutcome {
   recorded_at: number;
 }
 
+export interface SkillGateOverride {
+  proposal_id: string;
+  actor: string;
+  reason: string;
+  recorded_at: number;
+}
+
 export interface SkillOutcomeView extends SkillOutcomeStats {
   /** Distinct content versions of the skill that tasks loaded. */
   versions: number;
@@ -65,6 +72,14 @@ export class SkillOutcomeLedger {
         proposal_id TEXT NOT NULL,
         passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
         result TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS skill_gate_overrides (
+        proposal_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
         recorded_at INTEGER NOT NULL
       )`,
     );
@@ -166,8 +181,33 @@ export class SkillOutcomeLedger {
       const result = JSON.parse(row.result) as SkillGateResult;
       if ((result.cost_ratio as unknown) === "Infinity")
         result.cost_ratio = Number.POSITIVE_INFINITY;
+      if ((result.options?.max_cost_ratio as unknown) === "Infinity")
+        result.options.max_cost_ratio = Number.POSITIVE_INFINITY;
       return result;
     });
+  }
+
+  /** Records who accepted a proposal without a passing gate verdict, and why. */
+  recordGateOverride(override: SkillGateOverride): void {
+    if (!override.proposal_id || override.proposal_id.length > 256)
+      throw new Error("Invalid proposal id.");
+    if (!override.actor.trim() || !override.reason.trim())
+      throw new Error("A gate override needs an actor and a reason.");
+    this.db
+      .query(
+        `INSERT INTO skill_gate_overrides (proposal_id, actor, reason, recorded_at)
+         VALUES ($proposal_id, $actor, $reason, $recorded_at)`,
+      )
+      .run({ ...override });
+  }
+
+  /** Gate overrides for a proposal, oldest first. */
+  gateOverrides(proposalId: string): SkillGateOverride[] {
+    return this.db
+      .query(
+        "SELECT proposal_id, actor, reason, recorded_at FROM skill_gate_overrides WHERE proposal_id = ? ORDER BY recorded_at, rowid",
+      )
+      .all(proposalId) as SkillGateOverride[];
   }
 
   /** Per-skill evidence with each skill's own baseline: recorded tasks that did not load it. */

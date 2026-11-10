@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SkillStore } from "@mars/skills";
@@ -58,6 +58,60 @@ test("mars skills drives the proposal, undo, pin, archive and version lifecycle"
       (await run(state, ["reject", rejected.id, "--reason", "not supported"]))
         .exit,
     ).toBe(0);
+    const ungated = await run(state, ["accept", proposal.id]);
+    expect(ungated.exit).not.toBe(0);
+    expect(ungated.stderr).toContain("gate-required");
+    expect(
+      (await run(state, ["proposals", "--status", "pending"])).stdout,
+    ).toContain("    gate: none yet");
+    const trials = join(state, "trials.json");
+    const pair = (task_id: string, baseline: boolean) => ({
+      task_id,
+      baseline: { verified: baseline, cost_usd: 1 },
+      candidate: { verified: true, cost_usd: 1 },
+    });
+    writeFileSync(
+      trials,
+      JSON.stringify([
+        ...Array.from({ length: 6 }, (_, i) => pair(`held-${i}`, false)),
+        ...Array.from({ length: 4 }, (_, i) => pair(`tie-${i}`, true)),
+      ]),
+    );
+    expect(
+      (await run(state, ["gate", proposal.id, "--trials", trials])).exit,
+    ).not.toBe(0);
+    const overlap = await run(state, [
+      "gate",
+      proposal.id,
+      "--trials",
+      trials,
+      "--evidence",
+      "held-0",
+    ]);
+    expect(overlap.exit).toBe(0);
+    expect(overlap.stdout).toContain("failed (evidence-overlap)");
+    expect((await run(state, ["accept", proposal.id])).exit).not.toBe(0);
+    const gate = JSON.parse(
+      (
+        await run(state, [
+          "gate",
+          proposal.id,
+          "--trials",
+          trials,
+          "--evidence",
+          "learned-1,learned-2",
+          "--json",
+        ])
+      ).stdout,
+    );
+    expect(gate.passed).toBe(true);
+    const verdicts = JSON.parse(
+      (await run(state, ["gates", proposal.id, "--json"])).stdout,
+    );
+    expect(verdicts.gates.map((g: { passed: boolean }) => g.passed)).toEqual([
+      false,
+      true,
+    ]);
     const accepted = await run(state, [
       "accept",
       proposal.id,
@@ -66,6 +120,9 @@ test("mars skills drives the proposal, undo, pin, archive and version lifecycle"
     ]);
     expect(accepted.stderr).toBe("");
     expect(accepted.exit).toBe(0);
+    expect(accepted.stdout).toContain(
+      `gate passed (${gate.digest.slice(0, 12)})`,
+    );
     expect((await store.get("release-notes"))?.status).toBe("active");
     expect(await store.get("noise")).toBeNull();
     expect(
@@ -128,7 +185,22 @@ test("mars skills drives the proposal, undo, pin, archive and version lifecycle"
     const pending = await run(state, ["proposals", "--status", "pending"]);
     expect(pending.stdout).toContain("create triage:");
     expect(pending.stdout).toContain("      | Reproduce first.");
-    expect((await run(state, ["accept", reviewed.id])).exit).toBe(0);
+    expect(
+      (await run(state, ["accept", reviewed.id, "--without-gate"])).exit,
+    ).not.toBe(0);
+    const forced = await run(state, [
+      "accept",
+      reviewed.id,
+      "--without-gate",
+      "--reason",
+      "no model key yet",
+    ]);
+    expect(forced.exit).toBe(0);
+    expect(forced.stdout).toContain("gate skipped (recorded)");
+    expect(
+      JSON.parse((await run(state, ["gates", reviewed.id, "--json"])).stdout)
+        .overrides,
+    ).toMatchObject([{ actor: "local", reason: "no model key yet" }]);
     expect((await store.get("triage"))?.status).toBe("active");
     expect((await run(state, ["undo", "review-9"])).exit).toBe(0);
     expect((await store.get("triage"))?.status).toBe("archived");

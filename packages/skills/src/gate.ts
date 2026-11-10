@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { isQuarantined, type SkillOutcomeStats } from "./selection";
 
 /** One held-out task run without and with the proposed skill. */
@@ -54,14 +55,17 @@ export interface SkillGateResult {
   cost_ratio: number;
   /** SHA-256 of the canonical input and options, so a verdict can be reproduced and audited. */
   digest: string;
+  /** Thresholds the verdict was computed with; acceptance checks them against `GATE_POLICY`. */
+  options: Required<SkillGateOptions>;
 }
 
-const DEFAULTS: Required<SkillGateOptions> = {
+/** The loosest thresholds a verdict may use and still allow acceptance. */
+export const GATE_POLICY: Readonly<Required<SkillGateOptions>> = Object.freeze({
   min_trials: 10,
   max_regressions: 0,
   alpha: 0.05,
   max_cost_ratio: 1.25,
-};
+});
 
 /**
  * P(X >= wins) for X ~ Binomial(wins + losses, 1/2). Exact in doubles while
@@ -102,7 +106,7 @@ export function evaluateSkillGate(
   input: SkillGateInput,
   options: SkillGateOptions = {},
 ): SkillGateResult {
-  const config = { ...DEFAULTS, ...options };
+  const config = { ...GATE_POLICY, ...options };
   const reasons = new Set<SkillGateReason>();
   const evidence = new Set(
     input.evidence_task_ids.filter((id) => id.trim().length > 0),
@@ -182,7 +186,50 @@ export function evaluateSkillGate(
     p_value: pValue,
     cost_ratio: costRatio,
     digest,
+    options: config,
   };
+}
+
+const GateRunSchema = z
+  .object({
+    verified: z.boolean(),
+    cost_usd: z.number().finite().nonnegative(),
+  })
+  .strict();
+
+/** A held-out trials file: one entry per task, run without and with the skill. */
+export const GateTrialsSchema = z
+  .array(
+    z
+      .object({
+        task_id: z.string().trim().min(1).max(256),
+        baseline: GateRunSchema,
+        candidate: GateRunSchema,
+      })
+      .strict(),
+  )
+  .max(100_000);
+
+/** Proposals that write skill instructions must pass the gate; archive, restore, pin and stale do not. */
+export function gateRequired(ops: readonly { op: string }[]): boolean {
+  return ops.some((op) => op.op === "create" || op.op === "update");
+}
+
+/** A passing verdict computed with thresholds no looser than `policy`. */
+export function meetsGatePolicy(
+  result: SkillGateResult,
+  policy: Readonly<Required<SkillGateOptions>> = GATE_POLICY,
+): boolean {
+  const used = result.options;
+  return (
+    result.passed &&
+    result.reasons.length === 0 &&
+    used !== undefined &&
+    used.min_trials >= policy.min_trials &&
+    used.max_regressions <= policy.max_regressions &&
+    used.alpha <= policy.alpha &&
+    used.max_cost_ratio <= policy.max_cost_ratio
+  );
 }
 
 export interface ArchivalCandidate {
