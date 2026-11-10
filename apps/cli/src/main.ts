@@ -18,6 +18,7 @@ import { omnirouteDoctorReport } from "./omniroute";
 import { runRender } from "./render";
 import { RESEARCH_SEARCH_PROVIDERS, runServer } from "./serve";
 import { runSession } from "./session/app";
+import { runSkills } from "./skills";
 import { runTeam, teamDoctorReport } from "./team";
 import { runVault } from "./vault";
 
@@ -345,13 +346,15 @@ try {
     await runVault(process.argv.slice(3));
   } else if (command === "memory") {
     await runMemory(process.argv.slice(3));
+  } else if (command === "skills") {
+    await runSkills(process.argv.slice(3));
   } else if (command === "team") {
     await runTeam(process.argv.slice(3));
   } else if (command === "evolution") {
     await runEvolution(process.argv.slice(3));
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|team|evolution>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution>",
     );
     process.exitCode = 2;
   }

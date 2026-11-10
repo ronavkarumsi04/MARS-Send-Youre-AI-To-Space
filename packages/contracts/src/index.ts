@@ -415,6 +415,7 @@ export interface SkillProposal {
   ops: SkillOperation[];
   rationale: string;
   expectedRevision: string;
+  targets?: Record<string, string | null>;
   status: "pending" | "accepted" | "rejected";
   reason?: string;
 }

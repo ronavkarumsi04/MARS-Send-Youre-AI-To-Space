@@ -50,6 +50,8 @@ export interface Proposal {
   ops: Operation[];
   rationale: string;
   expectedRevision: string;
+  /** Digest of each target skill at submission; accept fails only if one of them changed. */
+  targets?: Record<string, string | null>;
   status: "pending" | "accepted" | "rejected";
   reason?: string;
 }
@@ -144,16 +146,50 @@ const ProposalSchema = z
     ops: z.array(OperationSchema),
     rationale: z.string(),
     expectedRevision: z.string(),
+    targets: z
+      .record(
+        z.string(),
+        z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .nullable(),
+      )
+      .optional(),
     status: z.enum(["pending", "accepted", "rejected"]),
     reason: z.string().optional(),
   })
   .passthrough()
   .transform(
-    ({ reason, ...proposal }): Proposal => ({
+    ({ reason, targets, ...proposal }): Proposal => ({
       ...proposal,
+      ...(targets === undefined ? {} : { targets }),
       ...(reason === undefined ? {} : { reason }),
     }),
   );
+
+const REVIEW_SOURCE = /^background_review:.+:([^:]+)$/;
+
+/** The review a background-review proposal came from, so accepting it can be undone by review id. */
+export function reviewIdFromSource(source: string): string | undefined {
+  return REVIEW_SOURCE.exec(source)?.[1];
+}
+
+// Usage bookkeeping (lastActivity, useCount) is excluded: using a skill must
+// not invalidate a pending proposal for it.
+function targetDigest(state: State, name: string): string | null {
+  const skill = state.skills[name];
+  if (!skill) return null;
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        skill.content,
+        skill.status,
+        skill.pinned,
+        (state.versions[name] ?? []).map((v) => v.id),
+      ]),
+    )
+    .digest("hex");
+}
 const ChangeSchema = z
   .object({
     ts: z.string(),
@@ -846,6 +882,9 @@ export class SkillStore implements SkillLifecycleService {
         id: randomUUID(),
         status: "pending",
         expectedRevision: revision(state),
+        targets: Object.fromEntries(
+          data.ops.map((op) => [op.name, targetDigest(state, op.name)]),
+        ),
       };
       state.proposals.push(proposal);
       await this.commit(state, [
@@ -865,9 +904,20 @@ export class SkillStore implements SkillLifecycleService {
       const proposal = state.proposals.find((p) => p.id === id);
       if (!proposal || proposal.status !== "pending")
         fail("not-pending", "Proposal is not pending");
-      if (proposal.expectedRevision !== revision(state))
-        fail("stale-revision", "Skill store changed since proposal");
-      const metadata = { ...options, source: proposal.source };
+      // Proposals from before per-skill targets keep the whole-store fence.
+      const stale = proposal.targets
+        ? Object.entries(proposal.targets).some(
+            ([name, digest]) => targetDigest(state, name) !== digest,
+          )
+        : proposal.expectedRevision !== revision(state);
+      if (stale)
+        fail("stale-revision", "A target skill changed since the proposal");
+      const reviewId = options.reviewId ?? reviewIdFromSource(proposal.source);
+      const metadata = {
+        ...options,
+        source: proposal.source,
+        ...(reviewId ? { reviewId } : {}),
+      };
       const changes = proposal.ops.map((op) =>
         this.perform(state, op, metadata),
       );

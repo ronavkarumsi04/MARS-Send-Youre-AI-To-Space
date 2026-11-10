@@ -90,6 +90,9 @@ import {
 } from "./server";
 import type { WorkbenchSpecialists } from "./specialist-routing";
 
+/** How often the skill curator runs while the workbench is up. */
+export const SKILL_CURATOR_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /**
  * Background research for every session: the durable `@mars/research` control
  * plane is opened under the private state root and the `@mars/research-worker`
@@ -393,6 +396,8 @@ export async function createWorkbenchService(
   let memory: DurableMemoryStore | undefined;
   let review: ReviewRunner | undefined;
   let skillOutcomes: SkillOutcomeLedger | undefined;
+  let curatorTimer: ReturnType<typeof setInterval> | undefined;
+  let curating: Promise<unknown> | undefined;
   let repositoryMap: RepositoryMapProvider | undefined;
   let research: DurableResearchService | undefined;
   let browser: DurableBrowserService | undefined;
@@ -415,6 +420,8 @@ export async function createWorkbenchService(
             ? undefined
             : { drainMs: options.browser.drainMs },
         ),
+      () => clearInterval(curatorTimer),
+      () => curating,
       () => review?.stop(),
       () => omniroute?.stop(),
       () => repositoryMap?.close(),
@@ -534,6 +541,19 @@ export async function createWorkbenchService(
     skillOutcomes = new SkillOutcomeLedger(
       join(outcomesRoot, "outcomes.sqlite"),
     );
+    // The curator only marks idle skills stale or archives them (never
+    // deletes, pinned skills exempt); a failed pass waits for the next one.
+    const curate = () => {
+      curating ??= skills
+        .runCurator({ actor: "curator", source: "curator" })
+        .catch(() => undefined)
+        .finally(() => {
+          curating = undefined;
+        });
+    };
+    curate();
+    curatorTimer = setInterval(curate, SKILL_CURATOR_INTERVAL_MS);
+    curatorTimer.unref?.();
     // Background review is proposal-only and free-model-only; without an
     // eligible free model the workbench simply runs without it.
     try {
