@@ -2120,17 +2120,15 @@ export async function createWorkbenchHost(
       throw new WorkbenchError("unavailable");
     }
     const routing = routed.routing;
-    if (!routing) throw new WorkbenchError("unavailable");
-    if (routing.ref === launch.routing.ref) return launch;
-    const model = selectModel(routing.model_id ?? undefined, needsTools);
-    const next: Launch = {
-      ...launch,
-      model_id: model.id,
-      model_classification: classifyModel(model.id) ?? undefined,
-      routing,
-    };
-    await rewriteLaunch(launchLocation, task, next);
-    return next;
+    // The saved journal is bound to its model, so a lost pin or a changed
+    // serving binding cannot continue this session: stay paused, fail closed.
+    if (
+      !routing ||
+      routing.ref !== launch.routing.ref ||
+      routing.model_id !== launch.routing.model_id
+    )
+      throw new WorkbenchError("unavailable");
+    return launch;
   };
   const freezeLaunchMemory = async (
     context: RequestContext,

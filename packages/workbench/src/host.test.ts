@@ -1842,7 +1842,7 @@ test.each(["specialist", "baseline", "manual"])(
   },
 );
 
-test("step routing replaces a specialist rolled back mid-task with its fallback on resume", async () => {
+test("step routing keeps a specialist rolled back mid-task paused on resume", async () => {
   const f = await fixture();
   const routed = await f.routedRegistry();
   const specialists = new MemoryArtifacts();
@@ -1901,22 +1901,22 @@ test("step routing replaces a specialist rolled back mid-task with its fallback 
   await session.disposed;
 
   await registry.rollback(context(), "specialist-1", "2");
-  await api.resume(
-    context(),
-    "task",
-    (await api.inspect(context(), "task")).revision,
-  );
-  const resumed = required(f.sessions[1]);
-  expect(resumed.options.modelId).toBe("fixture/free");
+  const resume = async () =>
+    api.resume(
+      context(),
+      "task",
+      (await api.inspect(context(), "task")).revision,
+    );
+  await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.sessions).toHaveLength(1);
+  expect((await api.inspect(context(), "task")).status).toBe("paused");
   const launch = JSON.parse(
     await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
   );
-  expect(launch.model_id).toBe("fixture/free");
+  expect(launch.model_id).toBe("fixture/specialist");
   expect(launch.routing).toMatchObject({
-    outcome: "baseline",
-    ref: "baseline:baseline@1",
-    specialist_revision: null,
-    model_id: null,
+    outcome: "specialist",
+    ref: "specialist:specialist-1@2",
   });
   const evidence = await taskEvents(f, "task", "routing");
   expect(evidence.map((item) => [item.phase, item.status, item.ref])).toEqual([
@@ -1928,21 +1928,19 @@ test("step routing replaces a specialist rolled back mid-task with its fallback 
     step_reasons: ["pinned_rolled_back"],
     lost_refs: ["specialist:specialist-1@2"],
   });
-  resumed.finish("paused");
-  await resumed.disposed;
 
-  await api.resume(
-    context(),
-    "task",
-    (await api.inspect(context(), "task")).revision,
-  );
-  const again = required(f.sessions[2]);
-  expect(again.options.modelId).toBe("fixture/free");
+  await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.sessions).toHaveLength(1);
   expect(
-    (await taskEvents(f, "task", "routing")).map((item) => item.status),
-  ).toEqual(["routed", "fallback"]);
-  again.finish("completed");
-  await again.disposed;
+    (await taskEvents(f, "task", "routing")).map((item) => [
+      item.status,
+      item.ref,
+    ]),
+  ).toEqual([
+    ["routed", "specialist:specialist-1@2"],
+    ["fallback", "baseline:baseline@1"],
+    ["pinned", "baseline:baseline@1"],
+  ]);
   await api.close();
 });
 

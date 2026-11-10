@@ -72,11 +72,12 @@ behavior.
    the workbench routes launches and children through it and appends each
    step as an `operation: "routing"` task event (`phase` `launch`, `child` or
    `resume`). On resume of a specialist launch it re-routes with the task's
-   durable usage and deadline. If the pin is lost, it switches the session
-   to the fallback model and rewrites the launch routing; an exhausted budget
-   or a routing error leaves the task paused with `unavailable`.
-   `Task.specialist_revision` keeps the launch-time specialist, and the
-   routing events record the replacement.
+   durable usage and deadline. The saved session journal is bound to its
+   model, so if the pin is lost or its serving binding changes, resume fails
+   closed: the task stays paused with `unavailable`, the launch is not
+   rewritten, and the routing event records the fallback target a new task
+   would use. An exhausted budget or a routing error also leaves the task
+   paused with `unavailable`.
 3. Execution passes `{ model: selected.model_id }` to the existing
    `ModelRouter` through the execution/model-bridge, keeping the selected
    model pinned for that attempt. The specialist package does not perform
