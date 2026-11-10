@@ -308,3 +308,32 @@ count every content version; `versions` reports how many there were.
 - **Not ported from upstream:** OpenClaw's reviewer prompt and `skill_manage`
   tool surface, Hermes `curator_backup`, run reports, and cron-referenced skill
   protection.
+
+## Acceptance gate
+
+`evaluateSkillGate(input, options)` (`packages/skills/src/gate.ts`) decides
+whether a proposed skill earns acceptance from a held-out A/B run: each trial
+is one task run without (`baseline`) and with (`candidate`) the skill. It
+passes only when all of these hold:
+
+- the proposal cites the checked runs it was learned from
+  (`evidence_task_ids`), and none of them is reused as a held-out trial;
+- at least `min_trials` (10) distinct, well-formed trials;
+- at most `max_regressions` (0) tasks the baseline passed and the candidate
+  failed;
+- a one-sided exact sign test over the discordant pairs gives
+  `p <= alpha` (0.05), so ties never count as evidence;
+- candidate spend is at most `max_cost_ratio` (1.25×) baseline spend.
+
+Every failed condition is listed in `reasons`. The result carries a SHA-256
+`digest` of the canonical input and options, so the same trials always produce
+the same verdict, and `SkillOutcomeLedger.recordGate` stores each verdict once
+per digest (`gates(proposalId)` reads them back).
+
+`harmfulSkillArchivals(skills, stats)` turns quarantined skills into archive
+*proposals* with the outcome numbers as rationale. Pinned and archived skills
+are skipped, and nothing is deleted; an operator still accepts or rejects.
+
+Not yet wired: the CLI and dashboard do not run the gate or require a passing
+verdict before `accept`, and held-out runs need a live model to produce real
+trials.
