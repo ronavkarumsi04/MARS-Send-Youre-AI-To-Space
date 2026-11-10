@@ -178,8 +178,10 @@ a candidate workspace, and reads a host-owned copy of the bundle.
 - No live model, Harbor run, Docker sandbox build or remote/GPU execution.
   All evidence uses the FAKE fixture evaluator (`simulated: true`, recorded on
   every decision) and host-process builds.
-- `createHarborEvaluator` is type-checked against `@mars/evaluation` but has
-  not been exercised end to end.
+- `createHarborEvaluator` is exercised only against fake Harbor. It passes
+  non-prompt settings to the agent as a `mars_agent_settings` component;
+  whether `mars-agent` applies them has not been verified live. Baseline-arm
+  spend is charged to the run ledger but excluded from the cost gate.
 - No real proposer (model-driven patch writer) ships; the interface and a
   scripted proposer exist.
 - No claim of beating DGM; no matched-budget comparison has been run.
