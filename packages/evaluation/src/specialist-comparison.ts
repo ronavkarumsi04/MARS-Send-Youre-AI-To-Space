@@ -46,7 +46,8 @@ export type SpecialistComparisonErrorCode =
   | "lineage_mismatch"
   | "evaluator_not_independent"
   | "not_found"
-  | "not_settled";
+  | "not_settled"
+  | "budget_insufficient";
 
 export class SpecialistComparisonError extends Error {
   constructor(
@@ -643,11 +644,7 @@ export function createSpecialistComparisonService(
     signal: AbortSignal,
   ) {
     await update(record.job_id, { status: "running" });
-    const runnable = work.targets.filter(
-      (target) =>
-        target.arm !== "current_specialist" ||
-        target.specialist_revision !== null,
-    );
+    const runnable = runnableTargets(work.targets);
     const perArm: Budget = {
       ...record.budget,
       max_usd: record.budget.max_usd / runnable.length,
@@ -748,6 +745,13 @@ export function createSpecialistComparisonService(
       const manifest = ArtifactRefSchema.parse(immutableManifest);
       const effective = BudgetSchema.parse(budget);
       const work = await plan(context, manifest);
+      const arms = runnableTargets(work.targets).length;
+      if (effective.max_tokens < arms) {
+        throw new SpecialistComparisonError(
+          "budget_insufficient",
+          `max_tokens must give each of the ${arms} matched arms at least one token`,
+        );
+      }
       const job_id = `spec-eval-${randomUUID()}`;
       const seed = sha256(
         canonicalJson([
@@ -829,6 +833,14 @@ export function createSpecialistComparisonService(
       );
     },
   };
+}
+
+function runnableTargets(targets: readonly ArmTarget[]): ArmTarget[] {
+  return targets.filter(
+    (target) =>
+      target.arm !== "current_specialist" ||
+      target.specialist_revision !== null,
+  );
 }
 
 /** Lists persisted comparison job ids (for operators and recovery). */

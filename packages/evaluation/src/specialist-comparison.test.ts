@@ -520,3 +520,15 @@ test("cancelling during the last arm records no verdict", async () => {
   );
   expect(recorded).toEqual([]);
 });
+
+test("a budget too small to split across matched arms is refused at submit", async () => {
+  const { registry, evaluator, recorded } = await setup();
+  await expect(
+    registry.requestEvaluation(context, "specialist-1", "1", {
+      ...budget,
+      max_tokens: 2,
+    }),
+  ).rejects.toMatchObject({ code: "budget_insufficient" });
+  expect(evaluator.calls).toHaveLength(0);
+  expect(recorded).toHaveLength(0);
+});
