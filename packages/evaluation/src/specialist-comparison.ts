@@ -332,7 +332,11 @@ const JobRecordSchema = z
   .object({
     schema: z.literal(SPECIALIST_COMPARISON_JOB_SCHEMA),
     job_id: Id,
-    scope: z.object({ owner_id: z.string(), project_id: z.string() }),
+    scope: z.object({
+      owner_id: z.string(),
+      project_id: z.string(),
+      workspace_id: z.string().nullable(),
+    }),
     input_manifest: ArtifactRefSchema,
     budget: BudgetSchema,
     status: JobStatus,
@@ -440,7 +444,9 @@ export function createSpecialistComparisonService(
     if (
       !record ||
       record.scope.owner_id !== context.scope.owner_id ||
-      record.scope.project_id !== context.scope.project_id
+      record.scope.project_id !== context.scope.project_id ||
+      (record.scope.workspace_id !== null &&
+        record.scope.workspace_id !== context.scope.workspace_id)
     ) {
       throw new SpecialistComparisonError("not_found");
     }
@@ -757,6 +763,7 @@ export function createSpecialistComparisonService(
         scope: {
           owner_id: context.scope.owner_id,
           project_id: context.scope.project_id,
+          workspace_id: context.scope.workspace_id ?? null,
         },
         input_manifest: manifest,
         budget: effective,

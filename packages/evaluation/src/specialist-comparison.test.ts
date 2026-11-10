@@ -356,6 +356,40 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
       job.job_id,
     ),
   ).rejects.toMatchObject({ code: "not_found" });
+  const workspaceA = {
+    ...context,
+    scope: { ...context.scope, workspace_id: "workspace-a" },
+  };
+  const projectWide = pricey.registry as SpecialistRegistry;
+  const workspaceService = createSpecialistComparisonService({
+    stateDir: path.join(root, "evaluation"),
+    artifacts: evidenceArtifacts(pricey.memory),
+    subjects: {
+      resolve: (_ctx, id, revision) =>
+        subjectResolverFromRegistry(projectWide).resolve(context, id, revision),
+    },
+    heldOut: createHeldOutGuard(split),
+    evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
+    signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
+    verdicts: { record: async () => {} },
+  });
+  const scoped = await workspaceService.submitComparison(
+    workspaceA,
+    job.input_manifest,
+    budget,
+  );
+  await workspaceService.settled(scoped.job_id);
+  expect(
+    (await workspaceService.inspect(workspaceA, scoped.job_id)).status,
+  ).toBe("completed");
+  for (const other of [
+    context,
+    { ...context, scope: { ...context.scope, workspace_id: "workspace-b" } },
+  ]) {
+    await expect(
+      workspaceService.inspect(other, scoped.job_id),
+    ).rejects.toMatchObject({ code: "not_found" });
+  }
 
   const restarted = createSpecialistComparisonService({
     stateDir: path.join(root, "evaluation"),
