@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { SkillGateResult } from "./gate";
 import type { SkillOutcomeStats } from "./selection";
 
 /** One loaded skill, bound to the exact content the task saw. */
@@ -44,6 +45,7 @@ export class SkillOutcomeLedger {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.migrateUnscoped();
+    this.createGates();
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS skill_outcomes (
         scope_key TEXT NOT NULL,
@@ -52,6 +54,18 @@ export class SkillOutcomeLedger {
         verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
         recorded_at INTEGER NOT NULL,
         PRIMARY KEY (scope_key, task_id)
+      )`,
+    );
+  }
+
+  private createGates(): void {
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS skill_gates (
+        digest TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+        result TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
       )`,
     );
   }
@@ -116,6 +130,44 @@ export class SkillOutcomeLedger {
         verified: outcome.verified ? 1 : 0,
         recorded_at: outcome.recorded_at,
       });
+  }
+
+  /** Keeps every gate verdict, keyed by its input digest so re-running the same gate is idempotent. */
+  recordGate(result: SkillGateResult, recordedAt = Date.now()): void {
+    if (!result.proposal_id || result.proposal_id.length > 256)
+      throw new Error("Invalid proposal id.");
+    if (!SHA256.test(result.digest)) throw new Error("Invalid gate digest.");
+    this.db
+      .query(
+        `INSERT OR IGNORE INTO skill_gates (digest, proposal_id, passed, result, recorded_at)
+         VALUES ($digest, $proposal_id, $passed, $result, $recorded_at)`,
+      )
+      .run({
+        digest: result.digest,
+        proposal_id: result.proposal_id,
+        passed: result.passed ? 1 : 0,
+        // JSON has no Infinity; a free baseline with a paid candidate has one.
+        result: JSON.stringify(result, (_, value) =>
+          value === Number.POSITIVE_INFINITY ? "Infinity" : value,
+        ),
+        recorded_at: recordedAt,
+      });
+  }
+
+  /** Gate verdicts for a proposal, oldest first. */
+  gates(proposalId: string): SkillGateResult[] {
+    return (
+      this.db
+        .query(
+          "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, digest",
+        )
+        .all(proposalId) as { result: string }[]
+    ).map((row) => {
+      const result = JSON.parse(row.result) as SkillGateResult;
+      if ((result.cost_ratio as unknown) === "Infinity")
+        result.cost_ratio = Number.POSITIVE_INFINITY;
+      return result;
+    });
   }
 
   /** Per-skill evidence with each skill's own baseline: recorded tasks that did not load it. */

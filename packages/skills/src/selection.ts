@@ -96,7 +96,8 @@ export function helpfulness(stats: SkillOutcomeStats | undefined): number {
   return 0;
 }
 
-function quarantined(stats: SkillOutcomeStats | undefined): boolean {
+/** Enough evidence on both sides that loading the skill lowers the pass rate. */
+export function isQuarantined(stats: SkillOutcomeStats | undefined): boolean {
   return (
     stats !== undefined &&
     stats.loads >= MIN_QUARANTINE_EVIDENCE &&
@@ -145,7 +146,7 @@ export function rankSkills(
   const candidates = skills
     .filter((skill) => skill.status !== "archived")
     .filter((skill) => {
-      if (!quarantined(stats.get(skill.name))) return true;
+      if (!isQuarantined(stats.get(skill.name))) return true;
       quarantine.push(skill.name);
       return false;
     })
