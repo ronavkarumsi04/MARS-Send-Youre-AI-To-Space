@@ -46,6 +46,7 @@ beforeEach(async () => {
         domain: DOMAIN,
         role: "worker",
         complexity: "medium",
+        request: `held-out request ${task_id}`,
       })),
     }),
   );

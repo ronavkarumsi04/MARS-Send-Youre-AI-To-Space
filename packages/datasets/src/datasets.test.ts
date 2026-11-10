@@ -12,6 +12,7 @@ import {
   findHeldOutLeakage,
   HELD_OUT_SPLIT_SCHEMA,
   type HeldOutSplit,
+  parseHeldOutSplit,
   requestSha256,
   type VerifiedExample,
 } from "./index";
@@ -324,4 +325,21 @@ test("held-out request digests catch normalized request overlap across task ids"
       request_sha256s: [requestSha256("unrelated request")],
     }),
   ).toEqual([]);
+});
+
+test("held-out tasks must carry request text for cross-id exclusion", () => {
+  expect(() =>
+    parseHeldOutSplit({
+      schema: HELD_OUT_SPLIT_SCHEMA,
+      split_id: "heldout-no-request",
+      tasks: [
+        {
+          task_id: "heldout-task",
+          domain: "coding/mechanical-edit",
+          role: "worker",
+          complexity: "medium",
+        },
+      ],
+    }),
+  ).toThrow();
 });

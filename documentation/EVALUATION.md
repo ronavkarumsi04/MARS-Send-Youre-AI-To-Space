@@ -215,7 +215,8 @@ specialists:
   or the split's own digest in the lineage refuses the job with
   `heldout_leakage`. Lineage `request_sha256s` (SHA-256 of each normalized
   training/validation request) are checked to catch matching request text
-  across different task ids. A lineage without this field is refused with
+  across different task ids. Every held-out task must carry its `request` text.
+  A lineage without this field (or with an empty list) is refused with
   `lineage_requests_unverifiable`, since request overlap cannot be ruled out.
   `packages/training` does not populate the field yet, so training-produced
   lineages are refused at evaluation until it does. An adapter without lineage

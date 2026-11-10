@@ -20,7 +20,8 @@ export const HeldOutTaskSchema = z
     domain: z.string().regex(/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/),
     role: z.enum(["lead", "worker", "reviewer"]),
     complexity: z.enum(["light", "medium", "heavy"]),
-    request: z.string().min(1).max(65_536).optional(),
+    /** Required: cross-id exclusion matches it against lineage request digests. */
+    request: z.string().min(1).max(65_536),
   })
   .strict();
 export type HeldOutTask = z.infer<typeof HeldOutTaskSchema>;
