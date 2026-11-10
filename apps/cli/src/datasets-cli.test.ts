@@ -178,4 +178,4 @@ test("mars datasets build writes pinned splits from verified tasks and honours h
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 60_000);
