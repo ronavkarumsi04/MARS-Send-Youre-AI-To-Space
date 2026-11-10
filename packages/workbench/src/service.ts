@@ -623,6 +623,7 @@ export async function createWorkbenchService(
         memoryRoot,
         skillsRoot,
         reviewRoot,
+        outcomesRoot,
         source,
         ...(researchRoot ? [researchRoot] : []),
         ...(graphRoot ? [graphRoot] : []),
