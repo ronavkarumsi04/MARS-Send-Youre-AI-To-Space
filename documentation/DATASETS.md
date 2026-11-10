@@ -59,6 +59,23 @@ it excludes, including those inferred from its tasks among the examples), every 
 the split policy. The training job and the specialist lineage record pin the
 split digests.
 
+## CLI
+
+```sh
+mars datasets build --id pilot-1 --out ./pilot-1 \
+  --held-out gate-trials.json --held-out final-holdout.json
+```
+
+Reads the task store `mars serve` writes (`<state>/tasks`, same `--state`,
+`--source`, `--project` defaults; `--owner` defaults to `local`). Each
+`--held-out` file is a gate trials file (`[{task_id, ...}]`), an
+optimization holdout record (`{final_holdout: [...]}`) or
+`{source?, task_ids, requests?}`; an unrecognized file is refused. The state
+directory, source directory and home directory are passed as private roots.
+It writes `train.jsonl`, `validation.jsonl` and `manifest.json` into `--out`
+and never overwrites existing files; `--json` prints the manifest and every
+skipped task with its reason.
+
 ## Limits
 
 Offline-verified only. Examples are request → patch pairs, not full
