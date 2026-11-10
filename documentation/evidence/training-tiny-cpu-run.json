@@ -1,0 +1,357 @@
+{
+  "note": "PLUMBING PROOF ONLY — tiny test model, synthetic fixture; not a useful specialist and no held-out evaluation.",
+  "manifest": {
+    "artifact_id": "art-71b43561669f30d4e1510c4395373ec2",
+    "sha256": "71b43561669f30d4e1510c4395373ec213787d068c10c498d11f010e19ca2fa4",
+    "media_type": "application/json",
+    "byte_length": 1894
+  },
+  "validation": {
+    "ready": true,
+    "missing": []
+  },
+  "estimate": {
+    "estimated_usd": null,
+    "hardware": [
+      "cpu:8-logical-cores",
+      "method:lora-fp32",
+      "token_bound:5896"
+    ]
+  },
+  "job": {
+    "job": {
+      "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
+      "input_manifest": {
+        "artifact_id": "art-71b43561669f30d4e1510c4395373ec2",
+        "sha256": "71b43561669f30d4e1510c4395373ec213787d068c10c498d11f010e19ca2fa4",
+        "media_type": "application/json",
+        "byte_length": 1894
+      }
+    },
+    "status": "completed",
+    "artifacts": [
+      {
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
+        "media_type": "application/json",
+        "byte_length": 1277
+      },
+      {
+        "artifact_id": "art-8fa8e29fffce23ad5de4b26f05aeb73d",
+        "sha256": "8fa8e29fffce23ad5de4b26f05aeb73d17080122f4a6a28135e84b5be13e92e3",
+        "media_type": "application/vnd.mars.peft-adapter-weights+safetensors",
+        "byte_length": 19320
+      },
+      {
+        "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+        "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
+        "media_type": "application/vnd.mars.peft-adapter-config+json",
+        "byte_length": 1658
+      },
+      {
+        "artifact_id": "art-eb168889df18927496ae630f2275c907",
+        "sha256": "eb168889df18927496ae630f2275c907646acc497ef99e229bfb511c5a003d2d",
+        "media_type": "application/json",
+        "byte_length": 1031
+      },
+      {
+        "artifact_id": "art-cd8e9439f0570856fd70470bf8889ebd",
+        "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+        "media_type": "text/x-jinja2",
+        "byte_length": 2507
+      },
+      {
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
+        "media_type": "application/json",
+        "byte_length": 1312
+      },
+      {
+        "artifact_id": "art-5a8b1e5634425c8210ca07b490111625",
+        "sha256": "5a8b1e5634425c8210ca07b4901116257c514deb5460d626bbf1e6b169d302d3",
+        "media_type": "application/json",
+        "byte_length": 3778
+      }
+    ],
+    "cost_usd": null
+  },
+  "report": {
+    "schema": "mars.training-run/v1",
+    "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
+    "manifest": {
+      "artifact_id": "art-71b43561669f30d4e1510c4395373ec2",
+      "sha256": "71b43561669f30d4e1510c4395373ec213787d068c10c498d11f010e19ca2fa4",
+      "media_type": "application/json",
+      "byte_length": 1894
+    },
+    "config_sha256": "ca3cdb9b11b09b7ee1767e3b33b20620e854238516598dd6c74ea98ef7898112",
+    "dataset_manifest_sha256": null,
+    "worker_versions": {
+      "python": "3.12.16",
+      "torch": "2.15.0+cpu",
+      "transformers": "5.22.1",
+      "trl": "1.17.1",
+      "peft": "0.21.2",
+      "datasets": "5.1.0",
+      "accelerate": "1.15.0",
+      "bitsandbytes": null,
+      "cuda_available": false,
+      "cuda_devices": []
+    },
+    "metrics": {
+      "global_steps": 8,
+      "train_loss": 11.925555109977722,
+      "eval_loss": 11.92186450958252,
+      "train_seconds": 0.952,
+      "trainable_params": 3968,
+      "total_params": 2440232,
+      "train_examples": 9,
+      "validation_examples": 3,
+      "device": "cpu"
+    },
+    "reload": {
+      "loaded": true,
+      "max_abs_logit_diff_vs_trained": 0,
+      "max_abs_logit_diff_vs_base": 0.05354183167219162,
+      "prompt_tokens": 41,
+      "generated_tokens": 8,
+      "generated_text": "Sugar𝔅(mysqli.Nullable(mysqli(mysqli.SwingConstants(mysqli"
+    },
+    "artifacts": {
+      "adapter_bundle": {
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
+        "media_type": "application/json",
+        "byte_length": 1277
+      },
+      "weights": {
+        "artifact_id": "art-8fa8e29fffce23ad5de4b26f05aeb73d",
+        "sha256": "8fa8e29fffce23ad5de4b26f05aeb73d17080122f4a6a28135e84b5be13e92e3",
+        "media_type": "application/vnd.mars.peft-adapter-weights+safetensors",
+        "byte_length": 19320
+      },
+      "adapter_config": {
+        "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+        "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
+        "media_type": "application/vnd.mars.peft-adapter-config+json",
+        "byte_length": 1658
+      },
+      "tokenizer_refs": {
+        "artifact_id": "art-eb168889df18927496ae630f2275c907",
+        "sha256": "eb168889df18927496ae630f2275c907646acc497ef99e229bfb511c5a003d2d",
+        "media_type": "application/json",
+        "byte_length": 1031
+      },
+      "chat_template": {
+        "artifact_id": "art-cd8e9439f0570856fd70470bf8889ebd",
+        "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+        "media_type": "text/x-jinja2",
+        "byte_length": 2507
+      },
+      "dataset_lineage": {
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
+        "media_type": "application/json",
+        "byte_length": 1312
+      }
+    },
+    "registration": {
+      "base_model": {
+        "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+        "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+      },
+      "tokenizer": {
+        "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+        "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+      },
+      "chat_template": {
+        "artifact_id": "art-cd8e9439f0570856fd70470bf8889ebd",
+        "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+        "media_type": "text/x-jinja2",
+        "byte_length": 2507
+      },
+      "adapter": {
+        "artifact_id": "art-b661139566e29ecee601fdea5a4036f7",
+        "sha256": "b661139566e29ecee601fdea5a4036f7819b0f2bea4e3a937a4856f248d1374f",
+        "media_type": "application/json",
+        "byte_length": 1277
+      },
+      "dataset_lineage": {
+        "artifact_id": "art-eec2c428a89064973fd9fd7fa179fc85",
+        "sha256": "eec2c428a89064973fd9fd7fa179fc85bf2a807b03967b574544f64d6f999370",
+        "media_type": "application/json",
+        "byte_length": 1312
+      },
+      "adapter_spec": {
+        "format": "peft-lora",
+        "base_model": {
+          "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+          "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+        },
+        "tokenizer": {
+          "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+          "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+        },
+        "chat_template_sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f"
+      }
+    },
+    "synthetic_fixture": true,
+    "limitations": [
+      "Training plumbing output only: no held-out agent-level evaluation has compared this adapter with its base. It is not evidence of a useful specialist."
+    ]
+  },
+  "bundle": {
+    "schema": "mars.peft-adapter/v1",
+    "format": "peft-lora",
+    "method": "lora",
+    "base_model": {
+      "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+      "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+    },
+    "tokenizer": {
+      "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+      "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+    },
+    "chat_template_sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+    "weights": {
+      "artifact_id": "art-8fa8e29fffce23ad5de4b26f05aeb73d",
+      "sha256": "8fa8e29fffce23ad5de4b26f05aeb73d17080122f4a6a28135e84b5be13e92e3",
+      "media_type": "application/vnd.mars.peft-adapter-weights+safetensors",
+      "byte_length": 19320
+    },
+    "adapter_config": {
+      "artifact_id": "art-0b23d0cbf931eec41f92a5d1c1958552",
+      "sha256": "0b23d0cbf931eec41f92a5d1c1958552b389c2da35b01f4e6e38698aeaa51d0b",
+      "media_type": "application/vnd.mars.peft-adapter-config+json",
+      "byte_length": 1658
+    },
+    "tokenizer_refs": {
+      "artifact_id": "art-eb168889df18927496ae630f2275c907",
+      "sha256": "eb168889df18927496ae630f2275c907646acc497ef99e229bfb511c5a003d2d",
+      "media_type": "application/json",
+      "byte_length": 1031
+    },
+    "chat_template": {
+      "artifact_id": "art-cd8e9439f0570856fd70470bf8889ebd",
+      "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "media_type": "text/x-jinja2",
+      "byte_length": 2507
+    }
+  },
+  "adapter_config": {
+    "alora_invocation_tokens": null,
+    "alpha_pattern": {},
+    "arrow_config": null,
+    "auto_mapping": null,
+    "base_model_name_or_path": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+    "bias": "none",
+    "corda_config": null,
+    "ensure_weight_tying": false,
+    "eva_config": null,
+    "exclude_modules": null,
+    "fan_in_fan_out": false,
+    "inference_mode": true,
+    "init_lora_weights": true,
+    "kasa_config": null,
+    "layer_replication": null,
+    "layers_pattern": null,
+    "layers_to_transform": null,
+    "loftq_config": {},
+    "lora_alpha": 16,
+    "lora_bias": false,
+    "lora_dropout": 0,
+    "lora_ga_config": null,
+    "megatron_config": null,
+    "megatron_core": "megatron.core",
+    "modules_to_save": null,
+    "monteclora_config": null,
+    "peft_type": "LORA",
+    "peft_version": "0.21.2",
+    "qalora_group_size": 16,
+    "r": 8,
+    "rank_pattern": {},
+    "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec",
+    "target_modules": [
+      "model.layers.0.mlp.up_proj",
+      "model.layers.1.mlp.up_proj",
+      "model.layers.1.mlp.down_proj",
+      "model.layers.0.mlp.down_proj",
+      "model.layers.0.self_attn.v_proj",
+      "model.layers.1.self_attn.q_proj",
+      "model.layers.0.self_attn.o_proj",
+      "model.layers.0.self_attn.q_proj",
+      "model.layers.1.self_attn.k_proj",
+      "model.layers.0.self_attn.k_proj",
+      "model.layers.1.self_attn.v_proj",
+      "model.layers.1.self_attn.o_proj",
+      "model.layers.1.mlp.gate_proj",
+      "model.layers.0.mlp.gate_proj"
+    ],
+    "target_parameters": null,
+    "task_type": "CAUSAL_LM",
+    "trainable_token_indices": null,
+    "use_bdlora": null,
+    "use_dora": false,
+    "use_qalora": false,
+    "use_rslora": false,
+    "velora_config": null
+  },
+  "lineage": {
+    "schema": "mars.specialist-dataset-lineage/v1",
+    "lineage_id": "lineage-train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
+    "subject": {
+      "specialist_id": "synthetic-plumbing-specialist",
+      "base_model": {
+        "component": "hf:trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+        "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+      }
+    },
+    "datasets": [
+      {
+        "dataset_id": "synthetic-coding-train",
+        "sha256": "5222702601a0c73127b091f4f6b90092f841ceb8390d328417b091c625279167",
+        "split": "train"
+      },
+      {
+        "dataset_id": "synthetic-coding-validation",
+        "sha256": "0ff81dbd6b9b8d0a9090883ec38e648948af4fc583c978fada12ea80b313525a",
+        "split": "validation"
+      }
+    ],
+    "training": {
+      "job_id": "train-dee4d585-32fd-489f-9350-ebc3dd63cd83",
+      "producer_id": "mars-training-live",
+      "config_sha256": "ca3cdb9b11b09b7ee1767e3b33b20620e854238516598dd6c74ea98ef7898112"
+    },
+    "source_scopes": [
+      {
+        "owner_id": "live-owner",
+        "project_id": "live-project"
+      }
+    ],
+    "train_task_ids": [
+      "synthetic-task-01",
+      "synthetic-task-02",
+      "synthetic-task-03",
+      "synthetic-task-04",
+      "synthetic-task-05",
+      "synthetic-task-06",
+      "synthetic-task-07",
+      "synthetic-task-08",
+      "synthetic-task-09"
+    ],
+    "validation_task_ids": [
+      "synthetic-task-10",
+      "synthetic-task-11",
+      "synthetic-task-12"
+    ],
+    "provenance": {
+      "synthetic_fixture": true
+    },
+    "attestation": {
+      "alg": "hmac-sha256",
+      "key_id": "live-ephemeral",
+      "mac_hex": "a3f009ae646e5e10652857063bc52b11ed2263879ac4d1b5751f2d90fea0b43c"
+    }
+  }
+}

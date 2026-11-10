@@ -72,7 +72,9 @@ behavior.
 
 ## Boundaries and limitations
 
-Evaluation and training are not performed here; this package only submits an
+Evaluation and training are not performed here (training lives in
+`@mars/training`, whose run report carries the exact `registration` fields and
+signed lineage this registry checks); this package only submits an
 immutable comparison request when an `EvaluationService` is injected. The
 included evaluation fixtures are synthetic and make no quality claim. HMAC
 attestation proves origin and byte integrity, not result truth. Hosted base

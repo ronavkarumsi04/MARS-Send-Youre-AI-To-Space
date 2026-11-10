@@ -281,6 +281,9 @@ export interface SpecialistFixtureOptions {
   adapter?: ArtifactRef | null;
   adapterSpec?: SpecialistRegistration["profile"]["adapter_spec"];
   adapterFormat?: "peft-lora" | null;
+  baseModel?: SpecialistRegistration["base_model"];
+  tokenizer?: SpecialistRegistration["tokenizer"];
+  chatTemplate?: ArtifactRef;
 }
 
 export interface SpecialistFixture {
@@ -306,9 +309,10 @@ export async function makeSpecialistFixture(
     revision,
     scope,
     tested_task_coverage: domains,
-    base_model: baseModel,
-    tokenizer,
-    chat_template: artifactRef(`template-${specialistId}`),
+    base_model: options.baseModel ?? baseModel,
+    tokenizer: options.tokenizer ?? tokenizer,
+    chat_template:
+      options.chatTemplate ?? artifactRef(`template-${specialistId}`),
     adapter: options.adapter ?? null,
     tools: [],
     skills: [],
@@ -355,7 +359,7 @@ export async function makeSpecialistFixture(
     { arm: "candidate", specialist_revision: revision },
   ] as const;
   const versions = {
-    base: { component: "model/base", revision: "1" },
+    base: options.baseModel ?? { component: "model/base", revision: "1" },
     prompt_optimized_baseline: {
       component: "model/prompt-optimized",
       revision: "1",
