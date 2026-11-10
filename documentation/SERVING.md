@@ -67,5 +67,6 @@ mars doctor [--vllm URL] [--vllm-allow-remote] [--vllm-api-key-env NAME]
 | Pin/version check, loopback/remote URL policy, bearer key by env name | Real vLLM v0.32.0 `/v1/models` and `/version` on a GPU host |
 | Attestor fail-closed paths and every serving mismatch reason code | Live adapter serving and completions through a loaded LoRA |
 | Wrong-base rejection with zero vLLM requests; runtime LoRA refused without the dev flag | Static `--lora-modules` startup on a real server |
-| Load / unload / rollback against the fake LoRA routes | Specialist routing consuming this attestor (Workstream B) and adapter-vs-base evaluation (Workstream C) |
+| Load / unload / rollback against the fake LoRA routes | A serving-backed arm evaluator for adapter-vs-base evaluation on real vLLM |
+| `SpecialistTaskRouter` consuming this attestor (`src/routing.test.ts`): loaded adapter routes; unload, off-pin version or unreachable server falls back to base | Mid-task fallback on a live server |
 | `mars serve --vllm` and `mars doctor` spawn e2e | Model key, tool-call parser for the chosen base |
