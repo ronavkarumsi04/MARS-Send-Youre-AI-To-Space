@@ -2093,11 +2093,21 @@ export async function createWorkbenchHost(
     let routed: RoutedTaskStep;
     try {
       const usage = { tokens: 0, usd: 0 };
+      let unpriced = false;
       for await (const event of options.store.events(context, task.task_id)) {
         if (!event.usage) continue;
         usage.tokens += event.usage.input_tokens + event.usage.output_tokens;
-        usage.usd += event.usage.cost_usd ?? 0;
+        if (event.usage.cost_usd === null) unpriced = true;
+        else usage.usd += event.usage.cost_usd;
       }
+      const committed = await options.store.budgetCommitted?.(
+        context,
+        task.task_id,
+      );
+      if (committed) {
+        usage.tokens = Math.max(usage.tokens, committed.tokens);
+        usage.usd = Math.max(usage.usd, committed.usd);
+      } else if (unpriced) usage.usd = task.budget.max_usd;
       routed = await routeTaskStep(
         context,
         task,

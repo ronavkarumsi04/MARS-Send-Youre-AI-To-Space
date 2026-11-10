@@ -1944,6 +1944,88 @@ test("step routing keeps a specialist rolled back mid-task paused on resume", as
   await api.close();
 });
 
+test("step resume routing counts paid foreground spending from the shared ledger", async () => {
+  const f = await fixture();
+  const routed = await f.routedRegistry();
+  const specialists = new MemoryArtifacts();
+  const registry = createSpecialistRegistry(
+    join(f.root, "specialists"),
+    specialists,
+    {
+      catalog: routed,
+      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+    },
+  );
+  await registry.registerBaseline(
+    context(),
+    makeBaseline(scope, {
+      model_id: "fixture/free",
+      provider_id: "fixture",
+      provider_model: "fixture",
+    }),
+  );
+  const promoted = await makeSpecialistFixture(specialists, {
+    scope,
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+  });
+  await registry.registerSpecialist(context(), promoted.registration);
+  await registry.promote(context(), "specialist-1", "1", null);
+  const next = await makeSpecialistFixture(specialists, {
+    scope,
+    revision: "2",
+    currentRevision: "1",
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+  });
+  await registry.registerSpecialist(context(), next.registration);
+  await registry.promote(context(), "specialist-1", "2", "1");
+  const api = await f.makeHost(routed, undefined, undefined, {
+    router: registry,
+    steps: new SpecialistTaskRouter(registry),
+    domain: "coding/mechanical-edit",
+  });
+  const input = task();
+  await api.create(context(), {
+    ...input,
+    budget: { ...input.budget, max_usd: 1 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  expect(session.options.modelId).toBe("fixture/specialist");
+  session.finish("paused");
+  await session.disposed;
+
+  const recordBudget = required(f.store.recordBudget);
+  await recordBudget.call(f.store, context(), "task", "foreground", {
+    tokens: 0,
+    usd: 1,
+  });
+  await expect(
+    api.resume(
+      context(),
+      "task",
+      (await api.inspect(context(), "task")).revision,
+    ),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.sessions).toHaveLength(1);
+  const evidence = await taskEvents(f, "task", "routing");
+  expect(evidence.at(-1)).toMatchObject({
+    phase: "resume",
+    fallback_from: "specialist:specialist-1@2",
+    rejected: [
+      { ref: "specialist:specialist-1@2", reasons: ["budget_cost_exceeded"] },
+    ],
+  });
+  await api.close();
+});
+
 test("routing aliases free-form task ids and sizes context like the model bridge", async () => {
   const f = await fixture();
   const routed = await f.routedRegistry();
