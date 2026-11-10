@@ -71,6 +71,8 @@ class DatasetTests(unittest.TestCase):
 
 
 class WatchdogTests(unittest.TestCase):
+    # The child writes its pid only after _start_watchdog has captured the host as its parent,
+    # so the host cannot exit before the watchdog records it.
     def test_orphaned_worker_exits_even_if_cleaner_cannot_start(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             pid_file = Path(root) / "worker.pid"
@@ -80,8 +82,8 @@ class WatchdogTests(unittest.TestCase):
                 "from mars_training_worker import worker\n"
                 "def broken(_):\n    raise OSError('no processes')\n"
                 "worker._spawn_scratch_cleaner = broken\n"
-                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                 f"worker._start_watchdog(None, {root!r})\n"
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                 "time.sleep(60)\n"
             )
             host = (
@@ -111,8 +113,8 @@ class WatchdogTests(unittest.TestCase):
                 "import os, sys, time\n"
                 f"sys.path.insert(0, {str(PYTHON_DIR)!r})\n"
                 "from mars_training_worker.worker import _start_watchdog\n"
-                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                 f"_start_watchdog(None, {str(scratch)!r})\n"
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                 "time.sleep(60)\n"
             )
             host = (
