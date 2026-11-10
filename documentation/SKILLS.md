@@ -347,8 +347,9 @@ are skipped, and nothing is deleted; an operator still accepts or rejects.
 (`packages/skills/src/gated-accept.ts`) is how operators accept proposals:
 
 - A proposal with a `create` or `update` op (`gateRequired`) is accepted only
-  when the ledger holds a passing verdict for its id computed with thresholds
-  no looser than `GATE_POLICY` (`meetsGatePolicy`: `min_trials` ≥ 10,
+  when the newest verdict stored for its id (`decidingGate`; a newer failing
+  run supersedes an older pass) passed with thresholds no looser than
+  `GATE_POLICY` (`meetsGatePolicy`: `min_trials` ≥ 10,
   `max_regressions` ≤ 0, `alpha` ≤ 0.05, `max_cost_ratio` ≤ 1.25). Verdicts
   record their thresholds in `options`; verdicts stored before that field
   existed do not qualify. Otherwise it fails with `gate-required`.

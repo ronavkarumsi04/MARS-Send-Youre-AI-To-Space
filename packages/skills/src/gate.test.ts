@@ -343,3 +343,46 @@ test("acceptance requires a passing verdict or a recorded override", async () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a newer failing gate run supersedes an older pass", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-gated-latest-"));
+  try {
+    const store = new SkillStore(join(dir, "skills"));
+    const ledger = new SkillOutcomeLedger(join(dir, "outcomes.sqlite"));
+    const proposal = await store.submitProposal({
+      source: "background_review:s:r",
+      rationale: "x",
+      ops: [
+        {
+          op: "create",
+          name: "flaky",
+          content:
+            "---\nname: flaky\ndescription: How to flaky.\n---\nDo it.\n",
+        },
+      ],
+    });
+    const run = (trials: GateTrial[]) =>
+      ledger.recordGate(
+        evaluateSkillGate({
+          proposal_id: proposal.id,
+          evidence_task_ids: ["learned"],
+          trials,
+        }),
+      );
+    run(winning);
+    expect(describeGate(proposal, ledger)).toStartWith("passed (");
+    run([...winning.slice(1), trial("broke", true, false)]);
+    expect(describeGate(proposal, ledger)).toStartWith("failed: ");
+    const operator = { actor: "tanay", source: "operator" };
+    await expect(
+      acceptWithGate(store, ledger, proposal.id, operator),
+    ).rejects.toMatchObject({ code: "gate-required" });
+    run(winning.map((t) => ({ ...t, task_id: `again-${t.task_id}` })));
+    expect(
+      (await acceptWithGate(store, ledger, proposal.id, operator)).gate,
+    ).not.toBeNull();
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

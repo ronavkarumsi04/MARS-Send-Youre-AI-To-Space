@@ -174,7 +174,7 @@ export class SkillOutcomeLedger {
     return (
       this.db
         .query(
-          "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, digest",
+          "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, rowid",
         )
         .all(proposalId) as { result: string }[]
     ).map((row) => {

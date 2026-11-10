@@ -1,6 +1,7 @@
 import type { RequestContext } from "@mars/contracts";
 import {
   acceptWithGate,
+  decidingGate,
   describeGate,
   gateRequired,
   helpfulness,
@@ -52,8 +53,7 @@ function proposalView(
   proposal: Proposal,
   ledger: SkillOutcomeLedger,
 ): SkillProposalView {
-  const verdicts = ledger.gates(proposal.id);
-  const latest = verdicts.at(-1);
+  const latest = ledger.gates(proposal.id).at(-1);
   const required = gateRequired(proposal.ops);
   return {
     proposal_id: proposal.id,
@@ -71,7 +71,7 @@ function proposalView(
     })),
     gate: {
       required,
-      cleared: !required || verdicts.some((v) => meetsGatePolicy(v)),
+      cleared: !required || decidingGate(ledger, proposal.id) !== null,
       summary: describeGate(proposal, ledger),
       latest: latest ? gateView(latest) : null,
     },
