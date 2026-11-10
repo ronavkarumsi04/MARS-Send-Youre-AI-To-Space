@@ -118,8 +118,12 @@ contracts, the provider router, or task execution.
 (wrapped by `verdictSinkFromRegistry`). The registry only trusts what it can
 re-verify: the job must be one it delegated in the caller's scope, the
 verdict's subject and candidate digest must match the stored revision, and
-the signed report must pass `verifyEvidence`; integrity failures throw
-(nothing is stored, the evaluation job fails). An accepted report is stored
+the signed report must pass `verifyEvidence` and carry this job's report id
+(`comparisonReportId(job_id)`, so an older report cannot be replayed), and the
+verdict's `outcome`/`simulated` must agree with the signed per-triple results
+and `synthetic_fixture`; failures throw (nothing is stored, the evaluation job
+fails). A verdict that arrives before `submitComparison` returns waits for the
+job row, and `reverify` retries if a verdict is recorded while it runs. An accepted report is stored
 in `evaluation_verdicts` (store format v2; a v1 store is migrated in place)
 with an `evaluation.recorded` audit event, and becomes the evidence that
 `reverify`, `promote`, rollback and routing gate on, so `no_improvement` and
