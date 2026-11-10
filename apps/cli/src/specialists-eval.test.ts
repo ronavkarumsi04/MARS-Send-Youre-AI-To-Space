@@ -237,7 +237,7 @@ test("with key, serving and an injected evaluation it records a verdict", async 
           context,
           requestEvaluation: (ctx, id, revision) =>
             ready.requestEvaluation(ctx, id, revision),
-          settled: (jobId) => service.settled(jobId),
+          settled: (ctx, jobId) => service.settled(ctx, jobId),
           verdict: (ctx, jobId) => service.verdict(ctx, jobId),
         };
       },

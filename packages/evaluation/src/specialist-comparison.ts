@@ -374,7 +374,7 @@ export interface SpecialistComparisonServiceOptions {
 
 export type SpecialistComparisonService = EvaluationService & {
   /** Resolves when the job reaches a terminal status. */
-  settled(jobId: string): Promise<JobResult>;
+  settled(context: RequestContext, jobId: string): Promise<JobResult>;
   verdict(
     context: RequestContext,
     jobId: string,
@@ -810,11 +810,10 @@ export function createSpecialistComparisonService(
       job.controller.abort();
       await job.done;
     },
-    async settled(jobId) {
+    async settled(context, jobId) {
+      await visible(context, jobId);
       await active.get(jobId)?.done;
-      const record = await read(jobId);
-      if (!record) throw new SpecialistComparisonError("not_found");
-      return result(record);
+      return result(await visible(context, jobId));
     },
     async verdict(context, jobId) {
       const record = await visible(context, jobId);

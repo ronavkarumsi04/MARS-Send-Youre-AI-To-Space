@@ -55,7 +55,7 @@ export interface LiveSpecialistEvaluation {
     context: RequestContext,
     jobId: string,
   ): Promise<SpecialistComparisonVerdict>;
-  settled(jobId: string): Promise<unknown>;
+  settled(context: RequestContext, jobId: string): Promise<unknown>;
 }
 
 export interface SpecialistsEvalDeps {
@@ -198,7 +198,7 @@ export async function runSpecialistsEvaluate(
     modelKeyEnv: keyEnv,
   });
   const job = await live.requestEvaluation(live.context, id, revision);
-  await live.settled(job.job_id);
+  await live.settled(live.context, job.job_id);
   const verdict = await live.verdict(live.context, job.job_id);
   (deps.write ?? ((text) => process.stdout.write(text)))(
     `${JSON.stringify(

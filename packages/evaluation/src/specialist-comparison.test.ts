@@ -172,7 +172,7 @@ test("request → job → signed verdict round-trip under matched conditions", a
   expect(await registry.evaluationJobs(context, "specialist-1", "1")).toEqual([
     job,
   ]);
-  const settled = await service.settled(job.job_id);
+  const settled = await service.settled(context, job.job_id);
   expect(settled.status).toBe("completed");
   expect(settled.artifacts).toHaveLength(2);
   expect(settled.cost_usd).toBe(0);
@@ -244,7 +244,9 @@ test("no improvement over base is recorded honestly, as is a regression", async 
     "specialist-1",
     "1",
   );
-  expect((await same.service.settled(job.job_id)).status).toBe("completed");
+  expect((await same.service.settled(context, job.job_id)).status).toBe(
+    "completed",
+  );
   const verdict = await same.service.verdict(context, job.job_id);
   expect(verdict.outcome).toBe("no_improvement");
   expect(verdict.codes).toEqual(["no_delta_vs_base"]);
@@ -263,7 +265,7 @@ test("no improvement over base is recorded honestly, as is a regression", async 
     "specialist-1",
     "1",
   );
-  await worse.service.settled(worseJob.job_id);
+  await worse.service.settled(context, worseJob.job_id);
   const regressed = await worse.service.verdict(context, worseJob.job_id);
   expect(regressed.outcome).toBe("regressed");
   expect(regressed.regressions).toBe(6);
@@ -343,7 +345,7 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
     "specialist-1",
     "1",
   );
-  const settled = await pricey.service.settled(job.job_id);
+  const settled = await pricey.service.settled(context, job.job_id);
   expect(settled.status).toBe("failed");
   expect(settled.artifacts).toEqual([]);
   await expect(pricey.service.verdict(context, job.job_id)).rejects.toThrow(
@@ -378,7 +380,7 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
     job.input_manifest,
     budget,
   );
-  await workspaceService.settled(scoped.job_id);
+  await workspaceService.settled(workspaceA, scoped.job_id);
   expect(
     (await workspaceService.inspect(workspaceA, scoped.job_id)).status,
   ).toBe("completed");
@@ -401,4 +403,37 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
     verdicts: { record: async () => {} },
   });
   expect((await restarted.inspect(context, job.job_id)).status).toBe("failed");
+
+  const hung = createSpecialistComparisonService({
+    stateDir: path.join(root, "evaluation"),
+    artifacts: evidenceArtifacts(pricey.memory),
+    subjects: {
+      resolve: (ctx, id, revision) =>
+        subjectResolverFromRegistry(projectWide).resolve(ctx, id, revision),
+    },
+    heldOut: createHeldOutGuard(split),
+    evaluator: {
+      ...createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
+      evaluate: ({ signal }) =>
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason)),
+        ),
+    },
+    signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
+    verdicts: { record: async () => {} },
+  });
+  const orphan = await hung.submitComparison(
+    context,
+    job.input_manifest,
+    budget,
+  );
+  await expect(
+    restarted.settled(
+      { ...context, scope: { owner_id: "owner-2", project_id: "project-1" } },
+      orphan.job_id,
+    ),
+  ).rejects.toMatchObject({ code: "not_found" });
+  const orphaned = await restarted.settled(context, orphan.job_id);
+  expect(orphaned.status).toBe("failed");
+  await hung.cancel(context, orphan.job_id);
 });
