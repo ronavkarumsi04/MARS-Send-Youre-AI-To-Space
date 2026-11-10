@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -210,6 +211,33 @@ test("the outcome ledger keeps the same task id in different scopes apart", () =
         verified,
         recorded_at: 1,
       });
+    expect(ledger.stats().get("a")).toMatchObject({ loads: 2, verified: 1 });
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unscoped outcome database is migrated on open and keeps learning", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-skill-outcomes-"));
+  const path = join(dir, "outcomes.sqlite");
+  try {
+    const old = new Database(path, { create: true });
+    old.exec(
+      "CREATE TABLE skill_outcomes (task_id TEXT PRIMARY KEY, skills TEXT NOT NULL, verified INTEGER NOT NULL, recorded_at INTEGER NOT NULL)",
+    );
+    old
+      .query("INSERT INTO skill_outcomes VALUES (?, ?, 1, 1)")
+      .run("t1", JSON.stringify([{ name: "a", sha256: sha("1") }]));
+    old.close();
+    const ledger = new SkillOutcomeLedger(path);
+    ledger.record({
+      scope_key: "owner-a",
+      task_id: "t1",
+      skills: [{ name: "a", sha256: sha("1") }],
+      verified: false,
+      recorded_at: 2,
+    });
     expect(ledger.stats().get("a")).toMatchObject({ loads: 2, verified: 1 });
     ledger.close();
   } finally {

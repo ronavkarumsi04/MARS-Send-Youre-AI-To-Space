@@ -26,6 +26,8 @@ export interface SkillOutcomeView extends SkillOutcomeStats {
 
 const MAX_SKILLS_PER_TASK = 1_024;
 const SHA256 = /^[a-f0-9]{64}$/;
+/** Scope given to rows recorded before outcomes were scoped. */
+export const LEGACY_SCOPE = "legacy-unscoped";
 
 /**
  * Durable record of which skill versions each verified task loaded and what
@@ -41,6 +43,7 @@ export class SkillOutcomeLedger {
     chmodSync(path, 0o600);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 5000");
+    this.migrateUnscoped();
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS skill_outcomes (
         scope_key TEXT NOT NULL,
@@ -51,6 +54,36 @@ export class SkillOutcomeLedger {
         PRIMARY KEY (scope_key, task_id)
       )`,
     );
+  }
+
+  /** Moves rows from a task-id-only table under one fixed legacy scope, atomically. */
+  private migrateUnscoped(): void {
+    const columns = this.db
+      .query("SELECT name FROM pragma_table_info('skill_outcomes')")
+      .all() as { name: string }[];
+    if (!columns.length || columns.some((c) => c.name === "scope_key")) return;
+    this.db.transaction(() => {
+      this.db.exec(
+        "ALTER TABLE skill_outcomes RENAME TO skill_outcomes_unscoped",
+      );
+      this.db.exec(
+        `CREATE TABLE skill_outcomes (
+          scope_key TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          skills TEXT NOT NULL,
+          verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+          recorded_at INTEGER NOT NULL,
+          PRIMARY KEY (scope_key, task_id)
+        )`,
+      );
+      this.db
+        .query(
+          `INSERT INTO skill_outcomes (scope_key, task_id, skills, verified, recorded_at)
+           SELECT $legacy, task_id, skills, verified, recorded_at FROM skill_outcomes_unscoped`,
+        )
+        .run({ legacy: LEGACY_SCOPE });
+      this.db.exec("DROP TABLE skill_outcomes_unscoped");
+    })();
   }
 
   record(outcome: SkillOutcome): void {
