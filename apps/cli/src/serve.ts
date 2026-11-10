@@ -17,6 +17,7 @@ import {
   type WorkbenchBrowserOptions,
   type WorkbenchResearchOptions,
 } from "@mars/workbench";
+import { remoteWorkspaceFromFlags } from "@mars/workspaces-remote";
 import { ServeUsageError } from "./cli-errors";
 import { omnirouteFromFlags } from "./omniroute";
 import { resolveWorkbenchLocation } from "./workbench-location";
@@ -205,6 +206,11 @@ export async function runServer(args: string[]): Promise<void> {
       project: { type: "string" },
       image: { type: "string" },
       checks: { type: "string" },
+      "workspace-provider": { type: "string" },
+      "agent-server": { type: "string" },
+      "agent-server-key-env": { type: "string" },
+      "agent-server-root": { type: "string" },
+      "agent-server-allow-insecure-http": { type: "boolean" },
       "trust-project": { type: "boolean" },
       "no-conventions": { type: "boolean" },
       "research-search": { type: "string" },
@@ -230,6 +236,8 @@ export async function runServer(args: string[]): Promise<void> {
         `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--checks HOST_CHECKS.json] [--trust-project] [--no-conventions]`,
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--browser-chromium PATH] [--browser-deny-host PATTERN]... [--browser-allow-input] [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
+        "                  [--workspace-provider local|remote] [--agent-server URL] [--agent-server-key-env MARS_AGENT_SERVER_API_KEY] [--agent-server-root /workspace/mars] [--agent-server-allow-insecure-http]",
+        "--workspace-provider remote runs workspace shell/files/artifacts on a pinned OpenHands Agent Server (1.59.0) at --agent-server; planning and model calls stay in MARS. The session key is read from the named environment variable and never printed. A remote server interface is not an OS isolation guarantee: commands run with the Agent Server process's privileges on its host. Live remote acceptance is unverified.",
         "Without a pre-pulled digest-pinned image, command execution is disabled. No model request is made at startup. Connection credentials are written only to the private connection file.",
         "Code knowledge graph tools (mars_graph_build, mars_graph_query) are offered only with --graphify ARG (repeatable; the argv prefix of the pinned graphify 0.9.101 executable from a uv/venv install, optionally behind an OS sandbox such as bwrap, then pass --graphify-os-wrapper). Confinement without a wrapper is process-level only (argv, env allowlist, offline flags); the graph is a derived, rebuildable artifact.",
         "Repository conventions are read once from --source at startup: skill folders (skills/, .claude/skills, .codex/skills, .agents/skills) and slash commands (.mars/commands, .claude/commands) always; AGENTS.md/AGENTS.override.md/CLAUDE.md instruction files and .mars/hooks.json only with --trust-project. Hook commands run only through the sandboxed execute path with execute approval. --no-conventions disables all of it, including mars_apply_patch.",
@@ -281,6 +289,26 @@ export async function runServer(args: string[]): Promise<void> {
       ? { allow: values["omniroute-allow"] }
       : {}),
   });
+  const remoteWorkspace = remoteWorkspaceFromFlags(
+    {
+      ...(values["workspace-provider"] !== undefined
+        ? { provider: values["workspace-provider"] }
+        : {}),
+      ...(values["agent-server"] !== undefined
+        ? { agentServer: values["agent-server"] }
+        : {}),
+      ...(values["agent-server-key-env"] !== undefined
+        ? { keyEnv: values["agent-server-key-env"] }
+        : {}),
+      ...(values["agent-server-root"] !== undefined
+        ? { remoteRoot: values["agent-server-root"] }
+        : {}),
+      ...(values["agent-server-allow-insecure-http"]
+        ? { allowInsecureHttp: true }
+        : {}),
+    },
+    process.env,
+  );
   const { source, project, state } = await resolveWorkbenchLocation({
     source: values.source,
     project: values.project,
@@ -305,6 +333,7 @@ export async function runServer(args: string[]): Promise<void> {
       values.port === undefined ? DEFAULT_WORKBENCH_PORT : Number(values.port),
     ...(values.image ? { image: values.image } : {}),
     ...(values.checks ? { checksFile: resolve(values.checks) } : {}),
+    ...(remoteWorkspace ? { remoteWorkspace } : {}),
     ...(research ? { research } : {}),
     ...(browser ? { browser } : {}),
     ...(values.graphify?.length
@@ -333,7 +362,8 @@ export async function runServer(args: string[]): Promise<void> {
         status: "listening",
         url: service.url,
         connection_file: service.connectionFile,
-        execute_enabled: Boolean(values.image),
+        execute_enabled: Boolean(values.image) || Boolean(remoteWorkspace),
+        workspace_provider: service.workspaceIsolation ?? { provider: "local" },
         research: research ? { search: research.search.id, live: true } : null,
         browser: browser ? { engine: browser.engine.id, live: true } : null,
         knowledge_graph: values.graphify?.length
