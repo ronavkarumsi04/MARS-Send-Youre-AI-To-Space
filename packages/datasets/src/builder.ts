@@ -112,9 +112,14 @@ export function buildDataset(input: BuildDatasetInput): BuiltDataset {
   if (!(fraction > 0 && fraction < 1))
     throw new DatasetError("invalid", "validation_fraction must be in (0, 1).");
   const heldIds = new Set(input.held_out.flatMap((set) => set.task_ids));
-  const heldRequests = new Set(
-    input.held_out.flatMap((set) => (set.requests ?? []).map(normalize)),
-  );
+  // A held-out task's own request text is held out too, so a renamed copy is
+  // caught even when the held-out set lists only ids.
+  const heldRequests = new Set([
+    ...input.held_out.flatMap((set) => (set.requests ?? []).map(normalize)),
+    ...input.examples
+      .filter((example) => heldIds.has(example.task_id))
+      .map((example) => normalize(example.request)),
+  ]);
   const privatePatterns = (input.private_patterns ?? []).filter(
     (pattern) => pattern.trim().length > 0,
   );

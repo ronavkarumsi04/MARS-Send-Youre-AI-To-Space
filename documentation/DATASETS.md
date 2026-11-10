@@ -30,7 +30,9 @@ in the manifest.
 
 - excludes every task listed in a held-out set (gate trials, Terminal-Bench,
   optimisation final holdouts, evolution held-out tasks) by id, and by
-  normalized request text so a renamed copy of a held-out task is caught;
+  normalized request text so a renamed copy of a held-out task is caught
+  (the request texts of held-out tasks present among the examples are held
+  out automatically; pass `requests` for held-out tasks MARS never ran);
 - re-checks the kept examples for leakage and fails with
   `DatasetError("leakage")` rather than writing a contaminated dataset;
 - requires `private_patterns` (the host's state, workspace and home roots)

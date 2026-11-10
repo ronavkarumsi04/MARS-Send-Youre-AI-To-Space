@@ -156,6 +156,7 @@ test("held-out tasks, secrets, private paths, duplicates and mismatched patches 
       ...["a", "b", "c", "d", "e", "f"].map((id) => example(id)),
       example("heldout-id"),
       example("renamed", "  FIX   tb2-task "),
+      example("copy", "fix HELDOUT-id", "--- a/c\n+++ b/c\n+copy\n"),
       example("secret", "Use key AKIAABCDEFGHIJKLMNOP"),
       example("private", "Read /home/u/.mars/state/x"),
       example("dup", "fix a", example("a").patch),
@@ -172,6 +173,7 @@ test("held-out tasks, secrets, private paths, duplicates and mismatched patches 
       built.manifest.excluded.map((e) => [e.task_id, e.reason]),
     ),
   ).toEqual({
+    copy: "held-out-request",
     dup: "duplicate",
     "heldout-id": "held-out-task",
     private: "private-path",
