@@ -532,3 +532,24 @@ test("a budget too small to split across matched arms is refused at submit", asy
   expect(evaluator.calls).toHaveLength(0);
   expect(recorded).toHaveLength(0);
 });
+
+test("a request missing comparison arms is refused before a job exists", async () => {
+  const { memory, registry, service, evaluator } = await setup();
+  const job = await registry.requestEvaluation(context, "specialist-1", "1");
+  await service.settled(context, job.job_id);
+  const request = JSON.parse(
+    new TextDecoder().decode(await memory.get(context, job.input_manifest)),
+  ) as Record<string, unknown>;
+  const partial = await evidenceArtifacts(memory).put(
+    context,
+    new TextEncoder().encode(
+      JSON.stringify({ ...request, required_arms: ["base", "candidate"] }),
+    ),
+    "application/json",
+  );
+  const calls = evaluator.calls.length;
+  await expect(
+    service.submitComparison(context, partial, budget),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  expect(evaluator.calls).toHaveLength(calls);
+});

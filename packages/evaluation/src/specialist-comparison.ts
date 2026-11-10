@@ -91,7 +91,9 @@ export const SpecialistComparisonRequestSchema = z
     required_arms: z
       .array(z.enum(SPECIALIST_ARMS))
       .min(1)
-      .refine((arms) => arms.includes("base") && arms.includes("candidate")),
+      .refine((arms) => SPECIALIST_ARMS.every((arm) => arms.includes(arm)), {
+        message: "the registry report needs every comparison arm",
+      }),
     current_production_revision: Id.nullable(),
     tested_task_coverage: z.array(Domain).min(1),
     acceptance: AcceptanceSchema,
