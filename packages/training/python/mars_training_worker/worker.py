@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import shutil
 import signal
 import sys
 import threading
@@ -281,6 +280,36 @@ def _train(start: dict[str, Any], channel: TextIO) -> dict[str, Any]:
     }
 
 
+_CLEANER = """
+import os, shutil, sys, time
+pid, scratch = int(sys.argv[1]), sys.argv[2]
+for _ in range(600):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+shutil.rmtree(scratch, ignore_errors=True)
+"""
+
+
+def _spawn_scratch_cleaner(scratch_dir: str) -> None:
+    """Remove scratch only after this worker's group is dead, so no writer races the delete.
+
+    The cleaner runs in its own session so the group kill does not reach it.
+    """
+    import subprocess
+
+    subprocess.Popen(
+        [sys.executable, "-c", _CLEANER, str(os.getpid()), scratch_dir],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
 def _start_watchdog(deadline_seconds: Any, scratch_dir: Any = None) -> None:
     """Backstop for the host's kill: exit (with our process group) if the host dies or the deadline passes.
 
@@ -299,7 +328,7 @@ def _start_watchdog(deadline_seconds: Any, scratch_dir: Any = None) -> None:
             orphaned = os.getppid() != parent
             if orphaned or (limit is not None and time.monotonic() > limit):
                 if orphaned and isinstance(scratch_dir, str) and scratch_dir:
-                    shutil.rmtree(scratch_dir, ignore_errors=True)
+                    _spawn_scratch_cleaner(scratch_dir)
                 if os.getpgrp() == os.getpid():
                     os.killpg(os.getpid(), signal.SIGKILL)
                 os._exit(3)
