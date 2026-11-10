@@ -262,12 +262,16 @@ export class VllmAdapterManager {
       reasons.length > 0 ||
       readiness.some((entry) => entry.serving_attestation !== "verified")
     ) {
-      await this.options.client
-        .unloadAdapter(artifact.sha256)
-        .catch(() => undefined);
+      // Only undo our own load; an adapter that was already serving stays.
+      if (!existing)
+        await this.options.client
+          .unloadAdapter(artifact.sha256)
+          .catch(() => undefined);
       throw new VllmAdapterRefused(
         "not_ready",
-        "Adapter loaded but did not attest; it was unloaded.",
+        existing
+          ? "Adapter is loaded but did not attest; it was left as it was."
+          : "Adapter loaded but did not attest; it was unloaded.",
         reasons.sort() as ReasonCode[],
       );
     }

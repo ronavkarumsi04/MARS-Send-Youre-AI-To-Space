@@ -619,4 +619,25 @@ describe("adapter lifecycle", () => {
     });
     expect(server.state.adapters.size).toBe(0);
   });
+
+  test("a failed load leaves an adapter that was already serving loaded", async () => {
+    const server = fake({
+      runtimeLoraUpdating: true,
+      adapters: { [ADAPTER]: artifact(ADAPTER).path },
+    });
+    const empty: ModelCatalog = {
+      policy: { allowPaid: false },
+      getModel: () => undefined,
+      unavailableReason: () => undefined,
+    };
+    await expect(
+      manager(server, true, empty).load(
+        context,
+        registration(),
+        artifact(ADAPTER),
+      ),
+    ).rejects.toMatchObject({ code: "not_ready" });
+    expect(server.requests.filter((r) => r.method === "POST")).toEqual([]);
+    expect(server.state.adapters.has(ADAPTER)).toBe(true);
+  });
 });
