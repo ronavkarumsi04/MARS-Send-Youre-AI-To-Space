@@ -1,0 +1,62 @@
+{
+  "schema": "mars.training-manifest/v1",
+  "manifest_id": "synthetic-plumbing-proof",
+  "specialist_id": "synthetic-plumbing-specialist",
+  "base_model": {
+    "repo": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+    "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+  },
+  "tokenizer": {
+    "repo": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+    "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec"
+  },
+  "chat_template": {
+    "repo": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+    "revision": "edca82771e1fad8f0b7ce110ffe770c682043fec",
+    "path": "chat_template.jinja",
+    "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f"
+  },
+  "datasets": [
+    {
+      "dataset_id": "synthetic-coding-train",
+      "split": "train",
+      "sha256": "5222702601a0c73127b091f4f6b90092f841ceb8390d328417b091c625279167",
+      "example_count": 9,
+      "task_ids": [
+        "synthetic-task-01",
+        "synthetic-task-02",
+        "synthetic-task-03",
+        "synthetic-task-04",
+        "synthetic-task-05",
+        "synthetic-task-06",
+        "synthetic-task-07",
+        "synthetic-task-08",
+        "synthetic-task-09"
+      ]
+    },
+    {
+      "dataset_id": "synthetic-coding-validation",
+      "split": "validation",
+      "sha256": "0ff81dbd6b9b8d0a9090883ec38e648948af4fc583c978fada12ea80b313525a",
+      "example_count": 3,
+      "task_ids": [
+        "synthetic-task-10",
+        "synthetic-task-11",
+        "synthetic-task-12"
+      ]
+    }
+  ],
+  "heldout": null,
+  "method": "lora",
+  "lora": { "r": 8, "alpha": 16, "dropout": 0, "target_modules": "all-linear" },
+  "sft": {
+    "max_steps": 8,
+    "learning_rate": 0.01,
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 1,
+    "max_length": 256,
+    "seed": 7
+  },
+  "generation": { "max_new_tokens": 8 },
+  "provenance": { "synthetic_fixture": true }
+}

@@ -334,6 +334,16 @@
         "zod": "3.25.76",
       },
     },
+    "packages/training": {
+      "name": "@mars/training",
+      "version": "0.0.1",
+      "dependencies": {
+        "@mars/contracts": "workspace:*",
+        "@mars/datasets": "workspace:*",
+        "@mars/specialists": "workspace:*",
+        "zod": "3.25.76",
+      },
+    },
     "packages/ui-core": {
       "name": "@mars/ui-core",
       "version": "0.0.1",
@@ -551,6 +561,8 @@
     "@mars/team-agent": ["@mars/team-agent@workspace:packages/team-agent"],
 
     "@mars/team-chat": ["@mars/team-chat@workspace:packages/team-chat"],
+
+    "@mars/training": ["@mars/training@workspace:packages/training"],
 
     "@mars/ui-core": ["@mars/ui-core@workspace:packages/ui-core"],
 
