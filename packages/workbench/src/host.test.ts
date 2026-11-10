@@ -43,7 +43,7 @@ import { ResearchError } from "@mars/research";
 import { ReviewRunner, type Turn } from "@mars/review";
 import { CommandError, type SkillOutcome, SkillStore } from "@mars/skills";
 import { type RoutingRequest, SpecialistTaskRouter } from "@mars/specialists";
-import { createTaskStore } from "@mars/tasks";
+import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import { WorkspaceModifiedError } from "@mars/workspaces";
 import {
   createRegistry as createSpecialistRegistry,
@@ -2026,90 +2026,106 @@ test("step resume routing counts paid foreground spending from the shared ledger
   await api.close();
 });
 
-test("step resume routing treats unpriced usage as spent without a foreground ledger", async () => {
-  const f = await fixture();
-  Reflect.deleteProperty(f.store, "recordBudget");
-  const routed = await f.routedRegistry();
-  const specialists = new MemoryArtifacts();
-  const registry = createSpecialistRegistry(
-    join(f.root, "specialists"),
-    specialists,
-    {
-      catalog: routed,
-      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
-    },
-  );
-  await registry.registerBaseline(
-    context(),
-    makeBaseline(scope, {
-      model_id: "fixture/free",
-      provider_id: "fixture",
-      provider_model: "fixture",
-    }),
-  );
-  const promoted = await makeSpecialistFixture(specialists, {
-    scope,
-    modelId: "fixture/specialist",
-    providerId: "fixture",
-    providerModel: "specialist",
-  });
-  await registry.registerSpecialist(context(), promoted.registration);
-  await registry.promote(context(), "specialist-1", "1", null);
-  const next = await makeSpecialistFixture(specialists, {
-    scope,
-    revision: "2",
-    currentRevision: "1",
-    modelId: "fixture/specialist",
-    providerId: "fixture",
-    providerModel: "specialist",
-  });
-  await registry.registerSpecialist(context(), next.registration);
-  await registry.promote(context(), "specialist-1", "2", "1");
-  const api = await f.makeHost(routed, undefined, undefined, {
-    router: registry,
-    steps: new SpecialistTaskRouter(registry),
-    domain: "coding/mechanical-edit",
-  });
-  const input = task();
-  await api.create(context(), {
-    ...input,
-    budget: { ...input.budget, max_usd: 1 },
-  });
-  await api.start(context(), {
-    task_id: "task",
-    expected_revision: 0,
-    approvals: { read: true, write: false, execute: false },
-  });
-  const session = required(f.sessions[0]);
-  expect(session.options.modelId).toBe("fixture/specialist");
-  session.finish("paused");
-  await session.disposed;
-
-  await f.store.appendEvent(context(), "task", {
-    run_id: "fixture-run",
-    versions: [{ component: "fixture", revision: "1" }],
-    event_type: "tool.completed",
-    producer: "fixture",
-    payload: { operation: "fixture" },
-    usage: { input_tokens: 1, output_tokens: 1, cost_usd: null },
-  });
-  await expect(
-    api.resume(
+for (const [spending, spend] of [
+  [
+    "unpriced usage",
+    (store: DurableTaskStore) =>
+      store.appendEvent(context(), "task", {
+        run_id: "fixture-run",
+        versions: [{ component: "fixture", revision: "1" }],
+        event_type: "tool.completed",
+        producer: "fixture",
+        payload: { operation: "fixture" },
+        usage: { input_tokens: 1, output_tokens: 1, cost_usd: null },
+      }),
+  ],
+  [
+    "a reserved hold",
+    (store: DurableTaskStore) =>
+      required(store.reserveBudget).call(store, context(), "task", "pool", {
+        tokens: 0,
+        usd: 1,
+      }),
+  ],
+] as const) {
+  test(`step resume routing counts ${spending} without a foreground ledger`, async () => {
+    const f = await fixture();
+    Reflect.deleteProperty(f.store, "recordBudget");
+    const routed = await f.routedRegistry();
+    const specialists = new MemoryArtifacts();
+    const registry = createSpecialistRegistry(
+      join(f.root, "specialists"),
+      specialists,
+      {
+        catalog: routed,
+        evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+      },
+    );
+    await registry.registerBaseline(
       context(),
-      "task",
-      (await api.inspect(context(), "task")).revision,
-    ),
-  ).rejects.toMatchObject({ code: "unavailable" });
-  expect(f.sessions).toHaveLength(1);
-  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
-    phase: "resume",
-    fallback_from: "specialist:specialist-1@2",
-    rejected: [
-      { ref: "specialist:specialist-1@2", reasons: ["budget_cost_exceeded"] },
-    ],
+      makeBaseline(scope, {
+        model_id: "fixture/free",
+        provider_id: "fixture",
+        provider_model: "fixture",
+      }),
+    );
+    const promoted = await makeSpecialistFixture(specialists, {
+      scope,
+      modelId: "fixture/specialist",
+      providerId: "fixture",
+      providerModel: "specialist",
+    });
+    await registry.registerSpecialist(context(), promoted.registration);
+    await registry.promote(context(), "specialist-1", "1", null);
+    const next = await makeSpecialistFixture(specialists, {
+      scope,
+      revision: "2",
+      currentRevision: "1",
+      modelId: "fixture/specialist",
+      providerId: "fixture",
+      providerModel: "specialist",
+    });
+    await registry.registerSpecialist(context(), next.registration);
+    await registry.promote(context(), "specialist-1", "2", "1");
+    const api = await f.makeHost(routed, undefined, undefined, {
+      router: registry,
+      steps: new SpecialistTaskRouter(registry),
+      domain: "coding/mechanical-edit",
+    });
+    const input = task();
+    await api.create(context(), {
+      ...input,
+      budget: { ...input.budget, max_usd: 1 },
+    });
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+    });
+    const session = required(f.sessions[0]);
+    expect(session.options.modelId).toBe("fixture/specialist");
+    session.finish("paused");
+    await session.disposed;
+
+    await spend(f.store);
+    await expect(
+      api.resume(
+        context(),
+        "task",
+        (await api.inspect(context(), "task")).revision,
+      ),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(f.sessions).toHaveLength(1);
+    expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+      phase: "resume",
+      fallback_from: "specialist:specialist-1@2",
+      rejected: [
+        { ref: "specialist:specialist-1@2", reasons: ["budget_cost_exceeded"] },
+      ],
+    });
+    await api.close();
   });
-  await api.close();
-});
+}
 
 test("routing aliases free-form task ids and sizes context like the model bridge", async () => {
   const f = await fixture();
