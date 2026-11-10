@@ -56,7 +56,10 @@ async function expectCode(
   if (detail instanceof RegExp) expect(registryError.detail).toMatch(detail);
 }
 
-async function setup(root?: string) {
+async function setup(
+  root?: string,
+  onSubmit?: (job: { job_id: string; input_manifest: ArtifactRef }) => void,
+) {
   const rootDir = root ?? (await createTempRoot());
   if (!root) roots.push(rootDir);
   const artifacts = new MemoryArtifacts();
@@ -64,7 +67,9 @@ async function setup(root?: string) {
   const service: EvaluationService = {
     async submitComparison(_ctx, input_manifest) {
       jobs += 1;
-      return { job_id: `job-${jobs}`, input_manifest };
+      const job = { job_id: `job-${jobs}`, input_manifest };
+      onSubmit?.(job);
+      return job;
     },
     async inspect() {
       throw new Error("not used");
@@ -148,6 +153,21 @@ describe("registry-side comparison verdict receiver", () => {
     const audit = await registry.audit(context);
     expect(
       audit.filter((event) => event.action === "evaluation.recorded"),
+    ).toHaveLength(1);
+  });
+
+  test("a verdict that arrives before submitComparison returns is recorded", async () => {
+    let early: Promise<unknown> | undefined;
+    const { registry, fixture } = await setup(undefined, (job) => {
+      early = registry.recordEvaluationVerdict(
+        context,
+        entry(job, fixture.registration.evaluation, fixture.candidateSha256),
+      );
+    });
+    const job = await registry.requestEvaluation(context, "specialist-1", "1");
+    expect(await early).toMatchObject({ job_id: job.job_id });
+    expect(
+      await registry.evaluationVerdicts(context, "specialist-1", "1"),
     ).toHaveLength(1);
   });
 

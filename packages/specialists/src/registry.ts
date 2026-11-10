@@ -380,6 +380,8 @@ export class SpecialistRegistry implements ModelRegistry {
   readonly options: SpecialistRegistryOptions;
   readonly store: SpecialistStore;
   private readonly compatibilityOptions: CompatibilityOptions;
+  /** Submissions whose job row is not written yet, by input manifest sha256. */
+  private readonly pendingEvaluations = new Map<string, Set<Promise<void>>>();
   private readonly rootDir: string;
 
   constructor(options: SpecialistRegistryOptions) {
@@ -1633,10 +1635,44 @@ export class SpecialistRegistry implements ModelRegistry {
       bytes,
       "application/json",
     );
-    const job = await this.options.evaluation.service.submitComparison(
+    // The service may finish (and call the verdict sink) before
+    // submitComparison returns; recordEvaluationVerdict waits on this.
+    let settle: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const waiting = this.pendingEvaluations.get(ref.sha256) ?? new Set();
+    waiting.add(pending);
+    this.pendingEvaluations.set(ref.sha256, waiting);
+    try {
+      return await this.delegateEvaluation(ctx, row, id, revision, ref, budget);
+    } finally {
+      waiting.delete(pending);
+      if (
+        waiting.size === 0 &&
+        this.pendingEvaluations.get(ref.sha256) === waiting
+      ) {
+        this.pendingEvaluations.delete(ref.sha256);
+      }
+      settle();
+    }
+  }
+
+  private async delegateEvaluation(
+    ctx: RequestContext,
+    row: { scope_key: string },
+    id: string,
+    revision: string,
+    ref: ArtifactRef,
+    budget: Budget | undefined,
+  ): Promise<JobRef> {
+    const evaluation = this.options.evaluation;
+    if (!evaluation)
+      throw new SpecialistRegistryError("evaluation_unavailable");
+    const job = await evaluation.service.submitComparison(
       ctx,
       ref,
-      budget ?? this.options.evaluation.defaultBudget,
+      budget ?? evaluation.defaultBudget,
     );
     const now = new Date().toISOString();
     this.store.transaction(() => {
@@ -1721,7 +1757,14 @@ export class SpecialistRegistry implements ModelRegistry {
     }
     const record = parsed.data;
     const key = scopeKey(ctx.scope);
-    const job = this.store.readEvaluationJob(key, record.job.job_id);
+    let job = this.store.readEvaluationJob(key, record.job.job_id);
+    const waiting = this.pendingEvaluations.get(
+      record.job.input_manifest.sha256,
+    );
+    if (!job && waiting) {
+      await Promise.all([...waiting]);
+      job = this.store.readEvaluationJob(key, record.job.job_id);
+    }
     if (!job) throw new SpecialistRegistryError("not_found", "evaluation_job");
     const { subject } = record.value;
     if (
