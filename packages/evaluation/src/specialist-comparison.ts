@@ -557,7 +557,10 @@ export function createSpecialistComparisonService(
           "the evaluator produced the training run",
         );
       }
-      if (lineage.data.request_sha256s === undefined) {
+      if (
+        lineage.data.request_sha256s === undefined ||
+        lineage.data.request_sha256s.length === 0
+      ) {
         throw new SpecialistComparisonError(
           "lineage_requests_unverifiable",
           "the dataset lineage carries no request digests, so held-out request overlap cannot be ruled out",

@@ -19,6 +19,7 @@ import {
   canonicalJson,
   checkServingReadiness,
   checkSpecialistBindings,
+  DatasetLineageSchema,
   evaluateTriple,
   formatRef,
   type ModelCatalog,
@@ -642,6 +643,17 @@ describe("specialist evidence and persistence", () => {
     );
     expect(view.status).toBe("evaluated");
     expect(view.verdict.codes).toEqual([]);
+  });
+
+  test("a lineage cannot claim request coverage with zero digests", async () => {
+    const { artifacts } = await setupRegistry();
+    const lineage = await makeLineageArtifact(artifacts, context.scope, {
+      requestSha256s: [],
+    });
+    const document = JSON.parse(
+      new TextDecoder().decode(await artifacts.get(context, lineage)),
+    );
+    expect(DatasetLineageSchema.safeParse(document).success).toBe(false);
   });
 
   test("rejects held-out leakage, non-independent evaluators, and non-improving candidates", async () => {
