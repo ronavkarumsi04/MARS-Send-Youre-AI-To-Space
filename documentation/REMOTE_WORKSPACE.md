@@ -84,7 +84,12 @@ Plain `http://` is refused for non-loopback hosts unless
   event is skipped. A durable `execute` journal entry (with the command id
   once known) is written before the start; if the host dies mid-command, the
   next operation sends stop for that id and adopts the scanned remote tree as
-  a new revision instead of stranding the workspace.
+  a new revision instead of stranding the workspace. **Not guaranteed:** if the
+  start response was lost (or the host died before it arrived), the command id
+  is unknown and the command cannot be stopped; MARS adopts the tree as it is
+  at reconciliation, and any later change by that orphaned command makes the
+  next operation fail closed with `workspace_modified` rather than being
+  silently accepted. Bound such commands with the server-side timeout.
 - **Failed writes/removes** that may have changed remote bytes (e.g. upload
   succeeded, `chmod` failed) adopt the scanned remote tree as a new revision
   before the error is returned, so the workspace stays usable.
