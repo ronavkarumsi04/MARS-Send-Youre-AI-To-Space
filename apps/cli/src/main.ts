@@ -12,6 +12,7 @@ import {
 import { remoteWorkspaceDoctor } from "@mars/workspaces-remote";
 import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
+import { runDatasets } from "./datasets";
 import { runEvolution } from "./evolution";
 import { runMemory } from "./memory";
 import { omnirouteDoctorReport } from "./omniroute";
@@ -352,9 +353,11 @@ try {
     await runTeam(process.argv.slice(3));
   } else if (command === "evolution") {
     await runEvolution(process.argv.slice(3));
+  } else if (command === "datasets") {
+    await runDatasets(process.argv.slice(3));
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution|datasets>",
     );
     process.exitCode = 2;
   }
