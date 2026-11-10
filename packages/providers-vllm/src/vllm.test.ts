@@ -575,6 +575,20 @@ describe("adapter lifecycle", () => {
     });
   });
 
+  test("an adapter name already served from another path is refused, not reused", async () => {
+    const server = fake({
+      runtimeLoraUpdating: true,
+      adapters: { [ADAPTER]: "/elsewhere" },
+    });
+    await expect(
+      manager(server, true).load(context, registration(), artifact(ADAPTER)),
+    ).rejects.toMatchObject({ code: "adapter_path_mismatch" });
+    expect(
+      server.requests.filter((r) => r.method === "POST").map((r) => r.path),
+    ).toEqual([]);
+    expect(server.state.adapters.get(ADAPTER)).toBe("/elsewhere");
+  });
+
   test("unload that leaves the adapter listed is reported", async () => {
     const server = fake({
       runtimeLoraUpdating: true,

@@ -9,7 +9,7 @@ import {
   type SpecialistRegistration,
 } from "@mars/specialists";
 import { createVllmServingAttestor, readVllmServing } from "./attestor";
-import type { VllmClient } from "./client";
+import type { VllmClient, VllmModelCard } from "./client";
 import { sameVersionRef, type VllmServingProfile } from "./profile";
 import { ADAPTER_NAME_PATTERN, VLLM_PROVIDER_ID, vllmModels } from "./provider";
 
@@ -29,6 +29,7 @@ export type AdapterRefusalCode =
   | "serving_tokenizer_mismatch"
   | "serving_chat_template_mismatch"
   | "runtime_lora_disabled"
+  | "adapter_path_mismatch"
   | "still_loaded"
   | "not_ready";
 
@@ -224,12 +225,16 @@ export class VllmAdapterManager {
       );
   }
 
-  private async loadedSha256s(): Promise<string[]> {
+  private async loadedAdapters(): Promise<VllmModelCard[]> {
     const snapshot = await readVllmServing(
       this.options.client,
       this.options.profile,
     );
-    return snapshot.adapters.map((card) => card.id);
+    return snapshot.adapters;
+  }
+
+  private async loadedSha256s(): Promise<string[]> {
+    return (await this.loadedAdapters()).map((card) => card.id);
   }
 
   /** Runtime load (dev only), then verify the binding attests with no reasons. */
@@ -240,7 +245,15 @@ export class VllmAdapterManager {
   ): Promise<ServingReadiness[]> {
     this.preflight(registration, artifact);
     this.requireRuntime("loading");
-    if (!(await this.loadedSha256s()).includes(artifact.sha256))
+    const existing = (await this.loadedAdapters()).find(
+      (card) => card.id === artifact.sha256,
+    );
+    if (existing && existing.root !== artifact.path)
+      throw new VllmAdapterRefused(
+        "adapter_path_mismatch",
+        "vLLM already serves this adapter name from a different path; unload it first.",
+      );
+    if (!existing)
       await this.options.client.loadAdapter(artifact.sha256, artifact.path);
     const readiness = await this.readiness(context, registration);
     const reasons = [...new Set(readiness.flatMap((entry) => entry.reasons))];
