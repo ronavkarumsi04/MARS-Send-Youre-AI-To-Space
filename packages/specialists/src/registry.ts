@@ -62,6 +62,8 @@ import {
   type SpecialistProfile,
   type SpecialistRegistration,
   SpecialistRegistrationSchema,
+  type TaskRoutingState,
+  TaskRoutingStateSchema,
 } from "./schemas";
 import {
   type BaselineRow,
@@ -1659,6 +1661,102 @@ export class SpecialistRegistry implements ModelRegistry {
       compatible,
       reasons: compatible ? [] : ["serving_base_mismatch"],
     };
+  }
+
+  /**
+   * The fallback chain starting at `ref` (inclusive), resolved in the scope
+   * that owns the specialist (the caller's scope or its project scope) with
+   * the same cycle/depth/missing-target rules routing uses.
+   */
+  async fallbackChain(
+    context: RequestContext,
+    ref: string,
+    ownerScope: RequestContext["scope"] = context.scope,
+  ): Promise<ReturnType<typeof resolveFallbackChain>> {
+    const ctx = this.checkContext(context);
+    const visible =
+      ownerScope.owner_id === ctx.scope.owner_id &&
+      ownerScope.project_id === ctx.scope.project_id &&
+      (ownerScope.workspace_id === undefined ||
+        ownerScope.workspace_id === ctx.scope.workspace_id);
+    if (!visible) throw new SpecialistRegistryError("scope_denied");
+    return this.lookupFallback(ctx, ref, scopeKey(ownerScope));
+  }
+
+  async taskRoutingState(
+    context: RequestContext,
+    taskId: string,
+    role: TaskRoutingState["role"],
+  ): Promise<TaskRoutingState | null> {
+    const ctx = this.checkContext(context);
+    const row = this.store.db
+      .query(
+        `SELECT step, state_json FROM task_routing_state
+         WHERE scope_key = ? AND task_id = ? AND role = ?`,
+      )
+      .get(scopeKey(ctx.scope), taskId, role) as {
+      step: number;
+      state_json: string;
+    } | null;
+    if (!row) return null;
+    const state = parseStored(row.state_json, TaskRoutingStateSchema);
+    if (
+      state.step !== row.step ||
+      state.task_id !== taskId ||
+      state.role !== role
+    ) {
+      throw new SpecialistRegistryError("corrupt_record");
+    }
+    return state;
+  }
+
+  /**
+   * Stores the next step state only if the stored step still equals
+   * `expectedStep` (0 when no state exists), so two hosts can never both
+   * commit the same step.
+   */
+  async commitTaskRoutingState(
+    context: RequestContext,
+    state: TaskRoutingState,
+    expectedStep: number,
+  ): Promise<void> {
+    const ctx = this.checkContext(context);
+    const parsed = TaskRoutingStateSchema.safeParse(state);
+    if (!parsed.success || parsed.data.step !== expectedStep + 1) {
+      throw new SpecialistRegistryError("invalid_input", "task_routing_state");
+    }
+    this.publish(parsed.data);
+    const scope = scopeKey(ctx.scope);
+    this.store.transaction(() => {
+      const row = this.store.db
+        .query(
+          `SELECT step FROM task_routing_state
+           WHERE scope_key = ? AND task_id = ? AND role = ?`,
+        )
+        .get(scope, parsed.data.task_id, parsed.data.role) as {
+        step: number;
+      } | null;
+      if ((row?.step ?? 0) !== expectedStep) {
+        throw new SpecialistRegistryError("conflict", "task_routing_step");
+      }
+      this.store.db
+        .query(
+          `INSERT INTO task_routing_state
+           (scope_key, task_id, role, step, state_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (scope_key, task_id, role) DO UPDATE SET
+             step = excluded.step, state_json = excluded.state_json,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          scope,
+          parsed.data.task_id,
+          parsed.data.role,
+          parsed.data.step,
+          canonicalJson(parsed.data),
+          new Date().toISOString(),
+        );
+    });
   }
 
   private lookupFallback(

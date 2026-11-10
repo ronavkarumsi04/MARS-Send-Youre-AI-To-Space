@@ -528,3 +528,29 @@ export interface ResolveFallbackResult {
     | "fallback_target_missing"
     | null;
 }
+
+/**
+ * Per-task, per-role step-routing state. `pinned` is the target every later
+ * step keeps while it stays eligible; `lost_refs` are targets that lost
+ * eligibility mid-task (rollback, unattested serving, invalidation) and are
+ * never selected again for this task.
+ */
+export const TaskRoutingStateSchema = z
+  .object({
+    schema_version: z.literal(1),
+    task_id: IdSchema,
+    role: RoleSchema,
+    step: z.number().int().nonnegative(),
+    pinned: z
+      .object({
+        ref: z.string().min(1),
+        via: z.enum(["route", "fallback"]),
+        decision_id: z.string().uuid(),
+      })
+      .strict()
+      .nullable(),
+    lost_refs: uniqueArray(z.string().min(1)),
+    last_decision_id: z.string().uuid().nullable(),
+  })
+  .strict();
+export type TaskRoutingState = z.infer<typeof TaskRoutingStateSchema>;

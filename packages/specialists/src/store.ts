@@ -216,6 +216,15 @@ export class SpecialistStore {
           attempt INTEGER NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS task_routing_state (
+          scope_key TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          step INTEGER NOT NULL,
+          state_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (scope_key, task_id, role)
+        );
         CREATE TABLE IF NOT EXISTS audit_events (
           seq INTEGER PRIMARY KEY AUTOINCREMENT,
           scope_key TEXT NOT NULL,
