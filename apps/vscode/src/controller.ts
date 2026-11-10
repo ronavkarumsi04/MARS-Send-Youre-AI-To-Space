@@ -70,6 +70,8 @@ export interface ControllerOptions {
   modelId(): string | null;
   newId(): string;
   poller?: Pick<PollerOptions, "minDelayMs" | "maxDelayMs" | "sleep">;
+  /** Called whenever `currentClient` changes (connect, disconnect, reconnect). */
+  onClientChange?(client: MarsClient | undefined): void;
 }
 
 const TERMINAL: readonly TaskStatus[] = ["completed", "cancelled", "failed"];
@@ -184,6 +186,17 @@ export class WorkbenchController {
 
   get disposed(): boolean {
     return this.disposedFlag;
+  }
+
+  /** The connected client, shared with the Skills view; undefined until connected. */
+  get currentClient(): MarsClient | undefined {
+    return this.client;
+  }
+
+  private setClient(client: MarsClient | undefined): void {
+    if (this.client === client) return;
+    this.client = client;
+    this.options.onClientChange?.(client);
   }
 
   get activePoller(): EventPoller | undefined {
@@ -403,7 +416,7 @@ export class WorkbenchController {
 
   private markDisconnected(status: ConnectionStatus, message: string): void {
     this.stopPolling();
-    this.client = undefined;
+    this.setClient(undefined);
     this.server = undefined;
     this.connection = disconnected(status, message);
   }
@@ -412,7 +425,7 @@ export class WorkbenchController {
 
   async connect(): Promise<void> {
     this.stopPolling();
-    this.client = undefined;
+    this.setClient(undefined);
     this.server = undefined;
     this.connection = disconnected("connecting", null);
     this.emit();
@@ -435,7 +448,7 @@ export class WorkbenchController {
       )
         this.resetServerState();
       this.identity = { server: result.server, scope: server.scope };
-      this.client = result.client;
+      this.setClient(result.client);
       this.server = server;
       this.connection = {
         status: "connected",

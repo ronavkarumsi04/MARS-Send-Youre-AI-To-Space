@@ -147,26 +147,34 @@ export class SkillOutcomeLedger {
       });
   }
 
-  /** Keeps every gate verdict, keyed by its input digest so re-running the same gate is idempotent. */
+  /**
+   * Keeps every gate verdict, one row per input digest. Re-running the same
+   * gate moves its row to newest, since the newest verdict decides acceptance.
+   */
   recordGate(result: SkillGateResult, recordedAt = Date.now()): void {
     if (!result.proposal_id || result.proposal_id.length > 256)
       throw new Error("Invalid proposal id.");
     if (!SHA256.test(result.digest)) throw new Error("Invalid gate digest.");
-    this.db
-      .query(
-        `INSERT OR IGNORE INTO skill_gates (digest, proposal_id, passed, result, recorded_at)
+    this.db.transaction(() => {
+      this.db
+        .query("DELETE FROM skill_gates WHERE digest = ?")
+        .run(result.digest);
+      this.db
+        .query(
+          `INSERT INTO skill_gates (digest, proposal_id, passed, result, recorded_at)
          VALUES ($digest, $proposal_id, $passed, $result, $recorded_at)`,
-      )
-      .run({
-        digest: result.digest,
-        proposal_id: result.proposal_id,
-        passed: result.passed ? 1 : 0,
-        // JSON has no Infinity; a free baseline with a paid candidate has one.
-        result: JSON.stringify(result, (_, value) =>
-          value === Number.POSITIVE_INFINITY ? "Infinity" : value,
-        ),
-        recorded_at: recordedAt,
-      });
+        )
+        .run({
+          digest: result.digest,
+          proposal_id: result.proposal_id,
+          passed: result.passed ? 1 : 0,
+          // JSON has no Infinity; a free baseline with a paid candidate has one.
+          result: JSON.stringify(result, (_, value) =>
+            value === Number.POSITIVE_INFINITY ? "Infinity" : value,
+          ),
+          recorded_at: recordedAt,
+        });
+    })();
   }
 
   /** Gate verdicts for a proposal, oldest first. */
@@ -174,7 +182,7 @@ export class SkillOutcomeLedger {
     return (
       this.db
         .query(
-          "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, digest",
+          "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, rowid",
         )
         .all(proposalId) as { result: string }[]
     ).map((row) => {

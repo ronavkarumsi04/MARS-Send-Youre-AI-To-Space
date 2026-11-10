@@ -40,6 +40,16 @@ import {
   MemoryProposalViewSchema,
   type RpcRequest,
   RpcRequestSchema,
+  type SkillProposalAcceptParams,
+  type SkillProposalListParams,
+  type SkillProposalRejectParams,
+  type SkillProposalView,
+  SkillProposalViewSchema,
+  type SkillReviewUndoParams,
+  type SkillReviewUndoResult,
+  SkillReviewUndoResultSchema,
+  type SkillView,
+  SkillViewSchema,
   type StartParams,
   WorkspaceRefSchema,
 } from "./protocol";
@@ -115,6 +125,25 @@ export interface WorkbenchOperations {
     context: RequestContext,
     params: MemoryProposalRejectParams,
   ): Promise<MemoryProposalView>;
+  /** Learned skills with their verified-outcome evidence; absent when the host has no skill store. */
+  skills?(context: RequestContext): Promise<SkillView[]>;
+  skillProposals?(
+    context: RequestContext,
+    params: SkillProposalListParams,
+  ): Promise<SkillProposalView[]>;
+  /** Proposals that write skill instructions need a passing held-out gate verdict or a recorded reason. */
+  acceptSkillProposal?(
+    context: RequestContext,
+    params: SkillProposalAcceptParams,
+  ): Promise<SkillProposalView>;
+  rejectSkillProposal?(
+    context: RequestContext,
+    params: SkillProposalRejectParams,
+  ): Promise<SkillProposalView>;
+  undoSkillReview?(
+    context: RequestContext,
+    params: SkillReviewUndoParams,
+  ): Promise<SkillReviewUndoResult>;
   /** Restores what an accepted proposal changed, fenced on the scope's current memory revision. */
   revertMemoryProposal?(
     context: RequestContext,
@@ -123,6 +152,8 @@ export interface WorkbenchOperations {
 }
 
 const memoryProposalList = z.array(MemoryProposalViewSchema).max(10_000);
+const skillList = z.array(SkillViewSchema).max(10_000);
+const skillProposalList = z.array(SkillProposalViewSchema).max(10_000);
 
 export interface WorkbenchServerOptions {
   api: WorkbenchOperations;
@@ -365,6 +396,29 @@ async function dispatch(
       return MemoryProposalViewSchema.parse(
         await api.revertMemoryProposal(context, request.params),
       );
+    case "skills.list":
+      if (!api.skills) throw new WorkbenchError("unavailable");
+      return skillList.parse(await api.skills(context));
+    case "skills.proposals.list":
+      if (!api.skillProposals) throw new WorkbenchError("unavailable");
+      return skillProposalList.parse(
+        await api.skillProposals(context, request.params),
+      );
+    case "skills.proposals.accept":
+      if (!api.acceptSkillProposal) throw new WorkbenchError("unavailable");
+      return SkillProposalViewSchema.parse(
+        await api.acceptSkillProposal(context, request.params),
+      );
+    case "skills.proposals.reject":
+      if (!api.rejectSkillProposal) throw new WorkbenchError("unavailable");
+      return SkillProposalViewSchema.parse(
+        await api.rejectSkillProposal(context, request.params),
+      );
+    case "skills.reviews.undo":
+      if (!api.undoSkillReview) throw new WorkbenchError("unavailable");
+      return SkillReviewUndoResultSchema.parse(
+        await api.undoSkillReview(context, request.params),
+      );
   }
 }
 
@@ -448,6 +502,32 @@ function validateResult(request: RpcRequest, result: unknown, scope: Scope) {
     }[request.method];
     if (
       !sameScope(proposal.scope, scope) ||
+      proposal.proposal_id !== request.params.proposal_id ||
+      proposal.status !== status
+    )
+      invalid();
+  } else if (request.method === "skills.list") {
+    const names = skillList.parse(result).map((skill) => skill.name);
+    if (new Set(names).size !== names.length) invalid();
+  } else if (request.method === "skills.proposals.list") {
+    const seen = new Set<string>();
+    for (const proposal of skillProposalList.parse(result)) {
+      if (
+        seen.has(proposal.proposal_id) ||
+        (request.params.status !== undefined &&
+          proposal.status !== request.params.status)
+      )
+        invalid();
+      seen.add(proposal.proposal_id);
+    }
+  } else if (
+    request.method === "skills.proposals.accept" ||
+    request.method === "skills.proposals.reject"
+  ) {
+    const proposal = SkillProposalViewSchema.parse(result);
+    const status =
+      request.method === "skills.proposals.accept" ? "accepted" : "rejected";
+    if (
       proposal.proposal_id !== request.params.proposal_id ||
       proposal.status !== status
     )

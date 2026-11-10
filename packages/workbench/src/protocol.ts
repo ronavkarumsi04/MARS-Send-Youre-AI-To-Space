@@ -261,6 +261,130 @@ export type MemoryProposalRevertParams = z.infer<
   typeof MemoryProposalRevertParamsSchema
 >;
 
+const skillName = z.string().min(1).max(128);
+const ratio = z.number().min(0).max(1);
+const SkillOutcomeSummarySchema = z
+  .object({
+    loads: z.number().int().nonnegative(),
+    verified: z.number().int().nonnegative(),
+    baseline_rate: ratio,
+    baseline_loads: z.number().int().nonnegative(),
+    /** Lower-bound pass-rate lift over the baseline, in [-1, 1]; 0 until the evidence clears chance. */
+    helpfulness: z.number().min(-1).max(1),
+    quarantined: z.boolean(),
+  })
+  .strict();
+/** A learned skill as the operator sees it, with its verified-outcome evidence. */
+export const SkillViewSchema = z
+  .object({
+    name: skillName,
+    status: z.enum(["active", "stale", "archived"]),
+    pinned: z.boolean(),
+    content: z.string(),
+    use_count: z.number().int().nonnegative(),
+    last_activity: z.number().int().nonnegative(),
+    outcomes: SkillOutcomeSummarySchema.nullable(),
+  })
+  .strict();
+export type SkillView = z.infer<typeof SkillViewSchema>;
+export const SkillProposalStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "rejected",
+]);
+const SkillGateVerdictViewSchema = z
+  .object({
+    passed: z.boolean(),
+    /** Passed and computed with thresholds no looser than the host policy. */
+    meets_policy: z.boolean(),
+    reasons: z.array(z.string().max(256)).max(64),
+    trials: z.number().int().nonnegative(),
+    wins: z.number().int().nonnegative(),
+    losses: z.number().int().nonnegative(),
+    ties: z.number().int().nonnegative(),
+    p_value: z.number().min(0).max(1).nullable(),
+    /** Null when the no-skill runs cost nothing (an infinite ratio). */
+    cost_ratio: z.number().nonnegative().nullable(),
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export const SkillProposalViewSchema = z
+  .object({
+    proposal_id: id,
+    source: opaque,
+    /** Background review that produced it; `skills.reviews.undo` takes this id. */
+    review_id: id.nullable(),
+    rationale: z.string(),
+    status: SkillProposalStatusSchema,
+    reason: z.string().optional(),
+    operations: z
+      .array(
+        z
+          .object({
+            op: z.enum([
+              "create",
+              "update",
+              "archive",
+              "restore",
+              "recordUse",
+              "stale",
+              "pin",
+              "restoreVersion",
+            ]),
+            name: skillName,
+            content: z.string().optional(),
+            pinned: z.boolean().optional(),
+            version_id: id.optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(1024),
+    gate: z
+      .object({
+        required: z.boolean(),
+        /** Accept needs no override: no gate required, or a stored verdict passed under the host policy. */
+        cleared: z.boolean(),
+        /** One line: "not required", "passed (…)", "failed: …", "none yet", … */
+        summary: z.string().max(2048),
+        latest: SkillGateVerdictViewSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type SkillProposalView = z.infer<typeof SkillProposalViewSchema>;
+export const SkillProposalListParamsSchema = z
+  .object({ status: SkillProposalStatusSchema.optional() })
+  .strict();
+export type SkillProposalListParams = z.infer<
+  typeof SkillProposalListParamsSchema
+>;
+/** `without_gate_reason` accepts without a passing gate verdict; the host records who and why. */
+export const SkillProposalAcceptParamsSchema = z
+  .object({
+    proposal_id: id,
+    without_gate_reason: reason.optional(),
+    resolved_by: actor.optional(),
+  })
+  .strict();
+export type SkillProposalAcceptParams = z.infer<
+  typeof SkillProposalAcceptParamsSchema
+>;
+export const SkillProposalRejectParamsSchema = z
+  .object({ proposal_id: id, reason, resolved_by: actor.optional() })
+  .strict();
+export type SkillProposalRejectParams = z.infer<
+  typeof SkillProposalRejectParamsSchema
+>;
+export const SkillReviewUndoParamsSchema = z
+  .object({ review_id: id, resolved_by: actor.optional() })
+  .strict();
+export type SkillReviewUndoParams = z.infer<typeof SkillReviewUndoParamsSchema>;
+export const SkillReviewUndoResultSchema = z
+  .object({ undone: z.number().int().nonnegative() })
+  .strict();
+export type SkillReviewUndoResult = z.infer<typeof SkillReviewUndoResultSchema>;
+
 function method<M extends string, P extends z.AnyZodObject>(
   name: M,
   params: P,
@@ -331,5 +455,10 @@ export const RpcRequestSchema = z.discriminatedUnion("method", [
   method("memory.proposals.accept", MemoryProposalAcceptParamsSchema),
   method("memory.proposals.reject", MemoryProposalRejectParamsSchema),
   method("memory.proposals.revert", MemoryProposalRevertParamsSchema),
+  method("skills.list", empty),
+  method("skills.proposals.list", SkillProposalListParamsSchema),
+  method("skills.proposals.accept", SkillProposalAcceptParamsSchema),
+  method("skills.proposals.reject", SkillProposalRejectParamsSchema),
+  method("skills.reviews.undo", SkillReviewUndoParamsSchema),
 ]);
 export type RpcRequest = z.infer<typeof RpcRequestSchema>;

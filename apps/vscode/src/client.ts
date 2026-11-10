@@ -33,6 +33,12 @@ import {
   NullResultSchema,
   RPC_METHODS,
   type RpcMethod,
+  SkillListSchema,
+  SkillProposalListSchema,
+  type SkillProposalView,
+  SkillProposalViewSchema,
+  SkillReviewUndoResultSchema,
+  type SkillView,
   sameScope,
   TaskListSchema,
   WorkspaceRefSchema,
@@ -170,6 +176,89 @@ export class MarsClient {
       ids.add(task.task_id);
     }
     return tasks;
+  }
+
+  async skills(signal?: AbortSignal): Promise<SkillView[]> {
+    const skills = validate(
+      SkillListSchema,
+      await this.call(RPC_METHODS.skills, {}, signal),
+      "skill list",
+    );
+    if (new Set(skills.map((s) => s.name)).size !== skills.length)
+      throw invalid("skill list");
+    return skills;
+  }
+
+  async skillProposals(signal?: AbortSignal): Promise<SkillProposalView[]> {
+    const proposals = validate(
+      SkillProposalListSchema,
+      await this.call(RPC_METHODS.skillProposals, {}, signal),
+      "skill proposal list",
+    );
+    if (new Set(proposals.map((p) => p.proposal_id)).size !== proposals.length)
+      throw invalid("skill proposal list");
+    return proposals;
+  }
+
+  private checkProposal(
+    value: unknown,
+    proposalId: string,
+    status: SkillProposalView["status"],
+  ): SkillProposalView {
+    const proposal = validate(SkillProposalViewSchema, value, "skill proposal");
+    if (proposal.proposal_id !== proposalId || proposal.status !== status)
+      throw invalid("skill proposal identity");
+    return proposal;
+  }
+
+  /** `withoutGateReason` accepts without a passing gate verdict; the server records it. */
+  async acceptSkillProposal(
+    proposalId: string,
+    withoutGateReason?: string,
+    signal?: AbortSignal,
+  ): Promise<SkillProposalView> {
+    return this.checkProposal(
+      await this.call(
+        RPC_METHODS.acceptSkillProposal,
+        withoutGateReason === undefined
+          ? { proposal_id: proposalId }
+          : { proposal_id: proposalId, without_gate_reason: withoutGateReason },
+        signal,
+      ),
+      proposalId,
+      "accepted",
+    );
+  }
+
+  async rejectSkillProposal(
+    proposalId: string,
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<SkillProposalView> {
+    return this.checkProposal(
+      await this.call(
+        RPC_METHODS.rejectSkillProposal,
+        { proposal_id: proposalId, reason },
+        signal,
+      ),
+      proposalId,
+      "rejected",
+    );
+  }
+
+  async undoSkillReview(
+    reviewId: string,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    return validate(
+      SkillReviewUndoResultSchema,
+      await this.call(
+        RPC_METHODS.undoSkillReview,
+        { review_id: reviewId },
+        signal,
+      ),
+      "undo result",
+    ).undone;
   }
 
   async inspect(taskId: string, signal?: AbortSignal): Promise<Task> {

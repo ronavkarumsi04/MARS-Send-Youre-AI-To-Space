@@ -656,6 +656,7 @@ export async function createWorkbenchService(
       memoryProposals: memory,
       skills,
       skillOutcomes,
+      skillOperator: { store: skills, ledger: skillOutcomes },
       ...(review ? { review } : {}),
       repositoryMap,
       ...(options.specialists ? { specialists: options.specialists } : {}),

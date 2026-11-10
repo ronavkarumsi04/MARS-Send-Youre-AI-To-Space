@@ -16,6 +16,18 @@ export interface GatedAcceptResult {
  * `GATE_POLICY`, unless an operator explicitly overrides with a reason, which
  * is recorded before the skill store changes.
  */
+/**
+ * The verdict acceptance can rely on: the newest stored verdict, if it passed
+ * under the policy. A newer failing or looser run supersedes an older pass.
+ */
+export function decidingGate(
+  ledger: SkillOutcomeLedger,
+  proposalId: string,
+): SkillGateResult | null {
+  const latest = ledger.gates(proposalId).at(-1);
+  return latest && meetsGatePolicy(latest) ? latest : null;
+}
+
 export async function acceptWithGate(
   store: SkillStore,
   ledger: SkillOutcomeLedger,
@@ -32,7 +44,7 @@ export async function acceptWithGate(
       gate: null,
       overridden: false,
     };
-  const gate = ledger.gates(id).findLast((g) => meetsGatePolicy(g)) ?? null;
+  const gate = decidingGate(ledger, id);
   if (!gate) {
     if (!override)
       throw new SkillError(
@@ -65,14 +77,13 @@ export function describeGate(
   ledger: SkillOutcomeLedger,
 ): string {
   if (!gateRequired(proposal.ops)) return "not required";
-  const verdicts = ledger.gates(proposal.id);
-  const passing = verdicts.findLast((g) => meetsGatePolicy(g));
+  const passing = decidingGate(ledger, proposal.id);
   if (passing) return `passed (${passing.digest.slice(0, 12)})`;
   // An override is recorded before accept runs, so it only counts once the proposal was accepted.
   const override = ledger.gateOverrides(proposal.id).at(-1);
   if (override && proposal.status === "accepted")
     return `accepted without gate by ${override.actor}: ${override.reason}`;
-  const last = verdicts.at(-1);
+  const last = ledger.gates(proposal.id).at(-1);
   if (last)
     return last.passed
       ? `passed with thresholds looser than the policy (${last.digest.slice(0, 12)})`

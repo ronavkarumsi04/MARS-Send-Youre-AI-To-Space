@@ -17,6 +17,7 @@ import { buildWebviewHtml } from "./html";
 import type { HostMessage } from "./messages";
 import { openReviewTarget, type ReviewOpenerHost } from "./reviewOpener";
 import { HttpRpcTransport } from "./rpc";
+import { SkillsController } from "./skillsController";
 import { TeamClient } from "./teamChat/client";
 import { TeamChatController } from "./teamChat/controller";
 import type { TeamChatHostMessage } from "./teamChat/messages";
@@ -97,6 +98,9 @@ class WorkbenchViewProvider
   private view: vscode.WebviewView | undefined;
   private readonly trustedEndpoints = new Set<string>();
   private suspended = 0;
+  private readonly clientChanged = new vscode.EventEmitter<void>();
+  /** Fires when the connected client changes, so the Skills view can reload. */
+  readonly onDidChangeClient = this.clientChanged.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -106,6 +110,7 @@ class WorkbenchViewProvider
   dispose(): void {
     this.controller?.dispose();
     this.controller = undefined;
+    this.clientChanged.dispose();
   }
 
   /** Drops the connection and blocks reconnects until the returned resume runs. */
@@ -157,6 +162,7 @@ class WorkbenchViewProvider
       post: (state) => this.post({ type: "state", state }),
       modelId: () => settings().modelId,
       newId: randomUUID,
+      onClientChange: () => this.clientChanged.fire(),
     });
     this.controller = controller;
     const subscriptions = [
@@ -338,6 +344,72 @@ class WorkbenchViewProvider
  * the latter case every request leaves from this extension host with the
  * `mars.teamToken` secret, and the webview still never touches the network.
  */
+const SKILLS_VIEW_ID = "mars.skills";
+
+/** Skills dashboard; it uses the Tasks view's connection, so it never asks for a token itself. */
+class SkillsViewProvider implements vscode.WebviewViewProvider {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly workbench: WorkbenchViewProvider,
+  ) {}
+
+  resolveWebviewView(view: vscode.WebviewView): void {
+    const extensionUri = this.context.extensionUri;
+    const dist = vscode.Uri.joinPath(extensionUri, "dist");
+    const media = vscode.Uri.joinPath(extensionUri, "media");
+    view.webview.options = {
+      enableScripts: true,
+      enableCommandUris: false,
+      enableForms: false,
+      localResourceRoots: [dist, media],
+    };
+    view.webview.html = buildWebviewHtml({
+      cspSource: view.webview.cspSource,
+      nonce: randomBytes(18).toString("base64"),
+      scriptUri: view.webview
+        .asWebviewUri(vscode.Uri.joinPath(dist, "skills.js"))
+        .toString(),
+      styleUri: view.webview
+        .asWebviewUri(vscode.Uri.joinPath(media, "workbench.css"))
+        .toString(),
+      title: "MARS Skills",
+    });
+    const controller = new SkillsController({
+      client: () => this.workbench.active?.currentClient,
+      post: (state) => void view.webview.postMessage({ type: "state", state }),
+      ui: {
+        confirm: async (message, detail, action) =>
+          (await vscode.window.showWarningMessage(
+            message,
+            { modal: true, detail },
+            action,
+          )) === action,
+        prompt: (title, prompt) =>
+          Promise.resolve(
+            vscode.window.showInputBox({
+              title,
+              prompt,
+              ignoreFocusOut: true,
+              validateInput: (value) =>
+                value.trim().length > 0 && value.length <= 1024
+                  ? undefined
+                  : "Enter 1-1024 characters.",
+            }),
+          ),
+      },
+    });
+    const subscriptions = [
+      view.webview.onDidReceiveMessage((message: unknown) => {
+        void controller.handleMessage(message);
+      }),
+      this.workbench.onDidChangeClient(() => void controller.refresh()),
+    ];
+    view.onDidDispose(() => {
+      for (const subscription of subscriptions) subscription.dispose();
+    });
+  }
+}
+
 class TeamChatViewProvider
   implements vscode.WebviewViewProvider, vscode.Disposable
 {
@@ -563,6 +635,10 @@ export function activate(context: vscode.ExtensionContext): void {
       documents,
     ),
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider),
+    vscode.window.registerWebviewViewProvider(
+      SKILLS_VIEW_ID,
+      new SkillsViewProvider(context, provider),
+    ),
     vscode.commands.registerCommand("mars.connect", reconnect),
     vscode.commands.registerCommand("mars.setToken", async () => {
       await promptForToken(context);

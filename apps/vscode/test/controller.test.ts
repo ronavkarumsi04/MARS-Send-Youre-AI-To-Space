@@ -36,6 +36,7 @@ function setup(
   } = {},
 ) {
   const h = harness(options.server);
+  const clientChanges: (MarsClient | undefined)[] = [];
   let n = 0;
   const controller = new WorkbenchController({
     connect: options.connect ?? h.connect,
@@ -44,8 +45,9 @@ function setup(
     modelId: () => (options.modelId === undefined ? null : options.modelId),
     newId: () => `id-${++n}`,
     poller: fastPoll,
+    onClientChange: (client) => clientChanges.push(client),
   });
-  return { ...h, controller };
+  return { ...h, controller, clientChanges };
 }
 
 async function connectedWithTask(
@@ -1112,4 +1114,18 @@ describe("Watch evidence beside the host verdict", () => {
     expect(ctx.last().notice).toBeNull();
     ctx.controller.dispose();
   });
+});
+
+test("onClientChange reports the shared client on connect and its loss on reconnect", async () => {
+  const ctx = setup();
+  await ctx.controller.connect();
+  expect(ctx.clientChanges).toHaveLength(1);
+  expect(ctx.clientChanges[0]).toBe(ctx.controller.currentClient);
+  expect(ctx.controller.currentClient).toBeDefined();
+  await ctx.controller.connect();
+  expect(ctx.clientChanges.map((c) => c === undefined)).toEqual([
+    false,
+    true,
+    false,
+  ]);
 });
