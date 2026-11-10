@@ -249,15 +249,49 @@ patterns, not a proof of safety.
 | Memory proposals | 64 pending per scope; 32 operations; rationale ≤2048; reason ≤1024; source ≤128 (`PROPOSAL_LIMITS`) |
 | Threat scan window | 65,536 code points |
 
+## Selection and outcome credit
+
+Skills are chosen for a launch, not loaded in name order
+(`packages/skills/src/selection.ts`):
+
+- **Relevance:** BM25 over each skill's name, description and body against
+  the task request and acceptance criteria, normalized to [0, 1].
+- **Helpfulness:** from verified outcomes. A skill's pass rate on tasks that
+  loaded it is compared with the pass rate of tasks that did not, using 95%
+  Wilson intervals. It is positive only when the lower bound of the skill's
+  rate beats the baseline's upper bound, negative only in the reverse case,
+  and 0 below 3 loads. Load counts alone never count as helping.
+- **Quarantine:** a skill with negative helpfulness, with at least 5 loads and
+  5 baseline tasks, is withheld from launches and listed in `quarantined`.
+- **Diversity:** maximal marginal relevance (Jaccard over tokens) keeps
+  near-duplicates from filling the budget. Stale skills are penalized and
+  archived ones never ranked.
+
+The frozen launch record now carries `selection` (name, SHA-256 of the exact
+content, relevance, helpfulness, score) and `quarantined`, so each task
+records why it saw what it saw. Resume replays the record unchanged.
+
+Every host verdict on a completed task that froze skills (including tasks that
+froze none, which form the baseline) is written to `SkillOutcomeLedger`
+(`packages/skills/src/outcomes.ts`, `<state>/skill-outcomes/outcomes.sqlite`,
+mode 0600). It stores one row per task, so a re-verified task replaces its
+verdict rather than counting twice. Outcome credit is advisory: a ledger
+failure never changes a task, and ranking falls back to relevance only.
+
+Limits of this evidence: the baseline is every other credited task, not a
+matched control, so different task mixes can confound it. The held-out A/B
+gate before acceptance is the next step. Outcomes are keyed by skill name and
+count every content version; `versions` reports how many there were.
+
 ## Not implemented or not verified
 
 - **No live-model evidence.** The review runner has only run with an injected
   fake gateway. Whether a free model produces useful, schema-valid proposals
   is unknown.
-- **No semantic retrieval or skill discovery.** `list()` returns every skill;
-  the frozen context is bounded by size, not relevance. The pre-existing
-  `SkillService` contract (`discover`/`read`/`propose`/`evaluate`) remains
-  unimplemented; `SkillLifecycleService` was added beside it.
+- **Lexical, not embedding, retrieval.** Selection uses BM25 plus outcome
+  evidence; there is no embedding index. The pre-existing `SkillService`
+  contract (`discover`/`read`/`propose`/`evaluate`) remains unimplemented;
+  `SkillLifecycleService` was added beside it.
 - **The curator is not scheduled.** Nothing in this repository calls
   `runCurator()` except `store.test.ts`; the host or a future CLI command must
   invoke it. Hermes' usage-interval/idle rules (`should_run_now`) are not

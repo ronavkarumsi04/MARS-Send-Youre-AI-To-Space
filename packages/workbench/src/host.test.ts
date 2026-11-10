@@ -41,7 +41,7 @@ import type { ModelProviderRegistry } from "@mars/providers";
 import { loadModelRegistry } from "@mars/providers";
 import { ResearchError } from "@mars/research";
 import { ReviewRunner, type Turn } from "@mars/review";
-import { CommandError, SkillStore } from "@mars/skills";
+import { CommandError, type SkillOutcome, SkillStore } from "@mars/skills";
 import type { RoutingRequest } from "@mars/specialists";
 import { createTaskStore } from "@mars/tasks";
 import { WorkspaceModifiedError } from "@mars/workspaces";
@@ -429,6 +429,7 @@ async function fixture() {
       | "vault"
       | "checks"
       | "memoryProposals"
+      | "skillOutcomes"
       | "browser"
     > & {
       canExecute?: boolean;
