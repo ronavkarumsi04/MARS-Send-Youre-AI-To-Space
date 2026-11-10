@@ -437,3 +437,41 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
   expect(orphaned.status).toBe("failed");
   await hung.cancel(context, orphan.job_id);
 });
+
+function standaloneService(
+  memory: MemoryArtifacts,
+  registry: SpecialistRegistry,
+  overrides: Partial<Parameters<typeof createSpecialistComparisonService>[0]>,
+) {
+  return createSpecialistComparisonService({
+    stateDir: path.join(root, "standalone"),
+    artifacts: evidenceArtifacts(memory),
+    subjects: subjectResolverFromRegistry(registry),
+    heldOut: createHeldOutGuard(split),
+    evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
+    signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
+    verdicts: { record: async () => {} },
+    ...overrides,
+  });
+}
+
+test("a verdict the registry sink did not record is never returned", async () => {
+  const { memory, registry } = await setup();
+  const job = await registry.requestEvaluation(context, "specialist-1", "1");
+  const service = standaloneService(memory, registry, {
+    verdicts: {
+      record: async () => {
+        throw new Error("registry unavailable");
+      },
+    },
+  });
+  const failed = await service.submitComparison(
+    context,
+    job.input_manifest,
+    budget,
+  );
+  expect((await service.settled(context, failed.job_id)).status).toBe("failed");
+  await expect(service.verdict(context, failed.job_id)).rejects.toMatchObject({
+    code: "not_settled",
+  });
+});

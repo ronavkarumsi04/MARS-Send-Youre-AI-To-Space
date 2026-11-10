@@ -817,7 +817,7 @@ export function createSpecialistComparisonService(
     },
     async verdict(context, jobId) {
       const record = await visible(context, jobId);
-      if (!record.verdict) {
+      if (record.status !== "completed" || !record.verdict) {
         throw new SpecialistComparisonError(
           "not_settled",
           `job is ${record.status}${record.error ? `: ${record.error}` : ""}`,
