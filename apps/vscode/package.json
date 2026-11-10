@@ -41,6 +41,11 @@
         },
         {
           "type": "webview",
+          "id": "mars.skills",
+          "name": "Skills"
+        },
+        {
+          "type": "webview",
           "id": "mars.teamChat",
           "name": "Team Chat",
           "when": "config.mars.teamChat.enabled"
@@ -174,7 +179,7 @@
     }
   },
   "scripts": {
-    "build": "bun build src/extension.ts --target=node --format=cjs --external vscode --outfile dist/extension.js && bun build src/webview/main.ts --target=browser --format=iife --outfile dist/webview.js && bun build src/webview/teamChat/main.ts --target=browser --format=iife --outfile dist/team-chat.js",
+    "build": "bun build src/extension.ts --target=node --format=cjs --external vscode --outfile dist/extension.js && bun build src/webview/main.ts --target=browser --format=iife --outfile dist/webview.js && bun build src/webview/teamChat/main.ts --target=browser --format=iife --outfile dist/team-chat.js && bun build src/webview/skills/main.ts --target=browser --format=iife --outfile dist/skills.js",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.webview.json",
     "test": "bun test test",
     "smoke": "bun run build && node scripts/node-smoke.cjs",

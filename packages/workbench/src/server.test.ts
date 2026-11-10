@@ -822,7 +822,12 @@ test("skill RPC methods are validated and answer unavailable without a skill sto
     rationale: "Lesson",
     status: "pending" as const,
     operations: [{ op: "create" as const, name: "triage", content: "Do it." }],
-    gate: { required: true, summary: "none yet", latest: null },
+    gate: {
+      required: true,
+      cleared: false,
+      summary: "none yet",
+      latest: null,
+    },
   };
   const skill = {
     name: "triage",

@@ -150,8 +150,90 @@ export const RPC_METHODS = {
   restore: "tasks.restore",
   verification: "tasks.verification",
   export: "tasks.export",
+  skills: "skills.list",
+  skillProposals: "skills.proposals.list",
+  acceptSkillProposal: "skills.proposals.accept",
+  rejectSkillProposal: "skills.proposals.reject",
+  undoSkillReview: "skills.reviews.undo",
 } as const;
 export type RpcMethod = (typeof RPC_METHODS)[keyof typeof RPC_METHODS];
+
+export const SkillViewSchema = z
+  .object({
+    name: z.string().min(1).max(128),
+    status: z.enum(["active", "stale", "archived"]),
+    pinned: z.boolean(),
+    content: z.string(),
+    use_count: z.number().int().nonnegative(),
+    last_activity: z.number().int().nonnegative(),
+    outcomes: z
+      .object({
+        loads: z.number().int().nonnegative(),
+        verified: z.number().int().nonnegative(),
+        baseline_rate: z.number().min(0).max(1),
+        baseline_loads: z.number().int().nonnegative(),
+        helpfulness: z.number().min(-1).max(1),
+        quarantined: z.boolean(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type SkillView = z.infer<typeof SkillViewSchema>;
+export const SkillListSchema = z.array(SkillViewSchema).max(10_000);
+export const SkillProposalViewSchema = z
+  .object({
+    proposal_id: z.string().min(1).max(256),
+    source: z.string().min(1),
+    review_id: z.string().min(1).max(256).nullable(),
+    rationale: z.string(),
+    status: z.enum(["pending", "accepted", "rejected"]),
+    reason: z.string().optional(),
+    operations: z
+      .array(
+        z
+          .object({
+            op: z.string().min(1).max(64),
+            name: z.string().min(1).max(128),
+            content: z.string().optional(),
+            pinned: z.boolean().optional(),
+            version_id: z.string().min(1).max(256).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(1024),
+    gate: z
+      .object({
+        required: z.boolean(),
+        cleared: z.boolean(),
+        summary: z.string().max(2048),
+        latest: z
+          .object({
+            passed: z.boolean(),
+            meets_policy: z.boolean(),
+            reasons: z.array(z.string().max(256)).max(64),
+            trials: z.number().int().nonnegative(),
+            wins: z.number().int().nonnegative(),
+            losses: z.number().int().nonnegative(),
+            ties: z.number().int().nonnegative(),
+            p_value: z.number().min(0).max(1).nullable(),
+            cost_ratio: z.number().nonnegative().nullable(),
+            digest: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type SkillProposalView = z.infer<typeof SkillProposalViewSchema>;
+export const SkillProposalListSchema = z
+  .array(SkillProposalViewSchema)
+  .max(10_000);
+export const SkillReviewUndoResultSchema = z
+  .object({ undone: z.number().int().nonnegative() })
+  .strict();
 
 export const TaskListSchema = z.array(TaskSchema).max(10_000);
 export const EventBatchSchema = z.array(EventEnvelopeSchema).max(10_000);

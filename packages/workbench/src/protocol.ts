@@ -343,6 +343,8 @@ export const SkillProposalViewSchema = z
     gate: z
       .object({
         required: z.boolean(),
+        /** Accept needs no override: no gate required, or a stored verdict passed under the host policy. */
+        cleared: z.boolean(),
         /** One line: "not required", "passed (…)", "failed: …", "none yet", … */
         summary: z.string().max(2048),
         latest: SkillGateVerdictViewSchema.nullable(),

@@ -52,7 +52,9 @@ function proposalView(
   proposal: Proposal,
   ledger: SkillOutcomeLedger,
 ): SkillProposalView {
-  const latest = ledger.gates(proposal.id).at(-1);
+  const verdicts = ledger.gates(proposal.id);
+  const latest = verdicts.at(-1);
+  const required = gateRequired(proposal.ops);
   return {
     proposal_id: proposal.id,
     source: proposal.source,
@@ -68,7 +70,8 @@ function proposalView(
       ...("versionId" in op ? { version_id: op.versionId } : {}),
     })),
     gate: {
-      required: gateRequired(proposal.ops),
+      required,
+      cleared: !required || verdicts.some((v) => meetsGatePolicy(v)),
       summary: describeGate(proposal, ledger),
       latest: latest ? gateView(latest) : null,
     },

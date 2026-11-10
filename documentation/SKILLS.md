@@ -369,5 +369,31 @@ CLI:
 - `mars skills accept PROPOSAL_ID [--without-gate --reason TEXT]`.
 
 The ledger is `<state>/skill-outcomes/outcomes.sqlite`, the one `mars serve`
-writes. No dashboard yet. Held-out runs need a live model to produce real
-trials.
+writes. Held-out runs need a live model to produce real trials.
+
+### VS Code Skills view and RPC
+
+`mars serve` exposes the same operations over workbench RPC
+(`packages/workbench/src/skills-operator.ts`), backed by the host's own skill
+store and outcome ledger:
+
+- `skills.list`: every skill with status, pin, use count and, once credited,
+  its verified-outcome evidence (loads, verified, no-skill baseline,
+  helpfulness lower bound, quarantine).
+- `skills.proposals.list` (optional `status` filter): proposals with their
+  operations, full proposed content, review id and gate state (`required`,
+  `cleared`, the `describeGate` summary and the latest verdict).
+- `skills.proposals.accept`: goes through `acceptWithGate`. Without a
+  policy-strict passing verdict it answers `conflict` unless
+  `without_gate_reason` is given, which is recorded with the caller.
+- `skills.proposals.reject` (reason required) and `skills.reviews.undo`.
+
+Skill errors map to `not_found`, `invalid_request` or `conflict`; a host
+without a skill store answers `unavailable`. The server checks that accept and
+reject answers name the requested proposal with the new status.
+
+The VS Code **Skills** view (`mars.skills`) uses the Tasks view's connection.
+It shows waiting proposals with their content and gate result, skills with
+their evidence, and decided proposals. Accept asks for confirmation when the
+gate is cleared and for a recorded reason otherwise; Reject asks for a reason;
+accepted review proposals offer Undo review.

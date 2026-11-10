@@ -49,7 +49,12 @@ test("skill operator API gates acceptance, records overrides and undoes reviews"
     const [listed] = await api.skillProposals(context, { status: "pending" });
     expect(SkillProposalViewSchema.parse(listed)).toMatchObject({
       review_id: "r1",
-      gate: { required: true, summary: "none yet", latest: null },
+      gate: {
+        required: true,
+        cleared: false,
+        summary: "none yet",
+        latest: null,
+      },
     });
     expect(
       await code(api.acceptSkillProposal(context, { proposal_id: gated.id })),
@@ -70,6 +75,7 @@ test("skill operator API gates acceptance, records overrides and undoes reviews"
       proposal_id: gated.id,
     });
     expect(accepted.status).toBe("accepted");
+    expect(accepted.gate.cleared).toBe(true);
     expect(accepted.gate.latest).toMatchObject({
       passed: true,
       meets_policy: true,

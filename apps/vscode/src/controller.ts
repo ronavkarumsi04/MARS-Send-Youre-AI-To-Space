@@ -186,6 +186,11 @@ export class WorkbenchController {
     return this.disposedFlag;
   }
 
+  /** The connected client, shared with the Skills view; undefined until connected. */
+  get currentClient(): MarsClient | undefined {
+    return this.client;
+  }
+
   get activePoller(): EventPoller | undefined {
     return this.poller;
   }
