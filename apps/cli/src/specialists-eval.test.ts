@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ArtifactRef, RequestContext } from "@mars/contracts";
 import { sha256 } from "@mars/contracts/canonical";
-import { HELD_OUT_SPLIT_SCHEMA } from "@mars/datasets";
+import { HELD_OUT_SPLIT_SCHEMA, requestSha256 } from "@mars/datasets";
 import {
   createFixtureArmEvaluator,
   createHmacReportSigner,
@@ -229,7 +229,6 @@ test("with key, serving and an injected evaluation it records a verdict", async 
               ).resolve(ctx, id, revision),
           },
           heldOut: guard,
-          trainingRequests: async () => ["unrelated training request"],
           evaluator: createFixtureArmEvaluator({
             evaluator_id: "eval-1",
             pass: () => true,
@@ -260,7 +259,9 @@ test("with key, serving and an injected evaluation it records a verdict", async 
         await registry.registerBaseline(context, makeBaseline());
         const fixture = await makeSpecialistFixture(memory, {
           domains: [DOMAIN],
-          datasetLineage: await makeLineageArtifact(memory),
+          datasetLineage: await makeLineageArtifact(memory, context.scope, {
+            requestSha256s: [requestSha256("unrelated training request")],
+          }),
         });
         await registry.registerSpecialist(context, fixture.registration);
         const ready = registry;
