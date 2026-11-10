@@ -268,8 +268,10 @@ Skills are chosen for a launch, not loaded in name order
   archived ones never ranked.
 
 The frozen launch record now carries `selection` (name, SHA-256 of the exact
-content, relevance, helpfulness, score) and `quarantined`, so each task
-records why it saw what it saw. Resume replays the record unchanged.
+content, relevance, helpfulness, score, and `redundancy`, the overlap penalty
+applied when it was picked, so the order is reproducible as
+`0.7 * score - 0.3 * redundancy`) and `quarantined`, so each task records why
+it saw what it saw. Resume replays the record unchanged.
 
 Every host verdict on a completed task that froze skills (including tasks that
 froze none, which form the baseline) is written to `SkillOutcomeLedger`

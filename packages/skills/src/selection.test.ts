@@ -66,11 +66,18 @@ test("diversity keeps a near-duplicate of the top skill from crowding out a diff
       "Download the CI log and find the first error.",
     ),
   ];
-  const order = rankSkills(
+  const ranked = rankSkills(
     skills,
     "diagnose the failing flaky test from CI logs",
-  ).ranked.map((r) => r.name);
+  ).ranked;
+  const order = ranked.map((r) => r.name);
   expect(order.indexOf("ci-logs")).toBeLessThan(2);
+  // The recorded fields reproduce the order: MMR value never increases.
+  const values = ranked.map((r) => 0.7 * r.score - 0.3 * r.redundancy);
+  expect(ranked[0]?.redundancy).toBe(0);
+  expect(ranked.at(-1)?.redundancy).toBeGreaterThan(0);
+  for (let i = 1; i < values.length; i++)
+    expect(values[i] ?? 0).toBeLessThanOrEqual((values[i - 1] ?? 0) + 1e-6);
 });
 
 test("outcome evidence only counts once it survives sampling noise, and harmful skills are quarantined", () => {

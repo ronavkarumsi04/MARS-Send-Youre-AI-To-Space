@@ -40,6 +40,7 @@ export const FrozenSkillsSchema = z
             relevance: z.number().min(0).max(1),
             helpfulness: z.number().min(-1).max(1),
             score: z.number().min(-1).max(1),
+            redundancy: z.number().min(0).max(1),
           })
           .strict(),
       )

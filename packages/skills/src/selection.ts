@@ -25,7 +25,10 @@ export interface RankedSkill {
   relevance: number;
   /** Lower confidence bound on pass-rate lift over tasks without it, [-1, 1]; 0 without evidence. */
   helpfulness: number;
+  /** 0.75 relevance + 0.25 helpfulness, times 0.8 if stale. */
   score: number;
+  /** Max token overlap with skills picked before it; order is by score minus this (MMR). */
+  redundancy: number;
 }
 
 export interface SkillRanking {
@@ -190,6 +193,7 @@ export function rankSkills(
   while (remaining.length) {
     let best = 0;
     let bestValue = Number.NEGATIVE_INFINITY;
+    let bestRedundancy = 0;
     remaining.forEach((item, index) => {
       const redundancy = Math.max(
         0,
@@ -199,6 +203,7 @@ export function rankSkills(
       if (value > bestValue + 1e-12) {
         best = index;
         bestValue = value;
+        bestRedundancy = redundancy;
       }
     });
     const [item] = remaining.splice(best, 1);
@@ -209,6 +214,7 @@ export function rankSkills(
       relevance: round(item.relevance),
       helpfulness: round(item.helpfulness),
       score: round(item.score),
+      redundancy: round(bestRedundancy),
     });
   }
   return { ranked, quarantined: quarantine.sort() };
