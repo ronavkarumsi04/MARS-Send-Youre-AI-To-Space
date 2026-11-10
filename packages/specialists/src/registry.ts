@@ -50,6 +50,7 @@ import {
 import {
   type BaselineProfile,
   BaselineProfileSchema,
+  ComparisonVerdictRecordSchema,
   type Complexity,
   EvidenceVerdictSchema,
   type ReasonCode,
@@ -67,6 +68,7 @@ import {
 } from "./schemas";
 import {
   type BaselineRow,
+  type EvaluationVerdictRow,
   type ProductionRow,
   type SpecialistRevisionRow,
   SpecialistStore,
@@ -120,6 +122,18 @@ export interface SpecialistRevisionView {
   rolled_back: boolean;
   invalidated_reason: string | null;
   evaluation_jobs: JobRef[];
+}
+
+export interface EvaluationVerdictView {
+  job_id: string;
+  specialist_id: string;
+  revision: string;
+  outcome: "improved" | "no_improvement" | "regressed";
+  simulated: boolean;
+  report: ArtifactRef;
+  verdict: ArtifactRef;
+  evidence: EvidenceVerdict;
+  recorded_at: string;
 }
 
 export interface SpecialistInspection {
@@ -219,6 +233,18 @@ function assertContext(context: RequestContext): RequestContext {
   }
   return parsed.data;
 }
+
+/** Report-integrity failures: such a verdict is refused, never stored. */
+const UNTRUSTED_VERDICT_CODES = new Set<string>([
+  "evidence_missing",
+  "evidence_digest_mismatch",
+  "evidence_malformed",
+  "evidence_subject_mismatch",
+  "evidence_unauthorized",
+  "evidence_unverified",
+  "evidence_synthetic_fixture",
+  "evidence_not_independent",
+]);
 
 function parseStored<S extends z.ZodTypeAny>(
   json: string,
@@ -428,6 +454,28 @@ export class SpecialistRegistry implements ModelRegistry {
         ? { maxArtifactBytes: this.options.maxArtifactBytes }
         : {}),
       ...extra,
+    };
+  }
+
+  /**
+   * The registration whose evidence gates this revision: the latest held-out
+   * comparison report received via `recordEvaluationVerdict` supersedes the
+   * evaluation report the revision was registered with.
+   */
+  private evidenceRegistration(
+    registration: SpecialistRegistration,
+  ): SpecialistRegistration {
+    const latest = this.store
+      .listEvaluationVerdicts(
+        scopeKey(registration.scope),
+        registration.specialist_id,
+        registration.revision,
+      )
+      .at(-1);
+    if (!latest) return registration;
+    return {
+      ...registration,
+      evaluation: parseStored(latest.report_json, ArtifactRefSchema),
     };
   }
 
@@ -823,7 +871,7 @@ export class SpecialistRegistry implements ModelRegistry {
     );
     const verdict = await verifyEvidence(
       ctx,
-      registration,
+      this.evidenceRegistration(registration),
       candidateSha,
       this.evidenceOptions({
         currentProductionRevision: production?.production_revision ?? null,
@@ -1038,7 +1086,7 @@ export class SpecialistRegistry implements ModelRegistry {
     const pointer = this.store.readProduction(row.scope_key, id);
     const verdict = await verifyEvidence(
       ctx,
-      registration,
+      this.evidenceRegistration(registration),
       row.candidate_sha256,
       this.evidenceOptions({
         currentProductionRevision: pointer?.production_revision ?? null,
@@ -1272,7 +1320,7 @@ export class SpecialistRegistry implements ModelRegistry {
     }
     const verdict = await verifyEvidence(
       ctx,
-      registration,
+      this.evidenceRegistration(registration),
       row.candidate_sha256,
       this.evidenceOptions({
         currentProductionRevision: current,
@@ -1388,7 +1436,7 @@ export class SpecialistRegistry implements ModelRegistry {
     const { row, registration } = this.specialistRow(ctx, id, targetRevision);
     const verdict = await verifyEvidence(
       ctx,
-      registration,
+      this.evidenceRegistration(registration),
       row.candidate_sha256,
       this.evidenceOptions(),
     );
@@ -1646,6 +1694,179 @@ export class SpecialistRegistry implements ModelRegistry {
       job_id: row.job_id,
       input_manifest: parseStored(row.input_manifest_json, ArtifactRefSchema),
     }));
+  }
+
+  /**
+   * Registry-side `SpecialistVerdictSink.record` for `@mars/evaluation`:
+   * accepts a comparison verdict only for a job this registry delegated,
+   * re-runs `verifyEvidence` on the signed report against the revision, and
+   * stores it as the revision's current evaluation evidence. Reports that
+   * fail integrity checks are refused; an authentic `no_improvement` or
+   * `regressed` report is recorded honestly and its acceptance-gate result
+   * (possibly `rejected`) becomes the revision's status.
+   */
+  async recordEvaluationVerdict(
+    context: RequestContext,
+    entry: {
+      job: JobRef;
+      report: ArtifactRef;
+      verdict: ArtifactRef;
+      value: unknown;
+    },
+  ): Promise<EvaluationVerdictView> {
+    const ctx = this.checkContext(context);
+    const parsed = ComparisonVerdictRecordSchema.safeParse(entry);
+    if (!parsed.success) {
+      throw new SpecialistRegistryError("invalid_input", "verdict_record");
+    }
+    const record = parsed.data;
+    const key = scopeKey(ctx.scope);
+    const job = this.store.readEvaluationJob(key, record.job.job_id);
+    if (!job) throw new SpecialistRegistryError("not_found", "evaluation_job");
+    const { subject } = record.value;
+    if (
+      !sameJson(
+        parseStored(job.input_manifest_json, ArtifactRefSchema),
+        record.job.input_manifest,
+      ) ||
+      record.value.job_id !== job.job_id ||
+      subject.specialist_id !== job.specialist_id ||
+      subject.revision !== job.revision ||
+      !sameJson(record.value.report, record.report)
+    ) {
+      throw new SpecialistRegistryError("invalid_input", "verdict_mismatch");
+    }
+    const { row, registration } = this.specialistRow(
+      ctx,
+      job.specialist_id,
+      job.revision,
+    );
+    if (
+      !scopeEquals(registration.scope, ctx.scope) ||
+      row.candidate_sha256 !== subject.candidate_sha256
+    ) {
+      throw new SpecialistRegistryError("invalid_input", "verdict_mismatch");
+    }
+    const existing = this.store.readEvaluationVerdict(job.job_id);
+    if (existing) {
+      if (
+        !sameJson(
+          parseStored(existing.report_json, ArtifactRefSchema),
+          record.report,
+        )
+      ) {
+        throw new SpecialistRegistryError("conflict", "verdict_recorded");
+      }
+      return this.evaluationVerdictView(existing);
+    }
+    const pointer = this.store.readProduction(row.scope_key, row.specialist_id);
+    const evidence = await verifyEvidence(
+      ctx,
+      { ...registration, evaluation: record.report },
+      row.candidate_sha256,
+      this.evidenceOptions({
+        currentProductionRevision: pointer?.production_revision ?? null,
+      }),
+    );
+    if (evidence.codes.some((code) => UNTRUSTED_VERDICT_CODES.has(code))) {
+      throw new SpecialistRegistryError(
+        "invalid_input",
+        `verdict_evidence_rejected:${evidence.codes.join(",")}`,
+      );
+    }
+    this.publish({ registration, verdict: evidence });
+    const recordedAt = new Date().toISOString();
+    this.store.transaction(() => {
+      const latest = this.store.readSpecialist(
+        row.scope_key,
+        row.specialist_id,
+        row.revision,
+      );
+      if (!latest || latest.candidate_sha256 !== row.candidate_sha256) {
+        throw new SpecialistRegistryError("stale_revision");
+      }
+      this.store.db
+        .query(
+          `INSERT INTO evaluation_verdicts
+           (job_id, scope_key, specialist_id, revision, report_json,
+            verdict_ref_json, comparison_json, evidence_json, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          job.job_id,
+          row.scope_key,
+          row.specialist_id,
+          row.revision,
+          canonicalJson(record.report),
+          canonicalJson(record.verdict),
+          canonicalJson(record.value),
+          canonicalJson(evidence),
+          recordedAt,
+        );
+      const frozen =
+        latest.status === "archived" || latest.status === "invalidated";
+      this.store.db
+        .query(
+          `UPDATE specialist_revisions SET status = ?, verdict_json = ?,
+           updated_at = ? WHERE scope_key = ? AND specialist_id = ? AND revision = ?`,
+        )
+        .run(
+          frozen ? latest.status : evidence.status,
+          canonicalJson(evidence),
+          recordedAt,
+          row.scope_key,
+          row.specialist_id,
+          row.revision,
+        );
+      this.store.writeAudit({
+        context: ctx,
+        scope_key: row.scope_key,
+        action: "evaluation.recorded",
+        subject: formatRef("specialist", row.specialist_id, row.revision),
+        detail: {
+          job_id: job.job_id,
+          outcome: record.value.outcome,
+          simulated: record.value.simulated,
+          codes: evidence.codes,
+          status: frozen ? latest.status : evidence.status,
+        },
+      });
+    });
+    const stored = this.store.readEvaluationVerdict(job.job_id);
+    if (!stored) throw new SpecialistRegistryError("corrupt_record");
+    return this.evaluationVerdictView(stored);
+  }
+
+  async evaluationVerdicts(
+    context: RequestContext,
+    id: string,
+    revision: string,
+  ): Promise<EvaluationVerdictView[]> {
+    const ctx = this.checkContext(context);
+    const { row } = this.specialistRow(ctx, id, revision);
+    return this.store
+      .listEvaluationVerdicts(row.scope_key, id, revision)
+      .map((item) => this.evaluationVerdictView(item));
+  }
+
+  private evaluationVerdictView(
+    row: EvaluationVerdictRow,
+  ): EvaluationVerdictView {
+    const comparison = parseStored(
+      row.comparison_json,
+      ComparisonVerdictRecordSchema.shape.value,
+    );
+    return {
+      job_id: row.job_id,
+      specialist_id: row.specialist_id,
+      revision: row.revision,
+      outcome: comparison.outcome,
+      simulated: comparison.simulated,
+      report: parseStored(row.report_json, ArtifactRefSchema),
+      verdict: parseStored(row.verdict_ref_json, ArtifactRefSchema),
+      evidence: parseStored(row.evidence_json, EvidenceVerdictSchema),
+      recorded_at: row.recorded_at,
+    };
   }
 
   async verifyCompatibility(
@@ -1941,7 +2162,7 @@ export class SpecialistRegistry implements ModelRegistry {
     }
     const verdict = await verifyEvidence(
       context,
-      registration,
+      this.evidenceRegistration(registration),
       candidateSha,
       this.evidenceOptions(),
     );

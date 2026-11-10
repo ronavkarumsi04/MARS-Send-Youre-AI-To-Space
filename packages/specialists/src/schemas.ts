@@ -7,7 +7,7 @@ import {
 } from "@mars/contracts";
 import { z } from "zod";
 
-export const SPECIALIST_STORE_FORMAT_VERSION = 1;
+export const SPECIALIST_STORE_FORMAT_VERSION = 2;
 export const NO_PRODUCTION = "none";
 export const ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 export const DOMAIN_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
@@ -517,6 +517,7 @@ export const AuditActionSchema = z.enum([
   "baseline.registered",
   "baseline.retired",
   "evaluation.delegated",
+  "evaluation.recorded",
   "production.deployed",
   "production.rolled_back",
   "production.retired",
@@ -559,3 +560,41 @@ export const TaskRoutingStateSchema = z
   })
   .strict();
 export type TaskRoutingState = z.infer<typeof TaskRoutingStateSchema>;
+
+const Sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * What `@mars/evaluation` hands back for a delegated comparison job. The
+ * registry only reads the fields it cross-checks; its trust comes from
+ * re-verifying the signed `report` artifact, never from `value` itself.
+ */
+export const ComparisonVerdictRecordSchema = z
+  .object({
+    job: z
+      .object({ job_id: z.string().min(1), input_manifest: ArtifactRefSchema })
+      .strict(),
+    report: ArtifactRefSchema,
+    verdict: ArtifactRefSchema,
+    value: z
+      .object({
+        schema: z.literal("mars.specialist-comparison-verdict/v1"),
+        job_id: z.string().min(1),
+        subject: z
+          .object({
+            specialist_id: z.string().min(1),
+            revision: z.string().min(1),
+            candidate_sha256: Sha256Hex,
+          })
+          .strict(),
+        report: ArtifactRefSchema,
+        outcome: z.enum(["improved", "no_improvement", "regressed"]),
+        codes: z.array(z.string()),
+        simulated: z.boolean(),
+        model_requests: z.number().int().nonnegative(),
+      })
+      .passthrough(),
+  })
+  .strict();
+export type ComparisonVerdictRecord = z.infer<
+  typeof ComparisonVerdictRecordSchema
+>;

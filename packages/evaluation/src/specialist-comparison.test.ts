@@ -37,6 +37,7 @@ import {
   type SpecialistComparisonVerdict,
   type SpecialistVerdictSink,
   subjectResolverFromRegistry,
+  verdictSinkFromRegistry,
 } from "./index";
 
 const DOMAIN = "coding/mechanical-edit";
@@ -125,6 +126,8 @@ async function setup(
     adapterBytes?: Uint8Array;
     heldOutSplit?: HeldOutSplit;
     omitRequestSha256s?: boolean;
+    registrySink?: boolean;
+    allowSyntheticFixtures?: boolean;
     pass?: Parameters<typeof createFixtureArmEvaluator>[0] extends infer O
       ? O extends { pass?: infer P }
         ? P
@@ -149,7 +152,13 @@ async function setup(
   });
   let registry: SpecialistRegistry | undefined;
   const sink: SpecialistVerdictSink = {
-    async record(_ctx, entry) {
+    async record(ctx, entry) {
+      if (options.registrySink) {
+        await verdictSinkFromRegistry(registry as SpecialistRegistry).record(
+          ctx,
+          entry,
+        );
+      }
       recorded.push({ job_id: entry.job.job_id, verdict: entry.value });
     },
   };
@@ -176,6 +185,9 @@ async function setup(
     });
   registry = createRegistry(path.join(root, "registry"), memory, {
     evaluation: { service, artifacts, defaultBudget: budget },
+    ...(options.allowSyntheticFixtures !== undefined
+      ? { allowSyntheticFixtures: options.allowSyntheticFixtures }
+      : {}),
   });
   await registry.registerBaseline(context, makeBaseline());
   const lineage = await makeLineageArtifact(memory, context.scope, {
@@ -698,4 +710,76 @@ test("a request missing comparison arms is refused before a job exists", async (
     service.submitComparison(context, partial, budget),
   ).rejects.toMatchObject({ code: "invalid_request" });
   expect(evaluator.calls).toHaveLength(calls);
+});
+
+test("registry verdict sink re-verifies and stores each verdict against the revision", async () => {
+  const better = await setup({ pass: candidateWins, registrySink: true });
+  const job = await better.registry.requestEvaluation(
+    context,
+    "specialist-1",
+    "1",
+  );
+  expect((await better.service.settled(context, job.job_id)).status).toBe(
+    "completed",
+  );
+  const verdict = await better.service.verdict(context, job.job_id);
+  const [stored, ...extra] = await better.registry.evaluationVerdicts(
+    context,
+    "specialist-1",
+    "1",
+  );
+  expect(extra).toEqual([]);
+  expect(stored).toMatchObject({
+    job_id: job.job_id,
+    outcome: "improved",
+    simulated: true,
+    report: verdict.report,
+    evidence: { status: "evaluated", codes: [] },
+  });
+  let inspection = await better.registry.inspect(context, "specialist-1");
+  expect(inspection.revisions[0]?.status).toBe("evaluated");
+
+  await removeTempRoot(root);
+  root = await createTempRoot();
+  const worse = await setup({
+    pass: ({ arm, task_id }) => arm !== "candidate" || task_id === "ho-1",
+    registrySink: true,
+  });
+  const worseJob = await worse.registry.requestEvaluation(
+    context,
+    "specialist-1",
+    "1",
+  );
+  expect((await worse.service.settled(context, worseJob.job_id)).status).toBe(
+    "completed",
+  );
+  const [regressed] = await worse.registry.evaluationVerdicts(
+    context,
+    "specialist-1",
+    "1",
+  );
+  expect(regressed?.outcome).toBe("regressed");
+  expect(regressed?.evidence.status).toBe("rejected");
+  inspection = await worse.registry.inspect(context, "specialist-1");
+  expect(inspection.revisions[0]?.status).toBe("rejected");
+  // Re-verification keeps using the recorded held-out report.
+  expect(
+    (await worse.registry.reverify(context, "specialist-1", "1")).status,
+  ).toBe("rejected");
+});
+
+test("a verdict the registry refuses is not stored and fails the job", async () => {
+  const { registry, service, recorded } = await setup({
+    pass: candidateWins,
+    registrySink: true,
+    allowSyntheticFixtures: false,
+  });
+  const job = await registry.requestEvaluation(context, "specialist-1", "1");
+  // The simulated report cannot be trusted by a registry that refuses
+  // synthetic evidence, so the sink throws and nothing is recorded.
+  expect((await service.settled(context, job.job_id)).status).toBe("failed");
+  expect(recorded).toEqual([]);
+  expect(
+    await registry.evaluationVerdicts(context, "specialist-1", "1"),
+  ).toEqual([]);
 });
