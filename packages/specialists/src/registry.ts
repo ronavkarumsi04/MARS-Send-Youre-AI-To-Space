@@ -1853,7 +1853,7 @@ export class SpecialistRegistry implements ModelRegistry {
     const outcome = record.value.outcome;
     if (
       !signed ||
-      record.value.simulated !== evidence.synthetic_fixture ||
+      record.value.simulated !== signed.simulated ||
       (outcome === "regressed") !== signed.worse ||
       (outcome === "improved" &&
         (!signed.better || evidence.status !== "evaluated"))
@@ -1926,11 +1926,11 @@ export class SpecialistRegistry implements ModelRegistry {
     return this.evaluationVerdictView(stored);
   }
 
-  /** Candidate-vs-base direction per triple, from the signed report. */
+  /** Candidate-vs-base direction per triple and simulation flag, from the signed report. */
   private async signedComparison(
     ctx: RequestContext,
     ref: ArtifactRef,
-  ): Promise<{ worse: boolean; better: boolean } | null> {
+  ): Promise<{ worse: boolean; better: boolean; simulated: boolean } | null> {
     let report: EvaluationReport;
     try {
       const bytes = await this.options.artifacts.get(ctx, ref);
@@ -1956,7 +1956,7 @@ export class SpecialistRegistry implements ModelRegistry {
       if (delta < 0) worse = true;
       if (delta > 0) better = true;
     }
-    return { worse, better };
+    return { worse, better, simulated: report.provenance.synthetic_fixture };
   }
 
   async evaluationVerdicts(

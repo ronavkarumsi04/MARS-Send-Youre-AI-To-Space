@@ -18,6 +18,7 @@ import {
   installNoNetworkStub,
   MemoryArtifacts,
   makeBaseline,
+  makeLineageArtifact,
   makeSpecialistFixture,
   removeTempRoot,
 } from "./helpers";
@@ -245,6 +246,37 @@ describe("registry-side comparison verdict receiver", () => {
     expect((await pending).status).toBe("rejected");
     const inspection = await registry.inspect(context, "specialist-1");
     expect(inspection.revisions[0]?.status).toBe("rejected");
+  });
+
+  test("simulated reflects the evaluator, not synthetic training lineage", async () => {
+    const { artifacts, registry } = await setup();
+    const lineaged = await makeSpecialistFixture(artifacts, {
+      specialistId: "specialist-2",
+      datasetLineage: await makeLineageArtifact(artifacts, context.scope, {
+        specialistId: "specialist-2",
+      }),
+    });
+    await registry.registerSpecialist(context, lineaged.registration);
+    const job = await registry.requestEvaluation(context, "specialist-2", "1");
+    const live = await makeSpecialistFixture(artifacts, {
+      specialistId: "specialist-2",
+      datasetLineage: lineaged.registration.dataset_lineage,
+      reportId: `report-${job.job_id}`,
+      synthetic: false,
+    });
+    const view = await registry.recordEvaluationVerdict(
+      context,
+      entry(job, live.registration.evaluation, live.candidateSha256, {
+        subject: {
+          specialist_id: "specialist-2",
+          revision: "1",
+          candidate_sha256: live.candidateSha256,
+        },
+        simulated: false,
+      }),
+    );
+    expect(view).toMatchObject({ outcome: "improved", simulated: false });
+    expect(view.evidence.synthetic_fixture).toBe(true);
   });
 
   test("refuses verdicts it cannot tie to a delegated job and revision", async () => {
