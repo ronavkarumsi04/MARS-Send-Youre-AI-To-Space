@@ -19,6 +19,7 @@ import {
 } from "../../specialists/tests/helpers";
 import {
   AdapterBundleSchema,
+  baseModelCached,
   canonicalBytes,
   createCommandWorkerLauncher,
   createFileJobStore,
@@ -266,6 +267,31 @@ describe("mars.training-manifest/v1", () => {
   });
 });
 
+test("the recorded CPU-run evidence parses with the current schemas", async () => {
+  const evidence = JSON.parse(
+    await readFile(
+      path.join(
+        import.meta.dir,
+        "..",
+        "..",
+        "..",
+        "documentation",
+        "evidence",
+        "training-tiny-cpu-run.json",
+      ),
+      "utf8",
+    ),
+  );
+  const report = TrainingRunReportSchema.parse(evidence.report);
+  expect(report.limitations).toEqual([PLUMBING_LIMITATION]);
+  expect(report.synthetic_fixture).toBe(true);
+  AdapterBundleSchema.parse(evidence.bundle);
+  DatasetLineageSchema.parse(evidence.lineage);
+  TrainingManifestSchema.parse(
+    JSON.parse(await readFile(path.join(FIXTURES, "manifest.json"), "utf8")),
+  );
+});
+
 describe("dataset and leakage checks", () => {
   test("refuses when dataset bytes do not match the manifest sha256", async () => {
     const tampered = new TextEncoder().encode(
@@ -357,6 +383,44 @@ describe("dataset and leakage checks", () => {
 });
 
 describe("hardware, pins and QLoRA", () => {
+  test("a sharded base model is cached only when every indexed shard is present", async () => {
+    const root = await newRoot();
+    const cache = await fakeHfCache(root);
+    const snapshot = path.join(
+      cache,
+      `models--${REPO.replace("/", "--")}`,
+      "snapshots",
+      REVISION,
+    );
+    await rm(path.join(snapshot, "model.safetensors"));
+    const index = {
+      weight_map: {
+        "a.weight": "model-00001-of-00002.safetensors",
+        "b.weight": "model-00002-of-00002.safetensors",
+      },
+    };
+    await writeFile(
+      path.join(snapshot, "model.safetensors.index.json"),
+      JSON.stringify(index),
+    );
+    await writeFile(
+      path.join(snapshot, "model-00001-of-00002.safetensors"),
+      "x",
+    );
+    const ref = { repo: REPO, revision: REVISION };
+    expect(await baseModelCached(cache, ref)).toBe(false);
+    await writeFile(
+      path.join(snapshot, "model-00002-of-00002.safetensors"),
+      "x",
+    );
+    expect(await baseModelCached(cache, ref)).toBe(true);
+    await writeFile(
+      path.join(snapshot, "model.safetensors.index.json"),
+      JSON.stringify({ weight_map: { a: "../../x.safetensors" } }),
+    );
+    expect(await baseModelCached(cache, ref)).toBe(false);
+  });
+
   test("estimate is honest on CPU: no dollar figure, LoRA only, QLoRA unavailable", async () => {
     const { service, bytes, putManifest } = await setup();
     const lora = await service.estimate(
@@ -365,7 +429,7 @@ describe("hardware, pins and QLoRA", () => {
     );
     expect(lora).toEqual({
       estimated_usd: null,
-      hardware: ["cpu:8-logical-cores", "method:lora-fp32", "token_bound:512"],
+      hardware: ["cpu:8-logical-cores", "method:lora-fp32", "token_bound:1412"],
     });
     const qloraRef = await putManifest(manifestFor(bytes, { method: "qlora" }));
     expect((await service.estimate(context, qloraRef)).hardware).toContain(
@@ -388,7 +452,7 @@ describe("hardware, pins and QLoRA", () => {
     expect((await service.estimate(context, ref)).hardware).toEqual([
       "cuda:Synthetic GPU",
       "method:qlora-4bit-nf4",
-      "token_bound:512",
+      "token_bound:1412",
     ]);
   });
 
@@ -647,6 +711,22 @@ describe("training job lifecycle (fake worker)", () => {
     );
     expect(await waitDead(pids.worker)).toBe(true);
     expect(await waitDead(pids.grandchild)).toBe(true);
+  });
+
+  test("a worker that closes stdout but keeps running is still stopped by the deadline", async () => {
+    const { service, bytes, putManifest } = await setup("close-stdout");
+    const job = await service.submit(
+      context,
+      await putManifest(manifestFor(bytes)),
+      {
+        ...budget,
+        max_duration_ms: 1000,
+      },
+    );
+    expect((await service.wait(context, job.job_id)).status).toBe("failed");
+    expect((await service.inspectRecord(context, job.job_id)).error?.code).toBe(
+      "deadline_exceeded",
+    );
   });
 
   test("jobs left running by a previous host process are reported as interrupted", async () => {

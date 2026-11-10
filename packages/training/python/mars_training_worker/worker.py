@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import os
 import platform
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, TextIO
@@ -230,13 +232,17 @@ def _train(start: dict[str, Any], channel: TextIO) -> dict[str, Any]:
     prompt_ids = tokenizer.apply_chat_template(
         prompt_messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
     )["input_ids"]
+    prompt_ids = prompt_ids[:, -int(sft["max_length"]) :]
     trained = trainer.model.eval()
     device = next(trained.parameters()).device
     prompt_ids = prompt_ids.to(device)
     with torch.no_grad():
         trained_logits = trained(input_ids=prompt_ids).logits.float().cpu()
     del trainer, trained, model
-    fresh_base = load_base().eval()
+    fresh_base = load_base()
+    if method != "qlora":
+        fresh_base = fresh_base.to(device)
+    fresh_base = fresh_base.eval()
     with torch.no_grad():
         base_logits = fresh_base(input_ids=prompt_ids).logits.float().cpu()
     reloaded = PeftModel.from_pretrained(fresh_base, str(adapter_dir)).eval()
@@ -274,6 +280,26 @@ def _train(start: dict[str, Any], channel: TextIO) -> dict[str, Any]:
     }
 
 
+def _start_watchdog(deadline_seconds: Any) -> None:
+    """Backstop for the host's kill: exit (with our process group) if the host dies or the deadline passes."""
+    parent = os.getppid()
+    limit = (
+        time.monotonic() + float(deadline_seconds)
+        if isinstance(deadline_seconds, (int, float)) and deadline_seconds > 0
+        else None
+    )
+
+    def watch() -> None:
+        while True:
+            time.sleep(0.5)
+            if os.getppid() != parent or (limit is not None and time.monotonic() > limit):
+                if os.getpgrp() == os.getpid():
+                    os.killpg(os.getpid(), signal.SIGKILL)
+                os._exit(3)
+
+    threading.Thread(target=watch, name="mars-watchdog", daemon=True).start()
+
+
 def run() -> int:
     channel = _channel()
     try:
@@ -285,6 +311,7 @@ def run() -> int:
             raise WorkerFailure("protocol_error", "first message must be start")
         if start.get("protocol") != PROTOCOL_VERSION:
             raise WorkerFailure("protocol_error", f"unsupported protocol {start.get('protocol')!r}")
+        _start_watchdog(start.get("watchdog_deadline_seconds"))
         _send(channel, {"type": "ready", "versions": _versions()})
         result = _train(start, channel)
         _send(channel, {"type": "done", **result})

@@ -269,6 +269,8 @@ export interface WorkerStart {
   lora: TrainingManifest["lora"];
   sft: TrainingManifest["sft"];
   generation: TrainingManifest["generation"];
+  /** Worker-side backstop: it kills its own group after this many seconds or if the host dies. */
+  watchdog_deadline_seconds: number;
 }
 
 // ---- output documents --------------------------------------------------------

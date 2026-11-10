@@ -162,7 +162,12 @@ export function pinMismatches(versions: WorkerVersions): string[] {
   return missing;
 }
 
-/** Processed-token upper bound used against `budget.max_tokens`. */
+/**
+ * Processed-token upper bound used against `budget.max_tokens`: training
+ * steps, one evaluation pass over the validation split, and the reload proof
+ * (three forward passes over a prompt truncated to `max_length`, then
+ * generation).
+ */
 export function trainingTokenBound(manifest: TrainingManifest): number {
   const {
     max_steps,
@@ -170,12 +175,15 @@ export function trainingTokenBound(manifest: TrainingManifest): number {
     gradient_accumulation_steps,
     max_length,
   } = manifest.sft;
-  return (
+  const validation = manifest.datasets.find((d) => d.split === "validation");
+  const train =
     max_steps *
     per_device_train_batch_size *
     gradient_accumulation_steps *
-    max_length
-  );
+    max_length;
+  const evaluation = (validation?.example_count ?? 0) * max_length;
+  const reload = 4 * max_length + manifest.generation.max_new_tokens;
+  return train + evaluation + reload;
 }
 
 export function createTrainingService(
@@ -388,7 +396,7 @@ export function createTrainingService(
       (found.status === "pending" || found.status === "running") &&
       !running.has(jobId)
     ) {
-      // A job this process does not own was interrupted (host restart); its worker is gone.
+      // A job this process does not own was interrupted (host restart).
       const interrupted: JobRecord = {
         ...found,
         status: "failed",
@@ -399,6 +407,11 @@ export function createTrainingService(
         },
       };
       await jobs.put(interrupted);
+      // Its worker's watchdog exits when the owning host dies; drop its scratch data.
+      await rm(path.join(options.workRoot, scopeKey(context.scope), jobId), {
+        recursive: true,
+        force: true,
+      }).catch(() => {});
       return interrupted;
     }
     return found;
@@ -468,6 +481,13 @@ export function createTrainingService(
         lora: manifest.lora,
         sft: manifest.sft,
         generation: manifest.generation,
+        watchdog_deadline_seconds:
+          Math.max(
+            1,
+            (Date.parse(job.created_at) + job.deadline_ms - now()) / 1000,
+          ) +
+          (options.killGraceMs ?? 5000) / 1000 +
+          5,
       };
       job = await update(job, { status: "running" });
       let progressWrite = Promise.resolve();

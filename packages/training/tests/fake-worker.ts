@@ -1,7 +1,7 @@
 /**
  * Offline stand-in for `python -m mars_training_worker` (no torch, no model).
  * argv: <mode> [--probe]. Modes: ok | error | hang | garbage | bad-config |
- * cuda | stale-pins. `hang` forks a grandchild into the same process group and
+ * cuda | stale-pins | close-stdout. `hang` forks a grandchild into the same process group and
  * records both pids so tests can prove the whole group is killed.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -38,6 +38,11 @@ console.error("fake worker: started");
 if (mode === "error") {
   send({ type: "error", code: "worker_error", message: "synthetic failure" });
   process.exit(1);
+}
+if (mode === "close-stdout") {
+  // Closes the protocol channel but keeps running: only the deadline can stop it.
+  process.stdout.end();
+  await Bun.sleep(600_000);
 }
 if (mode === "garbage") {
   process.stdout.write("this is not json\n");

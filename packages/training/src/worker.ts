@@ -273,11 +273,12 @@ export async function runTrainingWorker(
       message: String(cause).slice(0, 2000),
     };
     killWorkerGroup(proc, options.killGraceMs);
-  } finally {
-    clearTimeout(deadline);
-    options.signal?.removeEventListener("abort", onAbort);
   }
+  // The deadline and cancel stay armed until the worker has actually exited:
+  // a worker can close stdout and keep running.
   const exitCode = await proc.exited;
+  clearTimeout(deadline);
+  options.signal?.removeEventListener("abort", onAbort);
   // Reap anything the worker left behind in its group (e.g. dataloader children).
   try {
     process.kill(-proc.pid, "SIGKILL");

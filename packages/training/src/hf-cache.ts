@@ -14,7 +14,7 @@ export const TOKENIZER_FILES = [
   "tokenizer.model",
 ] as const;
 const TOKENIZER_CORE = ["tokenizer.json", "tokenizer.model", "vocab.json"];
-const MODEL_WEIGHTS = ["model.safetensors", "model.safetensors.index.json"];
+const SHARD_FILE = /^[A-Za-z0-9._-]+\.safetensors$/;
 
 /** `<cache>/models--org--name/snapshots/<revision>`, the huggingface_hub cache layout. */
 export function snapshotDir(cacheDir: string, ref: PinnedHfRef): string {
@@ -74,9 +74,31 @@ export async function baseModelCached(
   ref: PinnedHfRef,
 ): Promise<boolean> {
   if (!(await exists(cacheDir, ref, "config.json"))) return false;
-  for (const file of MODEL_WEIGHTS)
-    if (await exists(cacheDir, ref, file)) return true;
-  return false;
+  if (await exists(cacheDir, ref, "model.safetensors")) return true;
+  const index = await readSnapshotFile(
+    cacheDir,
+    ref,
+    "model.safetensors.index.json",
+  );
+  if (!index) return false;
+  let shards: unknown[];
+  try {
+    shards = [
+      ...new Set(
+        Object.values(
+          JSON.parse(new TextDecoder().decode(index)).weight_map ?? {},
+        ),
+      ),
+    ];
+  } catch {
+    return false;
+  }
+  if (shards.length === 0) return false;
+  for (const shard of shards) {
+    if (typeof shard !== "string" || !SHARD_FILE.test(shard)) return false;
+    if (!(await exists(cacheDir, ref, shard))) return false;
+  }
+  return true;
 }
 
 /** sha256 of every present tokenizer file, or null if no core tokenizer file is cached. */

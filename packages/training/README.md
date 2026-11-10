@@ -47,8 +47,9 @@ tokenizer / chat template present in the offline HF cache, worker venv present
 and its reported versions equal `TRAINING_PINS` (`worker_pin_mismatch:*`),
 QLoRA only with CUDA **and** bitsandbytes (`qlora_requires_cuda`,
 `qlora_requires_bitsandbytes`), and `submit` also refuses
-`budget_tokens_exceeded` when `max_steps × batch × grad_accum × max_length`
-exceeds `budget.max_tokens`. The registry repeats the leakage check against the
+`budget_tokens_exceeded` when `trainingTokenBound` (training steps × batch ×
+grad_accum × max_length, plus one validation pass and the reload/generation
+proof) exceeds `budget.max_tokens`. The registry repeats the leakage check against the
 signed evaluation report (`lineage_leakage`).
 
 ## Worker boundary
@@ -62,7 +63,8 @@ record). The worker:
 - is launched via `setsid` so it leads its own process group; cancel and the
   wall-clock deadline (`min(budget.max_duration_ms, maxDeadlineMs)`) SIGTERM
   the group, then SIGKILL after `killGraceMs`; leftovers in the group are
-  reaped when the worker exits;
+  reaped when the worker exits. A worker-side watchdog also kills the group if
+  the host process dies or the deadline (plus grace) passes;
 - gets a minimal environment (no host secrets), `HF_HUB_OFFLINE=1`, and loads
   models with `local_files_only=True` — it never downloads or installs;
 - after training, loads a fresh base, attaches the saved adapter, checks the
