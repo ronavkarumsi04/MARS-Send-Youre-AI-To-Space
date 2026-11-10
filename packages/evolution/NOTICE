@@ -1,0 +1,23 @@
+This package adapts the archive and parent-selection mechanics of the
+Darwin Gödel Machine (jennyzzt/dgm) at revision
+a565fd2d1dca504ef5104a7cc0f3bdc4ab9b4fd2:
+DGM_outer.py choose_selfimproves (score_prop / score_child_prop / random /
+best parent selection: sigmoid(10 * (score - 0.5)) score weight times
+1 / (1 + children_count) novelty weight), update_archive (keep_all /
+keep_better with noise_leeway), initialize_run / dgm_metadata.jsonl
+resume semantics, and utils/evo_utils.py is_compiled_self_improve
+(eligibility) and get_model_patch_paths (lineage as an ordered ancestor
+patch chain). Paper: "Darwin Gödel Machine: Open-Ended Evolution of
+Self-Improving Agents", arXiv:2505.22954.
+Copyright 2025 Jenny Zhang and Shengran Hu (per the upstream LICENSE).
+
+No upstream file is copied. The mechanics are re-implemented in
+TypeScript. The adapted material is licensed under the Apache License,
+Version 2.0; the license text is included at third_party/dgm/LICENSE.txt.
+
+Modified by MARS: durable SQLite archive with lineage DAG, frozen agent
+manifests reproducible from a content-addressed harness snapshot plus
+ordered patch chain, seeded deterministic selection, upstream `best`
+ordering fixed to pick the highest scores, isolated candidate workspaces,
+host-side tamper guard, held-out promotion gates, separate production
+champion with rollback.

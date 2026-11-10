@@ -12,6 +12,7 @@ import {
 import { remoteWorkspaceDoctor } from "@mars/workspaces-remote";
 import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
+import { runEvolution } from "./evolution";
 import { runMemory } from "./memory";
 import { omnirouteDoctorReport } from "./omniroute";
 import { runRender } from "./render";
@@ -349,9 +350,11 @@ try {
     await runSkills(process.argv.slice(3));
   } else if (command === "team") {
     await runTeam(process.argv.slice(3));
+  } else if (command === "evolution") {
+    await runEvolution(process.argv.slice(3));
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution>",
     );
     process.exitCode = 2;
   }
