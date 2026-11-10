@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { SkillRecord } from "@mars/contracts";
 import { MAX_RUNTIME_INSTRUCTION_LENGTH } from "@mars/execution";
 import {
+  FrozenSkillsSchema,
   freezeCurrentSkills,
   freezeSkills,
   validateFrozenSkills,
@@ -128,4 +129,17 @@ test("ranked freezing handles hundreds of short skills and ranks only the text t
   expect(
     ranked.selection?.find((entry) => entry.name === "hidden")?.relevance ?? 0,
   ).toBe(0);
+});
+
+test("selections frozen before redundancy was recorded still validate", () => {
+  const frozen = freezeSkills([skill()], "rev", "Task", 1_000_000, {
+    query: "verifier",
+  });
+  const legacy = {
+    ...frozen,
+    selection: frozen.selection?.map(({ redundancy: _, ...rest }) => rest),
+  };
+  expect(FrozenSkillsSchema.parse(legacy).selection?.[0]?.name).toBe(
+    "run-verifier",
+  );
 });
