@@ -27,6 +27,7 @@
         "@mars/output-format": "workspace:*",
         "@mars/providers": "workspace:*",
         "@mars/providers-omniroute": "workspace:*",
+        "@mars/providers-vllm": "workspace:*",
         "@mars/research-worker": "workspace:*",
         "@mars/skills": "workspace:*",
         "@mars/tasks": "workspace:*",
@@ -239,6 +240,16 @@
       "dependencies": {
         "@mars/contracts": "workspace:*",
         "@mars/providers": "workspace:*",
+        "zod": "3.25.76",
+      },
+    },
+    "packages/providers-vllm": {
+      "name": "@mars/providers-vllm",
+      "version": "0.0.1",
+      "dependencies": {
+        "@mars/contracts": "workspace:*",
+        "@mars/providers": "workspace:*",
+        "@mars/specialists": "workspace:*",
         "zod": "3.25.76",
       },
     },
@@ -543,6 +554,8 @@
     "@mars/providers": ["@mars/providers@workspace:packages/providers"],
 
     "@mars/providers-omniroute": ["@mars/providers-omniroute@workspace:packages/providers-omniroute"],
+
+    "@mars/providers-vllm": ["@mars/providers-vllm@workspace:packages/providers-vllm"],
 
     "@mars/research": ["@mars/research@workspace:packages/research"],
 

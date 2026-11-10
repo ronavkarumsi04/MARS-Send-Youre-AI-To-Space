@@ -22,6 +22,7 @@ import { runSession } from "./session/app";
 import { runSkills } from "./skills";
 import { runTeam, teamDoctorReport } from "./team";
 import { runVault } from "./vault";
+import { splitVllmServeArgs, vllmDoctorReport } from "./vllm";
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -261,6 +262,9 @@ try {
         "agent-server-key-env": { type: "string" },
         "agent-server-root": { type: "string" },
         "agent-server-allow-insecure-http": { type: "boolean" },
+        vllm: { type: "string" },
+        "vllm-allow-remote": { type: "boolean" },
+        "vllm-api-key-env": { type: "string" },
       },
     }).values;
     const report = {
@@ -301,6 +305,13 @@ try {
         live_verified: false,
       },
       omniroute: await omnirouteDoctorReport(),
+      vllm: await vllmDoctorReport({
+        ...(doctorArgs.vllm !== undefined ? { url: doctorArgs.vllm } : {}),
+        ...(doctorArgs["vllm-allow-remote"] ? { allowRemote: true } : {}),
+        ...(doctorArgs["vllm-api-key-env"] !== undefined
+          ? { apiKeyEnv: doctorArgs["vllm-api-key-env"] }
+          : {}),
+      }),
       team: teamDoctorReport(doctorArgs["team-state"]),
       remote_workspace: await remoteWorkspaceDoctor(
         {
@@ -325,6 +336,7 @@ try {
         "Background research runs only when mars serve is started with --research-search; no live search provider or model run has been verified.",
         "Background browser tasks run only when mars serve is started with --browser-chromium; no live browsing or planner model run has been verified.",
         "OmniRoute is an optional provider target enabled by mars serve --omniroute; the doctor probe is one GET /v1/models and no model request. No live OmniRoute or upstream provider call has been verified; catalog quotas are upstream approximations.",
+        "vLLM is an optional self-hosted provider target attached by mars serve --vllm (operator-started, pinned v0.32.0); the doctor probe is GET /version and GET /v1/models and no model request. No GPU host, real vLLM server or live adapter has been verified; attestation is tested only against a FAKE vLLM.",
         "Python services must use separate versioned environments.",
         "The remote workspace provider (mars serve --workspace-provider remote) is verified only against a FAKE OpenHands Agent Server; a remote server interface is not an OS isolation guarantee and MARS reports os_isolation none for it.",
         "Team Chat runs only under mars team serve with the dev authenticator and the team.enabled flag (default off); no live window, second machine or identity provider has been verified.",
@@ -342,7 +354,8 @@ try {
   } else if (command === "commands") {
     await runCommands(process.argv.slice(3));
   } else if (command === "serve") {
-    await runServer(process.argv.slice(3));
+    const serve = splitVllmServeArgs(process.argv.slice(3));
+    await runServer(serve.args, serve.vllm ? { vllm: serve.vllm } : {});
   } else if (command === "vault") {
     await runVault(process.argv.slice(3));
   } else if (command === "memory") {
