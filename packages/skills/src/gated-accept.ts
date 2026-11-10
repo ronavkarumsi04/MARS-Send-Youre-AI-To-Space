@@ -61,16 +61,16 @@ export async function acceptWithGate(
 
 /** One-line gate state of a proposal, for operators deciding whether to accept it. */
 export function describeGate(
-  proposal: { id: string; ops: readonly { op: string }[] },
+  proposal: { id: string; status: string; ops: readonly { op: string }[] },
   ledger: SkillOutcomeLedger,
 ): string {
   if (!gateRequired(proposal.ops)) return "not required";
   const verdicts = ledger.gates(proposal.id);
   const passing = verdicts.findLast((g) => meetsGatePolicy(g));
   if (passing) return `passed (${passing.digest.slice(0, 12)})`;
-  const overrides = ledger.gateOverrides(proposal.id);
-  const override = overrides.at(-1);
-  if (override)
+  // An override is recorded before accept runs, so it only counts once the proposal was accepted.
+  const override = ledger.gateOverrides(proposal.id).at(-1);
+  if (override && proposal.status === "accepted")
     return `accepted without gate by ${override.actor}: ${override.reason}`;
   const last = verdicts.at(-1);
   if (last)

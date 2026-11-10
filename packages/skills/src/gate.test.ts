@@ -304,6 +304,13 @@ test("acceptance requires a passing verdict or a recorded override", async () =>
     expect(accepted.overridden).toBe(false);
     expect((await store.get("gated"))?.status).toBe("active");
 
+    const stale = await propose("stale");
+    await store.create("stale", content("stale"), operator);
+    await expect(
+      acceptWithGate(store, ledger, stale.id, operator, { reason: "try" }),
+    ).rejects.toMatchObject({ code: "stale-revision" });
+    expect(describeGate(stale, ledger)).toBe("none yet");
+
     const skipped = await propose("skipped");
     await expect(
       acceptWithGate(store, ledger, skipped.id, operator, { reason: " " }),
@@ -316,7 +323,7 @@ test("acceptance requires a passing verdict or a recorded override", async () =>
     expect(ledger.gateOverrides(skipped.id)).toMatchObject([
       { actor: "tanay", reason: "no model key yet" },
     ]);
-    expect(describeGate(skipped, ledger)).toBe(
+    expect(describeGate({ ...skipped, status: "accepted" }, ledger)).toBe(
       "accepted without gate by tanay: no model key yet",
     );
 

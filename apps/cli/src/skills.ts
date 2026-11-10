@@ -266,7 +266,7 @@ export async function runSkills(args: string[]): Promise<void> {
             ...verdicts.map(renderGate),
             ...overrides.map(
               (o) =>
-                `accepted without gate by ${o.actor} at ${new Date(o.recorded_at).toISOString()}: ${o.reason}`,
+                `override requested by ${o.actor} at ${new Date(o.recorded_at).toISOString()}: ${o.reason}`,
             ),
           ].join("\n"),
         );
