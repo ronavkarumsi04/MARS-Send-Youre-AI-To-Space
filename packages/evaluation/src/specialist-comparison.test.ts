@@ -96,6 +96,7 @@ async function setup(
     trainRequests?: string[];
     producerId?: string;
     datasetSha256?: string;
+    adapterBytes?: Uint8Array;
     heldOutSplit?: HeldOutSplit;
     omitTrainingRequests?: boolean;
     pass?: Parameters<typeof createFixtureArmEvaluator>[0] extends infer O
@@ -166,6 +167,22 @@ async function setup(
   const fixture = await makeSpecialistFixture(memory, {
     datasetLineage: lineage,
     domains: [DOMAIN],
+    ...(options.adapterBytes
+      ? {
+          adapter: await artifacts.put(
+            context,
+            options.adapterBytes,
+            "application/octet-stream",
+          ),
+          adapterFormat: "peft-lora" as const,
+          adapterSpec: {
+            format: "peft-lora" as const,
+            base_model: { component: "model/base", revision: "1" },
+            tokenizer: { component: "tokenizer/base", revision: "1" },
+            chat_template_sha256: sha256(new Uint8Array()),
+          },
+        }
+      : {}),
   });
   await registry.registerSpecialist(context, fixture.registration);
   return { memory, registry, service, evaluator, recorded, fixture };
@@ -244,6 +261,49 @@ test("request → job → signed verdict round-trip under matched conditions", a
     { artifacts: memory, evidenceVerifier: evidenceVerifier() },
   );
   expect(strict.status).toBe("rejected");
+});
+
+test("candidate adapter is evaluated and preserved by the signed verdict round-trip", async () => {
+  const { memory, registry, service, evaluator, recorded, fixture } =
+    await setup({
+      adapterBytes: new TextEncoder().encode("synthetic adapter artifact"),
+      pass: candidateWins,
+    });
+  const job = await registry.requestEvaluation(context, "specialist-1", "1");
+  const settled = await service.settled(context, job.job_id);
+  expect(settled.status).toBe("completed");
+  expect(evaluator.calls.map(({ target }) => target.arm)).toEqual([
+    "base",
+    "prompt_optimized_baseline",
+    "candidate",
+  ]);
+  expect(
+    evaluator.calls
+      .filter(({ target }) =>
+        ["base", "prompt_optimized_baseline"].includes(target.arm),
+      )
+      .map(({ target }) => target.adapter),
+  ).toEqual([null, null]);
+  expect(
+    evaluator.calls.find(({ target }) => target.arm === "candidate")?.target
+      .adapter,
+  ).toEqual(fixture.registration.adapter);
+
+  const verdict = await service.verdict(context, job.job_id);
+  expect(recorded).toEqual([{ job_id: job.job_id, verdict }]);
+  const registryVerdict = await verifyEvidence(
+    context,
+    { ...fixture.registration, evaluation: verdict.report },
+    fixture.candidateSha256,
+    {
+      artifacts: memory,
+      evidenceVerifier: evidenceVerifier(),
+      allowSyntheticFixtures: true,
+      currentProductionRevision: null,
+    },
+  );
+  expect(registryVerdict.status).toBe("evaluated");
+  expect(registryVerdict.codes).toEqual([]);
 });
 
 test("no improvement over base is recorded honestly, as is a regression", async () => {
