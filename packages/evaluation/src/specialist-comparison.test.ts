@@ -475,3 +475,48 @@ test("a verdict the registry sink did not record is never returned", async () =>
     code: "not_settled",
   });
 });
+
+test("cancelling during the last arm records no verdict", async () => {
+  const { memory, registry } = await setup();
+  const job = await registry.requestEvaluation(context, "specialist-1", "1");
+  const fixture = createFixtureArmEvaluator({ evaluator_id: "eval-1" });
+  let reached!: () => void;
+  const atCandidate = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const recorded: string[] = [];
+  const service = standaloneService(memory, registry, {
+    evaluator: {
+      ...fixture,
+      async evaluate(input) {
+        if (input.target.arm === "candidate") {
+          reached();
+          await gate;
+        }
+        return fixture.evaluate(input);
+      },
+    },
+    verdicts: {
+      record: async (_ctx, entry) => {
+        recorded.push(entry.job.job_id);
+      },
+    },
+  });
+  const running = await service.submitComparison(
+    context,
+    job.input_manifest,
+    budget,
+  );
+  await atCandidate;
+  const cancelled = service.cancel(context, running.job_id);
+  release();
+  await cancelled;
+  expect((await service.inspect(context, running.job_id)).status).toBe(
+    "cancelled",
+  );
+  expect(recorded).toEqual([]);
+});

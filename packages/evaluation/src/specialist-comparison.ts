@@ -733,6 +733,7 @@ export function createSpecialistComparisonService(
       cost_usd: cost,
       model_requests: modelRequests,
     });
+    signal.throwIfAborted();
     await options.verdicts.record(context, {
       job: { job_id: record.job_id, input_manifest: record.input_manifest },
       report: reportRef,
