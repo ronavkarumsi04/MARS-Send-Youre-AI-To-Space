@@ -20,6 +20,12 @@ import {
 import { remoteWorkspaceFromFlags } from "@mars/workspaces-remote";
 import { ServeUsageError } from "./cli-errors";
 import { omnirouteFromFlags } from "./omniroute";
+import {
+  VLLM_SERVE_HELP,
+  VLLM_SERVE_USAGE,
+  type VllmServeFlags,
+  vllmServeRegistry,
+} from "./vllm";
 import { resolveWorkbenchLocation } from "./workbench-location";
 
 export { ServeUsageError };
@@ -194,7 +200,10 @@ export function conventionsAdapters(): Pick<
   };
 }
 
-export async function runServer(args: string[]): Promise<void> {
+export async function runServer(
+  args: string[],
+  options: { vllm?: VllmServeFlags } = {},
+): Promise<void> {
   const { values } = parseArgs({
     args,
     strict: true,
@@ -236,6 +245,7 @@ export async function runServer(args: string[]): Promise<void> {
         `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--checks HOST_CHECKS.json] [--trust-project] [--no-conventions]`,
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--browser-chromium PATH] [--browser-deny-host PATTERN]... [--browser-allow-input] [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
+        ...VLLM_SERVE_USAGE,
         "                  [--workspace-provider local|remote] [--agent-server URL] [--agent-server-key-env MARS_AGENT_SERVER_API_KEY] [--agent-server-root /workspace/mars] [--agent-server-allow-insecure-http]",
         "--workspace-provider remote runs workspace shell/files/artifacts on a pinned OpenHands Agent Server (1.59.0) at --agent-server; planning and model calls stay in MARS. The session key is read from the named environment variable and never printed. A remote server interface is not an OS isolation guarantee: commands run with the Agent Server process's privileges on its host. Live remote acceptance is unverified.",
         "Without a pre-pulled digest-pinned image, command execution is disabled. No model request is made at startup. Connection credentials are written only to the private connection file.",
@@ -244,6 +254,7 @@ export async function runServer(args: string[]): Promise<void> {
         "Background research runs only with --research-search. The search credential is read from BRAVE_SEARCH_API_KEY / TAVILY_API_KEY (or --research-api-key-env NAME) at startup and never stored; the worker uses the free default model unless --research-model names another free model. Live research is unverified.",
         "Background browser tasks (mars_browse, mars_browse_result) run only with --browser-chromium PATH (a local Chromium/Chrome executable driven through playwright-core). Browsing is read-only unless --browser-allow-input grants typing and key presses, every request passes the MARS egress guard (no private addresses, no credentials in URLs), and the planner is the free default model. Live browsing is unverified.",
         "--omniroute adds a self-hosted OmniRoute gateway as the `omniroute` provider target (attach to a running instance; --omniroute-start spawns the pinned omniroute CLI on 127.0.0.1). Only free, non-excluded catalog models route; MARS keeps policy and sends its paid-consent state. OMNIROUTE_API_KEY (OmniRoute's own key) is read by name; upstream credentials stay in OmniRoute. Live OmniRoute use is unverified.",
+        VLLM_SERVE_HELP,
       ].join("\n"),
     );
     return;
@@ -325,6 +336,12 @@ export async function runServer(args: string[]): Promise<void> {
           trustProject,
           ...conventionsAdapters(),
         });
+  const vllm = options.vllm
+    ? await vllmServeRegistry(options.vllm, {
+        sourceRoot: source,
+        trustProjectConfig: trustProject,
+      })
+    : undefined;
   const service = await createWorkbenchService({
     sourceRoot: source,
     stateRoot: state,
@@ -346,6 +363,7 @@ export async function runServer(args: string[]): Promise<void> {
       : {}),
     ...(conventions ? { conventions: conventions.conventions } : {}),
     ...(omniroute ? { omniroute } : {}),
+    ...(vllm ? { registry: vllm.registry } : {}),
     trustProjectConfig: trustProject,
   });
   await new Promise<void>((resolve, reject) => {
@@ -376,6 +394,7 @@ export async function runServer(args: string[]): Promise<void> {
           : null,
         conventions: conventions ? conventions.summary : null,
         omniroute: service.omniroute,
+        vllm: vllm ? vllm.report : null,
       }),
     );
   });

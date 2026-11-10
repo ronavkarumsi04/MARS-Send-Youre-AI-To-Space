@@ -2216,7 +2216,7 @@
         }
       ],
       "runtime_requirements": "Python >=3.11,<3.15; CUDA build pins torch==2.13.0 (requirements/cuda.txt); CPU build exists (requirements/cpu.txt torch 2.13.0+cpu; docs/getting_started/installation/cpu.md; vllm/lora/punica_wrapper/punica_cpu.py present) but CPU LoRA serving was not executed. Repo AGENTS.md mandates uv + .venv for dev. Runtime LoRA load/unload requires VLLM_ALLOW_RUNTIME_LORA_UPDATING=True (vllm/envs.py default False; router logs 'ONLY be used for local development').",
-      "integration_owner": "packages/providers (inference adapter) + model registry/router",
+      "integration_owner": "@mars/providers-vllm (openai-compatible provider target + ServingAttestor + adapter lifecycle); MARS registry/router own model policy and wrong-base rejection",
       "target_milestone": "7 (Specialist serving and routing)",
       "adaptation_decision": "REUSE AS PINNED EXTERNAL SERVER (OpenAI-compatible), no fork. packages/providers vLLM adapter: start with --enable-lora --max-lora-rank <registry max> and either static --lora-modules JSON with base_model_name, or dynamic load gated by MARS registry. MARS MUST implement wrong-base rejection itself (compare registry base model id+revision and adapter_config.base_model_name_or_path to the served model) because vLLM v0.32.0 does not reject on base mismatch; shape-incompatible adapters may still fail at add_lora, but that is not a lineage guarantee. Keep runtime-updating disabled in non-dev profiles. Verify tool-calling parser and tokenizer chat template per actual model.",
       "dependencies": [
@@ -2247,7 +2247,7 @@
         "torch pin 2.13.0 conflicts with SFT env torch 2.15.0 -> separate venvs/containers.",
         "GPU required for realistic serving; latency contention with training workers (blueprint)."
       ],
-      "integration_status": "not-integrated",
+      "integration_status": "provider-gateway",
       "background_references": [
         {
           "url": "https://docs.vllm.ai/en/v0.32.0/features/lora/",

@@ -16,6 +16,7 @@
     "@mars/output-format": "workspace:*",
     "@mars/providers": "workspace:*",
     "@mars/providers-omniroute": "workspace:*",
+    "@mars/providers-vllm": "workspace:*",
     "@mars/research-worker": "workspace:*",
     "@mars/skills": "workspace:*",
     "@mars/tasks": "workspace:*",
