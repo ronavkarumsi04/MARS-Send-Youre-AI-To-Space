@@ -212,6 +212,41 @@ describe("registry-side comparison verdict receiver", () => {
     );
   });
 
+  test("a verdict recorded during reverify is not overwritten by the older report", async () => {
+    const { artifacts, registry, fixture } = await setup();
+    const job = await registry.requestEvaluation(context, "specialist-1", "1");
+    const worse = await makeSpecialistFixture(artifacts, {
+      reportId: `report-${job.job_id}`,
+      candidatePassed: 0,
+      basePassed: 1,
+    });
+    const original = fixture.registration.evaluation.sha256;
+    const get = artifacts.get.bind(artifacts);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let gated = true;
+    artifacts.get = async (ctx, ref) => {
+      if (gated && ref.sha256 === original) {
+        gated = false;
+        await gate;
+      }
+      return get(ctx, ref);
+    };
+    const pending = registry.reverify(context, "specialist-1", "1");
+    await registry.recordEvaluationVerdict(
+      context,
+      entry(job, worse.registration.evaluation, worse.candidateSha256, {
+        outcome: "regressed",
+      }),
+    );
+    release();
+    expect((await pending).status).toBe("rejected");
+    const inspection = await registry.inspect(context, "specialist-1");
+    expect(inspection.revisions[0]?.status).toBe("rejected");
+  });
+
   test("refuses verdicts it cannot tie to a delegated job and revision", async () => {
     const { artifacts, registry, fixture } = await setup();
     const job = await registry.requestEvaluation(context, "specialist-1", "1");

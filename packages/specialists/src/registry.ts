@@ -471,6 +471,17 @@ export class SpecialistRegistry implements ModelRegistry {
    * comparison report received via `recordEvaluationVerdict` supersedes the
    * evaluation report the revision was registered with.
    */
+  private latestVerdictJob(
+    scope: string,
+    id: string,
+    revision: string,
+  ): string | null {
+    return (
+      this.store.listEvaluationVerdicts(scope, id, revision).at(-1)?.job_id ??
+      null
+    );
+  }
+
   private evidenceRegistration(
     registration: SpecialistRegistration,
   ): SpecialistRegistration {
@@ -1092,6 +1103,7 @@ export class SpecialistRegistry implements ModelRegistry {
     if (!scopeEquals(registration.scope, ctx.scope)) {
       throw new SpecialistRegistryError("not_found");
     }
+    const basis = this.latestVerdictJob(row.scope_key, id, revision);
     const pointer = this.store.readProduction(row.scope_key, id);
     const verdict = await verifyEvidence(
       ctx,
@@ -1102,9 +1114,15 @@ export class SpecialistRegistry implements ModelRegistry {
       }),
     );
     this.publish({ registration, verdict });
+    let superseded = false;
     this.store.transaction(() => {
       const latest = this.store.readSpecialist(row.scope_key, id, revision);
       if (!latest) throw new SpecialistRegistryError("not_found");
+      // A verdict recorded while verifying changed the gating report.
+      if (this.latestVerdictJob(row.scope_key, id, revision) !== basis) {
+        superseded = true;
+        return;
+      }
       const updatedAt = new Date().toISOString();
       if (latest.status === "archived" || latest.status === "invalidated") {
         this.store.db
@@ -1142,6 +1160,7 @@ export class SpecialistRegistry implements ModelRegistry {
         },
       });
     });
+    if (superseded) return this.reverify(context, id, revision);
     const updated = this.store.readSpecialist(row.scope_key, id, revision);
     if (!updated) throw new SpecialistRegistryError("corrupt_record");
     return this.revisionView(ctx, updated, registration);
