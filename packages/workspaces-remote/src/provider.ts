@@ -771,6 +771,12 @@ export async function createRemoteWorkspaceProvider(
     store.update(row);
   }
 
+  /** Adopt the remote tree only when it differs, keeping the revision otherwise. */
+  async function reconcileIfChanged(row: WorkspaceRow): Promise<void> {
+    const result = await scan(treeRoot(row));
+    if (result.manifest.digest !== row.manifest.digest) await reconcile(row);
+  }
+
   /** A failed mutation may have changed remote bytes: adopt what is there. */
   async function mutateRemote(
     row: WorkspaceRow,
@@ -781,7 +787,7 @@ export async function createRemoteWorkspaceProvider(
     try {
       await apply();
     } catch (error) {
-      await reconcile(row).catch(() => undefined);
+      await reconcileIfChanged(row).catch(() => undefined);
       throw error;
     }
     await commitMutation(row, next, known);

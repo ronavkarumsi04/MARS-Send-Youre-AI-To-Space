@@ -421,6 +421,39 @@ describe("remote provider robustness (FAKE Agent Server)", () => {
   );
 
   test(
+    "a rejected write that changed nothing keeps the revision",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-reject");
+        fx.fake.faults.failNext.set("/api/file/upload", {
+          status: 400,
+          count: 1,
+        });
+        await failure(
+          fx.provider.write(
+            context,
+            ws,
+            "src/a.ts",
+            await fx.artifacts.put(
+              context,
+              new TextEncoder().encode("export const a = 9;\n"),
+              "text/plain",
+            ),
+          ),
+        );
+        expect(
+          (await fx.provider.inspect(context, ws.workspace_id)).revision,
+        ).toBe(ws.revision);
+        expect(await fx.provider.read(context, ws, "src/a.ts")).toBeTruthy();
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
     "a polling failure stops the remote command before reconciling",
     async () => {
       const fx = await remoteFixture();
