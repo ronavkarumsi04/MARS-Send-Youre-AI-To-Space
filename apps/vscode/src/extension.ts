@@ -98,6 +98,9 @@ class WorkbenchViewProvider
   private view: vscode.WebviewView | undefined;
   private readonly trustedEndpoints = new Set<string>();
   private suspended = 0;
+  private readonly clientChanged = new vscode.EventEmitter<void>();
+  /** Fires when the connected client changes, so the Skills view can reload. */
+  readonly onDidChangeClient = this.clientChanged.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -107,6 +110,7 @@ class WorkbenchViewProvider
   dispose(): void {
     this.controller?.dispose();
     this.controller = undefined;
+    this.clientChanged.dispose();
   }
 
   /** Drops the connection and blocks reconnects until the returned resume runs. */
@@ -158,6 +162,7 @@ class WorkbenchViewProvider
       post: (state) => this.post({ type: "state", state }),
       modelId: () => settings().modelId,
       newId: randomUUID,
+      onClientChange: () => this.clientChanged.fire(),
     });
     this.controller = controller;
     const subscriptions = [
@@ -393,12 +398,15 @@ class SkillsViewProvider implements vscode.WebviewViewProvider {
           ),
       },
     });
-    const subscription = view.webview.onDidReceiveMessage(
-      (message: unknown) => {
+    const subscriptions = [
+      view.webview.onDidReceiveMessage((message: unknown) => {
         void controller.handleMessage(message);
-      },
-    );
-    view.onDidDispose(() => subscription.dispose());
+      }),
+      this.workbench.onDidChangeClient(() => void controller.refresh()),
+    ];
+    view.onDidDispose(() => {
+      for (const subscription of subscriptions) subscription.dispose();
+    });
   }
 }
 

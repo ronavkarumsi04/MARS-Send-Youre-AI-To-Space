@@ -127,14 +127,28 @@ test("Skills view rejects with a reason, surfaces errors and drops bad messages"
   ).toBe(false);
 });
 
-test("Skills view asks for a connection when the Tasks view has none", async () => {
+test("Skills view asks for a connection when the Tasks view has none, and loads once it connects", async () => {
+  const { client } = await setup();
+  let current: MarsClient | undefined;
   const states: SkillsState[] = [];
   const controller = new SkillsController({
-    client: () => undefined,
+    client: () => current,
     post: (state) => states.push(state),
     ui: { confirm: async () => true, prompt: async () => "x" },
   });
   await controller.handleMessage({ type: "ready" });
   expect(states.at(-1)).toMatchObject({ connected: false });
   expect(states.at(-1)?.notice?.text).toContain("Tasks view");
+  // The extension refreshes on the Tasks controller's onClientChange.
+  current = client;
+  await controller.refresh();
+  expect(states.at(-1)).toMatchObject({ connected: true, notice: null });
+  expect(states.at(-1)?.skills).toHaveLength(1);
+  current = undefined;
+  await controller.refresh();
+  expect(states.at(-1)).toMatchObject({
+    connected: false,
+    skills: [],
+    proposals: [],
+  });
 });

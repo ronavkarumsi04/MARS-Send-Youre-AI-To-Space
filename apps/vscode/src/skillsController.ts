@@ -71,6 +71,8 @@ export class SkillsController {
     if (!client) {
       this.emit({
         connected: false,
+        skills: [],
+        proposals: [],
         notice: {
           kind: "info",
           text: "Connect to a MARS server in the Tasks view first.",
