@@ -128,11 +128,14 @@ function entry(
 
 describe("registry-side comparison verdict receiver", () => {
   test("stores a re-verified verdict against the revision, idempotently", async () => {
-    const { registry, fixture } = await setup();
+    const { artifacts, registry, fixture } = await setup();
     const job = await registry.requestEvaluation(context, "specialist-1", "1");
+    const heldOut = await makeSpecialistFixture(artifacts, {
+      reportId: `report-${job.job_id}`,
+    });
     const record = entry(
       job,
-      fixture.registration.evaluation,
+      heldOut.registration.evaluation,
       fixture.candidateSha256,
     );
     const view = await registry.recordEvaluationVerdict(context, record);
@@ -158,12 +161,16 @@ describe("registry-side comparison verdict receiver", () => {
 
   test("a verdict that arrives before submitComparison returns is recorded", async () => {
     let early: Promise<unknown> | undefined;
-    const { registry, fixture } = await setup(undefined, (job) => {
+    let report: ArtifactRef | undefined;
+    const { artifacts, registry, fixture } = await setup(undefined, (job) => {
       early = registry.recordEvaluationVerdict(
         context,
-        entry(job, fixture.registration.evaluation, fixture.candidateSha256),
+        entry(job, report as ArtifactRef, fixture.candidateSha256),
       );
     });
+    report = (
+      await makeSpecialistFixture(artifacts, { reportId: "report-job-1" })
+    ).registration.evaluation;
     const job = await registry.requestEvaluation(context, "specialist-1", "1");
     expect(await early).toMatchObject({ job_id: job.job_id });
     expect(
@@ -173,13 +180,13 @@ describe("registry-side comparison verdict receiver", () => {
 
   test("an authentic no-improvement report is recorded and demotes the revision", async () => {
     const { artifacts, registry, fixture } = await setup();
+    const job = await registry.requestEvaluation(context, "specialist-1", "1");
     const worse = await makeSpecialistFixture(artifacts, {
-      reportId: "report-heldout-worse",
+      reportId: `report-${job.job_id}`,
       candidatePassed: 0,
       basePassed: 1,
     });
     expect(worse.candidateSha256).toBe(fixture.candidateSha256);
-    const job = await registry.requestEvaluation(context, "specialist-1", "1");
     const view = await registry.recordEvaluationVerdict(
       context,
       entry(job, worse.registration.evaluation, worse.candidateSha256, {
@@ -260,9 +267,23 @@ describe("registry-side comparison verdict receiver", () => {
       await registry.evaluationVerdicts(context, "specialist-1", "1"),
     ).toEqual([]);
 
+    // A signed report for this revision from another evaluation (here the
+    // registration's own report) is not this job's held-out result.
+    await expectCode(
+      () =>
+        registry.recordEvaluationVerdict(
+          context,
+          entry(job, report, fixture.candidateSha256),
+        ),
+      "invalid_input",
+      "verdict_report_unbound",
+    );
+    const bound = await makeSpecialistFixture(artifacts, {
+      reportId: `report-${job.job_id}`,
+    });
     await registry.recordEvaluationVerdict(
       context,
-      entry(job, report, fixture.candidateSha256),
+      entry(job, bound.registration.evaluation, fixture.candidateSha256),
     );
     const other = await makeSpecialistFixture(artifacts, {
       reportId: "report-other",

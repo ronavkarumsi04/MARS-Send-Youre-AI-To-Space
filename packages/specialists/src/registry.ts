@@ -235,6 +235,11 @@ function assertContext(context: RequestContext): RequestContext {
 }
 
 /** Report-integrity failures: such a verdict is refused, never stored. */
+/** Report id `@mars/evaluation` signs into the report of a comparison job. */
+export function comparisonReportId(jobId: string): string {
+  return `report-${jobId}`;
+}
+
 const UNTRUSTED_VERDICT_CODES = new Set<string>([
   "evidence_missing",
   "evidence_digest_mismatch",
@@ -1815,6 +1820,12 @@ export class SpecialistRegistry implements ModelRegistry {
       throw new SpecialistRegistryError(
         "invalid_input",
         `verdict_evidence_rejected:${evidence.codes.join(",")}`,
+      );
+    }
+    if (evidence.report_id !== comparisonReportId(job.job_id)) {
+      throw new SpecialistRegistryError(
+        "invalid_input",
+        "verdict_report_unbound",
       );
     }
     this.publish({ registration, verdict: evidence });
