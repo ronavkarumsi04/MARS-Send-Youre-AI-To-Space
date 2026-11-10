@@ -1664,15 +1664,23 @@ export class SpecialistRegistry implements ModelRegistry {
   }
 
   /**
-   * The fallback chain starting at `ref` (inclusive), resolved in the caller's
-   * scope with the same cycle/depth/missing-target rules routing uses.
+   * The fallback chain starting at `ref` (inclusive), resolved in the scope
+   * that owns the specialist (the caller's scope or its project scope) with
+   * the same cycle/depth/missing-target rules routing uses.
    */
   async fallbackChain(
     context: RequestContext,
     ref: string,
+    ownerScope: RequestContext["scope"] = context.scope,
   ): Promise<ReturnType<typeof resolveFallbackChain>> {
     const ctx = this.checkContext(context);
-    return this.lookupFallback(ctx, ref);
+    const visible =
+      ownerScope.owner_id === ctx.scope.owner_id &&
+      ownerScope.project_id === ctx.scope.project_id &&
+      (ownerScope.workspace_id === undefined ||
+        ownerScope.workspace_id === ctx.scope.workspace_id);
+    if (!visible) throw new SpecialistRegistryError("scope_denied");
+    return this.lookupFallback(ctx, ref, scopeKey(ownerScope));
   }
 
   async taskRoutingState(

@@ -371,11 +371,16 @@ export class SpecialistTaskRouter {
       }
       throw error;
     }
-    const start = inspection.revisions.find(
+    const registration = inspection.revisions.find(
       (item) => item.registration.revision === ref.revision,
-    )?.registration.fallback_specialist_revision;
-    if (!start) return [];
-    const resolved = await this.registry.fallbackChain(context, start);
+    )?.registration;
+    if (!registration) return [];
+    const start = registration.fallback_specialist_revision;
+    const resolved = await this.registry.fallbackChain(
+      context,
+      start,
+      registration.scope,
+    );
     if (resolved.error) {
       reject(start, [resolved.error satisfies ReasonCode]);
       return [];

@@ -305,6 +305,40 @@ describe("specialist task routing", () => {
     ]);
   });
 
+  test("workspace callers walk a project specialist's fallback chain", async () => {
+    const { registry, artifacts } = await setup();
+    const target = await makeSpecialistFixture(artifacts, {
+      specialistId: "chain-target",
+    });
+    await registry.registerSpecialist(context, target.registration);
+    const pinned = await makeSpecialistFixture(artifacts, {
+      fallbackRef: "specialist:chain-target@1",
+    });
+    await registry.registerSpecialist(context, pinned.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    const workspace: RequestContext = {
+      ...context,
+      scope: { ...context.scope, workspace_id: "workspace-1" },
+    };
+    const router = new SpecialistTaskRouter(registry);
+    const first = await router.routeStep(workspace, {
+      request: routingRequest(),
+    });
+    expect(first.step.selected?.ref).toBe("specialist:specialist-1@1");
+    await registry.retire(context, "specialist-1", "1");
+    const second = await router.routeStep(workspace, {
+      request: routingRequest(),
+    });
+    expect(second.step.step_reasons).toEqual(["pinned_retired"]);
+    expect(second.step.selected?.ref).toBe("specialist:chain-target@1");
+    await expect(
+      registry.fallbackChain(workspace, "baseline:baseline@1", {
+        ...context.scope,
+        workspace_id: "workspace-2",
+      }),
+    ).rejects.toBeInstanceOf(SpecialistRegistryError);
+  });
+
   test("budget pressure falls back and exhaustion stops routing", async () => {
     const { router, registry, artifacts } = await setup();
     const priced = await makeSpecialistFixture(artifacts, {
