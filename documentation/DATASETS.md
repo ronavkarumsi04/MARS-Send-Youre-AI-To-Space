@@ -73,7 +73,8 @@ optimization holdout record (`{final_holdout: [...]}`) or
 `{source?, task_ids, requests?}`; an unrecognized file is refused. The state
 directory, source directory and home directory are passed as private roots.
 It writes `train.jsonl`, `validation.jsonl` and `manifest.json` into `--out`
-and never overwrites existing files; `--json` prints the manifest and every
+atomically (staged, then renamed into place) and refuses an `--out` that
+already exists and is not empty; `--json` prints the manifest and every
 skipped task with its reason.
 
 ## Limits

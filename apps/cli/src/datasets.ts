@@ -1,6 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RequestContext } from "@mars/contracts";
 import {
@@ -19,7 +26,7 @@ export const DATASETS_USAGE = [
   "  Builds an SFT dataset from tasks whose newest host verdict passed on the exact exported patch.",
   "  --held-out FILE   tasks never trained on: a gate trials file, an optimization holdout record",
   "                    ({final_holdout}), or {source?, task_ids, requests?}; repeatable",
-  "  Writes DIR/train.jsonl, DIR/validation.jsonl and DIR/manifest.json; existing files are never overwritten.",
+  "  Writes DIR/train.jsonl, DIR/validation.jsonl and DIR/manifest.json; an existing non-empty --out is refused and nothing partial is left.",
   "  Defaults match mars serve: --project project-<sha256(source)>, --state ~/.mars/workbench/<project>, --owner local.",
 ].join("\n");
 
@@ -128,16 +135,25 @@ export async function runDatasets(args: string[]): Promise<void> {
       ...(fraction === undefined ? {} : { validation_fraction: fraction }),
       ...(values.seed === undefined ? {} : { seed: values.seed }),
     });
+    // All three files are written into a fresh sibling directory, which is
+    // then renamed into place, so a failure never leaves a partial dataset.
     const out = resolve(values.out);
-    await mkdir(out, { recursive: true });
-    const write = (name: string, bytes: Uint8Array | string) =>
-      writeFile(join(out, name), bytes, { flag: "wx", mode: 0o600 });
-    await write("train.jsonl", built.files.train);
-    await write("validation.jsonl", built.files.validation);
-    await write(
-      "manifest.json",
-      `${JSON.stringify(built.manifest, null, 2)}\n`,
-    );
+    await mkdir(dirname(out), { recursive: true });
+    const staging = await mkdtemp(join(dirname(out), `.${basename(out)}-`));
+    try {
+      const write = (name: string, bytes: Uint8Array | string) =>
+        writeFile(join(staging, name), bytes, { flag: "wx", mode: 0o600 });
+      await write("train.jsonl", built.files.train);
+      await write("validation.jsonl", built.files.validation);
+      await write(
+        "manifest.json",
+        `${JSON.stringify(built.manifest, null, 2)}\n`,
+      );
+      await rename(staging, out);
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true });
+      throw error;
+    }
     const summary = {
       out,
       manifest: built.manifest,
@@ -161,9 +177,10 @@ export async function runDatasets(args: string[]): Promise<void> {
   } catch (error) {
     if (error instanceof DatasetError)
       throw new DatasetsUsageError(`${error.code}: ${error.message}`);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST")
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "ENOTEMPTY" || code === "ENOTDIR")
       throw new DatasetsUsageError(
-        "Output files already exist; choose another --out.",
+        "--out already exists and is not an empty directory; choose another --out.",
       );
     throw error;
   } finally {

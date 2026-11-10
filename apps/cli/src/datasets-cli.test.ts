@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RequestContext, Task } from "@mars/contracts";
@@ -147,7 +153,19 @@ test("mars datasets build writes pinned splits from verified tasks and honours h
     // Never overwrites an existing dataset.
     const again = await run(args);
     expect(again.exit).not.toBe(0);
-    expect(again.stderr).toContain("already exist");
+    expect(again.stderr).toContain("already exists");
+    // A directory holding an unrelated file is refused and left untouched.
+    const occupied = join(root, "occupied");
+    Bun.spawnSync(["mkdir", "-p", occupied]);
+    writeFileSync(join(occupied, "manifest.json"), "{}");
+    const blocked = await run([
+      ...args.slice(0, 4),
+      occupied,
+      ...args.slice(5),
+    ]);
+    expect(blocked.exit).not.toBe(0);
+    expect(readdirSync(occupied)).toEqual(["manifest.json"]);
+    expect(readdirSync(root).filter((n) => n.startsWith("."))).toEqual([]);
     // A malformed held-out file is refused rather than ignored.
     writeFileSync(heldOut, JSON.stringify({ nope: true }));
     const bad = await run([
