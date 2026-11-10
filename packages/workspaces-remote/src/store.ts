@@ -51,6 +51,10 @@ const JournalSchema = z.discriminatedUnion("kind", [
       target_digest: sha,
     })
     .strict(),
+  /** A write/remove may have changed remote bytes; on recovery adopt the tree. */
+  z
+    .object({ kind: z.literal("mutate") })
+    .strict(),
   /** A remote command may be running; on recovery stop it and adopt the tree. */
   z
     .object({

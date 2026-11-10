@@ -91,8 +91,10 @@ Plain `http://` is refused for non-loopback hosts unless
   next operation fail closed with `workspace_modified` rather than being
   silently accepted. Bound such commands with the server-side timeout.
 - **Failed writes/removes** that may have changed remote bytes (e.g. upload
-  succeeded, `chmod` failed) adopt the scanned remote tree as a new revision
-  before the error is returned, so the workspace stays usable.
+  succeeded, `chmod` failed) are covered by a durable `mutate` journal entry
+  written before the remote change: the scanned remote tree is adopted as a
+  new revision only if it changed (otherwise the revision is kept), and if that
+  scan also fails the journal is settled on the next operation.
 - **Checkpoints** are content-addressed artifacts of the full manifest plus
   every file's bytes (hash-checked on load). **Restore** is revision fenced,
   writes a durable journal first, applies uploads/removals, verifies the

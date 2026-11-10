@@ -730,6 +730,10 @@ export async function createRemoteWorkspaceProvider(
   ): Promise<void> {
     const journal = row.journal;
     if (!journal) return;
+    if (journal.kind === "mutate") {
+      await settleMutation(row);
+      return;
+    }
     if (journal.kind === "execute") {
       if (journal.command_id)
         await client.stopCommand(journal.command_id).catch(() => undefined);
@@ -761,8 +765,11 @@ export async function createRemoteWorkspaceProvider(
   }
 
   /** Re-read the remote after a command and advance the revision. */
-  async function reconcile(row: WorkspaceRow): Promise<void> {
-    const result = await scan(treeRoot(row));
+  async function reconcile(
+    row: WorkspaceRow,
+    scanned?: ScanResult,
+  ): Promise<void> {
+    const result = scanned ?? (await scan(treeRoot(row)));
     await syncMirror(row, result.manifest);
     row.manifest = result.manifest;
     row.skipped = result.skipped;
@@ -771,10 +778,13 @@ export async function createRemoteWorkspaceProvider(
     store.update(row);
   }
 
-  /** Adopt the remote tree only when it differs, keeping the revision otherwise. */
-  async function reconcileIfChanged(row: WorkspaceRow): Promise<void> {
+  /** Clear a mutate journal, adopting the remote tree only if it changed. */
+  async function settleMutation(row: WorkspaceRow): Promise<void> {
     const result = await scan(treeRoot(row));
-    if (result.manifest.digest !== row.manifest.digest) await reconcile(row);
+    row.journal = null;
+    if (result.manifest.digest !== row.manifest.digest)
+      await reconcile(row, result);
+    else store.update(row);
   }
 
   /** A failed mutation may have changed remote bytes: adopt what is there. */
@@ -784,12 +794,16 @@ export async function createRemoteWorkspaceProvider(
     known: Map<string, Uint8Array>,
     apply: () => Promise<void>,
   ): Promise<void> {
+    // Durable before any remote change, so a failed settle is retried later.
+    row.journal = { kind: "mutate" };
+    store.update(row);
     try {
       await apply();
     } catch (error) {
-      await reconcileIfChanged(row).catch(() => undefined);
+      await settleMutation(row).catch(() => undefined);
       throw error;
     }
+    row.journal = null;
     await commitMutation(row, next, known);
   }
 

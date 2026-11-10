@@ -421,6 +421,43 @@ describe("remote provider robustness (FAKE Agent Server)", () => {
   );
 
   test(
+    "a failed write whose settle scan also fails is recovered from its journal",
+    async () => {
+      const fx = await remoteFixture();
+      try {
+        const ws = await fx.provider.prepare(context, "task-settle");
+        // Upload succeeds; the chmod start and the settle scan start both fail.
+        fx.fake.faults.failNext.set("/api/bash/start_bash_command", {
+          status: 500,
+          count: 2,
+          skip: 1,
+        });
+        await failure(
+          fx.provider.write(
+            context,
+            ws,
+            "src/a.ts",
+            await fx.artifacts.put(
+              context,
+              new TextEncoder().encode("export const a = 11;\n"),
+              "text/plain",
+            ),
+          ),
+        );
+        const after = await fx.provider.inspect(context, ws.workspace_id);
+        expect(after.revision).not.toBe(ws.revision);
+        const ref = await fx.provider.read(context, after, "src/a.ts");
+        expect(
+          new TextDecoder().decode(await fx.artifacts.get(context, ref)),
+        ).toBe("export const a = 11;\n");
+      } finally {
+        await fx.close();
+      }
+    },
+    T,
+  );
+
+  test(
     "a rejected write that changed nothing keeps the revision",
     async () => {
       const fx = await remoteFixture();
