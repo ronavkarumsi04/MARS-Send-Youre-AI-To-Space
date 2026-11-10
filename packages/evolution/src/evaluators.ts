@@ -44,6 +44,12 @@ export interface EvaluationRequest {
 export interface CandidateEvaluator {
   readonly digest: string;
   readonly simulated: boolean;
+  /**
+   * Manifest prompt components the evaluated agent applies (plus
+   * `mars_agent_settings` for skills/tools/retrieval). Undefined = all.
+   * Mutations outside this set are refused as inert.
+   */
+  readonly appliedComponents?: readonly string[];
   evaluate(
     request: EvaluationRequest,
     signal: AbortSignal,
@@ -171,6 +177,8 @@ export function createHarborEvaluator(
   return {
     digest,
     simulated: false,
+    // packages/evaluation/agent/main.ts APPLIED_COMPONENTS: only the system prompt reaches the agent.
+    appliedComponents: ["system_prompt"],
     async evaluate(request, signal) {
       if (request.manifest.model.id !== template.model.id)
         fail(

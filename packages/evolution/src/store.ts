@@ -490,6 +490,16 @@ export class EvolutionStore {
     return row.outcome_json;
   }
 
+  evaluationSubjects(runId: string, split: string, key: string): string[] {
+    return (
+      this.db
+        .query(
+          "SELECT DISTINCT candidate_id FROM evaluations WHERE run_id = ? AND split = ? AND key = ? ORDER BY candidate_id",
+        )
+        .all(runId, split, key) as { candidate_id: string }[]
+    ).map((row) => row.candidate_id);
+  }
+
   countEvaluations(runId: string, split: string, excludeKey = ""): number {
     const row = this.db
       .query(

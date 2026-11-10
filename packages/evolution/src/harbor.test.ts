@@ -106,6 +106,7 @@ test("createHarborEvaluator runs a candidate as the MARS arm against the mini-sw
     AbortSignal.timeout(60_000),
   );
   expect(outcome.simulated).toBe(false);
+  expect(evaluator.appliedComponents).toEqual(["system_prompt"]);
   expect(outcome.evaluator_digest).toBe(evaluator.digest);
   expect(outcome.per_task.map((row) => row.task_id)).toEqual(template.tasks);
   for (const row of outcome.per_task) {

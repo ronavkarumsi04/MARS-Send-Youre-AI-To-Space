@@ -732,12 +732,16 @@ export class EvolutionService {
           "settle",
           ledgerKey,
           {
-            tokens:
-              totalSpend(outcome.tokens, outcome.baseline_tokens) ??
+            tokens: chargedSpend(
+              outcome.tokens,
+              outcome.baseline_tokens,
               budget.max_tokens,
-            usd:
-              totalSpend(outcome.cost_usd, outcome.baseline_cost_usd) ??
+            ),
+            usd: chargedSpend(
+              outcome.cost_usd,
+              outcome.baseline_cost_usd,
               budget.max_usd,
+            ),
             ms: Math.min(outcome.runtime_ms, budget.max_duration_ms * 4),
           },
           nowIso(this.now()),
@@ -1133,6 +1137,11 @@ export class EvolutionService {
       });
       if (digestOf(manifest) === digestOf(parentManifest))
         fail("invalid_input", "empty_mutation: proposal changes nothing");
+      assertMutationApplied(
+        parentManifest,
+        manifest,
+        this.options.evaluator.appliedComponents,
+      );
     } catch (error) {
       reason = reasonOf(error);
       proposalJson = canonicalJson({
@@ -1407,7 +1416,20 @@ export class EvolutionService {
       ) as ChampionEntryRow;
       const championManifest = this.manifestOf(championRow);
       const decisionId = `dec-${digestOf([scope_key, input.idempotency_key]).slice(0, 24)}`;
-      // A retry of this decision resumes its own partial comparison.
+      // A retry of this decision resumes its own partial comparison, but the
+      // key may not be reused to put a different pair on the final set.
+      const allowed = new Set([
+        chosen.candidate_id,
+        `${CHAMPION_PREFIX}${championRow.seq}`,
+      ]);
+      const foreign = this.store
+        .evaluationSubjects(input.run_id, "final", decisionId)
+        .filter((id) => !allowed.has(id));
+      if (foreign.length > 0)
+        fail(
+          "conflict",
+          `idempotency key ${input.idempotency_key} already compared ${foreign.join(", ")} on the final set`,
+        );
       const uses = this.store.countEvaluations(
         input.run_id,
         "final",
@@ -1950,13 +1972,22 @@ export class EvolutionService {
   }
 }
 
-/** Candidate plus any in-job baseline spend; null when either part is unknown. */
-function totalSpend(
+/** Known candidate plus in-job baseline spend; unknown parts count 0 here. */
+function knownSpend(
   own: number | null,
   baseline: number | null | undefined,
-): number | null {
-  if (own === null || baseline === null) return null;
-  return own + (baseline ?? 0);
+): number {
+  return (own ?? 0) + (baseline ?? 0);
+}
+
+/** Ledger charge: the known total, or at least the full matched budget when any part is unknown. */
+function chargedSpend(
+  own: number | null,
+  baseline: number | null | undefined,
+  cap: number,
+): number {
+  const known = knownSpend(own, baseline);
+  return own === null || baseline === null ? Math.max(cap, known) : known;
 }
 
 /** Applied to fresh and cached outcomes alike, so a resumed decision cannot skip it. */
@@ -1965,11 +1996,39 @@ function assertWithinBudget(
   outcome: EvaluationOutcome,
   budget: Budget,
 ): void {
-  const usd = totalSpend(outcome.cost_usd, outcome.baseline_cost_usd) ?? 0;
-  const tokens = totalSpend(outcome.tokens, outcome.baseline_tokens) ?? 0;
+  const usd = knownSpend(outcome.cost_usd, outcome.baseline_cost_usd);
+  const tokens = knownSpend(outcome.tokens, outcome.baseline_tokens);
   if (usd > budget.max_usd + 1e-9 || tokens > budget.max_tokens)
     fail(
       "over_budget",
       `${subjectId} exceeded the matched evaluation budget (${usd} USD, ${tokens} tokens)`,
+    );
+}
+
+/** Refuses mutations the evaluator would not apply, so their scores never measure the parent. */
+function assertMutationApplied(
+  parent: AgentManifest,
+  child: AgentManifest,
+  applied: readonly string[] | undefined,
+): void {
+  if (applied === undefined) return;
+  const keys = new Set([
+    ...Object.keys(parent.prompts),
+    ...Object.keys(child.prompts),
+  ]);
+  const inert = [...keys].filter(
+    (key) =>
+      parent.prompts[key] !== child.prompts[key] && !applied.includes(key),
+  );
+  if (
+    !applied.includes("mars_agent_settings") &&
+    digestOf([parent.skills, parent.tools, parent.retrieval]) !==
+      digestOf([child.skills, child.tools, child.retrieval])
+  )
+    inert.push("skills/tools/retrieval");
+  if (inert.length > 0)
+    fail(
+      "invalid_input",
+      `inert_mutation: evaluator does not apply ${inert.join(", ")}`,
     );
 }

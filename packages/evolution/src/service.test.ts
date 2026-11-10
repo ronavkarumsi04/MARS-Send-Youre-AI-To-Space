@@ -629,4 +629,73 @@ describe("review regressions", () => {
     expect(decision.verdict).toBe("accepted");
     expect(decision.final_test_uses).toBe(1);
   });
+
+  test("a known candidate overspend is caught even when baseline spend is unknown", async () => {
+    const service = await withEvaluator(
+      wrap((request, outcome) => ({
+        ...outcome,
+        tokens: request.budget.max_tokens + 1,
+        baseline_tokens: null,
+      })),
+    );
+    expect((await service.run("run-1")).status).toBe("failed");
+    expect(service.lineage("run-1")[0]?.reason).toMatch(/^over_budget/);
+    const settle = service.store
+      .ledger("run-1")
+      .find((row) => row.kind === "settle");
+    expect(settle?.tokens).toBeGreaterThan(
+      runConfig().evaluation_budget.max_tokens,
+    );
+  });
+
+  test("an interrupted decision key cannot be reused to put another candidate on the final set", async () => {
+    const service = await withEvaluator(base, {
+      ...runConfig({ children_per_generation: 2 }),
+      final_test: {
+        tasks: ["f1", "f2", "f3", "f4"],
+        repeats: 2,
+        bootstrap_samples: 200,
+        max_uses: 1,
+      },
+    });
+    await service.run("run-1");
+    await service.promote({
+      run_id: "run-1",
+      candidate_id: "g1-c0",
+      idempotency_key: "p",
+    });
+    service.store.db.query("DELETE FROM decisions").run();
+    expect(
+      await codeOf(
+        service.promote({
+          run_id: "run-1",
+          candidate_id: "g1-c1",
+          idempotency_key: "p",
+        }),
+      ),
+    ).toBe("conflict");
+  });
+
+  test("mutations the evaluator does not apply are refused as inert", async () => {
+    const fixture = await createFixture(() => ({
+      hypothesis: "recall fewer memories",
+      retrieval: { memory_top_k: 3 },
+    }));
+    cleanup.push(async () =>
+      rm(fixture.root, { recursive: true, force: true }),
+    );
+    const service = await fixture.open({
+      evaluator: {
+        ...base,
+        appliedComponents: ["system_prompt"],
+        evaluate: base.evaluate,
+      },
+    });
+    cleanup.push(async () => service.close());
+    await fixture.start(service);
+    await service.run("run-1");
+    expect(service.lineage("run-1")[1]?.reason).toMatch(
+      /inert_mutation: evaluator does not apply skills\/tools\/retrieval/,
+    );
+  });
 });

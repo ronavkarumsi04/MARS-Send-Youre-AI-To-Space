@@ -152,6 +152,9 @@ export async function createFixture(
       const recording: CandidateEvaluator = {
         digest: evaluator.digest,
         simulated: evaluator.simulated,
+        ...(evaluator.appliedComponents
+          ? { appliedComponents: evaluator.appliedComponents }
+          : {}),
         evaluate(request, signal) {
           requests.push(request);
           return evaluator.evaluate(request, signal);
