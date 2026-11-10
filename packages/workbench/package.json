@@ -26,6 +26,7 @@
     "@mars/tasks": "workspace:*",
     "@mars/watch": "workspace:*",
     "@mars/workspaces": "workspace:*",
+    "@mars/workspaces-remote": "workspace:*",
     "zod": "3.25.76"
   }
 }

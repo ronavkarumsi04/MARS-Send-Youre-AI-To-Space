@@ -67,10 +67,18 @@ import { createRegistryReviewGateway, ReviewRunner } from "@mars/review";
 import { SkillStore } from "@mars/skills";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import {
+  type CommandApprovalRequest,
   createDockerSandbox,
   createLocalWorkspaceProvider,
+  type LocalWorkspaceProvider,
   WorkspaceNotFoundError,
 } from "@mars/workspaces";
+import {
+  clientFor,
+  createRemoteWorkspaceProvider,
+  type IsolationReport,
+  type RemoteWorkspaceConfig,
+} from "@mars/workspaces-remote";
 import type { WorkbenchCollaboration } from "./collaboration-context";
 import type { WorkbenchConventions } from "./conventions-context";
 import { createWorkbenchHost, type WorkbenchHostOptions } from "./host";
@@ -191,6 +199,8 @@ export interface WorkbenchServiceOptions {
   scope: Scope;
   port?: number;
   image?: string;
+  /** Run workspace operations on an OpenHands Agent Server instead of locally. */
+  remoteWorkspace?: RemoteWorkspaceConfig;
   /** Host-owned protected check definitions (JSON); clients select them by id at Start. */
   checksFile?: string;
   /** Optional existing vault to report read-only status; never imported/exported by the workbench. */
@@ -224,6 +234,8 @@ export interface WorkbenchService {
   readonly connectionFile: string;
   /** Null unless the service was started with `omniroute`. */
   readonly omniroute: OmniRouteProcessStatus | null;
+  /** Isolation actually established by the remote workspace provider, if any. */
+  readonly workspaceIsolation?: IsolationReport;
   close(): Promise<void>;
 }
 
@@ -368,9 +380,8 @@ export async function createWorkbenchService(
     await omniroute?.stop().catch(() => undefined);
     throw error;
   }
-  let workspace:
-    | Awaited<ReturnType<typeof createLocalWorkspaceProvider>>
-    | undefined;
+  let workspace: LocalWorkspaceProvider | undefined;
+  let workspaceIsolation: IsolationReport | undefined;
   let host: Awaited<ReturnType<typeof createWorkbenchHost>> | undefined;
   let memory: DurableMemoryStore | undefined;
   let review: ReviewRunner | undefined;
@@ -524,16 +535,32 @@ export async function createWorkbenchService(
     const checks = options.checksFile
       ? await loadHostChecks(options.checksFile)
       : [];
-    workspace = await createLocalWorkspaceProvider({
-      rootDir: join(root, "workspaces"),
-      sourceRoot: source,
-      artifacts: store.artifacts,
-      ...(sandbox ? { sandbox } : {}),
-      approveCommand: async (request) =>
-        Boolean(sandbox) &&
-        (await store.inspect(request.context, request.task_id)).status ===
-          "running",
-    });
+    const remote = options.remoteWorkspace;
+    const canExecute = Boolean(sandbox) || Boolean(remote);
+    const approveCommand = async (request: CommandApprovalRequest) =>
+      canExecute &&
+      (await store.inspect(request.context, request.task_id)).status ===
+        "running";
+    const remoteProvider = remote
+      ? await createRemoteWorkspaceProvider({
+          rootDir: join(root, "remote-workspaces"),
+          sourceRoot: source,
+          artifacts: store.artifacts,
+          client: clientFor(remote),
+          remoteRoot: remote.remoteRoot,
+          approveCommand,
+        })
+      : undefined;
+    workspaceIsolation = remoteProvider?.isolation();
+    workspace = remoteProvider
+      ? remoteProvider
+      : await createLocalWorkspaceProvider({
+          rootDir: join(root, "workspaces"),
+          sourceRoot: source,
+          artifacts: store.artifacts,
+          ...(sandbox ? { sandbox } : {}),
+          approveCommand,
+        });
     const provider = workspace;
     repositoryMap = createRepositoryMapProvider({
       confinement: "anchored",
@@ -569,7 +596,7 @@ export async function createWorkbenchService(
       stateRoot: hostRoot,
       store,
       registry,
-      canExecute: Boolean(sandbox),
+      canExecute,
       ...(checks.length ? { checks } : {}),
       ...(options.image ? { image: options.image } : {}),
       ...(providerStatus ? { providerStatus } : {}),
@@ -618,7 +645,7 @@ export async function createWorkbenchService(
         collect: provider.collect.bind(provider),
         stop: provider.stop.bind(provider),
         diff: provider.diff.bind(provider),
-        ...(sandbox ? { runCheck: provider.runCheck.bind(provider) } : {}),
+        ...(canExecute ? { runCheck: provider.runCheck.bind(provider) } : {}),
         exportPatch: provider.exportPatch.bind(provider),
         cwd: provider.workspacePath.bind(provider),
         async reopen(context, taskId) {
@@ -660,6 +687,7 @@ export async function createWorkbenchService(
       url,
       connectionFile,
       omniroute: omniroute?.status() ?? null,
+      ...(workspaceIsolation ? { workspaceIsolation } : {}),
       close() {
         closing ??= (async () => {
           if (await teardown(researchDrainMs))
