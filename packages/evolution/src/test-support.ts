@@ -96,6 +96,7 @@ export interface Fixture {
   open(options?: {
     evaluator?: CandidateEvaluator;
     holder?: string;
+    leaseTtlMs?: number;
     propose?: (context: ProposalContext) => MutationProposal;
   }): Promise<EvolutionService>;
   start(service: EvolutionService, config?: RunConfigInput): Promise<void>;
@@ -168,6 +169,7 @@ export async function createFixture(
         protectedControlPaths: [controlFile],
         hiddenAnswerPaths: [join(controlDir, "hidden")],
         ...(options.holder ? { holder: options.holder } : {}),
+        ...(options.leaseTtlMs ? { leaseTtlMs: options.leaseTtlMs } : {}),
       });
     },
     async start(service, config = runConfig()) {

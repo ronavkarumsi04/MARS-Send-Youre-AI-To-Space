@@ -598,14 +598,18 @@ export class EvolutionService {
       if (tasks.some((task) => !familyTasks.includes(task)))
         fail("split_violation", "regression tasks must belong to the family");
     }
+    const budget: Budget = config.evaluation_budget;
     const cached = this.store.getEvaluation(runId, subject.id, split, key);
-    if (cached) return EvaluationOutcomeSchema.parse(JSON.parse(cached));
+    if (cached) {
+      const outcome = EvaluationOutcomeSchema.parse(JSON.parse(cached));
+      assertWithinBudget(subject.id, outcome, budget);
+      return outcome;
+    }
     const now = this.now();
     if (now >= deadline_ms)
       fail("deadline_exceeded", `run ${runId} passed its deadline`);
     this.store.verifyLedger(runId);
     const ledgerKey = `${subject.id}/${split}/${key}`;
-    const budget: Budget = config.evaluation_budget;
     this.store.transaction(() => {
       this.store.assertLease(runId, lease, this.now());
       if (
@@ -663,12 +667,35 @@ export class EvolutionService {
         1,
         Math.min(deadline_ms, now + budget.max_duration_ms) - now,
       );
-      const outcome = EvaluationOutcomeSchema.parse(
-        await this.options.evaluator.evaluate(
-          request,
-          AbortSignal.timeout(timeout),
-        ),
+      // Keep the run lease alive while a long evaluation runs; losing it aborts.
+      const lost = new AbortController();
+      const heartbeat = setInterval(
+        () => {
+          try {
+            const token = this.store.acquireLease(
+              runId,
+              this.options.holder,
+              this.now(),
+              this.options.leaseTtlMs,
+            );
+            if (token !== lease) lost.abort();
+          } catch {
+            lost.abort();
+          }
+        },
+        Math.max(10, Math.floor(this.options.leaseTtlMs / 3)),
       );
+      let outcome: EvaluationOutcome;
+      try {
+        outcome = EvaluationOutcomeSchema.parse(
+          await this.options.evaluator.evaluate(
+            request,
+            AbortSignal.any([AbortSignal.timeout(timeout), lost.signal]),
+          ),
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
       await verifyControlDigests(control.control_digests, "after evaluation");
       if (
         outcome.evaluator_digest !== control.evaluator_digest ||
@@ -705,21 +732,18 @@ export class EvolutionService {
           "settle",
           ledgerKey,
           {
-            tokens: outcome.tokens ?? budget.max_tokens,
-            usd: outcome.cost_usd ?? budget.max_usd,
+            tokens:
+              totalSpend(outcome.tokens, outcome.baseline_tokens) ??
+              budget.max_tokens,
+            usd:
+              totalSpend(outcome.cost_usd, outcome.baseline_cost_usd) ??
+              budget.max_usd,
             ms: Math.min(outcome.runtime_ms, budget.max_duration_ms * 4),
           },
           nowIso(this.now()),
         );
       });
-      if (
-        (outcome.cost_usd ?? 0) > budget.max_usd + 1e-9 ||
-        (outcome.tokens ?? 0) > budget.max_tokens
-      )
-        fail(
-          "over_budget",
-          `${subject.id} exceeded the matched evaluation budget (${outcome.cost_usd ?? "?"} USD, ${outcome.tokens ?? "?"} tokens)`,
-        );
+      assertWithinBudget(subject.id, outcome, budget);
       return outcome;
     } finally {
       await rm(bundleDir, { recursive: true, force: true });
@@ -1383,7 +1407,12 @@ export class EvolutionService {
       ) as ChampionEntryRow;
       const championManifest = this.manifestOf(championRow);
       const decisionId = `dec-${digestOf([scope_key, input.idempotency_key]).slice(0, 24)}`;
-      const uses = this.store.countEvaluations(input.run_id, "final");
+      // A retry of this decision resumes its own partial comparison.
+      const uses = this.store.countEvaluations(
+        input.run_id,
+        "final",
+        decisionId,
+      );
       if (uses >= config.final_test.max_uses)
         fail(
           "budget_exhausted",
@@ -1919,4 +1948,28 @@ export class EvolutionService {
       updated_at: run.updated_at,
     };
   }
+}
+
+/** Candidate plus any in-job baseline spend; null when either part is unknown. */
+function totalSpend(
+  own: number | null,
+  baseline: number | null | undefined,
+): number | null {
+  if (own === null || baseline === null) return null;
+  return own + (baseline ?? 0);
+}
+
+/** Applied to fresh and cached outcomes alike, so a resumed decision cannot skip it. */
+function assertWithinBudget(
+  subjectId: string,
+  outcome: EvaluationOutcome,
+  budget: Budget,
+): void {
+  const usd = totalSpend(outcome.cost_usd, outcome.baseline_cost_usd) ?? 0;
+  const tokens = totalSpend(outcome.tokens, outcome.baseline_tokens) ?? 0;
+  if (usd > budget.max_usd + 1e-9 || tokens > budget.max_tokens)
+    fail(
+      "over_budget",
+      `${subjectId} exceeded the matched evaluation budget (${usd} USD, ${tokens} tokens)`,
+    );
 }

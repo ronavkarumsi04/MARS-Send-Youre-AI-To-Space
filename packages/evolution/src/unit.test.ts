@@ -187,6 +187,14 @@ describe("statistics", () => {
 describe("run config", () => {
   test("final holdout may not overlap selection or regression tasks", () => {
     expect(RunConfigSchema.safeParse(runConfig()).success).toBe(true);
+    // @mars/evaluation comparison manifests cap repeats at 32.
+    const config = runConfig();
+    expect(
+      RunConfigSchema.safeParse({
+        ...config,
+        final_test: { ...config.final_test, repeats: 33 },
+      }).success,
+    ).toBe(false);
     const leak = runConfig({ final_test: { tasks: ["s1", "f2"], repeats: 2 } });
     expect(RunConfigSchema.safeParse(leak).success).toBe(false);
     const regressionLeak = runConfig({

@@ -198,7 +198,17 @@ export function createHarborEvaluator(
             ...template.arms.candidate,
             candidate: {
               candidate_id: request.subject_id,
-              components: request.manifest.prompts,
+              components: {
+                ...request.manifest.prompts,
+                // Non-prompt settings must reach the evaluated agent too, or a
+                // tool/skill/retrieval mutation would score the old configuration.
+                mars_agent_settings: canonicalJson({
+                  model: request.manifest.model,
+                  skills: request.manifest.skills,
+                  tools: request.manifest.tools,
+                  retrieval: request.manifest.retrieval,
+                }),
+              },
               parent_candidate_id: null,
               created_at: template.created_at,
             },
@@ -276,14 +286,22 @@ export function createHarborEvaluator(
           };
         }),
         cost_usd: arm.total_cost_usd,
-        tokens:
-          arm.n_input_tokens === null || arm.n_output_tokens === null
-            ? null
-            : Math.round(arm.n_input_tokens + arm.n_output_tokens),
+        tokens: tokensOf(arm),
+        baseline_cost_usd: report.arms.baseline.total_cost_usd,
+        baseline_tokens: tokensOf(report.arms.baseline),
         runtime_ms: Date.now() - started,
         report: result.artifacts[0],
         notes: [`harbor job ${job.job_id}`],
       };
     },
   };
+}
+
+function tokensOf(arm: {
+  n_input_tokens: number | null;
+  n_output_tokens: number | null;
+}): number | null {
+  return arm.n_input_tokens === null || arm.n_output_tokens === null
+    ? null
+    : Math.round(arm.n_input_tokens + arm.n_output_tokens);
 }

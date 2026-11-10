@@ -490,12 +490,12 @@ export class EvolutionStore {
     return row.outcome_json;
   }
 
-  countEvaluations(runId: string, split: string): number {
+  countEvaluations(runId: string, split: string, excludeKey = ""): number {
     const row = this.db
       .query(
-        "SELECT COUNT(DISTINCT key) AS n FROM evaluations WHERE run_id = ? AND split = ?",
+        "SELECT COUNT(DISTINCT key) AS n FROM evaluations WHERE run_id = ? AND split = ? AND key <> ?",
       )
-      .get(runId, split) as { n: number };
+      .get(runId, split, excludeKey) as { n: number };
     return row.n;
   }
 

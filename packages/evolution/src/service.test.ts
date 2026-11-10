@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { EvolutionError } from "./errors";
-import { createFixtureEvaluator } from "./evaluators";
-import type { MutationProposal } from "./schemas";
+import {
+  type CandidateEvaluator,
+  createFixtureEvaluator,
+  type EvaluationRequest,
+} from "./evaluators";
+import type { EvaluationOutcome, MutationProposal } from "./schemas";
 import type { EvolutionService } from "./service";
 import {
   addFile,
@@ -507,3 +511,122 @@ async function startInput(fixture: Fixture) {
 }
 
 export type { EvolutionService };
+
+describe("review regressions", () => {
+  async function withEvaluator(
+    evaluator: CandidateEvaluator,
+    config = runConfig(),
+    leaseTtlMs?: number,
+  ) {
+    const fixture = await createFixture(better);
+    cleanup.push(async () =>
+      rm(fixture.root, { recursive: true, force: true }),
+    );
+    const service = await fixture.open({
+      evaluator,
+      ...(leaseTtlMs ? { leaseTtlMs } : {}),
+    });
+    cleanup.push(async () => service.close());
+    await fixture.start(service, config);
+    return service;
+  }
+  const base = createFixtureEvaluator();
+  const wrap = (
+    change: (
+      request: EvaluationRequest,
+      outcome: EvaluationOutcome,
+    ) => Promise<EvaluationOutcome> | EvaluationOutcome,
+  ): CandidateEvaluator => ({
+    digest: base.digest,
+    simulated: true,
+    async evaluate(request, signal) {
+      return change(request, await base.evaluate(request, signal));
+    },
+  });
+  const isCandidate = (request: EvaluationRequest) =>
+    request.subject_id.startsWith("g");
+
+  test("an evaluation longer than the lease TTL renews the lease and is recorded", async () => {
+    const service = await withEvaluator(
+      wrap(async (_request, outcome) => {
+        await Bun.sleep(700);
+        return outcome;
+      }),
+      runConfig(),
+      300,
+    );
+    expect((await service.run("run-1")).status).toBe("completed");
+    expect(
+      service.lineage("run-1").every((node) => node.state === "evaluated"),
+    ).toBe(true);
+  }, 30_000);
+
+  test("a resumed promotion re-checks the matched budget on cached final outcomes", async () => {
+    const service = await withEvaluator(
+      wrap((request, outcome) =>
+        request.split === "final" && isCandidate(request)
+          ? { ...outcome, tokens: request.budget.max_tokens + 1 }
+          : outcome,
+      ),
+    );
+    await service.run("run-1");
+    const first = await service.promote({
+      run_id: "run-1",
+      idempotency_key: "p",
+    });
+    expect(first.verdict).toBe("rejected");
+    // Crash between the committed evaluations and the decision commit.
+    service.store.db.query("DELETE FROM decisions").run();
+    const resumed = await service.promote({
+      run_id: "run-1",
+      idempotency_key: "p",
+    });
+    expect(resumed.verdict).toBe("rejected");
+    expect(resumed.gates.find((gate) => gate.name === "cost")?.passed).toBe(
+      false,
+    );
+    expect(service.champion("scope-1")?.candidate_id).toBe("initial");
+  });
+
+  test("baseline-arm spend reported by the evaluator is charged against the matched budget", async () => {
+    const service = await withEvaluator(
+      wrap((request, outcome) => ({
+        ...outcome,
+        baseline_cost_usd: request.budget.max_usd,
+      })),
+    );
+    expect((await service.run("run-1")).status).toBe("failed");
+    expect(service.lineage("run-1")[0]?.reason).toMatch(/^over_budget/);
+  });
+
+  test("a promotion interrupted mid-comparison resumes under max_uses 1", async () => {
+    let crash = true;
+    const service = await withEvaluator(
+      wrap((request, outcome) => {
+        if (crash && request.split === "final" && isCandidate(request))
+          throw new EvolutionError("closed", "simulated crash");
+        return outcome;
+      }),
+      {
+        ...runConfig(),
+        final_test: {
+          tasks: ["f1", "f2", "f3", "f4"],
+          repeats: 2,
+          bootstrap_samples: 200,
+          max_uses: 1,
+        },
+      },
+    );
+    await service.run("run-1");
+    expect(
+      await codeOf(service.promote({ run_id: "run-1", idempotency_key: "p" })),
+    ).toBe("closed");
+    crash = false;
+    const decision = await service.promote({
+      run_id: "run-1",
+      idempotency_key: "p",
+    });
+    expect(decision.verdict).toBe("accepted");
+    expect(decision.final_test_uses).toBe(1);
+  });
+});

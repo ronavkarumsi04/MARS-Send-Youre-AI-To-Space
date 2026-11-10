@@ -135,7 +135,8 @@ export const RunConfigSchema = z
     final_test: z
       .object({
         tasks: TaskListSchema,
-        repeats: z.number().int().min(2).max(64),
+        // ≤ 32: the @mars/evaluation comparison manifest caps repeats at 32.
+        repeats: z.number().int().min(2).max(32),
         /** Quality gate: the lower bound of the paired CI must exceed this. */
         min_improvement: z.number().min(0).max(1).default(0),
         confidence: z.number().min(0.5).max(0.999).default(0.95),
@@ -307,6 +308,9 @@ export const EvaluationOutcomeSchema = z
     ),
     cost_usd: z.number().min(0).nullable(),
     tokens: z.number().int().min(0).nullable(),
+    /** Spend of a baseline arm run inside the same job; charged to the ledger, excluded from the cost gate. */
+    baseline_cost_usd: z.number().min(0).nullable().optional(),
+    baseline_tokens: z.number().int().min(0).nullable().optional(),
     runtime_ms: z.number().int().min(0),
     report: ArtifactRefSchema.nullable(),
     notes: z.array(z.string().max(2000)).max(64),

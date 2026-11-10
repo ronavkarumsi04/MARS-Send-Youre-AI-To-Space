@@ -2,7 +2,11 @@ import { afterAll, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEvaluationService, createHarborRunner } from "@mars/evaluation";
+import {
+  COMPARISON_MANIFEST_MEDIA_TYPE,
+  createEvaluationService,
+  createHarborRunner,
+} from "@mars/evaluation";
 import {
   context,
   FAKE_HARBOR,
@@ -109,6 +113,21 @@ test("createHarborEvaluator runs a candidate as the MARS arm against the mini-sw
     expect(row.baseline_rewards).toHaveLength(template.repeats);
   }
   expect(outcome.report?.media_type).toContain("json");
+  expect(outcome).toHaveProperty("baseline_cost_usd");
+  const comparison = [...artifacts.items.values()]
+    .filter((item) => item.mediaType === COMPARISON_MANIFEST_MEDIA_TYPE)
+    .map((item) => JSON.parse(new TextDecoder().decode(item.data)))[0];
+  const settings = JSON.parse(
+    comparison.arms.candidate.candidate.components.mars_agent_settings,
+  );
+  expect(settings).toMatchObject({
+    tools: [],
+    skills: { store_revision: "r1" },
+    model: { id: template.model.id },
+  });
+  expect(comparison.arms.candidate.candidate.components.system_prompt).toBe(
+    "You are MARS.",
+  );
   const mismatched = {
     ...request,
     manifest: { ...manifest, model: { ...manifest.model, id: "other-model" } },
