@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,42 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(len(_read_jsonl(str(fixtures / "train.jsonl"))), 9)
         self.assertEqual(len(_read_jsonl(str(fixtures / "validation.jsonl"))), 3)
 
+
+
+class WatchdogTests(unittest.TestCase):
+    def test_orphaned_worker_removes_scratch_and_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            scratch = Path(root) / "job"
+            scratch.mkdir()
+            (scratch / "train.jsonl").write_text("{}\n", encoding="utf-8")
+            pid_file = Path(root) / "worker.pid"
+            worker = (
+                "import os, sys, time\n"
+                f"sys.path.insert(0, {str(PYTHON_DIR)!r})\n"
+                "from mars_training_worker.worker import _start_watchdog\n"
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                f"_start_watchdog(None, {str(scratch)!r})\n"
+                "time.sleep(60)\n"
+            )
+            host = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {worker!r}], start_new_session=True)\n"
+                f"while not __import__('os').path.exists({str(pid_file)!r}): time.sleep(0.05)\n"
+            )
+            subprocess.run([sys.executable, "-c", host], timeout=30, check=True)
+            deadline = time.monotonic() + 10
+            while scratch.exists() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(scratch.exists())
+            pid = int(pid_file.read_text(encoding="utf-8"))
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import signal
 import sys
 import threading
@@ -280,8 +281,11 @@ def _train(start: dict[str, Any], channel: TextIO) -> dict[str, Any]:
     }
 
 
-def _start_watchdog(deadline_seconds: Any) -> None:
-    """Backstop for the host's kill: exit (with our process group) if the host dies or the deadline passes."""
+def _start_watchdog(deadline_seconds: Any, scratch_dir: Any = None) -> None:
+    """Backstop for the host's kill: exit (with our process group) if the host dies or the deadline passes.
+
+    If the host died, nobody else will clean this job's scratch dir, so remove it first.
+    """
     parent = os.getppid()
     limit = (
         time.monotonic() + float(deadline_seconds)
@@ -292,7 +296,10 @@ def _start_watchdog(deadline_seconds: Any) -> None:
     def watch() -> None:
         while True:
             time.sleep(0.5)
-            if os.getppid() != parent or (limit is not None and time.monotonic() > limit):
+            orphaned = os.getppid() != parent
+            if orphaned or (limit is not None and time.monotonic() > limit):
+                if orphaned and isinstance(scratch_dir, str) and scratch_dir:
+                    shutil.rmtree(scratch_dir, ignore_errors=True)
                 if os.getpgrp() == os.getpid():
                     os.killpg(os.getpid(), signal.SIGKILL)
                 os._exit(3)
@@ -311,7 +318,7 @@ def run() -> int:
             raise WorkerFailure("protocol_error", "first message must be start")
         if start.get("protocol") != PROTOCOL_VERSION:
             raise WorkerFailure("protocol_error", f"unsupported protocol {start.get('protocol')!r}")
-        _start_watchdog(start.get("watchdog_deadline_seconds"))
+        _start_watchdog(start.get("watchdog_deadline_seconds"), start.get("scratch_dir"))
         _send(channel, {"type": "ready", "versions": _versions()})
         result = _train(start, channel)
         _send(channel, {"type": "done", **result})

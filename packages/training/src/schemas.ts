@@ -271,6 +271,8 @@ export interface WorkerStart {
   generation: TrainingManifest["generation"];
   /** Worker-side backstop: it kills its own group after this many seconds or if the host dies. */
   watchdog_deadline_seconds: number;
+  /** Job scratch dir; the worker removes it if the host dies mid-job. */
+  scratch_dir: string;
 }
 
 // ---- output documents --------------------------------------------------------

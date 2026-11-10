@@ -407,8 +407,8 @@ export function createTrainingService(
         },
       };
       await jobs.put(interrupted);
-      // Its worker's watchdog exits when the owning host dies. Scratch data is
-      // left in place: another live instance sharing this store may own it.
+      // Its worker's watchdog removes the scratch dir and exits when the owning
+      // host dies; another live instance sharing this store may still own it.
       return interrupted;
     }
     return found;
@@ -478,6 +478,7 @@ export function createTrainingService(
         lora: manifest.lora,
         sft: manifest.sft,
         generation: manifest.generation,
+        scratch_dir: workDir,
         watchdog_deadline_seconds:
           Math.max(
             1,
