@@ -2100,10 +2100,13 @@ export async function createWorkbenchHost(
         if (event.usage.cost_usd === null) unpriced = true;
         else usage.usd += event.usage.cost_usd;
       }
-      const committed = await options.store.budgetCommitted?.(
-        context,
-        task.task_id,
-      );
+      // The ledger is authoritative only when foreground runs charge it
+      // (see `foregroundBudget`); otherwise unpriced usage spends the budget.
+      const { reserveBudget, recordBudget, budgetCommitted } = options.store;
+      const committed =
+        reserveBudget && recordBudget && budgetCommitted
+          ? await budgetCommitted.call(options.store, context, task.task_id)
+          : undefined;
       if (committed) {
         usage.tokens = Math.max(usage.tokens, committed.tokens);
         usage.usd = Math.max(usage.usd, committed.usd);
