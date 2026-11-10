@@ -98,9 +98,14 @@ test("collects only completed tasks whose newest verdict passed on the exported 
       versions: [{ component: "@mars/workbench", revision: "1" }],
       payload,
     });
-  const exportPatch = async (id: string, patch: string) =>
+  const exportPatch = async (
+    id: string,
+    patch: string,
+    round_trip = "passed",
+  ) =>
     emit(id, {
       operation: "patch.exported",
+      round_trip,
       artifact: await store.artifacts.put(
         context,
         new TextEncoder().encode(patch),
@@ -108,7 +113,13 @@ test("collects only completed tasks whose newest verdict passed on the exported 
       ),
     });
   const patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
-  for (const id of ["good", "regressed", "other-patch", "pending"]) {
+  for (const id of [
+    "good",
+    "regressed",
+    "other-patch",
+    "no-round-trip",
+    "pending",
+  ]) {
     await store.create(context, task(id));
     if (id === "pending") continue;
     await store.update(context, id, 0, { status: "running" });
@@ -121,6 +132,8 @@ test("collects only completed tasks whose newest verdict passed on the exported 
   await exportPatch("regressed", patch);
   await emit("other-patch", verdict("other-patch", patch, true));
   await exportPatch("other-patch", `${patch}+extra\n`);
+  await emit("no-round-trip", verdict("no-round-trip", patch, true));
+  await exportPatch("no-round-trip", patch, "failed");
   // An agent-produced record never counts as host evidence.
   await store.appendEvent(context, "pending", {
     event_type: "tool.completed",
@@ -140,6 +153,7 @@ test("collects only completed tasks whose newest verdict passed on the exported 
   ).toEqual({
     regressed: "latest-verdict-not-verified",
     "other-patch": "no-exported-tested-patch",
+    "no-round-trip": "export-round-trip-failed",
     pending: "not-completed",
   });
   await store.close();

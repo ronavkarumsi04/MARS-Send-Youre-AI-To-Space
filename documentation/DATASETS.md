@@ -14,12 +14,15 @@ keeps a task only when all of these hold:
   `verified` (a newer failing verdict supersedes an older pass) and carries a
   `patch_sha256`;
 - a `patch.exported` artifact exists whose bytes hash to exactly that digest,
-  so the example is the exact patch the protected checks ran against.
+  so the example is the exact patch the protected checks ran against, and
+  that export recorded a passing round trip (the patch rebuilds the verified
+  candidate; exports from before the round trip was recorded do not count).
 
 Agent-produced records, Watch evidence, unexported patches and patches that
 differ from the tested bytes are skipped with a stable reason
 (`not-completed`, `unverified`, `latest-verdict-not-verified`,
-`verdict-not-patch-bound`, `no-exported-tested-patch`). Each example is one
+`verdict-not-patch-bound`, `no-exported-tested-patch`,
+`export-round-trip-failed`). Each example is one
 request → patch pair: the task request as the user turn and the verified
 unified diff as the assistant turn, under a fixed system turn whose digest is
 in the manifest.

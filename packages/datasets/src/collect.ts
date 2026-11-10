@@ -16,7 +16,8 @@ export type SkipReason =
   | "unverified"
   | "latest-verdict-not-verified"
   | "verdict-not-patch-bound"
-  | "no-exported-tested-patch";
+  | "no-exported-tested-patch"
+  | "export-round-trip-failed";
 
 export interface CollectResult {
   examples: VerifiedExample[];
@@ -41,7 +42,7 @@ export async function collectVerifiedExamples(
       continue;
     }
     let latest: VerificationEvidenceRecord | null = null;
-    const exported: Uint8Array[] = [];
+    const exported: { bytes: Uint8Array; round_trip: unknown }[] = [];
     for await (const event of store.events(context, task.task_id)) {
       if (
         event.event_type !== "tool.completed" ||
@@ -69,7 +70,10 @@ export async function collectVerifiedExamples(
           (payload as { artifact?: unknown }).artifact,
         );
         if (artifact.success)
-          exported.push(await store.artifacts.get(context, artifact.data));
+          exported.push({
+            bytes: await store.artifacts.get(context, artifact.data),
+            round_trip: (payload as { round_trip?: unknown }).round_trip,
+          });
       }
     }
     const reason: SkipReason | null = !latest
@@ -84,13 +88,19 @@ export async function collectVerifiedExamples(
       continue;
     }
     const digest = latest.patch_sha256;
-    const patch = exported.find(
-      (bytes) => createHash("sha256").update(bytes).digest("hex") === digest,
+    const matching = exported.filter(
+      (e) => createHash("sha256").update(e.bytes).digest("hex") === digest,
     );
+    // Only an export whose patch was shown to rebuild the verified candidate
+    // counts; older exports that did not record their round trip do not.
+    const patch = matching.find((e) => e.round_trip === "passed")?.bytes;
     if (!patch) {
       skipped.push({
         task_id: task.task_id,
-        reason: "no-exported-tested-patch",
+        reason:
+          matching.length > 0
+            ? "export-round-trip-failed"
+            : "no-exported-tested-patch",
       });
       continue;
     }
