@@ -157,6 +157,36 @@ test("refuses when serving does not answer or no live evaluator is wired", async
   expect(unwired.code).toBe("live_evaluation_unavailable");
 });
 
+test("refuses a successful models probe with a non-JSON body as malformed", async () => {
+  restoreFetch();
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response("hello", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+  });
+  try {
+    const error = await refusal(
+      runSpecialistsEvaluate(
+        args([
+          "--model-key-env",
+          "MARS_EVAL_KEY",
+          "--serving",
+          server.url.href,
+        ]),
+        { env: { MARS_EVAL_KEY: KEY } },
+      ),
+    );
+    expect(error.code).toBe("serving_unreachable");
+    expect(error.message).toContain("malformed");
+    expect(error.message).not.toContain(KEY);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("with key, serving and an injected evaluation it records a verdict", async () => {
   const memory = new MemoryArtifacts();
   const artifacts = {
@@ -199,6 +229,7 @@ test("with key, serving and an injected evaluation it records a verdict", async 
               ).resolve(ctx, id, revision),
           },
           heldOut: guard,
+          trainingRequests: async () => ["unrelated training request"],
           evaluator: createFixtureArmEvaluator({
             evaluator_id: "eval-1",
             pass: () => true,

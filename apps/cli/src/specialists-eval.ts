@@ -74,18 +74,33 @@ export interface SpecialistsEvalDeps {
 export async function probeOpenAiCompatibleServing(
   url: URL,
 ): Promise<ServingProbeResult> {
+  let response: Response;
   try {
-    const response = await fetch(new URL("v1/models", withSlash(url)), {
+    response = await fetch(new URL("v1/models", withSlash(url)), {
       signal: AbortSignal.timeout(5_000),
     });
-    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
-    const body = (await response.json()) as { data?: unknown };
-    return Array.isArray(body.data)
-      ? { ok: true }
-      : { ok: false, reason: "malformed /v1/models response" };
   } catch {
     return { ok: false, reason: "unreachable" };
   }
+  if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    return {
+      ok: false,
+      reason:
+        error instanceof SyntaxError
+          ? "malformed /v1/models response"
+          : "unreachable",
+    };
+  }
+  return typeof body === "object" &&
+    body !== null &&
+    "data" in body &&
+    Array.isArray(body.data)
+    ? { ok: true }
+    : { ok: false, reason: "malformed /v1/models response" };
 }
 
 function withSlash(url: URL): URL {
