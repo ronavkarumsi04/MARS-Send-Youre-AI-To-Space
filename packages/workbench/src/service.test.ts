@@ -18,6 +18,7 @@ import {
 } from "@mars/execution";
 import { createMemoryStore } from "@mars/memory";
 import { loadModelRegistry } from "@mars/providers";
+import { SkillStore } from "@mars/skills";
 import { MarsClient } from "../../../apps/vscode/src/client";
 import { HttpRpcTransport } from "../../../apps/vscode/src/rpc";
 import { createWorkbenchService } from "./service";
@@ -1202,4 +1203,27 @@ test("a startup failure after resources open surfaces the original error and rel
   expect(await Bun.file(join(f.root, "connection.json")).exists()).toBe(false);
   const service = await createWorkbenchService({ ...options, port: 0 });
   await service.close();
+});
+
+test("the service runs the skill curator at startup: idle skills are archived, pinned skills are kept", async () => {
+  const { root, start } = await fixture();
+  const old = Date.now() - 40 * 86_400_000;
+  await mkdir(join(root, "skills"), { recursive: true, mode: 0o700 });
+  const seeded = new SkillStore(join(root, "skills"), { clock: () => old });
+  const skill = (name: string) =>
+    `---\nname: ${name}\ndescription: How to ${name}.\n---\nStep one.\n`;
+  const options = { actor: "tanay", source: "operator" };
+  await seeded.create("idle", skill("idle"), options);
+  await seeded.create("kept", skill("kept"), options);
+  await seeded.pin("kept", true, options);
+  await start(async () => {
+    throw new Error("no model request expected");
+  });
+  const store = new SkillStore(join(root, "skills"));
+  const deadline = Date.now() + 10_000;
+  while ((await store.get("idle"))?.status !== "archived") {
+    if (Date.now() > deadline) throw new Error("curator did not run");
+    await Bun.sleep(50);
+  }
+  expect((await store.get("kept"))?.status).toBe("active");
 });
