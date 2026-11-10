@@ -52,6 +52,8 @@ import {
   BaselineProfileSchema,
   ComparisonVerdictRecordSchema,
   type Complexity,
+  type EvaluationReport,
+  EvaluationReportSchema,
   EvidenceVerdictSchema,
   type ReasonCode,
   RequestContextSchema,
@@ -1828,6 +1830,20 @@ export class SpecialistRegistry implements ModelRegistry {
         "verdict_report_unbound",
       );
     }
+    const signed = await this.signedComparison(ctx, record.report);
+    const outcome = record.value.outcome;
+    if (
+      !signed ||
+      record.value.simulated !== evidence.synthetic_fixture ||
+      (outcome === "regressed") !== signed.worse ||
+      (outcome === "improved" &&
+        (!signed.better || evidence.status !== "evaluated"))
+    ) {
+      throw new SpecialistRegistryError(
+        "invalid_input",
+        "verdict_outcome_mismatch",
+      );
+    }
     this.publish({ registration, verdict: evidence });
     const recordedAt = new Date().toISOString();
     this.store.transaction(() => {
@@ -1889,6 +1905,39 @@ export class SpecialistRegistry implements ModelRegistry {
     const stored = this.store.readEvaluationVerdict(job.job_id);
     if (!stored) throw new SpecialistRegistryError("corrupt_record");
     return this.evaluationVerdictView(stored);
+  }
+
+  /** Candidate-vs-base direction per triple, from the signed report. */
+  private async signedComparison(
+    ctx: RequestContext,
+    ref: ArtifactRef,
+  ): Promise<{ worse: boolean; better: boolean } | null> {
+    let report: EvaluationReport;
+    try {
+      const bytes = await this.options.artifacts.get(ctx, ref);
+      report = EvaluationReportSchema.parse(
+        JSON.parse(new TextDecoder().decode(bytes)),
+      );
+    } catch {
+      return null;
+    }
+    const key = (item: EvaluationReport["results"][number]) =>
+      `${item.domain}|${item.role}|${item.complexity}`;
+    const base = new Map(
+      report.results
+        .filter((item) => item.arm === "base")
+        .map((item) => [key(item), item.passed / item.attempted]),
+    );
+    let worse = false;
+    let better = false;
+    for (const item of report.results) {
+      const baseRate = base.get(key(item));
+      if (item.arm !== "candidate" || baseRate === undefined) continue;
+      const delta = item.passed / item.attempted - baseRate;
+      if (delta < 0) worse = true;
+      if (delta > 0) better = true;
+    }
+    return { worse, better };
   }
 
   async evaluationVerdicts(

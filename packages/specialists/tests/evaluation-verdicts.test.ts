@@ -187,6 +187,15 @@ describe("registry-side comparison verdict receiver", () => {
       basePassed: 1,
     });
     expect(worse.candidateSha256).toBe(fixture.candidateSha256);
+    await expectCode(
+      () =>
+        registry.recordEvaluationVerdict(
+          context,
+          entry(job, worse.registration.evaluation, worse.candidateSha256),
+        ),
+      "invalid_input",
+      "verdict_outcome_mismatch",
+    );
     const view = await registry.recordEvaluationVerdict(
       context,
       entry(job, worse.registration.evaluation, worse.candidateSha256, {
@@ -281,6 +290,26 @@ describe("registry-side comparison verdict receiver", () => {
     const bound = await makeSpecialistFixture(artifacts, {
       reportId: `report-${job.job_id}`,
     });
+    // Outcome and simulation flag must agree with the signed report.
+    for (const overrides of [
+      { outcome: "regressed" },
+      { outcome: "no_improvement", simulated: false },
+    ]) {
+      await expectCode(
+        () =>
+          registry.recordEvaluationVerdict(
+            context,
+            entry(
+              job,
+              bound.registration.evaluation,
+              fixture.candidateSha256,
+              overrides,
+            ),
+          ),
+        "invalid_input",
+        "verdict_outcome_mismatch",
+      );
+    }
     await registry.recordEvaluationVerdict(
       context,
       entry(job, bound.registration.evaluation, fixture.candidateSha256),
