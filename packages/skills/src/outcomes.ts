@@ -146,7 +146,10 @@ export class SkillOutcomeLedger {
         digest: result.digest,
         proposal_id: result.proposal_id,
         passed: result.passed ? 1 : 0,
-        result: JSON.stringify(result),
+        // JSON has no Infinity; a free baseline with a paid candidate has one.
+        result: JSON.stringify(result, (_, value) =>
+          value === Number.POSITIVE_INFINITY ? "Infinity" : value,
+        ),
         recorded_at: recordedAt,
       });
   }
@@ -159,7 +162,12 @@ export class SkillOutcomeLedger {
           "SELECT result FROM skill_gates WHERE proposal_id = ? ORDER BY recorded_at, digest",
         )
         .all(proposalId) as { result: string }[]
-    ).map((row) => JSON.parse(row.result) as SkillGateResult);
+    ).map((row) => {
+      const result = JSON.parse(row.result) as SkillGateResult;
+      if ((result.cost_ratio as unknown) === "Infinity")
+        result.cost_ratio = Number.POSITIVE_INFINITY;
+      return result;
+    });
   }
 
   /** Per-skill evidence with each skill's own baseline: recorded tasks that did not load it. */

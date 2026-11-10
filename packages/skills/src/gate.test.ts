@@ -156,3 +156,54 @@ test("harmful skills get archive proposals, never pinned or archived ones", () =
     },
   ]);
 });
+
+test("blank evidence ids do not count as cited runs", () => {
+  expect(
+    evaluateSkillGate({
+      proposal_id: "p",
+      evidence_task_ids: ["", "  "],
+      trials: winning,
+    }).reasons,
+  ).toEqual(["evidence-missing"]);
+});
+
+test("the sign test stays finite for large trial counts", () => {
+  const p = signTestPValue(400, 624);
+  expect(Number.isFinite(p)).toBe(true);
+  expect(p).toBeGreaterThan(0.99);
+  expect(signTestPValue(1_024, 0)).toBeLessThan(1e-300);
+  const losing = evaluateSkillGate(
+    {
+      proposal_id: "p",
+      evidence_task_ids: ["learned-1"],
+      trials: [
+        ...Array.from({ length: 400 }, (_, i) => trial(`w-${i}`, false, true)),
+        ...Array.from({ length: 624 }, (_, i) => trial(`l-${i}`, true, false)),
+      ],
+    },
+    { max_regressions: 1_000 },
+  );
+  expect(losing.passed).toBe(false);
+  expect(losing.reasons).toContain("not-significant");
+});
+
+test("an infinite cost ratio survives storage", () => {
+  const free = evaluateSkillGate({
+    proposal_id: "free",
+    evidence_task_ids: ["learned-1"],
+    trials: winning.map((t) => ({
+      ...t,
+      baseline: { ...t.baseline, cost_usd: 0 },
+    })),
+  });
+  expect(free.cost_ratio).toBe(Number.POSITIVE_INFINITY);
+  const dir = mkdtempSync(join(tmpdir(), "mars-skill-gates-"));
+  try {
+    const ledger = new SkillOutcomeLedger(join(dir, "outcomes.sqlite"));
+    ledger.recordGate(free, 1);
+    expect(ledger.gates("free")).toEqual([free]);
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

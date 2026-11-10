@@ -63,17 +63,17 @@ const DEFAULTS: Required<SkillGateOptions> = {
   max_cost_ratio: 1.25,
 };
 
-/** P(X >= wins) for X ~ Binomial(wins + losses, 1/2). */
+/** P(X >= wins) for X ~ Binomial(wins + losses, 1/2), summed in log space so large n cannot overflow. */
 export function signTestPValue(wins: number, losses: number): number {
   const n = wins + losses;
   if (n === 0) return 1;
-  let coefficient = 1;
+  let logCoefficient = 0;
   let tail = 0;
   for (let k = 0; k <= n; k++) {
-    if (k >= wins) tail += coefficient;
-    coefficient = (coefficient * (n - k)) / (k + 1);
+    if (k >= wins) tail += Math.exp(logCoefficient - n * Math.LN2);
+    logCoefficient += Math.log((n - k) / (k + 1));
   }
-  return Math.min(1, tail / 2 ** n);
+  return Math.min(1, tail);
 }
 
 function validRun(run: GateRun): boolean {
@@ -92,7 +92,9 @@ export function evaluateSkillGate(
 ): SkillGateResult {
   const config = { ...DEFAULTS, ...options };
   const reasons = new Set<SkillGateReason>();
-  const evidence = new Set(input.evidence_task_ids);
+  const evidence = new Set(
+    input.evidence_task_ids.filter((id) => id.trim().length > 0),
+  );
   if (!evidence.size) reasons.add("evidence-missing");
   const seen = new Set<string>();
   let wins = 0;
@@ -126,7 +128,7 @@ export function evaluateSkillGate(
   if (trials < config.min_trials) reasons.add("too-few-trials");
   if (losses > config.max_regressions) reasons.add("regression");
   const pValue = signTestPValue(wins, losses);
-  if (pValue > config.alpha) reasons.add("not-significant");
+  if (!(pValue <= config.alpha)) reasons.add("not-significant");
   const costRatio =
     baselineCost > 0
       ? candidateCost / baselineCost
