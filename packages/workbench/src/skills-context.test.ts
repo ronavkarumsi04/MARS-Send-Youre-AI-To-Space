@@ -105,3 +105,27 @@ test("freezing reads one store revision and reports a store that changed underne
     "changed",
   );
 });
+
+test("ranked freezing handles hundreds of short skills and ranks only the text the model sees", () => {
+  const many = Array.from({ length: 300 }, (_, index) =>
+    skill({ name: `s${index}`, content: "Check." }),
+  );
+  const frozen = freezeSkills(many, "rev", "Task", 1_000_000, {
+    query: "check",
+  });
+  expect(frozen.skills.length).toBeGreaterThan(256);
+  expect(frozen.selection).toHaveLength(frozen.skills.length);
+
+  const hidden = skill({
+    name: "hidden",
+    content: `${"x ".repeat(2_100)}fixture fixture fixture`,
+  });
+  const visible = skill({ name: "visible", content: "Write the fixture." });
+  const ranked = freezeSkills([hidden, visible], "rev", "Task", 1_000_000, {
+    query: "fixture",
+  });
+  expect(ranked.selection?.[0]?.name).toBe("visible");
+  expect(
+    ranked.selection?.find((entry) => entry.name === "hidden")?.relevance ?? 0,
+  ).toBe(0);
+});
