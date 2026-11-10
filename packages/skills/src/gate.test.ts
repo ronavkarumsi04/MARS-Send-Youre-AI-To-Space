@@ -377,7 +377,10 @@ test("a newer failing gate run supersedes an older pass", async () => {
     await expect(
       acceptWithGate(store, ledger, proposal.id, operator),
     ).rejects.toMatchObject({ code: "gate-required" });
-    run(winning.map((t) => ({ ...t, task_id: `again-${t.task_id}` })));
+    // Re-running the earlier passing evidence makes it the newest verdict again.
+    run(winning);
+    expect(ledger.gates(proposal.id)).toHaveLength(2);
+    expect(describeGate(proposal, ledger)).toStartWith("passed (");
     expect(
       (await acceptWithGate(store, ledger, proposal.id, operator)).gate,
     ).not.toBeNull();
