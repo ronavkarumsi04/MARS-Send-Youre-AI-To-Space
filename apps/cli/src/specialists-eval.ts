@@ -9,7 +9,7 @@ import {
 import type {
   HeldOutGuard,
   SpecialistComparisonVerdict,
-} from "../../../packages/evaluation/src/index";
+} from "@mars/evaluation";
 import { CliUsageError } from "./cli-errors";
 
 export const SPECIALISTS_EVAL_USAGE = [

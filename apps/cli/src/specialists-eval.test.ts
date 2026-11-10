@@ -10,6 +10,7 @@ import {
   createHmacReportSigner,
   createSpecialistComparisonService,
   subjectResolverFromRegistry,
+  verdictSinkFromRegistry,
 } from "../../../packages/evaluation/src/index";
 import type { SpecialistRegistry } from "../../../packages/specialists/src/index";
 import {
@@ -204,6 +205,7 @@ test("with key, serving and an injected evaluation it records a verdict", async 
     },
   };
   const outcomes: string[] = [];
+  let opened: SpecialistRegistry | undefined;
   let written = "";
   const verdict = await runSpecialistsEvaluate(
     args([
@@ -239,7 +241,10 @@ test("with key, serving and an injected evaluation it records a verdict", async 
             secret: EVIDENCE_SECRET,
           }),
           verdicts: {
-            async record(_ctx, entry) {
+            async record(ctx, entry) {
+              await verdictSinkFromRegistry(
+                registry as SpecialistRegistry,
+              ).record(ctx, entry);
               outcomes.push(entry.value.outcome);
             },
           },
@@ -266,6 +271,7 @@ test("with key, serving and an injected evaluation it records a verdict", async 
         });
         await registry.registerSpecialist(context, fixture.registration);
         const ready = registry;
+        opened = registry;
         return {
           context,
           requestEvaluation: (ctx, id, revision) =>
@@ -278,6 +284,11 @@ test("with key, serving and an injected evaluation it records a verdict", async 
   );
   expect(verdict.outcome).toBe("no_improvement");
   expect(outcomes).toEqual(["no_improvement"]);
+  // The registry re-verified the signed report and stored it on the revision.
+  const stored = await opened?.evaluationVerdicts(context, "specialist-1", "1");
+  expect(stored?.map((item) => [item.job_id, item.outcome])).toEqual([
+    [verdict.job_id, "no_improvement"],
+  ]);
   const printed = JSON.parse(written) as Record<string, unknown>;
   expect(printed).toMatchObject({
     specialist: "specialist-1@1",
@@ -287,3 +298,45 @@ test("with key, serving and an injected evaluation it records a verdict", async 
   });
   expect(written).not.toContain(KEY);
 });
+
+test("mars specialists evaluate is registered and refuses without a model key", async () => {
+  const entrypoint = path.resolve(import.meta.dir, "main.ts");
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && name !== "MARS_EVAL_ABSENT_KEY") {
+      env[name] = value;
+    }
+  }
+  const run = async (argv: string[]) => {
+    const child = Bun.spawn([process.execPath, entrypoint, ...argv], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { stdout, stderr, exit };
+  };
+  const usage = await run(["specialists"]);
+  expect(usage.exit).toBe(2);
+  expect(usage.stderr).toContain("mars specialists evaluate");
+  const refused = await run([
+    "specialists",
+    "evaluate",
+    ...args(),
+    "--model-key-env",
+    "MARS_EVAL_ABSENT_KEY",
+    "--serving",
+    "http://127.0.0.1:9",
+  ]);
+  expect(refused.exit).toBe(1);
+  expect(refused.stdout).toBe("");
+  expect(refused.stderr).toContain(
+    "environment variable MARS_EVAL_ABSENT_KEY is not set",
+  );
+  const listed = await run(["unknown-command"]);
+  expect(listed.stderr).toContain("specialists");
+}, 60_000);
