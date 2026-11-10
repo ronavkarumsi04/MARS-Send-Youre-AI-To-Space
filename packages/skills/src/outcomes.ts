@@ -10,6 +10,8 @@ export interface LoadedSkill {
 }
 
 export interface SkillOutcome {
+  /** Task ids are unique only within a scope; defaults to "". */
+  scope_key?: string;
   task_id: string;
   skills: readonly LoadedSkill[];
   /** The host's verdict for the task's exact candidate. */
@@ -22,7 +24,7 @@ export interface SkillOutcomeView extends SkillOutcomeStats {
   versions: number;
 }
 
-const MAX_SKILLS_PER_TASK = 256;
+const MAX_SKILLS_PER_TASK = 1_024;
 const SHA256 = /^[a-f0-9]{64}$/;
 
 /**
@@ -41,10 +43,12 @@ export class SkillOutcomeLedger {
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS skill_outcomes (
-        task_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
         skills TEXT NOT NULL,
         verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
-        recorded_at INTEGER NOT NULL
+        recorded_at INTEGER NOT NULL,
+        PRIMARY KEY (scope_key, task_id)
       )`,
     );
   }
@@ -52,6 +56,8 @@ export class SkillOutcomeLedger {
   record(outcome: SkillOutcome): void {
     if (!outcome.task_id || outcome.task_id.length > 256)
       throw new Error("Invalid task id.");
+    const scopeKey = outcome.scope_key ?? "";
+    if (scopeKey.length > 1_024) throw new Error("Invalid scope key.");
     if (outcome.skills.length > MAX_SKILLS_PER_TASK)
       throw new Error("Too many skills.");
     const names = new Set<string>();
@@ -63,14 +69,15 @@ export class SkillOutcomeLedger {
     }
     this.db
       .query(
-        `INSERT INTO skill_outcomes (task_id, skills, verified, recorded_at)
-         VALUES ($task_id, $skills, $verified, $recorded_at)
-         ON CONFLICT(task_id) DO UPDATE SET
+        `INSERT INTO skill_outcomes (scope_key, task_id, skills, verified, recorded_at)
+         VALUES ($scope_key, $task_id, $skills, $verified, $recorded_at)
+         ON CONFLICT(scope_key, task_id) DO UPDATE SET
            skills = excluded.skills,
            verified = excluded.verified,
            recorded_at = excluded.recorded_at`,
       )
       .run({
+        scope_key: scopeKey,
         task_id: outcome.task_id,
         skills: JSON.stringify(outcome.skills),
         verified: outcome.verified ? 1 : 0,

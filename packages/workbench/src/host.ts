@@ -1180,10 +1180,18 @@ export async function createWorkbenchHost(
     if (!options.skillOutcomes) return;
     try {
       const launch = await readLaunchIfPresent(launchLocation, task);
-      if (!launch?.skills) return;
+      // Launches frozen before selection existed name skills without their
+      // content hashes; crediting them as "no skills" would skew the baseline.
+      const selection = launch?.skills?.selection;
+      if (!selection) return;
       await options.skillOutcomes.record({
+        scope_key: JSON.stringify([
+          options.scope.owner_id,
+          options.scope.project_id,
+          options.scope.workspace_id,
+        ]),
         task_id: task.task_id,
-        skills: (launch.skills.selection ?? []).map(({ name, sha256 }) => ({
+        skills: selection.map(({ name, sha256 }) => ({
           name,
           sha256,
         })),

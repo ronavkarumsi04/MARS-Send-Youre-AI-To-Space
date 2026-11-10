@@ -187,3 +187,25 @@ test("the outcome ledger credits each task once, with each skill compared to tas
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the outcome ledger keeps the same task id in different scopes apart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-skill-outcomes-"));
+  try {
+    const ledger = new SkillOutcomeLedger(join(dir, "outcomes.sqlite"));
+    for (const [scope_key, verified] of [
+      ["owner-a", true],
+      ["owner-b", false],
+    ] as const)
+      ledger.record({
+        scope_key,
+        task_id: "t1",
+        skills: [{ name: "a", sha256: sha("1") }],
+        verified,
+        recorded_at: 1,
+      });
+    expect(ledger.stats().get("a")).toMatchObject({ loads: 2, verified: 1 });
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
