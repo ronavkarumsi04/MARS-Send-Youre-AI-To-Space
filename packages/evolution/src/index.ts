@@ -2,6 +2,7 @@ export { runOfflineDemo } from "./demo";
 export * from "./errors";
 export * from "./evaluators";
 export * from "./guard";
+export * from "./live-evidence";
 export * from "./proposers";
 export * from "./sandbox";
 export * from "./schemas";

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ArtifactRef, RequestContext } from "@mars/contracts";
@@ -10,6 +10,7 @@ import {
   parseComparisonManifest,
 } from "@mars/evaluation";
 import { createHarborEvaluator } from "./evaluators";
+import { LIVE_ACCEPTANCE_EVIDENCE } from "./live-evidence";
 import { createScriptedProposer } from "./proposers";
 import { createProcessSandbox } from "./sandbox";
 import { EvolutionService } from "./service";
@@ -17,6 +18,10 @@ import { EvolutionService } from "./service";
 /**
  * LIVE acceptance (never run in CI; BLOCKED without a model key, Harbor venv
  * and pinned Docker images). See HANDOFF.md for the exact command.
+ *
+ * PARTIAL PATH: real Harbor evaluation, but a scripted proposer and
+ * host-process builds. A pass does not establish model-driven proposing or
+ * Docker-isolated builds; see LIVE_ACCEPTANCE_EVIDENCE.
  */
 const live = process.env.MARS_EVOLUTION_LIVE === "1";
 
@@ -44,7 +49,7 @@ class Artifacts {
 }
 
 test.skipIf(!live)(
-  "live: an isolated harness candidate is compared, promoted or refused, and rollback survives reopen",
+  "live (partial: Harbor evaluation; scripted proposer, host-process builds): a harness candidate is compared, promoted or refused, and rollback survives reopen",
   async () => {
     const env = (name: string) => {
       const value = process.env[name];
@@ -52,6 +57,13 @@ test.skipIf(!live)(
       return value;
     };
     const root = await mkdtemp(join(tmpdir(), "mars-evolution-live-"));
+    await writeFile(
+      join(root, "live-evidence.json"),
+      `${JSON.stringify(LIVE_ACCEPTANCE_EVIDENCE, null, 2)}\n`,
+    );
+    console.log(
+      `live evidence scope: ${LIVE_ACCEPTANCE_EVIDENCE.scope}; not established: ${LIVE_ACCEPTANCE_EVIDENCE.does_not_establish.join("; ")}`,
+    );
     const template = parseComparisonManifest(
       JSON.parse(
         await readFile(resolve(env("MARS_EVOLUTION_TEMPLATE")), "utf8"),

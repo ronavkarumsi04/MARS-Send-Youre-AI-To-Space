@@ -20,6 +20,7 @@ Only the mechanics were adapted (no upstream code copied); see
 | Champion history, rollback, crash recovery | Implemented, reopen/restart tests |
 | Harbor / mini-swe-agent evaluation adapter (`createHarborEvaluator`) | Implemented; **not run live** |
 | Live acceptance (real model, Harbor, Docker sandbox) | **BLOCKED** — no model key, GPU or remote server (see HANDOFF.md) |
+| Scope of the opt-in live test | **Partial path**: real Harbor evaluation, but `createScriptedProposer` and `createProcessSandbox`; a pass does not establish model-driven proposing or Docker-isolated builds (`LIVE_ACCEPTANCE_EVIDENCE`) |
 
 ## Concepts
 
@@ -186,6 +187,11 @@ a candidate workspace, and reads a host-owned copy of the bundle.
   spend is charged to the run ledger but excluded from the cost gate.
 - No real proposer (model-driven patch writer) ships; the interface and a
   scripted proposer exist.
+- `live.acceptance.test.ts`, once unblocked, covers only part of the path: it
+  pairs Harbor evaluation with the scripted proposer and host-process builds.
+  Its evidence is labelled `scope: "partial"` (`LIVE_ACCEPTANCE_EVIDENCE`, also
+  written to `live-evidence.json` in the run root) and is not evidence of
+  model-driven proposing or Docker-isolated builds.
 - No claim of beating DGM; no matched-budget comparison has been run.
 - Candidates are evaluated sequentially (`max_concurrency` is not used yet).
 

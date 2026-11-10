@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { EvolutionError } from "./errors";
+import { LIVE_ACCEPTANCE_EVIDENCE } from "./live-evidence";
 import { RunConfigSchema } from "./schemas";
 import {
   type ArchiveMember,
@@ -300,5 +303,26 @@ describe("patch policy", () => {
     expect(
       code(() => parsePatch("diff --git a/harness/a.txt b/harness/b.txt\n")),
     ).toBe("unsafe_patch");
+  });
+});
+
+describe("live acceptance evidence label", () => {
+  test("labels the opt-in live test as partial: scripted proposer and host-process builds", () => {
+    expect(LIVE_ACCEPTANCE_EVIDENCE.scope).toBe("partial");
+    expect(LIVE_ACCEPTANCE_EVIDENCE.proposer).toBe("scripted");
+    expect(LIVE_ACCEPTANCE_EVIDENCE.build_isolation).toBe("host-process");
+    const gaps = LIVE_ACCEPTANCE_EVIDENCE.does_not_establish.join("\n");
+    expect(gaps).toContain("model-driven proposing");
+    expect(gaps).toContain("Docker-isolated builds");
+    const source = readFileSync(
+      join(import.meta.dir, "live.acceptance.test.ts"),
+      "utf8",
+    );
+    expect(source).toContain("createScriptedProposer(");
+    expect(source).toContain("createProcessSandbox()");
+    expect(source).toContain("LIVE_ACCEPTANCE_EVIDENCE");
+    expect(source).toContain(
+      "live (partial: Harbor evaluation; scripted proposer, host-process builds)",
+    );
   });
 });
