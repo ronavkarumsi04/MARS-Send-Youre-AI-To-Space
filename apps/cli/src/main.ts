@@ -11,6 +11,7 @@ import {
 } from "@mars/providers";
 import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
+import { runEvolution } from "./evolution";
 import { runMemory } from "./memory";
 import { omnirouteDoctorReport } from "./omniroute";
 import { runRender } from "./render";
@@ -321,9 +322,11 @@ try {
     await runMemory(process.argv.slice(3));
   } else if (command === "team") {
     await runTeam(process.argv.slice(3));
+  } else if (command === "evolution") {
+    await runEvolution(process.argv.slice(3));
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|team>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|team|evolution>",
     );
     process.exitCode = 2;
   }
