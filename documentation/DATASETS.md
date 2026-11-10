@@ -40,7 +40,8 @@ in the manifest.
 - drops examples whose patch bytes no longer match their digest, that contain
   a secret shape (`secretShapeRegexes`) or a host-private root, that exceed
   `max_example_chars`, or that duplicate another example;
-- splits by task (a task is never in both splits) with a seeded hash, so the
+- splits by groups of examples sharing a task id or normalized request (so
+  neither appears in both splits) with a seeded hash, so the
   same inputs in any order give byte-identical files and manifest.
 
 ## Output

@@ -247,3 +247,23 @@ test("the build is deterministic and refuses an empty result", () => {
     }),
   ).toThrow("private_patterns");
 });
+
+test("examples sharing a request stay in the same split under every seed", () => {
+  const examples = [
+    ...["a", "b", "c", "d", "e", "f", "g", "h"].map((id) => example(id)),
+    example("p", "Shared request", "--- a/p\n+++ b/p\n+p\n"),
+    example("q", "shared   REQUEST", "--- a/q\n+++ b/q\n+q\n"),
+  ];
+  for (let seed = 0; seed < 25; seed++) {
+    const built = buildDataset({
+      dataset_id: "d",
+      examples,
+      held_out: [],
+      private_patterns: ["/state"],
+      validation_fraction: 0.3,
+      seed: String(seed),
+    });
+    const validation = built.manifest.splits[1]?.task_ids ?? [];
+    expect(validation.includes("p")).toBe(validation.includes("q"));
+  }
+});

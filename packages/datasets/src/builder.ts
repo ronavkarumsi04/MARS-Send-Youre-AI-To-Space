@@ -100,8 +100,9 @@ const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /**
  * Builds a deterministic train/validation dataset from verified examples.
  * Held-out tasks are excluded by id and by normalized request text, and the
- * result is re-checked for leakage before it is returned. Splits are by task,
- * so no task appears in both.
+ * result is re-checked for leakage before it is returned. Splits are by
+ * groups of examples sharing a task id or normalized request, so neither a
+ * task nor a repeated request appears in both.
  */
 export function buildDataset(input: BuildDatasetInput): BuiltDataset {
   const fraction = input.validation_fraction ?? 0.1;
@@ -160,20 +161,34 @@ export function buildDataset(input: BuildDatasetInput): BuiltDataset {
     )
       throw new DatasetError("leakage", "A held-out task reached the dataset.");
 
-  const bucket = (taskId: string) =>
-    Number.parseInt(sha256(`${seed}\0${taskId}`).slice(0, 8), 16) / 2 ** 32;
-  let validationIds = new Set(
-    kept.map((e) => e.task_id).filter((id) => bucket(id) < fraction),
-  );
-  const taskIds = [...new Set(kept.map((e) => e.task_id))];
-  if (validationIds.size === 0 && taskIds.length >= 2) {
-    const lowest = taskIds.reduce((a, b) => (bucket(b) < bucket(a) ? b : a));
-    validationIds = new Set([lowest]);
+  // Examples sharing a task id or a normalized request form one group, and a
+  // group lands wholly in one split.
+  const parent = new Map<string, string>();
+  const find = (node: string): string => {
+    let root = node;
+    while (parent.get(root) !== root) root = parent.get(root) ?? root;
+    return root;
+  };
+  const link = (a: string, b: string) => {
+    for (const node of [a, b]) if (!parent.has(node)) parent.set(node, node);
+    const [ra, rb] = [find(a), find(b)];
+    if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+  };
+  for (const e of kept)
+    link(`t:${e.task_id}`, `r:${sha256(normalize(e.request))}`);
+  const group = (e: VerifiedExample) => find(`t:${e.task_id}`);
+  const bucket = (id: string) =>
+    Number.parseInt(sha256(`${seed}\0${id}`).slice(0, 8), 16) / 2 ** 32;
+  const groups = [...new Set(kept.map(group))].sort();
+  let validationGroups = new Set(groups.filter((g) => bucket(g) < fraction));
+  if (validationGroups.size === 0 && groups.length >= 2) {
+    const lowest = groups.reduce((a, b) => (bucket(b) < bucket(a) ? b : a));
+    validationGroups = new Set([lowest]);
   }
-  if (validationIds.size === taskIds.length)
-    validationIds = new Set(taskIds.slice(1));
-  const train = kept.filter((e) => !validationIds.has(e.task_id));
-  const validation = kept.filter((e) => validationIds.has(e.task_id));
+  if (validationGroups.size === groups.length)
+    validationGroups = new Set(groups.slice(1));
+  const train = kept.filter((e) => !validationGroups.has(group(e)));
+  const validation = kept.filter((e) => validationGroups.has(group(e)));
   const files = { train: jsonl(train), validation: jsonl(validation) };
   const split = (
     name: "train" | "validation",
