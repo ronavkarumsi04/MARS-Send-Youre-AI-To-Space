@@ -63,10 +63,22 @@ const DEFAULTS: Required<SkillGateOptions> = {
   max_cost_ratio: 1.25,
 };
 
-/** P(X >= wins) for X ~ Binomial(wins + losses, 1/2), summed in log space so large n cannot overflow. */
+/**
+ * P(X >= wins) for X ~ Binomial(wins + losses, 1/2). Exact in doubles while
+ * 2^n fits (so p = 1/64 compares equal to alpha = 1/64); log space beyond.
+ */
 export function signTestPValue(wins: number, losses: number): number {
   const n = wins + losses;
   if (n === 0) return 1;
+  if (n <= 1_000) {
+    let coefficient = 1;
+    let tail = 0;
+    for (let k = 0; k <= n; k++) {
+      if (k >= wins) tail += coefficient;
+      coefficient = (coefficient * (n - k)) / (k + 1);
+    }
+    return Math.min(1, tail / 2 ** n);
+  }
   let logCoefficient = 0;
   let tail = 0;
   for (let k = 0; k <= n; k++) {

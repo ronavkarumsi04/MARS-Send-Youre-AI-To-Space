@@ -207,3 +207,13 @@ test("an infinite cost ratio survives storage", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a p-value exactly at alpha passes", () => {
+  expect(signTestPValue(6, 0)).toBe(1 / 64);
+  expect(
+    evaluateSkillGate(
+      { proposal_id: "p", evidence_task_ids: ["learned-1"], trials: winning },
+      { alpha: 1 / 64 },
+    ).passed,
+  ).toBe(true);
+});
