@@ -20,6 +20,10 @@ import { runRender } from "./render";
 import { RESEARCH_SEARCH_PROVIDERS, runServer } from "./serve";
 import { runSession } from "./session/app";
 import { runSkills } from "./skills";
+import {
+  runSpecialistsEvaluate,
+  SPECIALISTS_EVAL_USAGE,
+} from "./specialists-eval";
 import { runTeam, teamDoctorReport } from "./team";
 import { runVault } from "./vault";
 import { splitVllmServeArgs, vllmDoctorReport } from "./vllm";
@@ -241,6 +245,10 @@ async function runModels(args: string[]): Promise<void> {
 /** Commands whose non-usage errors may carry paths or configuration, so they print this instead. */
 const REDACTED_FAILURES = new Map<string | undefined, string>([
   [
+    "specialists",
+    "MARS specialists evaluation could not complete safely. Check the held-out split, serving URL, model key variable and specialist registry state.",
+  ],
+  [
     "serve",
     "MARS workbench could not start or stop safely. Check the source, private state directory, port, optional pinned local image, and research model/search configuration.",
   ],
@@ -368,9 +376,16 @@ try {
     await runEvolution(process.argv.slice(3));
   } else if (command === "datasets") {
     await runDatasets(process.argv.slice(3));
+  } else if (command === "specialists") {
+    if (process.argv[3] === "evaluate") {
+      await runSpecialistsEvaluate(process.argv.slice(4));
+    } else {
+      console.error(SPECIALISTS_EVAL_USAGE);
+      process.exitCode = 2;
+    }
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution|datasets>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution|datasets|specialists>",
     );
     process.exitCode = 2;
   }

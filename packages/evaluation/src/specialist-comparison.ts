@@ -155,6 +155,25 @@ export function subjectResolverFromRegistry(registry: {
   };
 }
 
+/** Adapts `SpecialistRegistry.recordEvaluationVerdict` as the verdict sink. */
+export function verdictSinkFromRegistry(registry: {
+  recordEvaluationVerdict(
+    context: RequestContext,
+    entry: {
+      job: JobRef;
+      report: ArtifactRef;
+      verdict: ArtifactRef;
+      value: SpecialistComparisonVerdict;
+    },
+  ): Promise<unknown>;
+}): SpecialistVerdictSink {
+  return {
+    async record(context, entry) {
+      await registry.recordEvaluationVerdict(context, entry);
+    },
+  };
+}
+
 export interface HeldOutTaskView {
   task_id: string;
   domain: string;

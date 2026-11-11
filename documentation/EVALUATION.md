@@ -218,8 +218,8 @@ specialists:
   across different task ids. Every held-out task must carry its `request` text.
   A lineage without this field (or with an empty list) is refused with
   `lineage_requests_unverifiable`, since request overlap cannot be ruled out.
-  `packages/training` does not populate the field yet, so training-produced
-  lineages are refused at evaluation until it does. An adapter without lineage
+  `packages/training` writes the digest of every user turn in its train and
+  validation examples into the lineage it signs. An adapter without lineage
   is refused (`lineage_missing`), and an evaluator whose id equals the
   lineage's training producer is refused (`evaluator_not_independent`). Only
   split tasks covered by the request's domains, roles and complexities run.
@@ -236,11 +236,20 @@ specialists:
   when every gate passes with a positive delta vs base. Equal pass rates are
   recorded as `no_improvement` (`no_delta_vs_base`); a lower rate is
   `regressed`. Both artifacts are returned by `inspect` and handed to the
-  `SpecialistVerdictSink`. Jobs persist under
+  `SpecialistVerdictSink`. In integration the sink is
+  `verdictSinkFromRegistry(registry)`: `SpecialistRegistry.recordEvaluationVerdict`
+  accepts the verdict only for a job it delegated (job id, input manifest,
+  subject and candidate digest must match), re-runs `verifyEvidence` on the
+  signed report, refuses reports that fail integrity (signature, digest,
+  subject, scope, independence, or synthetic evidence the registry does not
+  allow) so the job fails, and otherwise stores the verdict against the
+  revision. The newest recorded report becomes the revision's gating
+  evidence, so an authentic `regressed` verdict demotes it to `rejected`.
+  Jobs persist under
   `<stateDir>/specialist-comparisons/`; a job left running by a restarted
   process is marked failed, never resumed silently.
 - **CLI.** `runSpecialistsEvaluate` in `apps/cli/src/specialists-eval.ts`
-  (not yet registered in `main.ts`) refuses with `SpecialistsEvalRefusal`
+  (`mars specialists evaluate`) refuses with `SpecialistsEvalRefusal`
   when `--model-key-env NAME` is unset, `--serving URL` is absent or does not
   answer `GET /v1/models`, or no serving-backed evaluator is wired. Messages
   name flags and variable names, never the key.
@@ -251,6 +260,6 @@ refusal, with `createFixtureArmEvaluator` (simulated, `model_requests: 0`)
 and the registry's own `verifyEvidence` accepting the signed report.
 Simulated reports carry `synthetic_fixture: true`, so a registry without
 `allowSyntheticFixtures` rejects them. Blocked: a serving-backed arm
-evaluator (real vLLM with base + adapter, a GPU host and a model key), and the
-registry-side sink that persists the verdict against the revision
-(integration work).
+evaluator (real vLLM with base + adapter, a GPU host and a model key); until
+one is wired, `mars specialists evaluate` refuses `live_evaluation_unavailable`
+after the key and serving checks.

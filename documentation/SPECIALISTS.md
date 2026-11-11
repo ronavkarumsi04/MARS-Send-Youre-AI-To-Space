@@ -109,3 +109,24 @@ models may drift without a serving attestor. Persistence is local, single-host
 SQLite; there is no distributed coordination. Cost and runtime decisions are
 only as good as the signed report. The registry does not alter existing apps,
 contracts, the provider router, or task execution.
+
+## Held-out comparison verdicts (Milestone 7)
+
+`requestEvaluation` delegates a `mars.specialist-comparison-request/v1` to
+`@mars/evaluation`; the verdict comes back through
+`recordEvaluationVerdict(context, { job, report, verdict, value })`
+(wrapped by `verdictSinkFromRegistry`). The registry only trusts what it can
+re-verify: the job must be one it delegated in the caller's scope, the
+verdict's subject and candidate digest must match the stored revision, and
+the signed report must pass `verifyEvidence` and carry this job's report id
+(`comparisonReportId(job_id)`, so an older report cannot be replayed), and the
+verdict's `outcome`/`simulated` must agree with the signed per-triple results
+and `synthetic_fixture`; failures throw (nothing is stored, the evaluation job
+fails). A verdict that arrives before `submitComparison` returns waits for the
+job row, and `reverify` retries if a verdict is recorded while it runs. An accepted report is stored
+in `evaluation_verdicts` (store format v2; a v1 store is migrated in place)
+with an `evaluation.recorded` audit event, and becomes the evidence that
+`reverify`, `promote`, rollback and routing gate on, so `no_improvement` and
+`regressed` outcomes are recorded honestly and may demote the revision.
+`evaluationVerdicts(context, id, revision)` lists them.
+

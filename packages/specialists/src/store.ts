@@ -61,6 +61,35 @@ export interface EvaluationJobRow {
   submitted_at: string;
 }
 
+export interface EvaluationVerdictRow {
+  job_id: string;
+  scope_key: string;
+  specialist_id: string;
+  revision: string;
+  report_json: string;
+  verdict_ref_json: string;
+  comparison_json: string;
+  evidence_json: string;
+  recorded_at: string;
+}
+
+/** Format v2: comparison verdicts received back from `@mars/evaluation`. */
+const EVALUATION_VERDICTS_DDL = `
+  CREATE TABLE IF NOT EXISTS evaluation_verdicts (
+    job_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    specialist_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    verdict_ref_json TEXT NOT NULL,
+    comparison_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS evaluation_verdicts_revision_idx
+    ON evaluation_verdicts(scope_key, specialist_id, revision);
+`;
+
 export interface RoutingDecisionRow {
   decision_id: string;
   scope_key: string;
@@ -246,13 +275,22 @@ export class SpecialistStore {
       const format = this.db
         .query("SELECT value FROM meta WHERE key = 'format_version'")
         .get() as { value: string } | null;
-      if (format && Number(format.value) !== SPECIALIST_STORE_FORMAT_VERSION) {
+      const version = format ? Number(format.value) : null;
+      if (
+        version !== null &&
+        version !== 1 &&
+        version !== SPECIALIST_STORE_FORMAT_VERSION
+      ) {
         throw new SpecialistRegistryError("corrupt_record", "format_version");
       }
-      if (!format) {
+      if (version !== SPECIALIST_STORE_FORMAT_VERSION) {
         this.transaction(() => {
+          this.db.exec(EVALUATION_VERDICTS_DDL);
           this.db
-            .query("INSERT INTO meta (key, value) VALUES ('format_version', ?)")
+            .query(
+              `INSERT INTO meta (key, value) VALUES ('format_version', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+            )
             .run(String(SPECIALIST_STORE_FORMAT_VERSION));
         });
       }
@@ -285,6 +323,39 @@ export class SpecialistStore {
       }
       throw error;
     }
+  }
+
+  readEvaluationJob(scopeKey: string, jobId: string): EvaluationJobRow | null {
+    this.assertOpen();
+    return this.db
+      .query(
+        `SELECT job_id, scope_key, specialist_id, revision, input_manifest_json,
+          submitted_at FROM evaluation_jobs WHERE scope_key = ? AND job_id = ?`,
+      )
+      .get(scopeKey, jobId) as EvaluationJobRow | null;
+  }
+
+  readEvaluationVerdict(jobId: string): EvaluationVerdictRow | null {
+    this.assertOpen();
+    return this.db
+      .query(`SELECT * FROM evaluation_verdicts WHERE job_id = ?`)
+      .get(jobId) as EvaluationVerdictRow | null;
+  }
+
+  /** Verdicts for a revision, oldest first (insertion order). */
+  listEvaluationVerdicts(
+    scopeKey: string,
+    specialistId: string,
+    revision: string,
+  ): EvaluationVerdictRow[] {
+    this.assertOpen();
+    return this.db
+      .query(
+        `SELECT * FROM evaluation_verdicts
+         WHERE scope_key = ? AND specialist_id = ? AND revision = ?
+         ORDER BY rowid`,
+      )
+      .all(scopeKey, specialistId, revision) as EvaluationVerdictRow[];
   }
 
   readSpecialist(
