@@ -1,6 +1,7 @@
 import type { ModelConfig } from "@mars/contracts";
 import { loadModelRegistry, type ModelProviderRegistry } from "@mars/providers";
 import {
+  createVllmServingAttestor,
   extendRegistryWithVllm,
   type FetchLike,
   loadVllmServingProfile,
@@ -166,7 +167,11 @@ export async function attachVllm(
     env?: Record<string, string | undefined>;
     fetch?: FetchLike;
   } = {},
-): Promise<{ registry: ModelProviderRegistry; report: VllmServeReport }> {
+): Promise<{
+  registry: ModelProviderRegistry;
+  report: VllmServeReport;
+  servingAttestor?: ReturnType<typeof createVllmServingAttestor>;
+}> {
   const env = options.env ?? process.env;
   let profile: VllmServingProfile | undefined;
   if (flags.profilePath !== undefined) {
@@ -217,6 +222,9 @@ export async function attachVllm(
     });
     return {
       registry: extended,
+      ...(profile
+        ? { servingAttestor: createVllmServingAttestor({ client, profile }) }
+        : {}),
       report: {
         provider_id: VLLM_PROVIDER_ID,
         route: VLLM_ROUTE,
@@ -240,7 +248,7 @@ export async function attachVllm(
 export async function vllmServeRegistry(
   flags: VllmServeFlags,
   location: { sourceRoot: string; trustProjectConfig: boolean },
-): Promise<{ registry: ModelProviderRegistry; report: VllmServeReport }> {
+): ReturnType<typeof attachVllm> {
   const base = await loadModelRegistry({
     cwd: location.sourceRoot,
     trustProjectConfig: location.trustProjectConfig,

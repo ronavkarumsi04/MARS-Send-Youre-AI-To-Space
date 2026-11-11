@@ -4,12 +4,20 @@ import { parseArgs } from "node:util";
 import { createPlaywrightEngine } from "@mars/browser-worker";
 import { applyPatch, discoverInstructions } from "@mars/codex-tools";
 import { registerRuntimeCleanup } from "@mars/execution";
+import { loadModelRegistry } from "@mars/providers";
 import {
   createBraveSearch,
   createSearxngSearch,
   createTavilySearch,
   type SearchProvider,
 } from "@mars/research-worker";
+import {
+  createFileArtifactStore,
+  createSpecialistRegistry,
+  DOMAIN_PATTERN,
+  loadSpecialistTrust,
+  SpecialistTaskRouter,
+} from "@mars/specialists";
 import {
   createWorkbenchService,
   DEFAULT_WORKBENCH_PORT,
@@ -29,6 +37,43 @@ import {
 import { resolveWorkbenchLocation } from "./workbench-location";
 
 export { ServeUsageError };
+
+export function specialistsFromFlags(flags: {
+  registry?: string;
+  trust?: string;
+  domain?: string;
+  complexity?: string;
+}) {
+  if (flags.registry === undefined) {
+    if (Object.values(flags).some((value) => value !== undefined))
+      throw new ServeUsageError(
+        "--specialists-* requires --specialists-registry DIR.",
+      );
+    return undefined;
+  }
+  if (
+    !flags.registry ||
+    !flags.trust ||
+    !flags.domain ||
+    !DOMAIN_PATTERN.test(flags.domain)
+  )
+    throw new ServeUsageError(
+      "--specialists-registry requires --specialists-trust FILE and --specialists-domain AREA/KIND.",
+    );
+  if (
+    flags.complexity !== undefined &&
+    !["light", "medium", "heavy"].includes(flags.complexity)
+  )
+    throw new ServeUsageError(
+      "--specialists-complexity must be light|medium|heavy.",
+    );
+  return {
+    registry: flags.registry,
+    trust: flags.trust,
+    domain: flags.domain,
+    complexity: (flags.complexity ?? "medium") as "light" | "medium" | "heavy",
+  };
+}
 
 /** Search providers `mars serve` can drive; credentials are read from the named environment variable at startup only. */
 export const RESEARCH_SEARCH_PROVIDERS = {
@@ -209,6 +254,10 @@ export async function runServer(
     strict: true,
     options: {
       source: { type: "string" },
+      "specialists-registry": { type: "string" },
+      "specialists-trust": { type: "string" },
+      "specialists-domain": { type: "string" },
+      "specialists-complexity": { type: "string" },
       state: { type: "string" },
       port: { type: "string" },
       owner: { type: "string" },
@@ -246,6 +295,8 @@ export async function runServer(
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--browser-chromium PATH] [--browser-deny-host PATTERN]... [--browser-allow-input] [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
         ...VLLM_SERVE_USAGE,
+        "                  [--specialists-registry DIR --specialists-trust FILE --specialists-domain AREA/KIND] [--specialists-complexity light|medium|heavy]",
+        "Specialists route per step with paid consent disabled. Trust secrets are UTF-8 environment values. Adapters fail closed to baseline unless --vllm and --vllm-profile attest the loaded adapter.",
         "                  [--workspace-provider local|remote] [--agent-server URL] [--agent-server-key-env MARS_AGENT_SERVER_API_KEY] [--agent-server-root /workspace/mars] [--agent-server-allow-insecure-http]",
         "--workspace-provider remote runs workspace shell/files/artifacts on a pinned OpenHands Agent Server (1.59.0) at --agent-server; planning and model calls stay in MARS. The session key is read from the named environment variable and never printed. A remote server interface is not an OS isolation guarantee: commands run with the Agent Server process's privileges on its host. Live remote acceptance is unverified.",
         "Without a pre-pulled digest-pinned image, command execution is disabled. No model request is made at startup. Connection credentials are written only to the private connection file.",
@@ -259,6 +310,20 @@ export async function runServer(
     );
     return;
   }
+  const specialistFlags = specialistsFromFlags({
+    ...(values["specialists-registry"] !== undefined
+      ? { registry: values["specialists-registry"] }
+      : {}),
+    ...(values["specialists-trust"] !== undefined
+      ? { trust: values["specialists-trust"] }
+      : {}),
+    ...(values["specialists-domain"] !== undefined
+      ? { domain: values["specialists-domain"] }
+      : {}),
+    ...(values["specialists-complexity"] !== undefined
+      ? { complexity: values["specialists-complexity"] }
+      : {}),
+  });
   const research = researchFromFlags(
     {
       ...(values["research-search"] !== undefined
@@ -342,6 +407,47 @@ export async function runServer(
         trustProjectConfig: trustProject,
       })
     : undefined;
+  const catalog =
+    vllm?.registry ??
+    (specialistFlags
+      ? await loadModelRegistry({
+          cwd: source,
+          trustProjectConfig: trustProject,
+        })
+      : undefined);
+  const specialists =
+    specialistFlags && catalog
+      ? await (async () => {
+          let trust: Awaited<ReturnType<typeof loadSpecialistTrust>>;
+          try {
+            trust = await loadSpecialistTrust(
+              specialistFlags.trust,
+              process.env,
+            );
+          } catch {
+            throw new ServeUsageError("--specialists-trust: trust_invalid");
+          }
+          const registry = createSpecialistRegistry({
+            rootDir: resolve(specialistFlags.registry),
+            artifacts: createFileArtifactStore(
+              resolve(specialistFlags.registry, "artifacts"),
+            ),
+            catalog,
+            evidenceVerifier: trust.evidenceVerifier,
+            ...(vllm?.servingAttestor
+              ? { servingAttestor: vllm.servingAttestor }
+              : {}),
+            hostPrivateRoots: [state, source],
+          });
+          return {
+            router: registry,
+            steps: new SpecialistTaskRouter(registry),
+            domain: specialistFlags.domain,
+            complexity: specialistFlags.complexity,
+            paid_consent: false,
+          };
+        })()
+      : undefined;
   const service = await createWorkbenchService({
     sourceRoot: source,
     stateRoot: state,
@@ -363,13 +469,15 @@ export async function runServer(
       : {}),
     ...(conventions ? { conventions: conventions.conventions } : {}),
     ...(omniroute ? { omniroute } : {}),
-    ...(vllm ? { registry: vllm.registry } : {}),
+    ...(catalog ? { registry: catalog } : {}),
+    ...(specialists ? { specialists } : {}),
     trustProjectConfig: trustProject,
   });
   await new Promise<void>((resolve, reject) => {
     registerRuntimeCleanup("mars-workbench", async () => {
       try {
         await service.close();
+        specialists?.router.close();
         resolve();
       } catch {
         reject(new Error("Workbench shutdown failed."));
@@ -395,6 +503,14 @@ export async function runServer(
         conventions: conventions ? conventions.summary : null,
         omniroute: service.omniroute,
         vllm: vllm ? vllm.report : null,
+        specialists: specialists
+          ? {
+              domain: specialists.domain,
+              complexity: specialists.complexity,
+              serving_attestation: vllm?.servingAttestor ? "vllm" : "none",
+              step_routing: true,
+            }
+          : null,
       }),
     );
   });

@@ -3,6 +3,33 @@ import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_WORKBENCH_PORT } from "@mars/workbench";
+import { specialistsFromFlags } from "./serve";
+
+test("specialists flags are opt-in and validate required domain, trust and complexity", () => {
+  expect(specialistsFromFlags({})).toBeUndefined();
+  for (const flags of [
+    { trust: "trust" },
+    { domain: "coding/edit" },
+    { complexity: "light" },
+    { registry: "r" },
+    { registry: "r", trust: "t", domain: "invalid" },
+    { registry: "r", trust: "t", domain: "coding/edit", complexity: "huge" },
+  ])
+    expect(() => specialistsFromFlags(flags)).toThrow();
+  expect(
+    specialistsFromFlags({ registry: "r", trust: "t", domain: "coding/edit" })
+      ?.complexity,
+  ).toBe("medium");
+  for (const complexity of ["light", "medium", "heavy"] as const)
+    expect(
+      specialistsFromFlags({
+        registry: "r",
+        trust: "t",
+        domain: "coding/edit",
+        complexity,
+      })?.complexity,
+    ).toBe(complexity);
+});
 
 const entrypoint = join(import.meta.dir, "main.ts");
 test("mars serve starts without model credentials, keeps its token private and closes cleanly", async () => {
