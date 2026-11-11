@@ -218,8 +218,8 @@ specialists:
   across different task ids. Every held-out task must carry its `request` text.
   A lineage without this field (or with an empty list) is refused with
   `lineage_requests_unverifiable`, since request overlap cannot be ruled out.
-  `packages/training` does not populate the field yet, so training-produced
-  lineages are refused at evaluation until it does. An adapter without lineage
+  `packages/training` writes the digest of every user turn in its train and
+  validation examples into the lineage it signs. An adapter without lineage
   is refused (`lineage_missing`), and an evaluator whose id equals the
   lineage's training producer is refused (`evaluator_not_independent`). Only
   split tasks covered by the request's domains, roles and complexities run.
