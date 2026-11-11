@@ -11,7 +11,12 @@ import {
   ReviewRateLimit,
 } from "./model";
 import { InvalidOutput, parseOutput } from "./output";
-import { REVIEW_LIMITS, ReviewRunner, type Turn } from "./runner";
+import {
+  REVIEW_LIMITS,
+  type ReviewDependencies,
+  ReviewRunner,
+  type Turn,
+} from "./runner";
 
 const roots: string[] = [];
 const stores: DurableMemoryStore[] = [];
@@ -75,7 +80,10 @@ const fakeModel = (
 };
 const setup = (
   model: ReviewModelGateway,
-  options: { idleMs?: number; timeoutMs?: number; clock?: () => number } = {},
+  options: Pick<
+    ReviewDependencies,
+    "idleMs" | "timeoutMs" | "clock" | "scheduleIdle"
+  > = {},
 ) => {
   const dir = mkdtempSync(join(tmpdir(), "mars-review-"));
   roots.push(dir);
@@ -203,22 +211,47 @@ test("review never recursively schedules itself and ignores non-foreground origi
 });
 
 test("recordTurn accumulates 10 iterations per session, then runs once after the quiet period", async () => {
+  let now = 0;
+  const scheduled = new Map<() => Promise<void>, number>();
+  const advance = async (ms: number) => {
+    now += ms;
+    for (const [callback, due] of scheduled) {
+      if (due > now) continue;
+      scheduled.delete(callback);
+      await callback();
+    }
+  };
   const model = fakeModel(() => output([]));
-  const { runner } = setup(model);
+  const { runner, log } = setup(model, {
+    idleMs: 100,
+    clock: () => now,
+    scheduleIdle: (callback, delayMs) => {
+      scheduled.set(callback, now + delayMs);
+      return () => {
+        scheduled.delete(callback);
+      };
+    },
+  });
   for (let i = 0; i < 9; i++) runner.recordTurn(turn("session-a", 1));
-  await tick();
+  await advance(100);
   expect(runner.modelRequests).toBe(0);
   expect(runner.pendingSessions).toEqual([]);
   runner.recordTurn(turn("session-a", 1));
   expect(runner.pendingSessions).toEqual(["session-a"]);
-  await tick();
+  await advance(99);
+  expect(runner.modelRequests).toBe(0);
+  expect(runner.pendingSessions).toEqual(["session-a"]);
+  await advance(1);
   expect(runner.modelRequests).toBe(1);
   expect(runner.pendingSessions).toEqual([]);
+  expect(log().map((record) => record.event)).toEqual(["started", "completed"]);
   runner.recordTurn({ ...turn("session-b", 10), success: false });
   runner.recordTurn(turn("session-c", 0));
   runner.recordTurn(turn("session-d", Number.NaN));
-  await tick();
+  await advance(100);
   expect(runner.modelRequests).toBe(1);
+  expect(runner.pendingSessions).toEqual([]);
+  expect(scheduled.size).toBe(0);
 });
 
 test("live foreground turns defer and cancel in-flight reviews", async () => {
