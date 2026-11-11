@@ -415,9 +415,13 @@ describe("cli e2e", () => {
         });
         return response.json();
       };
-      for (const loaded of [true, false]) {
-        if (!loaded) server.state.adapters.clear();
-        const taskId = loaded ? "loaded" : "unloaded";
+      for (const taskId of ["loaded", "unloaded", "off-pin"]) {
+        const loaded = taskId === "loaded";
+        if (taskId === "unloaded") server.state.adapters.clear();
+        if (taskId === "off-pin") {
+          server.state.adapters.set(ADAPTER, "/adapter");
+          server.state.version = "0.31.0";
+        }
         await rpc("tasks.create", {
           task: {
             schema_version: 1,
@@ -494,7 +498,18 @@ describe("cli e2e", () => {
             ),
           );
           expect(launch.model_id).toBe(`vllm/${ADAPTER}`);
-        } else expect(serialized).toContain("serving_adapter_not_loaded");
+        } else {
+          expect(serialized).toContain(
+            taskId === "off-pin"
+              ? "serving_unattested"
+              : "serving_adapter_not_loaded",
+          );
+          expect(
+            payloads
+              .filter((payload) => payload.operation === "routing")
+              .every((payload) => payload.ref === "baseline:baseline@1"),
+          ).toBe(true);
+        }
         await rpc("tasks.cancel", { task_id: taskId });
       }
       expect(
