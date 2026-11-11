@@ -70,6 +70,7 @@ import {
 } from "./schemas";
 import {
   type BaselineRow,
+  type EvaluationJobRow,
   type EvaluationVerdictRow,
   type ProductionRow,
   type SpecialistRevisionRow,
@@ -387,8 +388,15 @@ export class SpecialistRegistry implements ModelRegistry {
   readonly options: SpecialistRegistryOptions;
   readonly store: SpecialistStore;
   private readonly compatibilityOptions: CompatibilityOptions;
-  /** Submissions whose job row is not written yet, by input manifest sha256. */
-  private readonly pendingEvaluations = new Map<string, Set<Promise<void>>>();
+  /**
+   * Submissions in flight, by input manifest sha256. Each resolves with its
+   * job id (null if submitComparison threw) once its job row is written or
+   * the write failed.
+   */
+  private readonly pendingEvaluations = new Map<
+    string,
+    Set<Promise<string | null>>
+  >();
   private readonly rootDir: string;
 
   constructor(options: SpecialistRegistryOptions) {
@@ -1663,15 +1671,26 @@ export class SpecialistRegistry implements ModelRegistry {
     );
     // The service may finish (and call the verdict sink) before
     // submitComparison returns; recordEvaluationVerdict waits on this.
-    let settle: () => void = () => {};
-    const pending = new Promise<void>((resolve) => {
+    let settle: (jobId: string | null) => void = () => {};
+    const pending = new Promise<string | null>((resolve) => {
       settle = resolve;
     });
+    let submitted: string | null = null;
     const waiting = this.pendingEvaluations.get(ref.sha256) ?? new Set();
     waiting.add(pending);
     this.pendingEvaluations.set(ref.sha256, waiting);
     try {
-      return await this.delegateEvaluation(ctx, row, id, revision, ref, budget);
+      return await this.delegateEvaluation(
+        ctx,
+        row,
+        id,
+        revision,
+        ref,
+        budget,
+        (jobId) => {
+          submitted = jobId;
+        },
+      );
     } finally {
       waiting.delete(pending);
       if (
@@ -1680,7 +1699,7 @@ export class SpecialistRegistry implements ModelRegistry {
       ) {
         this.pendingEvaluations.delete(ref.sha256);
       }
-      settle();
+      settle(submitted);
     }
   }
 
@@ -1691,6 +1710,7 @@ export class SpecialistRegistry implements ModelRegistry {
     revision: string,
     ref: ArtifactRef,
     budget: Budget | undefined,
+    onSubmitted: (jobId: string) => void,
   ): Promise<JobRef> {
     const evaluation = this.options.evaluation;
     if (!evaluation)
@@ -1700,6 +1720,7 @@ export class SpecialistRegistry implements ModelRegistry {
       ref,
       budget ?? evaluation.defaultBudget,
     );
+    onSubmitted(job.job_id);
     const now = new Date().toISOString();
     this.store.transaction(() => {
       this.store.db
@@ -1783,14 +1804,11 @@ export class SpecialistRegistry implements ModelRegistry {
     }
     const record = parsed.data;
     const key = scopeKey(ctx.scope);
-    let job = this.store.readEvaluationJob(key, record.job.job_id);
-    const waiting = this.pendingEvaluations.get(
+    const job = await this.delegatedJob(
+      key,
+      record.job.job_id,
       record.job.input_manifest.sha256,
     );
-    if (!job && waiting) {
-      await Promise.all([...waiting]);
-      job = this.store.readEvaluationJob(key, record.job.job_id);
-    }
     if (!job) throw new SpecialistRegistryError("not_found", "evaluation_job");
     const { subject } = record.value;
     if (
@@ -1924,6 +1942,30 @@ export class SpecialistRegistry implements ModelRegistry {
     const stored = this.store.readEvaluationVerdict(job.job_id);
     if (!stored) throw new SpecialistRegistryError("corrupt_record");
     return this.evaluationVerdictView(stored);
+  }
+
+  /**
+   * The delegated job row, waiting only until the submission that returned
+   * `jobId` has settled: the service may call the verdict sink before
+   * submitComparison returns. Other submissions of the same manifest (an
+   * unchanged revision evaluated concurrently) do not delay it.
+   */
+  private async delegatedJob(
+    key: string,
+    jobId: string,
+    manifestSha256: string,
+  ): Promise<EvaluationJobRow | null> {
+    for (;;) {
+      const job = this.store.readEvaluationJob(key, jobId);
+      if (job) return job;
+      const waiting = this.pendingEvaluations.get(manifestSha256);
+      if (!waiting || waiting.size === 0) return null;
+      // Settled submissions leave the set before resolving, so this loop
+      // always waits on a still-pending one.
+      if ((await Promise.race(waiting)) === jobId) {
+        return this.store.readEvaluationJob(key, jobId);
+      }
+    }
   }
 
   /** Candidate-vs-base direction per triple and simulation flag, from the signed report. */

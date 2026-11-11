@@ -59,7 +59,10 @@ async function expectCode(
 
 async function setup(
   root?: string,
-  onSubmit?: (job: { job_id: string; input_manifest: ArtifactRef }) => void,
+  onSubmit?: (job: {
+    job_id: string;
+    input_manifest: ArtifactRef;
+  }) => void | Promise<void>,
 ) {
   const rootDir = root ?? (await createTempRoot());
   if (!root) roots.push(rootDir);
@@ -69,7 +72,7 @@ async function setup(
     async submitComparison(_ctx, input_manifest) {
       jobs += 1;
       const job = { job_id: `job-${jobs}`, input_manifest };
-      onSubmit?.(job);
+      await onSubmit?.(job);
       return job;
     },
     async inspect() {
@@ -177,6 +180,72 @@ describe("registry-side comparison verdict receiver", () => {
     expect(
       await registry.evaluationVerdicts(context, "specialist-1", "1"),
     ).toHaveLength(1);
+  });
+
+  test("an early verdict does not wait on another submission of the same manifest", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let early: Promise<unknown> | undefined;
+    let report: ArtifactRef | undefined;
+    const { artifacts, registry, fixture } = await setup(
+      undefined,
+      async (job) => {
+        if (job.job_id === "job-1") return firstGate;
+        early = registry.recordEvaluationVerdict(
+          context,
+          entry(job, report as ArtifactRef, fixture.candidateSha256),
+        );
+      },
+    );
+    report = (
+      await makeSpecialistFixture(artifacts, { reportId: "report-job-2" })
+    ).registration.evaluation;
+    const slow = registry.requestEvaluation(context, "specialist-1", "1");
+    const second = await registry.requestEvaluation(
+      context,
+      "specialist-1",
+      "1",
+    );
+    // Both submissions carry the same (unchanged-revision) manifest.
+    expect(second.job_id).toBe("job-2");
+    const outcome = await Promise.race([
+      early,
+      Bun.sleep(2_000).then(() => "still waiting"),
+    ]);
+    expect(outcome).toMatchObject({ job_id: "job-2" });
+    releaseFirst();
+    const first = await slow;
+    expect(first.input_manifest).toEqual(second.input_manifest);
+    expect(
+      await registry.evaluationVerdicts(context, "specialist-1", "1"),
+    ).toHaveLength(1);
+  });
+
+  test("an early verdict for a submission that never stored its job is refused", async () => {
+    let early: Promise<unknown> | undefined;
+    let report: ArtifactRef | undefined;
+    const { artifacts, registry, fixture } = await setup(undefined, (job) => {
+      early = registry.recordEvaluationVerdict(
+        context,
+        entry(
+          { ...job, job_id: "job-other" },
+          report as ArtifactRef,
+          fixture.candidateSha256,
+          { job_id: "job-other" },
+        ),
+      );
+    });
+    report = (
+      await makeSpecialistFixture(artifacts, { reportId: "report-job-other" })
+    ).registration.evaluation;
+    await registry.requestEvaluation(context, "specialist-1", "1");
+    await expectCode(
+      () => early as Promise<unknown>,
+      "not_found",
+      "evaluation_job",
+    );
   });
 
   test("an authentic no-improvement report is recorded and demotes the revision", async () => {
