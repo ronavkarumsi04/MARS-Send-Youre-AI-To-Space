@@ -41,11 +41,14 @@ export function createServingArmEvaluator(
     suite: options.suite,
     simulated: false,
     async evaluate(input) {
-      const served =
+      const baseline =
         input.target.arm === "base" ||
-        input.target.arm === "prompt_optimized_baseline"
-          ? options.baseServedModel
-          : (input.target.adapter?.sha256 ?? options.baseServedModel);
+        input.target.arm === "prompt_optimized_baseline";
+      if (!baseline && !input.target.adapter?.sha256)
+        throw new Error("adapter_missing");
+      const served = baseline
+        ? options.baseServedModel
+        : (input.target.adapter?.sha256 as string);
       const prompt =
         input.target.arm === "prompt_optimized_baseline"
           ? (options.promptOptimizedSystemPrompt ?? options.systemPrompt ?? "")

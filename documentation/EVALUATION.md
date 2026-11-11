@@ -317,7 +317,8 @@ authorization refuses `trust_invalid` without printing secret values.
 
 `createServingArmEvaluator` uses the existing OpenAI-compatible adapter. Base
 and prompt-optimized arms use the profile's base served name; candidate/current
-use `target.adapter.sha256`, or the base when the adapter is null. It sends
+require `target.adapter.sha256`, refusing `adapter_missing` before any request
+when it is absent rather than silently evaluating the base. It sends
 temperature **0**, bounds each completion by the remaining per-arm token budget
 and per-request cap (1024 by default), counts actual requests and reported input
 and output tokens, honors cancellation, and rejects missing usage or overspend.

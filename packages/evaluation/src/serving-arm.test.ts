@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { startFakeVllm } from "../../providers-vllm/src/index";
 import { createServingArmEvaluator } from "./serving-arm";
 import type { ArmEvaluationInput } from "./specialist-comparison";
 
@@ -103,6 +104,57 @@ test("serving arms resolve model and prompts, bound tokens and measure calls", a
   const cancelled = input();
   cancelled.signal = AbortSignal.abort();
   await expect(evaluator.evaluate(cancelled)).rejects.toThrow();
+});
+
+test("specialist arms without adapter hashes refuse before any counted request or fake completion", async () => {
+  let completions = 0;
+  let countedRequests = 0;
+  const server = startFakeVllm({
+    completions: () => {
+      completions++;
+      return "answer";
+    },
+  });
+  try {
+    const evaluator = createServingArmEvaluator({
+      baseUrl: `${server.url}/v1`,
+      apiKeyEnv: "KEY",
+      env: {},
+      baseServedModel: "mars-base",
+      evaluator_id: "eval",
+      evaluator_revision: "1",
+      harness: { component: "h", revision: "1" },
+      suite: { suite_id: "s", revision: "1" },
+      grade: () => 1,
+      fetch: (url, init) => {
+        countedRequests++;
+        return fetch(url, init);
+      },
+    });
+    for (const arm of ["candidate", "current_specialist"] as const) {
+      for (const adapter of [
+        null,
+        {
+          artifact_id: "adapter",
+          sha256: "",
+          byte_length: 0,
+          media_type: "application/octet-stream",
+        },
+      ]) {
+        const request = input();
+        request.target = { ...request.target, arm, adapter };
+        await expect(evaluator.evaluate(request)).rejects.toThrow(
+          "adapter_missing",
+        );
+        expect(countedRequests).toBe(0);
+        expect(completions).toBe(0);
+        expect(server.modelRequests()).toHaveLength(0);
+        expect(server.requests).toHaveLength(0);
+      }
+    }
+  } finally {
+    await server.stop();
+  }
 });
 
 test("serving evaluator rejects malformed responses and missing usage, invalid grades and token overruns", async () => {
