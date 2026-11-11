@@ -8,7 +8,7 @@ Status: **offline-verified only** against an in-process fake vLLM. No GPU host, 
 - The server is the `vllm` provider target, reached through the existing `openai-compatible` adapter (`ProviderConfig.kind` is unchanged). Model policy, free-first routing and paid consent stay in `@mars/providers`; every vLLM model is registered as free (self-hosted) and the registry's `policy.allowPaid` is untouched.
 - Pin: vLLM `v0.32.0`, source audit revision `5df63a7203cdb9328d824a27b682e77c7b9928be` (`sources/manifest.json` component `vllm`). `GET /version` must report exactly `0.32.0` (a PEP 440 local label such as `0.32.0+cu130` is accepted; dev, rc and other releases are not).
 - URL policy: loopback (`127.0.0.1`, `localhost`, `::1`) by default, default `http://127.0.0.1:8000`. A non-loopback server needs the explicit `--vllm-allow-remote` flag **and** `https`. URLs with credentials, queries or paths other than `/v1` are refused.
-- Only control requests are sent: `GET /version`, `GET /v1/models`, and (dev runtime mode only) `POST /v1/load_lora_adapter` / `POST /v1/unload_lora_adapter`. No completion is requested at startup, in `mars doctor` or in tests (`model_requests: 0`).
+- Attach, attestation and doctor use control requests: `GET /version`, `GET /v1/models`, and (dev runtime mode only) `POST /v1/load_lora_adapter` / `POST /v1/unload_lora_adapter`. No completion is requested at startup or in `mars doctor`. Task execution and serving-backed evaluation can request completions; their offline tests use opt-in fake completions, not real models.
 - The server's own `--api-key` is read by environment-variable name (`MARS_VLLM_API_KEY`, or `--vllm-api-key-env NAME`) and sent as a bearer token; it is never printed.
 
 ## Serving profile
@@ -60,6 +60,40 @@ mars doctor [--vllm URL] [--vllm-allow-remote] [--vllm-api-key-env NAME]
 
 `mars serve --vllm` fails closed: an unreachable, malformed, off-pin or profile-disagreeing server stops startup with a usage error naming the cause. On success the `listening` line has a `vllm` object (`base_url`, `version`, `base_model`, `attested`, `adapters`, `models`, `lora_mode: static|dev-runtime`, `live_verified: false`) and the registry gains the `vllm` route (`vllm/<served>` and `vllm/<sha256>` models). The default route is unchanged. `mars doctor` reports the pin, reachability, version match and base/adapter counts only (`MARS_VLLM_URL` overrides the default URL).
 
+## Opt-in specialist routing in `mars serve`
+
+```sh
+mars serve --source ./repo --state /private/mars-state \
+  --vllm http://127.0.0.1:8000 --vllm-profile PROFILE.json \
+  --specialists-registry /private/specialists \
+  --specialists-trust TRUST.json --specialists-domain coding/mechanical-edit \
+  --specialists-complexity medium
+```
+
+`--specialists-registry DIR` enables routing and requires `--specialists-trust FILE`
+and `--specialists-domain AREA/KIND`. Optional `--specialists-complexity` accepts
+`light|medium|heavy` (default `medium`). Dependent flags without the registry are
+usage errors. Without these flags the listening summary has `specialists: null`.
+With them it reports only domain, complexity, `serving_attestation: "vllm"|"none"`
+and `step_routing: true`, not registry paths or secrets.
+
+The CLI constructs `SpecialistTaskRouter` over the registry using the same model
+catalog as the workbench (extended with vLLM when attached), with paid consent
+disabled. Artifacts live at `<DIR>/artifacts/<sha256>`; see
+[SPECIALISTS.md](SPECIALISTS.md) for the trust schema and permissions. Routing
+events are stored as task evidence with `operation: "routing"`.
+
+Only `--vllm` together with `--vllm-profile` supplies a serving attestor. No
+attestor, an unattested target, an unloaded adapter (`serving_adapter_not_loaded`)
+or a version that goes off-pin after startup (`serving_unattested`) prevents
+adapter selection and falls back to an eligible baseline. Baseline execution
+uses the ordinary free-only default model route; configure that route explicitly
+if it must resolve to the vLLM base. An off-pin vLLM at initial attach refuses
+startup instead. A paused specialist session cannot silently change its journal's
+model: loss of its pin on resume leaves it paused with `unavailable` while the
+routing event records the fallback. No synthetic-fixture evidence is enabled in
+production registry construction.
+
 ## Offline verified vs blocked
 
 | Offline verified (fake vLLM) | Blocked |
@@ -67,6 +101,12 @@ mars doctor [--vllm URL] [--vllm-allow-remote] [--vllm-api-key-env NAME]
 | Pin/version check, loopback/remote URL policy, bearer key by env name | Real vLLM v0.32.0 `/v1/models` and `/version` on a GPU host |
 | Attestor fail-closed paths and every serving mismatch reason code | Live adapter serving and completions through a loaded LoRA |
 | Wrong-base rejection with zero vLLM requests; runtime LoRA refused without the dev flag | Static `--lora-modules` startup on a real server |
-| Load / unload / rollback against the fake LoRA routes | A serving-backed arm evaluator for adapter-vs-base evaluation on real vLLM |
+| Load / unload / rollback against the fake LoRA routes; serving-backed evaluator against opt-in fake completions | Adapter-vs-base evaluation on real vLLM |
 | `SpecialistTaskRouter` consuming this attestor (`src/routing.test.ts`): loaded adapter routes; unload, off-pin version or unreachable server falls back to base | Mid-task fallback on a live server |
-| `mars serve --vllm` and `mars doctor` spawn e2e | Model key, tool-call parser for the chosen base |
+| `mars serve --vllm`, `mars doctor`, specialist serve routing (loaded, unloaded and off-pin), and specialists evaluate spawn e2e | Model key, tool-call parser for the chosen base |
+
+The fake vLLM binds loopback. Completion support is opt-in; its default remains
+HTTP 500, and completions count in `modelRequests()`. Control-only tests and
+fixture evaluators still make zero model requests; fake-completion tests make
+counted local requests. No GPU host, real pinned vLLM, real model key or live
+adapter serving was verified by this increment.

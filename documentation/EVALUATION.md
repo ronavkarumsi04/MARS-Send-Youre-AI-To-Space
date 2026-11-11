@@ -251,7 +251,7 @@ specialists:
 - **CLI.** `runSpecialistsEvaluate` in `apps/cli/src/specialists-eval.ts`
   (`mars specialists evaluate`) refuses with `SpecialistsEvalRefusal`
   when `--model-key-env NAME` is unset, `--serving URL` is absent or does not
-  answer `GET /v1/models`, or no serving-backed evaluator is wired. Messages
+  answer `GET /v1/models`, or live configuration is absent. Messages
   name flags and variable names, never the key.
 
 Offline-verified: the round trip, leakage refusals, no-improvement and
@@ -259,7 +259,93 @@ regressed verdicts, budget overrun, restart, scope isolation and every CLI
 refusal, with `createFixtureArmEvaluator` (simulated, `model_requests: 0`)
 and the registry's own `verifyEvidence` accepting the signed report.
 Simulated reports carry `synthetic_fixture: true`, so a registry without
-`allowSyntheticFixtures` rejects them. Blocked: a serving-backed arm
-evaluator (real vLLM with base + adapter, a GPU host and a model key); until
-one is wired, `mars specialists evaluate` refuses `live_evaluation_unavailable`
-after the key and serving checks.
+`allowSyntheticFixtures` rejects them. The serving-backed evaluator is now wired
+and separately tested against loopback fake completions (`simulated: false`);
+real vLLM with base + adapter, a GPU host and a model key remain blocked.
+
+### Serving-backed CLI
+
+```sh
+mars specialists evaluate --specialist specialist-1@1 --held-out HELDOUT.json \
+  --model-key-env MARS_EVAL_KEY --serving http://127.0.0.1:8000 \
+  --registry /private/specialists --trust TRUST.json --signing-key-id local-key \
+  --vllm-profile PROFILE.json --expectations EXPECTATIONS.json \
+  --owner local --project my-project \
+  --max-tokens 100000 --max-duration-ms 30000
+```
+
+The original `--specialist`, `--held-out`, `--model-key-env` and `--serving`
+preconditions retain their order. With none of the live configuration flags,
+the command still refuses `live_evaluation_unavailable` after key and serving
+checks. For the default live implementation, `--registry`, `--trust`,
+`--signing-key-id`, `--vllm-profile`, `--expectations` and `--project` are required.
+`--owner` defaults to `local`. Optional `--max-tokens` (100000) is the total job
+budget divided equally among runnable arms; `--max-duration-ms` (30000) bounds
+the job. Both must be positive integers. `--prompt-optimized FILE` supplies a
+UTF-8 system prompt for the prompt-optimized baseline arm only.
+
+`--serving` is the loopback vLLM origin; this CLI has no remote-serving opt-in.
+The named model key is used for the models probe and serving requests. The
+profile pins the base, tokenizer and chat template as in
+[SERVING.md](SERVING.md). The model catalog is extended with the base and loaded
+sha256-named adapters; the registry gets a profile-backed serving attestor.
+`--signing-key-id` selects an authority authorizing the owner and the fixed
+evaluator id `mars-serving-evaluator`. The strict trust schema and UTF-8 secret
+environment-variable semantics are in [SPECIALISTS.md](SPECIALISTS.md).
+
+`--expectations` is strict JSON with one entry for **every** held-out split task
+and a matching `split_id`:
+
+```json
+{
+  "schema": "mars.held-out-expectations/v1",
+  "split_id": "my-heldout-split",
+  "tasks": {
+    "heldout-task-1": {
+      "must_include": ["expected answer"],
+      "must_not_include": ["forbidden answer"]
+    }
+  }
+}
+```
+
+Both arrays are optional. Grade is 1 exactly when all includes are present and
+all excludes absent (case-sensitive substring matching), otherwise 0. An empty
+rule passes every response, so it is not a meaningful quality test. Invalid or
+incomplete files refuse `expectations_invalid`; invalid trust or signing
+authorization refuses `trust_invalid` without printing secret values.
+
+`createServingArmEvaluator` uses the existing OpenAI-compatible adapter. Base
+and prompt-optimized arms use the profile's base served name; candidate/current
+use `target.adapter.sha256`, or the base when the adapter is null. It sends
+temperature **0**, bounds each completion by the remaining per-arm token budget
+and per-request cap (1024 by default), counts actual requests and reported input
+and output tokens, honors cancellation, and rejects missing usage or overspend.
+The service records a matched per-job seed, but the adapter **does not forward
+seed** to serving; this is not a claim of server-side seeded determinism.
+Without `--prompt-optimized`, the prompt-optimized arm is identical to base.
+Self-hosted cost is recorded as **$0**, not a measurement of GPU or host costs.
+
+Before completions, a candidate adapter absent from `/v1/models` refuses
+`candidate_not_served`. Held-out leakage is rejected by comparison planning and
+surfaced as `evaluation_refused`. Both paths make **zero completions**. Missing
+attestation, unloaded adapters or off-pin serving cannot authorize adapter
+routing; serve falls back to an eligible baseline (or refuses initial attach).
+
+Artifacts use `<registry>/artifacts/<sha256>` with file mode `0600`, directory
+mode `0700`, and SHA-256/byte-length checks on reads. Jobs are stored under
+`<registry>/evaluations/specialist-comparisons/`. The registry delegates the job,
+waits for completion, re-verifies its signed report, and stores its verdict on
+the revision (`evaluationVerdicts`). Output includes `outcome`, `codes`,
+`triples`, `report_sha256`, `simulated: false`, and `model_requests` equal to the
+completion count, including the base and prompt-optimized arms. No-improvement
+is stored honestly rather than relabeled as improvement.
+
+Offline-verified: authenticated fake vLLM with opt-in fake completions;
+improved and no-improvement verdict persistence; candidate-not-served and leakage
+with zero completions; invalid trust, expectations and budgets; evaluator
+cancellation, malformed responses, missing usage and token overruns; and a CLI
+spawn round trip. Real attestor code against fake endpoints and injected fake
+attestor paths are offline checks, as are simulated fixture evaluators (zero
+model requests). **Blocked/unverified:** GPU host, real pinned vLLM, real model
+key, live adapter serving/completions and any resulting quality improvement.

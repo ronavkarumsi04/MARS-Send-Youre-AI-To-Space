@@ -33,7 +33,7 @@ behavior.
    `artifacts = taskStore.artifacts`, and an HMAC verifier whose keys remain
    host-side. Pass environment variable names through host configuration;
    never put key values in source, reports, or documentation. A host may add a
-   future serving attestor or an evaluation-service importer.
+   serving attestor or an evaluation-service importer.
    Contract `register` can receive a plain `SpecialistManifest` when the host
    configures `contractProfiles`; the resolver provides roles, serving
    bindings, and acceptance policy, which are required by the evidence gate
@@ -97,6 +97,60 @@ behavior.
 8. A future coordinator can consume `routeTeam` output. `routeTeam` returns
    selections only and never starts a team.
 
+## CLI registry and trust files
+
+`mars serve --specialists-registry DIR --specialists-trust FILE
+--specialists-domain AREA/KIND [--specialists-complexity light|medium|heavy]`
+constructs the registry and per-step router. Complexity defaults to `medium`;
+paid consent is false. It uses the workbench catalog, including attached vLLM
+models. `--vllm` plus `--vllm-profile FILE` is required for adapter attestation;
+without an attestor adapters never route. Unattested, unloaded or off-pin targets
+fall back to an eligible baseline with recorded reasons. Baseline execution uses
+the ordinary free-only default route. See [SERVING.md](SERVING.md) for startup
+versus mid-task fail-closed behavior.
+
+Both serve and evaluate use `createFileArtifactStore(DIR/artifacts)`:
+content-addressed bytes live at `DIR/artifacts/<sha256>` (files `0600`, artifact
+directory `0700`). `put` derives `artifact_id` from the hash; `get` checks SHA-256
+and byte length and throws on mismatch. Registry SQLite state remains under
+`DIR`; comparisons are under `DIR/evaluations/specialist-comparisons/`.
+
+The strict trust JSON schema is `mars.specialist-trust/v1`:
+
+```json
+{
+  "schema": "mars.specialist-trust/v1",
+  "authorities": [{
+    "key_id": "local-key",
+    "authority_id": "local-authority",
+    "secret_env": "MARS_SPECIALIST_SECRET",
+    "owner_ids": ["local"],
+    "evaluator_ids": ["mars-serving-evaluator"]
+  }]
+}
+```
+
+`loadSpecialistTrust(FILE, env)` reads **UTF-8**, not hex-decoded, secret bytes
+from each named variable; unset, empty or whitespace-only values, duplicate key
+ids and unknown JSON fields are refused. Authorities and authorization lists
+must be nonempty. Never put secret values in the file. HMAC verification checks
+owner and evaluator authorization. For evaluate, `--signing-key-id` must name an
+authority authorizing both `--owner` and the evaluator `mars-serving-evaluator`.
+Production CLI registries do not enable `allowSyntheticFixtures`.
+
+`mars specialists evaluate` loads this registry and trust file, checks held-out
+expectations, runs serving-backed arms, and records signed verdicts through
+`recordEvaluationVerdict`. See [EVALUATION.md](EVALUATION.md) for its flags and
+expectations schema. A candidate adapter absent from serving and held-out
+leakage both refuse before any completion (zero completions).
+
+Offline verification covers fake vLLM control endpoints and opt-in fake
+completions, real attestor code against that fake, injected fake attestor paths,
+fixture evaluators, and serve/evaluate spawn tests. Fixture evaluators are
+simulated with zero requests; serving-backed tests are `simulated: false` but
+only contact loopback fakes and count those completions. GPU host, real pinned
+vLLM, model key and live adapter serving remain blocked, not quality claims.
+
 ## Boundaries and limitations
 
 Evaluation and training are not performed here (training lives in
@@ -129,4 +183,3 @@ with an `evaluation.recorded` audit event, and becomes the evidence that
 `reverify`, `promote`, rollback and routing gate on, so `no_improvement` and
 `regressed` outcomes are recorded honestly and may demote the revision.
 `evaluationVerdicts(context, id, revision)` lists them.
-
