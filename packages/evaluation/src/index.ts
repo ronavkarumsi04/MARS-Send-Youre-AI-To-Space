@@ -5,5 +5,6 @@ export * from "./report";
 export * from "./runner";
 export * from "./scoring";
 export * from "./service";
+export * from "./serving-arm";
 export * from "./specialist-comparison";
 export * from "./trajectory";
