@@ -4,7 +4,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ArtifactRef, Budget, RequestContext } from "@mars/contracts";
-import { buildDataset, type DatasetSplit } from "@mars/datasets";
+import {
+  buildDataset,
+  type DatasetSplit,
+  findHeldOutLeakage,
+  requestSha256,
+} from "@mars/datasets";
 import {
   createHmacEvidenceSigner,
   DatasetLineageSchema,
@@ -572,6 +577,49 @@ describe("training job lifecycle (fake worker)", () => {
     expect(lineage.training.job_id).toBe(job.job_id);
     expect(lineage.provenance.synthetic_fixture).toBe(true);
     expect(lineage.attestation.key_id).toBe("test-key");
+    const userTurns = [bytes.train, bytes.validation].flatMap((file) =>
+      new TextDecoder()
+        .decode(file)
+        .trim()
+        .split("\n")
+        .flatMap(
+          (line) =>
+            (
+              JSON.parse(line) as {
+                messages: { role: string; content: string }[];
+              }
+            ).messages,
+        )
+        .filter((message) => message.role === "user")
+        .map((message) => message.content),
+    );
+    expect(userTurns.length).toBeGreaterThan(0);
+    expect(lineage.request_sha256s).toEqual(
+      [...new Set(userTurns.map(requestSha256))].sort(),
+    );
+    // A held-out task restating a training request under another task id is
+    // caught by the lineage digests alone.
+    expect(
+      findHeldOutLeakage(
+        {
+          schema: "mars.held-out-split/v1",
+          split_id: "heldout",
+          tasks: [
+            {
+              task_id: "heldout-task-1",
+              domain: "code/typescript",
+              role: "worker",
+              complexity: "light",
+              request: `  ${userTurns[0]?.toUpperCase()}  `,
+            },
+          ],
+        },
+        {
+          task_ids: [...lineage.train_task_ids, ...lineage.validation_task_ids],
+          request_sha256s: lineage.request_sha256s ?? [],
+        },
+      ),
+    ).toEqual([{ task_id: "heldout-task-1", reason: "training-request" }]);
   });
 
   test("the @mars/specialists registry accepts the adapter and lineage, and flags leakage", async () => {

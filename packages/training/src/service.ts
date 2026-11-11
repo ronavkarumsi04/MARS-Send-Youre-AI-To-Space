@@ -13,6 +13,7 @@ import {
   type TrainingService,
   type VersionRef,
 } from "@mars/contracts";
+import { requestSha256 } from "@mars/datasets";
 import { type DatasetLineage, DatasetLineageSchema } from "@mars/specialists";
 import { canonicalBytes, canonicalJson, scopeKey, sha256 } from "./canonical";
 import {
@@ -31,6 +32,7 @@ import { defaultHfCacheDir, TRAINING_PINS } from "./pins";
 import {
   ADAPTER_BUNDLE_SCHEMA,
   type AdapterBundle,
+  ConversationalExampleSchema,
   DatasetManifestSplitsSchema,
   type JobRecord,
   type PinnedHfRef,
@@ -565,6 +567,7 @@ export function createTrainingService(
     job: JobRecord,
     checked: {
       manifest: TrainingManifest;
+      datasets: NonNullable<Preflight["datasets"]>;
       chatTemplate: Uint8Array;
       tokenizerFiles: Record<string, string>;
     },
@@ -638,6 +641,10 @@ export function createTrainingService(
     );
     const train = datasetFor(manifest, "train");
     const validation = datasetFor(manifest, "validation");
+    const requestSha256s = trainingRequestSha256s([
+      checked.datasets.train,
+      checked.datasets.validation,
+    ]);
     const unsigned: UnsignedLineage = {
       schema: "mars.specialist-dataset-lineage/v1",
       lineage_id: `lineage-${job.job_id}`,
@@ -662,6 +669,7 @@ export function createTrainingService(
       ],
       train_task_ids: train.task_ids,
       validation_task_ids: validation.task_ids,
+      ...(requestSha256s.length > 0 ? { request_sha256s: requestSha256s } : {}),
       provenance: { synthetic_fixture: manifest.provenance.synthetic_fixture },
     };
     const lineageDoc = DatasetLineageSchema.parse(
@@ -838,6 +846,28 @@ export function createTrainingService(
 }
 
 /** Minimal safetensors sanity check: 8-byte LE header length followed by a JSON header. */
+/**
+ * Normalized-request digests (`@mars/datasets` `requestSha256`) of every user
+ * turn in the train and validation examples, sorted. Evaluation compares them
+ * with held-out requests; an example without user turns contributes none, and
+ * a lineage with none at all is refused there as unverifiable.
+ */
+function trainingRequestSha256s(datasets: readonly ParsedDataset[]): string[] {
+  const digests = new Set<string>();
+  for (const dataset of datasets) {
+    for (const example of dataset.examples) {
+      const { messages } = ConversationalExampleSchema.parse(
+        JSON.parse(example),
+      );
+      for (const message of messages) {
+        if (message.role === "user")
+          digests.add(requestSha256(message.content));
+      }
+    }
+  }
+  return [...digests].sort();
+}
+
 function assertSafetensors(bytes: Uint8Array): void {
   if (bytes.byteLength < 8)
     throw new TrainingError("worker_protocol", "adapter weights too short");
