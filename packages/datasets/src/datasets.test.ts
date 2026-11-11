@@ -9,6 +9,11 @@ import {
   buildDataset,
   collectVerifiedExamples,
   DatasetError,
+  findHeldOutLeakage,
+  HELD_OUT_SPLIT_SCHEMA,
+  type HeldOutSplit,
+  parseHeldOutSplit,
+  requestSha256,
   type VerifiedExample,
 } from "./index";
 
@@ -292,4 +297,49 @@ test("the held-out digest covers request texts inferred from held-out examples",
     }).manifest.held_out[0]?.sha256;
   expect(digest("Fix h")).not.toBe(digest("Fix something else"));
   expect(digest("Fix h")).toBe(digest("  FIX   h "));
+});
+
+test("held-out request digests catch normalized request overlap across task ids", () => {
+  const split: HeldOutSplit = {
+    schema: HELD_OUT_SPLIT_SCHEMA,
+    split_id: "heldout-digest-test",
+    tasks: [
+      {
+        task_id: "heldout-task",
+        domain: "coding/mechanical-edit",
+        role: "worker" as const,
+        complexity: "medium" as const,
+        request: "  rename the widget ",
+      },
+    ],
+  };
+  expect(
+    findHeldOutLeakage(split, {
+      task_ids: ["different-training-task"],
+      request_sha256s: [requestSha256("Rename  the Widget")],
+    }),
+  ).toEqual([{ task_id: "heldout-task", reason: "training-request" }]);
+  expect(
+    findHeldOutLeakage(split, {
+      task_ids: [],
+      request_sha256s: [requestSha256("unrelated request")],
+    }),
+  ).toEqual([]);
+});
+
+test("held-out tasks must carry request text for cross-id exclusion", () => {
+  expect(() =>
+    parseHeldOutSplit({
+      schema: HELD_OUT_SPLIT_SCHEMA,
+      split_id: "heldout-no-request",
+      tasks: [
+        {
+          task_id: "heldout-task",
+          domain: "coding/mechanical-edit",
+          role: "worker",
+          complexity: "medium",
+        },
+      ],
+    }),
+  ).toThrow();
 });

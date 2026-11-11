@@ -279,6 +279,11 @@ export const DatasetLineageSchema = z
       .min(1),
     train_task_ids: uniqueArray(IdSchema),
     validation_task_ids: uniqueArray(IdSchema),
+    /** sha256 of each normalized (`@mars/datasets` `normalizeRequest`) train/validation request. Absent on lineages written before this field. */
+    request_sha256s: uniqueArray(
+      z.string().regex(/^[a-f0-9]{64}$/),
+      1,
+    ).optional(),
     provenance: z.object({ synthetic_fixture: z.boolean() }).strict(),
     attestation: AttestationSchema,
   })

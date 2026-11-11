@@ -482,6 +482,7 @@ export async function makeLineageArtifact(
     validationTaskIds?: string[];
     sourceScopes?: Scope[];
     datasetSha256?: string;
+    requestSha256s?: string[];
   } = {},
 ): Promise<ArtifactRef> {
   const signer = createHmacEvidenceSigner({
@@ -510,6 +511,9 @@ export async function makeLineageArtifact(
     source_scopes: options.sourceScopes ?? [scope],
     train_task_ids: options.trainTaskIds ?? ["training-task-1"],
     validation_task_ids: options.validationTaskIds ?? ["validation-task-1"],
+    ...(options.requestSha256s !== undefined
+      ? { request_sha256s: options.requestSha256s }
+      : {}),
     provenance: { synthetic_fixture: true },
   });
   const bytes = new TextEncoder().encode(canonicalJson(lineage));

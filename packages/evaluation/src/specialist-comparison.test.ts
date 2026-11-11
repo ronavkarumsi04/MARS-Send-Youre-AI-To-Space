@@ -9,6 +9,7 @@ import {
   HELD_OUT_SPLIT_SCHEMA,
   type HeldOutSplit,
   heldOutSplitSha256,
+  requestSha256,
 } from "../../datasets/src/index";
 import {
   type SpecialistRegistry,
@@ -50,15 +51,40 @@ const split: HeldOutSplit = {
   schema: HELD_OUT_SPLIT_SCHEMA,
   split_id: "m7-heldout",
   tasks: [
-    { task_id: "ho-1", domain: DOMAIN, role: "worker", complexity: "medium" },
-    { task_id: "ho-2", domain: DOMAIN, role: "worker", complexity: "medium" },
-    { task_id: "ho-3", domain: DOMAIN, role: "worker", complexity: "medium" },
-    { task_id: "ho-4", domain: DOMAIN, role: "worker", complexity: "medium" },
+    {
+      task_id: "ho-1",
+      domain: DOMAIN,
+      role: "worker",
+      complexity: "medium",
+      request: "held-out request ho-1",
+    },
+    {
+      task_id: "ho-2",
+      domain: DOMAIN,
+      role: "worker",
+      complexity: "medium",
+      request: "held-out request ho-2",
+    },
+    {
+      task_id: "ho-3",
+      domain: DOMAIN,
+      role: "worker",
+      complexity: "medium",
+      request: "held-out request ho-3",
+    },
+    {
+      task_id: "ho-4",
+      domain: DOMAIN,
+      role: "worker",
+      complexity: "medium",
+      request: "held-out request ho-4",
+    },
     {
       task_id: "ho-other",
       domain: "docs/other",
       role: "worker",
       complexity: "medium",
+      request: "held-out request ho-other",
     },
   ],
 };
@@ -93,12 +119,12 @@ function evidenceArtifacts(memory: MemoryArtifacts) {
 async function setup(
   options: {
     trainTaskIds?: string[];
-    trainRequests?: string[];
+    trainRequestSha256s?: string[];
     producerId?: string;
     datasetSha256?: string;
     adapterBytes?: Uint8Array;
     heldOutSplit?: HeldOutSplit;
-    omitTrainingRequests?: boolean;
+    omitRequestSha256s?: boolean;
     pass?: Parameters<typeof createFixtureArmEvaluator>[0] extends infer O
       ? O extends { pass?: infer P }
         ? P
@@ -141,12 +167,6 @@ async function setup(
       },
       heldOut: createHeldOutGuard(options.heldOutSplit ?? split),
       evaluator,
-      ...(!options.omitTrainingRequests
-        ? {
-            trainingRequests: async () =>
-              options.trainRequests ?? ["unrelated training request"],
-          }
-        : {}),
       signer: createHmacReportSigner({
         key_id: "test-key",
         secret: EVIDENCE_SECRET,
@@ -161,6 +181,13 @@ async function setup(
   const lineage = await makeLineageArtifact(memory, context.scope, {
     trainTaskIds: options.trainTaskIds ?? ["train-1", "train-2"],
     validationTaskIds: ["validation-1"],
+    ...(!options.omitRequestSha256s
+      ? {
+          requestSha256s: options.trainRequestSha256s ?? [
+            requestSha256("unrelated training request"),
+          ],
+        }
+      : {}),
     ...(options.producerId ? { producerId: options.producerId } : {}),
     ...(options.datasetSha256 ? { datasetSha256: options.datasetSha256 } : {}),
   });
@@ -396,7 +423,7 @@ test("held-out request text overlap is refused across task ids", async () => {
     ],
   };
   const leaked = await setup({
-    trainRequests: [request],
+    trainRequestSha256s: [requestSha256(request)],
     heldOutSplit,
   });
   const error = await leaked.registry
@@ -412,11 +439,18 @@ test("held-out request text overlap is refused across task ids", async () => {
   ).toEqual([]);
 });
 
-test("lineage without a training-request source is refused before evaluation", async () => {
-  const unverifiable = await setup({ omitTrainingRequests: true });
-  await expect(
-    unverifiable.registry.requestEvaluation(context, "specialist-1", "1"),
-  ).rejects.toMatchObject({ code: "lineage_requests_unverifiable" });
+test("lineage without request digests is refused before evaluation", async () => {
+  const unverifiable = await setup({ omitRequestSha256s: true });
+  const error = await unverifiable.registry
+    .requestEvaluation(context, "specialist-1", "1")
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(SpecialistComparisonError);
+  expect((error as SpecialistComparisonError).code).toBe(
+    "lineage_requests_unverifiable",
+  );
+  expect((error as Error).message).toContain(
+    "the dataset lineage carries no request digests",
+  );
   expect(unverifiable.evaluator.calls).toHaveLength(0);
   expect(unverifiable.recorded).toHaveLength(0);
   expect(
@@ -483,7 +517,6 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
         subjectResolverFromRegistry(projectWide).resolve(context, id, revision),
     },
     heldOut: createHeldOutGuard(split),
-    trainingRequests: async () => ["unrelated training request"],
     evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
     signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
     verdicts: { record: async () => {} },
@@ -525,7 +558,6 @@ test("budget overruns fail the job; restarted services mark orphaned jobs failed
         subjectResolverFromRegistry(projectWide).resolve(ctx, id, revision),
     },
     heldOut: createHeldOutGuard(split),
-    trainingRequests: async () => ["unrelated training request"],
     evaluator: {
       ...createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
       evaluate: ({ signal }) =>
@@ -562,7 +594,6 @@ function standaloneService(
     artifacts: evidenceArtifacts(memory),
     subjects: subjectResolverFromRegistry(registry),
     heldOut: createHeldOutGuard(split),
-    trainingRequests: async () => ["unrelated training request"],
     evaluator: createFixtureArmEvaluator({ evaluator_id: "eval-1" }),
     signer: createHmacReportSigner({ key_id: "k", secret: EVIDENCE_SECRET }),
     verdicts: { record: async () => {} },
