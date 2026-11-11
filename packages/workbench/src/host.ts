@@ -179,6 +179,9 @@ import {
 } from "./skills-operator";
 import {
   type FrozenRouting,
+  pinInvalidation,
+  type ResumeRefusal,
+  type ResumeRoutingOutcome,
   type RoutedTaskStep,
   routeLaunch,
   routeTaskStep,
@@ -2072,9 +2075,14 @@ export async function createWorkbenchHost(
   };
   /**
    * With step routing, a resumed specialist launch re-checks its pin against
-   * durable usage and the fixed deadline. A pin that was rolled back or lost
-   * serving attestation is replaced by its fallback and the launch rewritten,
-   * so the resumed session never runs on an ineligible specialist.
+   * durable usage and the fixed deadline. A pin that is still verified keeps
+   * the launch unchanged. A pin that was rolled back or lost serving
+   * attestation resumes on its routed fallback (`fallback_specialist_revision`
+   * chain, then the base model): the launch is rewritten with the new routing
+   * and model before the task is marked running, and the saved journal is
+   * rebound to that model by the runtime. Every outcome is recorded as a
+   * `resume` routing event. A fallback never resumes on an unattested adapter
+   * and never turns a free session into a paid one.
    */
   const rerouteResume = async (
     context: RequestContext,
@@ -2086,11 +2094,14 @@ export async function createWorkbenchHost(
     const steps = specialists?.steps;
     if (!specialists || !steps || launch.routing?.outcome !== "specialist")
       return launch;
+    const pinned = launch.routing;
     const needsTools = toolsRequired(
       launch.approvals,
       Boolean(launch.collaboration),
     );
     let routed: RoutedTaskStep;
+    let outcome: ResumeRoutingOutcome;
+    let rebound: Launch | undefined;
     try {
       const usage = { tokens: 0, usd: 0 };
       let unpriced = false;
@@ -2126,24 +2137,161 @@ export async function createWorkbenchHost(
           ...(launch.deadline ? { deadline_at: launch.deadline } : {}),
         },
       );
+      // A resume that routed the fallback but stayed paused already moved the
+      // step router's pin; its recorded evidence keeps the invalidation.
+      const invalidation =
+        pinInvalidation(routed.step, pinned.ref) ??
+        (pinned.ref !== null &&
+        routed.step.lost_refs.includes(pinned.ref) &&
+        routed.routing?.ref !== pinned.ref
+          ? await priorResumeInvalidation(context, task.task_id, pinned.ref)
+          : null);
+      ({ outcome, rebound } = resumeTarget(
+        launch,
+        pinned,
+        routed,
+        needsTools,
+        invalidation,
+      ));
       await options.store.appendEvent(
         context,
         task.task_id,
-        workbenchEvent(routingStepEvidence(routed.step, { phase: "resume" })),
+        workbenchEvent(
+          routingStepEvidence(routed.step, {
+            phase: "resume",
+            resume: outcome,
+          }),
+        ),
       );
     } catch {
       throw new WorkbenchError("unavailable");
     }
-    const routing = routed.routing;
-    // The saved journal is bound to its model, so a lost pin or a changed
-    // serving binding cannot continue this session: stay paused, fail closed.
-    if (
-      !routing ||
-      routing.ref !== launch.routing.ref ||
-      routing.model_id !== launch.routing.model_id
-    )
+    if (outcome.action === "refused")
+      throw new WorkbenchError(
+        outcome.reason === "fallback_model_unavailable"
+          ? "model_unavailable"
+          : "unavailable",
+      );
+    if (!rebound) return launch;
+    try {
+      await rewriteLaunch(launchLocation, task, rebound);
+    } catch {
       throw new WorkbenchError("unavailable");
-    return launch;
+    }
+    return rebound;
+  };
+  const priorResumeInvalidation = async (
+    context: RequestContext,
+    taskId: string,
+    ref: string,
+  ): Promise<string | null> => {
+    for await (const event of options.store.events(context, taskId)) {
+      if (
+        event.event_type !== "tool.completed" ||
+        event.producer !== WORKBENCH_PRODUCER
+      )
+        continue;
+      const bytes = await options.store.artifacts.get(context, event.payload);
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        continue;
+      const record = parsed as Record<string, unknown>;
+      if (record.operation !== "routing" || record.phase !== "resume") continue;
+      const reason = pinInvalidation(record, ref);
+      if (reason) return reason;
+    }
+    return null;
+  };
+  /** Decides whether a re-routed resume keeps its pin, falls back or stays paused. */
+  const resumeTarget = (
+    launch: Launch,
+    pinned: FrozenRouting,
+    routed: RoutedTaskStep,
+    needsTools: boolean,
+    invalidation: string | null,
+  ): { outcome: ResumeRoutingOutcome; rebound?: Launch } => {
+    const routing = routed.routing;
+    const selected = routed.step.selected;
+    const base = {
+      from_ref: pinned.ref,
+      to_ref: routing?.ref ?? null,
+      from_model_id: launch.model_id,
+    };
+    const refuse = (reason: ResumeRefusal) => ({
+      outcome: {
+        ...base,
+        action: "refused" as const,
+        reason,
+        to_model_id: null,
+      },
+    });
+    if (routed.step.mode === "budget_exhausted")
+      return refuse("budget_exhausted");
+    if (!routing || !selected || routing.outcome === "unavailable")
+      return refuse("routing_unavailable");
+    // Defense in depth: the step router already refuses these.
+    if (
+      selected.adapter_sha256 !== null &&
+      selected.serving_attestation !== "verified"
+    )
+      return refuse("unattested_adapter_refused");
+    if (routing.ref === pinned.ref) {
+      // The saved journal is bound to its model: a changed serving binding
+      // for the same pin cannot continue this session.
+      if (routing.model_id !== pinned.model_id)
+        return refuse("pinned_binding_changed");
+      return {
+        outcome: {
+          ...base,
+          action: "pinned",
+          reason: null,
+          to_model_id: launch.model_id,
+        },
+      };
+    }
+    // Only a pin that is no longer a verified target moves; one dropped for
+    // budget or capability keeps the session paused, as before.
+    if (!invalidation) return refuse("pinned_not_invalidated");
+    // A baseline fallback has no pinned model and uses the free-only default.
+    let model: ReturnType<typeof selectModel>;
+    try {
+      model = selectModel(routing.model_id ?? undefined, needsTools);
+    } catch {
+      return refuse("fallback_model_unavailable");
+    }
+    const launchedFree =
+      (launch.model_classification ?? classifyModel(launch.model_id))?.free ===
+      true;
+    if (
+      !model.pricing.free &&
+      (launchedFree || options.specialists?.paid_consent !== true)
+    )
+      return refuse("fallback_paid_refused");
+    const rebind = {
+      from_model_id: launch.model_id,
+      to_model_id: model.id,
+      from_ref: pinned.ref,
+      to_ref: routing.ref,
+      decision_id: routing.decision_id,
+      step_reasons: routed.step.step_reasons,
+    };
+    const history = launch.model_rebinds ?? [];
+    if (history.length >= 32) return refuse("rebind_limit_reached");
+    return {
+      outcome: {
+        ...base,
+        action: "fallback",
+        reason: invalidation,
+        to_model_id: model.id,
+      },
+      rebound: {
+        ...launch,
+        model_id: model.id,
+        model_classification: classifyModel(model.id) ?? undefined,
+        routing,
+        model_rebinds: [...history, rebind],
+      },
+    };
   };
   const freezeLaunchMemory = async (
     context: RequestContext,
@@ -2983,6 +3131,11 @@ export async function createWorkbenchHost(
         savedLaunch,
         instruction,
       );
+      // A rebound launch carries the routed fallback's specialist revision
+      // (null for the base model); the task records it as it resumes.
+      const specialistRevision = launch.model_rebinds
+        ? (launch.routing?.specialist_revision ?? null)
+        : task.specialist_revision;
       selectModel(
         launch.model_id,
         toolsRequired(launch.approvals, Boolean(launch.collaboration)),
@@ -2995,7 +3148,14 @@ export async function createWorkbenchHost(
         throw new WorkbenchError("conflict");
       const cwd = await options.workspace.cwd(context, workspace);
       if (cwd !== launch.cwd) throw new WorkbenchError("conflict");
-      const running = await options.store.resume(context, taskId, revision);
+      const running = await options.store.resume(
+        context,
+        taskId,
+        revision,
+        ...(specialistRevision !== task.specialist_revision
+          ? [{ specialist_revision: specialistRevision }]
+          : []),
+      );
       let runtime: RuntimeSession | undefined;
       try {
         runtime = await runtimeFactory({
@@ -3007,6 +3167,13 @@ export async function createWorkbenchHost(
           sessionFile: binding.session_file,
           registry: options.registry,
           modelId: launch.model_id,
+          ...(launch.model_rebinds
+            ? {
+                rebindFromModelIds: launch.model_rebinds.map(
+                  (item) => item.from_model_id,
+                ),
+              }
+            : {}),
           approvals: launch.approvals,
           tools: toolsFor(
             workspace,

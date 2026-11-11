@@ -107,6 +107,14 @@ export interface TaskPatch {
   specialist_revision?: string | null;
 }
 
+/**
+ * Optional fields a resume changes in the same revision step that marks the
+ * task running (a resumed specialist session that fell back to another target).
+ */
+export interface TaskResumePatch {
+  specialist_revision?: string | null;
+}
+
 export interface UpstreamSessionBinding {
   runtime: "oh-my-pi";
   package_version: string;
@@ -134,6 +142,12 @@ export interface DurableTaskStore extends TaskService {
     options?: TaskCreateOptions,
   ): Promise<Task>;
   list(context: RequestContext): Promise<Task[]>;
+  resume(
+    context: RequestContext,
+    taskId: string,
+    expectedRevision: number,
+    patch?: TaskResumePatch,
+  ): Promise<Task>;
   update(
     context: RequestContext,
     taskId: string,
@@ -332,6 +346,19 @@ const invalidInput = (message: string): TaskStoreError =>
 
 function fail(code: TaskStoreErrorCode, message: string): never {
   throw new TaskStoreError(code, message);
+}
+
+function resumePatch(input: unknown): TaskResumePatch | undefined {
+  if (input === undefined) return undefined;
+  if (input === null || typeof input !== "object" || Array.isArray(input))
+    throw invalidInput("Invalid resume patch");
+  const keys = Object.keys(input);
+  if (keys.length === 0 || keys.some((key) => key !== "specialist_revision"))
+    throw invalidInput("Resume patch must contain supported fields");
+  const value = (input as Record<string, unknown>).specialist_revision;
+  if (value !== null && (typeof value !== "string" || value.length === 0))
+    throw invalidInput("Invalid specialist revision");
+  return { specialist_revision: value as string | null };
 }
 
 export function canonicalJson(value: unknown): string {
@@ -1826,12 +1853,15 @@ export async function createTaskStore(
         .all(key) as TaskRow[];
       return rows.map(verifyTaskRow);
     },
-    async resume(context, taskId, expectedRevision) {
+    async resume(context, taskId, expectedRevision, patchInput) {
       const { context: parsedContext, scopeKey: key } = contextFor(context);
       assertTaskId(taskId);
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
         throw invalidInput("Invalid expected revision");
-      const inputHash = idemKeyInput({ expectedRevision });
+      const patch = resumePatch(patchInput);
+      const inputHash = idemKeyInput(
+        patch ? { expectedRevision, patch } : { expectedRevision },
+      );
       const snapshot = readTask(key, taskId);
       const payload = {
         change: "status",
@@ -1839,6 +1869,14 @@ export async function createTaskStore(
         to: "running",
         from_revision: snapshot.revision,
         to_revision: snapshot.revision + 1,
+        ...(patch && "specialist_revision" in patch
+          ? {
+              specialist_revision: {
+                from: snapshot.specialist_revision,
+                to: patch.specialist_revision ?? null,
+              },
+            }
+          : {}),
       };
       const prepared = preparePayloadArtifact(snapshot.scope, payload);
       const transaction = db.transaction(() => {
@@ -1857,6 +1895,9 @@ export async function createTaskStore(
           fail("invalid_transition", "Only paused tasks can be resumed");
         const updated = TaskSchema.parse({
           ...current,
+          ...(patch && "specialist_revision" in patch
+            ? { specialist_revision: patch.specialist_revision ?? null }
+            : {}),
           status: "running",
           revision: current.revision + 1,
         });
