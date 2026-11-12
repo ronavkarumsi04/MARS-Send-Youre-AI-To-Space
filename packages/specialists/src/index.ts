@@ -2,6 +2,7 @@ export * from "./canonical";
 export * from "./compat";
 export * from "./errors";
 export * from "./evidence";
+export * from "./files";
 export * from "./registry";
 export * from "./routing";
 export * from "./schemas";

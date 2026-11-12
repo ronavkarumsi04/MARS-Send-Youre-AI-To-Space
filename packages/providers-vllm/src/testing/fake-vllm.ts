@@ -35,6 +35,7 @@ export interface FakeVllmOptions
   extends Partial<Omit<FakeVllmState, "adapters">> {
   adapters?: Record<string, string>;
   apiKey?: string;
+  completions?: (body: unknown) => string;
 }
 
 const CONTROL_PATHS = new Set([
@@ -123,6 +124,29 @@ export function startFakeVllm(options: FakeVllmOptions = {}): FakeVllm {
       const lora =
         url.pathname === "/v1/load_lora_adapter" ||
         url.pathname === "/v1/unload_lora_adapter";
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/chat/completions" &&
+        options.completions
+      ) {
+        return Response.json({
+          id: "fake-completion",
+          object: "chat.completion",
+          created: 0,
+          model: (body as { model?: string } | null)?.model ?? state.baseName,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: options.completions(body),
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      }
       if (request.method === "POST" && lora) {
         if (!state.runtimeLoraUpdating)
           return Response.json({ detail: "Not Found" }, { status: 404 });

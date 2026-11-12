@@ -20,6 +20,7 @@
     "@mars/providers-vllm": "workspace:*",
     "@mars/research-worker": "workspace:*",
     "@mars/skills": "workspace:*",
+    "@mars/specialists": "workspace:*",
     "@mars/tasks": "workspace:*",
     "@mars/team": "workspace:*",
     "@mars/ui-core": "workspace:*",

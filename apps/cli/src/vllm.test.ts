@@ -1,14 +1,34 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadModelRegistry } from "@mars/providers";
 import {
+  createVllmServingAttestor,
   type FakeVllm,
   startFakeVllm,
+  VllmClient,
   type VllmServingProfile,
 } from "@mars/providers-vllm";
+import {
+  createFileArtifactStore,
+  createSpecialistRegistry,
+} from "@mars/specialists";
+import {
+  artifactRef,
+  baseModel,
+  context,
+  EVIDENCE_SECRET,
+  evidenceVerifier,
+  fakeCatalog,
+  fakeModel,
+  MemoryArtifacts,
+  makeBaseline,
+  makeLineageArtifact,
+  makeSpecialistFixture,
+  tokenizer,
+} from "../../../packages/specialists/tests/helpers";
 import { ServeUsageError } from "./cli-errors";
 import { attachVllm, splitVllmServeArgs, vllmDoctorReport } from "./vllm";
 
@@ -217,6 +237,294 @@ async function readFirstLine(
 }
 
 describe("cli e2e", () => {
+  test("mars serve specialists routes an attested adapter and fails closed after unload", async () => {
+    const dir = await root();
+    const source = join(dir, "source");
+    const state = join(dir, "state");
+    const home = join(dir, "models");
+    await mkdir(source);
+    await mkdir(home);
+    // The only default target is loopback vLLM; the child inherits no provider keys.
+    await writeFile(
+      join(home, "models.json"),
+      JSON.stringify({
+        version: 1,
+        providers: [],
+        models: [],
+        routes: { default: ["vllm/mars-base"] },
+        policy: { allowPaid: false },
+      }),
+    );
+    const server = startFakeVllm({
+      adapters: { [ADAPTER]: "/adapter" },
+      completions: () => "done",
+    });
+    const chatTemplate = artifactRef(
+      "template",
+      new TextEncoder().encode("tpl"),
+    );
+    const servingProfile = {
+      ...profile,
+      base_model: baseModel,
+      tokenizer,
+      max_lora_rank: 16,
+    };
+    const profilePath = join(dir, "profile.json");
+    await writeFile(profilePath, JSON.stringify(servingProfile));
+    const trustPath = join(dir, "trust.json");
+    await writeFile(
+      trustPath,
+      JSON.stringify({
+        schema: "mars.specialist-trust/v1",
+        authorities: [
+          {
+            key_id: "test-key",
+            authority_id: "test",
+            secret_env: "TEST_SPECIALIST_SECRET",
+            owner_ids: [context.scope.owner_id],
+            evaluator_ids: ["eval-1"],
+          },
+        ],
+      }),
+    );
+    const registryDir = join(dir, "registry");
+    const artifacts = createFileArtifactStore(join(registryDir, "artifacts"));
+    const memory = new MemoryArtifacts();
+    const lineage = await makeLineageArtifact(memory, context.scope, {
+      synthetic: false,
+    });
+    const fixture = await makeSpecialistFixture(memory, {
+      synthetic: false,
+      adapter: { ...artifactRef("adapter"), sha256: ADAPTER },
+      chatTemplate,
+      adapterFormat: "peft-lora",
+      adapterSpec: {
+        format: "peft-lora",
+        base_model: baseModel,
+        tokenizer,
+        chat_template_sha256: chatTemplate.sha256,
+      },
+      datasetLineage: lineage,
+      serving: [
+        {
+          model_id: `vllm/${ADAPTER}`,
+          provider_id: "vllm",
+          provider_model: ADAPTER,
+          adapter_format: "peft-lora",
+        },
+      ],
+    });
+    for (const ref of [fixture.registration.evaluation, lineage]) {
+      await artifacts.put(
+        context,
+        await memory.get(context, ref),
+        ref.media_type,
+      );
+    }
+    const registry = createSpecialistRegistry({
+      rootDir: registryDir,
+      artifacts,
+      servingAttestor: createVllmServingAttestor({
+        client: new VllmClient({ url: server.url }),
+        profile: servingProfile,
+      }),
+      catalog: fakeCatalog({
+        models: [
+          fakeModel({
+            id: "vllm/mars-base",
+            providerId: "vllm",
+            model: "mars-base",
+          }),
+          fakeModel({
+            id: `vllm/${ADAPTER}`,
+            providerId: "vllm",
+            model: ADAPTER,
+          }),
+        ],
+      }),
+      evidenceVerifier: evidenceVerifier(),
+    });
+    await registry.registerBaseline(
+      context,
+      makeBaseline(context.scope, {
+        model_id: "vllm/mars-base",
+        provider_id: "vllm",
+        provider_model: "mars-base",
+      }),
+    );
+    await registry.registerSpecialist(context, fixture.registration);
+    await registry.promote(context, "specialist-1", "1", null);
+    registry.close();
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        entrypoint,
+        "serve",
+        "--source",
+        source,
+        "--state",
+        state,
+        "--port",
+        "0",
+        "--owner",
+        context.scope.owner_id,
+        "--project",
+        context.scope.project_id,
+        "--vllm",
+        server.url,
+        "--vllm-profile",
+        profilePath,
+        "--specialists-registry",
+        registryDir,
+        "--specialists-trust",
+        trustPath,
+        "--specialists-domain",
+        "coding/mechanical-edit",
+      ],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          MARS_HOME: home,
+          TEST_SPECIALIST_SECRET: new TextDecoder().decode(EVIDENCE_SECRET),
+        },
+      },
+    );
+    try {
+      const report = JSON.parse(await readFirstLine(child));
+      expect(report.specialists).toEqual({
+        domain: "coding/mechanical-edit",
+        complexity: "medium",
+        serving_attestation: "vllm",
+        step_routing: true,
+      });
+      const connection = JSON.parse(
+        await readFile(report.connection_file, "utf8"),
+      );
+      const rpc = async (method: string, params: unknown) => {
+        const response = await fetch(`${report.url}/v1/rpc`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${connection.token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ method, context, params }),
+        });
+        return response.json();
+      };
+      for (const taskId of ["loaded", "unloaded", "off-pin"]) {
+        const loaded = taskId === "loaded";
+        if (taskId === "unloaded") server.state.adapters.clear();
+        if (taskId === "off-pin") {
+          server.state.adapters.set(ADAPTER, "/adapter");
+          server.state.version = "0.31.0";
+        }
+        await rpc("tasks.create", {
+          task: {
+            schema_version: 1,
+            task_id: taskId,
+            session_id: `session-${taskId}`,
+            scope: context.scope,
+            revision: 0,
+            request: "Say done",
+            acceptance_criteria: ["done"],
+            budget: {
+              max_tokens: 64000,
+              max_usd: 1,
+              max_duration_ms: 10000,
+              max_depth: 1,
+              max_concurrency: 1,
+            },
+            status: "pending",
+            specialist_revision: null,
+            artifacts: [],
+          },
+        });
+        await rpc("tasks.start", {
+          task_id: taskId,
+          expected_revision: 0,
+          approvals: { read: false, write: false, execute: false },
+        });
+        const events = await rpc("tasks.events", { task_id: taskId });
+        const payloads = [];
+        for (const event of events.result) {
+          if (
+            event.event_type !== "tool.completed" ||
+            event.producer !== "@mars/workbench"
+          )
+            continue;
+          const artifact = await rpc("tasks.artifact", {
+            task_id: taskId,
+            artifact: event.payload,
+          });
+          payloads.push(
+            JSON.parse(
+              Buffer.from(artifact.result.data_base64, "base64").toString(
+                "utf8",
+              ),
+            ),
+          );
+        }
+        const serialized = JSON.stringify(payloads);
+        expect(serialized).toContain('"operation":"routing"');
+        expect(serialized).toContain(
+          loaded
+            ? '"ref":"specialist:specialist-1@1"'
+            : '"ref":"baseline:baseline@1"',
+        );
+        if (loaded) {
+          expect(serialized).toContain('"status":"routed"');
+          const launch = JSON.parse(
+            await readFile(
+              join(
+                state,
+                "sessions",
+                createHash("sha256")
+                  .update(
+                    JSON.stringify([
+                      context.scope.owner_id,
+                      context.scope.project_id,
+                      null,
+                      taskId,
+                    ]),
+                  )
+                  .digest("hex"),
+                "launch.json",
+              ),
+              "utf8",
+            ),
+          );
+          expect(launch.model_id).toBe(`vllm/${ADAPTER}`);
+        } else {
+          expect(serialized).toContain(
+            taskId === "off-pin"
+              ? "serving_unattested"
+              : "serving_adapter_not_loaded",
+          );
+          expect(
+            payloads
+              .filter((payload) => payload.operation === "routing")
+              .every((payload) => payload.ref === "baseline:baseline@1"),
+          ).toBe(true);
+        }
+        await rpc("tasks.cancel", { task_id: taskId });
+      }
+      expect(
+        server
+          .modelRequests()
+          .every(({ body }) =>
+            ["mars-base", ADAPTER].includes((body as { model: string }).model),
+          ),
+      ).toBe(true);
+    } finally {
+      child.kill("SIGTERM");
+      await child.exited;
+      await server.stop();
+    }
+  }, 60_000);
   test("mars serve --vllm attaches, reports the target and closes cleanly", async () => {
     const dir = await root();
     const source = join(dir, "source");

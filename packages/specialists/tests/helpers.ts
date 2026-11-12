@@ -483,6 +483,7 @@ export async function makeLineageArtifact(
     sourceScopes?: Scope[];
     datasetSha256?: string;
     requestSha256s?: string[];
+    synthetic?: boolean;
   } = {},
 ): Promise<ArtifactRef> {
   const signer = createHmacEvidenceSigner({
@@ -514,7 +515,7 @@ export async function makeLineageArtifact(
     ...(options.requestSha256s !== undefined
       ? { request_sha256s: options.requestSha256s }
       : {}),
-    provenance: { synthetic_fixture: true },
+    provenance: { synthetic_fixture: options.synthetic ?? true },
   });
   const bytes = new TextEncoder().encode(canonicalJson(lineage));
   const ref = artifactRef("synthetic-lineage-artifact", bytes);
