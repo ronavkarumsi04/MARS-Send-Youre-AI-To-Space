@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,63 @@ import {
   tokenizer,
 } from "../../../packages/specialists/tests/helpers";
 import { runSpecialistsEvaluate } from "./specialists-eval";
+
+test("remote serving is refused before sending the model key", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-eval-transport-"));
+  const file = join(root, "heldout.json");
+  await writeFile(
+    file,
+    JSON.stringify({
+      schema: HELD_OUT_SPLIT_SCHEMA,
+      split_id: "transport",
+      tasks: [
+        {
+          task_id: "heldout",
+          domain: "coding/edit",
+          role: "worker",
+          complexity: "medium",
+          request: "question",
+        },
+      ],
+    }),
+  );
+  const fetcher = spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({ data: [] }),
+  );
+  try {
+    for (const serving of [
+      "http://remote.example",
+      "https://remote.example",
+      "http://user:password@127.0.0.1:8000",
+      "http://127.0.0.1:8000/private?query=1",
+    ]) {
+      await expect(
+        runSpecialistsEvaluate(
+          [
+            "--specialist",
+            "s@1",
+            "--held-out",
+            file,
+            "--model-key-env",
+            "MODEL_KEY",
+            "--serving",
+            serving,
+          ],
+          { env: { MODEL_KEY: "test-only" } },
+        ),
+      ).rejects.toMatchObject({ code: "serving_missing" });
+    }
+    expect(
+      fetcher.mock.calls.filter(([, init]) =>
+        new Headers(init?.headers).has("authorization"),
+      ),
+    ).toHaveLength(0);
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally {
+    fetcher.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 async function setup(
   mode: "improved" | "no_improvement" | "leakage" | "not_served",

@@ -23,6 +23,7 @@ import {
   loadVllmServingProfile,
   readVllmServing,
   VllmClient,
+  vllmOrigin,
 } from "@mars/providers-vllm";
 import {
   createFileArtifactStore,
@@ -223,14 +224,11 @@ export async function runSpecialistsEvaluate(
   }
   let servingUrl: URL;
   try {
-    servingUrl = new URL(values.serving);
-    if (servingUrl.protocol !== "http:" && servingUrl.protocol !== "https:") {
-      throw new Error("protocol");
-    }
+    servingUrl = new URL(vllmOrigin(values.serving));
   } catch {
     throw new SpecialistsEvalRefusal(
       "serving_missing",
-      "--serving must be an http(s) URL",
+      "--serving must be a loopback http(s) origin or /v1 URL without credentials, query or fragment",
     );
   }
   const probe = await (deps.probeServing
