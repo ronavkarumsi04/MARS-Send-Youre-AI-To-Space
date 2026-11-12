@@ -24,9 +24,19 @@ export interface ServingArmOptions {
   promptOptimizedSystemPrompt?: string;
 }
 
+/** The integer sampling seed forwarded for a comparison job's matched `seed` string. */
+export function servingSeed(seed: string): number {
+  if (/^\d+$/.test(seed)) {
+    const value = Number(seed);
+    if (Number.isSafeInteger(value)) return value;
+  }
+  return Number.parseInt(sha256(seed).slice(0, 8), 16);
+}
+
 /** Self-hosted inference costs zero dollars here; usage must be reported by serving.
- * The job seed is recorded by the comparison service, not forwarded by the adapter.
- * Temperature zero is shared by all arms. Without an optimized prompt both base arms coincide.
+ * Every request of every arm in a job forwards the same `servingSeed(input.seed)` at
+ * temperature zero; serving-side seeded determinism is best effort per request.
+ * Without an optimized prompt both base arms coincide.
  */
 export function createServingArmEvaluator(
   options: ServingArmOptions,
@@ -60,6 +70,7 @@ export function createServingArmEvaluator(
         capabilities: { tools: false, vision: false, contextWindow: 32768 },
         pricing: { free: true },
       };
+      const seed = servingSeed(input.seed);
       let remaining = input.budget.max_tokens;
       let requests = 0;
       const adapter = createOpenAICompatibleAdapter(
@@ -103,6 +114,7 @@ export function createServingArmEvaluator(
                 { role: "user", content: task.request ?? task.task_id },
               ],
               temperature: 0,
+              seed,
               maxTokens: Math.min(maxTokens, remaining),
             },
             model,
@@ -135,6 +147,7 @@ export function createServingArmEvaluator(
             served,
             sha256(prompt),
             maxTokens,
+            seed,
           ]),
         ),
         outcomes,

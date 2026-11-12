@@ -223,6 +223,53 @@ test("OpenAI-compatible adapter sends non-stream chat with env-based bearer auth
   }
 });
 
+test("OpenAI-compatible adapter forwards seed only when set and refuses invalid seeds before any request", async () => {
+  const bodies: string[] = [];
+  const stub = await serve(async (incoming, outgoing) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    bodies.push(Buffer.concat(chunks).toString("utf8"));
+    jsonResponse(outgoing, {
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+    });
+  });
+  try {
+    const adapter = createOpenAICompatibleAdapter(
+      provider("stub", `${stub.baseUrl}/v1`),
+    );
+    const target = model("mars-model", "stub");
+    const base = { ...request, temperature: 0, maxTokens: 8 };
+    await adapter.complete(base, target);
+    expect(bodies[0]).toBe(
+      JSON.stringify({
+        model: "mars-model",
+        messages: [{ role: "user", content: "Hello" }],
+        temperature: 0,
+        max_tokens: 8,
+      }),
+    );
+    expect(Object.hasOwn(JSON.parse(bodies[0] as string), "seed")).toBe(false);
+    await adapter.complete({ ...base, seed: 0 }, target);
+    await adapter.complete({ ...base, seed: 4294967295 }, target);
+    expect(JSON.parse(bodies[1] as string).seed).toBe(0);
+    expect(JSON.parse(bodies[2] as string).seed).toBe(4294967295);
+    for (const seed of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(adapter.complete({ ...base, seed }, target)).rejects.toThrow(
+        "Request seed must be a non-negative safe integer.",
+      );
+      const events = adapter.stream({ ...base, seed }, target);
+      await expect(
+        (async () => {
+          for await (const _event of events);
+        })(),
+      ).rejects.toThrow("Request seed must be a non-negative safe integer.");
+    }
+    expect(bodies).toHaveLength(3);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("OpenAI-compatible 200 error envelopes are mapped without echoing response text", async () => {
   const adapter = createOpenAICompatibleAdapter(
     provider("stub", "https://models.example/v1"),

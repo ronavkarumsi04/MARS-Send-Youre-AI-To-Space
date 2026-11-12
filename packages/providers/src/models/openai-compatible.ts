@@ -52,10 +52,26 @@ function openaiMessages(messages: ChatMessage[]): unknown[] {
   });
 }
 
+/** A chat request with the OpenAI-compatible sampling `seed` (non-negative safe integer). */
+export interface OpenAICompatibleChatRequest extends ChatRequest {
+  seed?: number;
+}
+
+export interface OpenAICompatibleAdapter extends ProviderAdapter {
+  complete(
+    request: OpenAICompatibleChatRequest,
+    model: ModelConfig,
+  ): Promise<ChatResponse>;
+  stream(
+    request: OpenAICompatibleChatRequest,
+    model: ModelConfig,
+  ): AsyncIterable<StreamEvent>;
+}
+
 export function createOpenAICompatibleAdapter(
   provider: ProviderConfig,
   options: AdapterOptions = {},
-): ProviderAdapter {
+): OpenAICompatibleAdapter {
   const fetcher = options.fetch ?? fetch;
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -82,10 +98,18 @@ export function createOpenAICompatibleAdapter(
   }
 
   function requestBody(
-    requestData: ChatRequest,
+    requestData: OpenAICompatibleChatRequest,
     model: ModelConfig,
     stream: boolean,
   ): Record<string, unknown> {
+    const { seed } = requestData;
+    if (seed !== undefined && (!Number.isSafeInteger(seed) || seed < 0)) {
+      throw new ProviderError(
+        provider.id,
+        "Request seed must be a non-negative safe integer.",
+        { retryable: false },
+      );
+    }
     return {
       model: model.model,
       messages: openaiMessages(requestData.messages),
@@ -107,12 +131,13 @@ export function createOpenAICompatibleAdapter(
       ...(requestData.maxTokens !== undefined
         ? { max_tokens: requestData.maxTokens }
         : {}),
+      ...(seed !== undefined ? { seed } : {}),
       ...(stream ? { stream: true } : {}),
     };
   }
 
   async function complete(
-    requestData: ChatRequest,
+    requestData: OpenAICompatibleChatRequest,
     model: ModelConfig,
   ): Promise<ChatResponse> {
     const { response, cleanup, signal } = await request(
@@ -207,7 +232,7 @@ export function createOpenAICompatibleAdapter(
   }
 
   async function* stream(
-    requestData: ChatRequest,
+    requestData: OpenAICompatibleChatRequest,
     model: ModelConfig,
   ): AsyncGenerator<StreamEvent> {
     const { response, cleanup, signal } = await request(
