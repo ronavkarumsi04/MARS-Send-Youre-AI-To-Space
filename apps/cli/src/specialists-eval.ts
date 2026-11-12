@@ -41,7 +41,7 @@ export const SPECIALISTS_EVAL_USAGE = [
   "         --model-key-env NAME --serving URL",
   "         --registry DIR --trust FILE --signing-key-id ID --vllm-profile FILE --expectations FILE --project ID",
   "         [--owner ID] [--max-tokens N] [--max-duration-ms N] [--prompt-optimized FILE]",
-  "  Trust secrets are UTF-8. Temperature is zero; the recorded job seed is not forwarded to serving.",
+  "  Trust secrets are UTF-8. Temperature is zero; the matched job seed is forwarded to serving (best effort).",
   "  Self-hosted cost is zero; without --prompt-optimized both baseline prompts are identical.",
   "  Runs the candidate adapter against base on a held-out split (mars.held-out-split/v1)",
   "  under matched budget and seed, then records the verdict with the registry.",
