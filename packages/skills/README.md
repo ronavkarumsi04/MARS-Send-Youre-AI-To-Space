@@ -54,7 +54,7 @@ Name 64 chars; 10 versions; 50 drafts; curator 14/30 days; lock 30 s; threat sca
 
 ## Not implemented
 
-Scoping by owner/project; embedding-based discovery; OpenClaw's reviewer prompt and tool surface; Hermes curator backups and run reports. Curator scheduling, operator commands and a held-out acceptance gate are implemented.
+Scoping by owner/project; semantic discovery; OpenClaw's reviewer prompt and tool surface; Hermes curator backups and run reports. Curator scheduling, operator commands and a held-out acceptance gate are implemented.
 
 ## Attribution
 
