@@ -72,12 +72,29 @@ behavior.
    the workbench routes launches and children through it and appends each
    step as an `operation: "routing"` task event (`phase` `launch`, `child` or
    `resume`). On resume of a specialist launch it re-routes with the task's
-   durable usage and deadline. The saved session journal is bound to its
-   model, so if the pin is lost or its serving binding changes, resume fails
-   closed: the task stays paused with `unavailable`, the launch is not
-   rewritten, and the routing event records the fallback target a new task
-   would use. An exhausted budget or a routing error also leaves the task
-   paused with `unavailable`.
+   durable usage (event usage, committed holds and the foreground ledger)
+   and its fixed deadline. A pin that is still verified resumes unchanged.
+   A pin that is no longer a verified target (rolled back, superseded,
+   retired, or rejected for `serving_unattested` or another `serving_*` /
+   binding reason, including an unreachable attestor) resumes on the routed
+   fallback: the `fallback_specialist_revision` chain, then the baseline,
+   which runs on the free-only default model. Before the task is marked
+   running the host rewrites the launch (`model_id`, `routing`, and an
+   append-only `model_rebinds` entry with both refs, models, the decision id
+   and `step_reasons`), the task store records the new
+   `Task.specialist_revision` (null for base) in the same revision step as
+   the resume, and the runtime rebinds the saved journal to the fallback
+   model (`mars.model_rebind` + a new `mars.binding`), keeping its
+   conversation, budget ledger and deadline. The resume routing event
+   carries a `resume` record: `action` (`pinned`, `fallback` or
+   `refused`), the invalidation or refusal `reason`, and the from/to refs
+   and models. Resume never starts an adapter without verified attestation,
+   and a free session never falls back to a paid model
+   (`fallback_paid_refused`); a paid fallback needs a paid launch and
+   `paid_consent`. A pin dropped only for budget or capability
+   (`pinned_not_invalidated`), an exhausted budget, a changed serving binding
+   for the same pin, or a routing error leaves the task paused with
+   `unavailable` and the launch unchanged.
 3. Execution passes `{ model: selected.model_id }` to the existing
    `ModelRouter` through the execution/model-bridge, keeping the selected
    model pinned for that attempt. The specialist package does not perform

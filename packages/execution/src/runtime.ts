@@ -682,6 +682,13 @@ export interface RuntimeSessionOptions {
   sessionFile?: string;
   registry: ModelProviderRegistry;
   modelId?: string;
+  /**
+   * Earlier model ids a resumed journal may still be bound to. A journal bound
+   * to one of them (same task, budget and workspace) is rebound to the
+   * selected model, keeping its conversation, budget ledger and deadline.
+   * The host passes these only after routing replaced a lost specialist pin.
+   */
+  rebindFromModelIds?: readonly string[];
   approvals: { read: boolean; write: boolean; execute: boolean };
   tools: RuntimeTools;
   recall?(query: string): Promise<string>;
@@ -779,18 +786,37 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     manager = await SessionManager.open(file, stateDir);
     const saved = manager
       .getEntries()
-      .find(
+      .filter(
         (entry) =>
           entry.type === "custom" && entry.customType === "mars.binding",
-      );
+      )
+      .at(-1);
+    const savedModel =
+      saved?.type === "custom" &&
+      typeof (saved.data as { model_id?: unknown } | undefined)?.model_id ===
+        "string"
+        ? (saved.data as { model_id: string }).model_id
+        : null;
+    const rebind =
+      savedModel !== null &&
+      savedModel !== selected.id &&
+      (options.rebindFromModelIds ?? []).includes(savedModel);
     if (
       saved?.type !== "custom" ||
-      JSON.stringify(saved.data) !== JSON.stringify(binding)
+      JSON.stringify(saved.data) !==
+        JSON.stringify(rebind ? { ...binding, model_id: savedModel } : binding)
     ) {
       await manager.close();
       throw new Error(
         "Session journal binding does not match task, model, budget or workspace.",
       );
+    }
+    if (rebind) {
+      manager.appendCustomEntry("mars.model_rebind", {
+        from_model_id: savedModel,
+        to_model_id: selected.id,
+      });
+      manager.appendCustomEntry("mars.binding", binding);
     }
   } else {
     manager = SessionManager.create(cwd, stateDir);

@@ -477,6 +477,79 @@ test("a stopped SDK session reopens its original journal and retains budget and 
   }
 }, 30000);
 
+test("a resumed journal rebinds only from an allowed earlier model", async () => {
+  const f = await fixture();
+  const task = { ...f.task, budget: { ...f.task.budget, max_usd: 1 } };
+  try {
+    const first = await f.open({
+      task,
+      modelId: "fixture/paid",
+      fetch: async () => sse({ content: "First turn" }),
+    });
+    expect((await first.run("First instruction")).status).toBe("completed");
+    const file = first.journalPath;
+    await first.dispose();
+    await expect(
+      f.open({ task, sessionFile: file, modelId: "fixture/free" }),
+    ).rejects.toThrow("binding");
+    await expect(
+      f.open({
+        task,
+        sessionFile: file,
+        modelId: "fixture/free",
+        rebindFromModelIds: ["fixture/unknown"],
+      }),
+    ).rejects.toThrow("binding");
+    await expect(
+      f.open({
+        task: { ...task, task_id: "another-task" },
+        sessionFile: file,
+        modelId: "fixture/free",
+        rebindFromModelIds: ["fixture/paid"],
+      }),
+    ).rejects.toThrow("binding");
+    const second = await f.open({
+      task,
+      sessionFile: file,
+      modelId: "fixture/free",
+      rebindFromModelIds: ["fixture/paid"],
+      fetch: async (_url, init) => {
+        const body = String(init?.body);
+        expect(body).toContain("First turn");
+        return sse({ content: "Resumed turn" });
+      },
+    });
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.modelId).toBe("fixture/free");
+    expect((await second.run("Continue")).status).toBe("completed");
+    await second.dispose();
+    const journal = await readFile(file, "utf8");
+    expect(journal).toContain("mars.model_rebind");
+    // The journal is now bound to the fallback; reopening needs no rebind.
+    const third = await f.open({
+      task,
+      sessionFile: file,
+      modelId: "fixture/free",
+      rebindFromModelIds: ["fixture/paid"],
+    });
+    await third.dispose();
+    const reopened = await f.open({
+      task,
+      sessionFile: file,
+      modelId: "fixture/free",
+    });
+    await reopened.dispose();
+    expect(
+      (await readFile(file, "utf8")).split("mars.model_rebind").length - 1,
+    ).toBe(1);
+    await expect(
+      f.open({ task, sessionFile: file, modelId: "fixture/paid" }),
+    ).rejects.toThrow("binding");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
 test("truncated streams cannot complete successfully or execute partial tool calls", async () => {
   const f = await fixture();
   let writes = 0;

@@ -42,15 +42,23 @@ import { loadModelRegistry } from "@mars/providers";
 import { ResearchError } from "@mars/research";
 import { ReviewRunner, type Turn } from "@mars/review";
 import { CommandError, type SkillOutcome, SkillStore } from "@mars/skills";
-import { type RoutingRequest, SpecialistTaskRouter } from "@mars/specialists";
+import {
+  type RoutingRequest,
+  type ServingAttestor,
+  SpecialistTaskRouter,
+} from "@mars/specialists";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
 import { WorkspaceModifiedError } from "@mars/workspaces";
 import {
+  artifactRef,
+  baseModel,
   createRegistry as createSpecialistRegistry,
   evidenceVerifier,
   MemoryArtifacts,
   makeBaseline,
+  makeLineageArtifact,
   makeSpecialistFixture,
+  tokenizer,
 } from "../../specialists/tests/helpers";
 import type { WorkbenchBrowser } from "./browser-context";
 import type {
@@ -1842,7 +1850,7 @@ test.each(["specialist", "baseline", "manual"])(
   },
 );
 
-test("step routing keeps a specialist rolled back mid-task paused on resume", async () => {
+test("step routing resumes a specialist rolled back mid-task on its base fallback", async () => {
   const f = await fixture();
   const routed = await f.routedRegistry();
   const specialists = new MemoryArtifacts();
@@ -1897,6 +1905,9 @@ test("step routing keeps a specialist rolled back mid-task paused on resume", as
   });
   const session = required(f.sessions[0]);
   expect(session.options.modelId).toBe("fixture/specialist");
+  expect((await api.inspect(context(), "task")).specialist_revision).toBe(
+    "specialist:specialist-1@2",
+  );
   session.finish("paused");
   await session.disposed;
 
@@ -1907,17 +1918,37 @@ test("step routing keeps a specialist rolled back mid-task paused on resume", as
       "task",
       (await api.inspect(context(), "task")).revision,
     );
-  await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
-  expect(f.sessions).toHaveLength(1);
-  expect((await api.inspect(context(), "task")).status).toBe("paused");
+  await resume();
+  expect(f.sessions).toHaveLength(2);
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  expect(resumed.options.rebindFromModelIds).toEqual(["fixture/specialist"]);
+  expect(resumed.options.sessionFile).toBe(
+    join(session.options.stateDir, "session.jsonl"),
+  );
+  expect(resumed.options.deadline).toBe(session.options.deadline);
+  const running = await api.inspect(context(), "task");
+  expect(running.status).toBe("running");
+  expect(running.specialist_revision).toBeNull();
   const launch = JSON.parse(
     await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
   );
-  expect(launch.model_id).toBe("fixture/specialist");
+  expect(launch.model_id).toBe("fixture/free");
   expect(launch.routing).toMatchObject({
-    outcome: "specialist",
-    ref: "specialist:specialist-1@2",
+    outcome: "baseline",
+    ref: "baseline:baseline@1",
+    specialist_revision: null,
   });
+  expect(launch.model_rebinds).toEqual([
+    {
+      from_model_id: "fixture/specialist",
+      to_model_id: "fixture/free",
+      from_ref: "specialist:specialist-1@2",
+      to_ref: "baseline:baseline@1",
+      decision_id: launch.routing.decision_id,
+      step_reasons: ["pinned_rolled_back"],
+    },
+  ]);
   const evidence = await taskEvents(f, "task", "routing");
   expect(evidence.map((item) => [item.phase, item.status, item.ref])).toEqual([
     ["launch", "routed", "specialist:specialist-1@2"],
@@ -1927,20 +1958,425 @@ test("step routing keeps a specialist rolled back mid-task paused on resume", as
     fallback_from: "specialist:specialist-1@2",
     step_reasons: ["pinned_rolled_back"],
     lost_refs: ["specialist:specialist-1@2"],
+    resume: {
+      action: "fallback",
+      reason: "pinned_rolled_back",
+      from_ref: "specialist:specialist-1@2",
+      to_ref: "baseline:baseline@1",
+      from_model_id: "fixture/specialist",
+      to_model_id: "fixture/free",
+    },
   });
 
+  // Later resumes stay on the fallback without re-routing.
+  resumed.finish("paused");
+  await resumed.disposed;
+  await resume();
+  expect(required(f.sessions[2]).options.modelId).toBe("fixture/free");
+  expect(await taskEvents(f, "task", "routing")).toHaveLength(2);
+  required(f.sessions[2]).finish("completed");
+  await required(f.sessions[2]).disposed;
+  await api.close();
+});
+
+/** An adapter specialist whose serving binding is attested by a switchable fake. */
+const adapterResume = async (
+  f: Awaited<ReturnType<typeof fixture>>,
+  options: {
+    chained?: boolean;
+    beforePause?: (store: DurableTaskStore) => Promise<unknown>;
+  } = {},
+) => {
+  const routed = await f.routedRegistry();
+  const specialists = new MemoryArtifacts();
+  const chatTemplate = artifactRef("template-adapter-specialist");
+  const adapters = {
+    primary: artifactRef("adapter-primary", new Uint8Array([1, 2, 3])),
+    chained: artifactRef("adapter-chained", new Uint8Array([4, 5, 6])),
+  };
+  const state = {
+    loaded: [adapters.primary.sha256, adapters.chained.sha256],
+    throws: false,
+  };
+  const attestor: ServingAttestor = {
+    async attest(_context, binding) {
+      if (state.throws) throw new Error("serving host unreachable");
+      if (state.loaded.length === 0) return null;
+      return {
+        model_id: binding.model_id,
+        provider_id: binding.provider_id,
+        provider_model: binding.provider_model,
+        base_model: baseModel,
+        tokenizer,
+        chat_template_sha256: chatTemplate.sha256,
+        adapter_formats: ["peft-lora"],
+        loaded_adapter_sha256s: [...state.loaded],
+      };
+    },
+  };
+  const registry = createSpecialistRegistry(
+    join(f.root, "specialists"),
+    specialists,
+    {
+      catalog: routed,
+      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+      servingAttestor: attestor,
+    },
+  );
+  await registry.registerBaseline(
+    context(),
+    makeBaseline(scope, {
+      model_id: "fixture/free",
+      provider_id: "fixture",
+      provider_model: "fixture",
+    }),
+  );
+  const adapterSpecialist = async (
+    id: string,
+    adapter: typeof adapters.primary,
+  ) =>
+    makeSpecialistFixture(specialists, {
+      scope,
+      specialistId: id,
+      modelId: "fixture/specialist",
+      providerId: "fixture",
+      providerModel: "specialist",
+      adapter,
+      adapterFormat: "peft-lora",
+      adapterSpec: {
+        format: "peft-lora",
+        base_model: baseModel,
+        tokenizer,
+        chat_template_sha256: chatTemplate.sha256,
+      },
+      chatTemplate,
+      datasetLineage: await makeLineageArtifact(specialists, scope, {
+        specialistId: id,
+        sourceScopes: [
+          { owner_id: scope.owner_id, project_id: scope.project_id },
+        ] as never,
+      }),
+      ...(options.chained && id === "adapter-primary"
+        ? { fallbackRef: "specialist:adapter-chained@1" }
+        : {}),
+    });
+  if (options.chained) {
+    const chained = await adapterSpecialist(
+      "adapter-chained",
+      adapters.chained,
+    );
+    await registry.registerSpecialist(context(), chained.registration);
+    await registry.promote(context(), "adapter-chained", "1", null);
+  }
+  const primary = await adapterSpecialist("adapter-primary", adapters.primary);
+  await registry.registerSpecialist(context(), primary.registration);
+  await registry.promote(context(), "adapter-primary", "1", null);
+  // Only the primary adapter is loaded when the task starts.
+  state.loaded = [adapters.primary.sha256];
+  const api = await f.makeHost(routed, undefined, undefined, {
+    router: registry,
+    steps: new SpecialistTaskRouter(registry),
+    domain: "coding/mechanical-edit",
+  });
+  const input = task();
+  await api.create(context(), {
+    ...input,
+    budget: { ...input.budget, max_usd: 1 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  expect(session.options.modelId).toBe("fixture/specialist");
+  expect((await api.inspect(context(), "task")).specialist_revision).toBe(
+    "specialist:adapter-primary@1",
+  );
+  await options.beforePause?.(f.store);
+  session.finish("paused");
+  await session.disposed;
+  const resume = async () =>
+    api.resume(
+      context(),
+      "task",
+      (await api.inspect(context(), "task")).revision,
+    );
+  const launch = async () =>
+    JSON.parse(
+      await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+    );
+  return { api, state, session, resume, launch };
+};
+
+test("step routing resumes a specialist that lost serving attestation on the base model", async () => {
+  const f = await fixture();
+  const { api, state, session, resume, launch } = await adapterResume(f);
+  state.loaded = [];
+  await resume();
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  expect(resumed.options.rebindFromModelIds).toEqual(["fixture/specialist"]);
+  expect(resumed.options.sessionFile).toBe(
+    join(session.options.stateDir, "session.jsonl"),
+  );
+  expect((await api.inspect(context(), "task")).specialist_revision).toBeNull();
+  expect(await launch()).toMatchObject({
+    model_id: "fixture/free",
+    routing: { outcome: "baseline", ref: "baseline:baseline@1" },
+  });
+  const evidence = await taskEvents(f, "task", "routing");
+  expect(evidence.at(-1)).toMatchObject({
+    phase: "resume",
+    status: "fallback",
+    ref: "baseline:baseline@1",
+    fallback_from: "specialist:adapter-primary@1",
+    lost_refs: ["specialist:adapter-primary@1"],
+    resume: {
+      action: "fallback",
+      reason: "serving_unattested",
+      from_model_id: "fixture/specialist",
+      to_model_id: "fixture/free",
+    },
+  });
+  expect(
+    (evidence.at(-1)?.rejected as { ref: string; reasons: string[] }[]).find(
+      (item) => item.ref === "specialist:adapter-primary@1",
+    )?.reasons,
+  ).toContain("serving_unattested");
+  resumed.finish("completed");
+  await resumed.disposed;
+  await api.close();
+});
+
+test("step routing keeps a still-attested specialist on resume", async () => {
+  const f = await fixture();
+  const { api, resume, launch } = await adapterResume(f);
+  const before = await launch();
+  await resume();
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/specialist");
+  expect(resumed.options.rebindFromModelIds).toBeUndefined();
+  expect(await launch()).toEqual(before);
+  expect((await api.inspect(context(), "task")).specialist_revision).toBe(
+    "specialist:adapter-primary@1",
+  );
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    phase: "resume",
+    status: "pinned",
+    ref: "specialist:adapter-primary@1",
+    resume: { action: "pinned", reason: null },
+  });
+  resumed.finish("completed");
+  await resumed.disposed;
+  await api.close();
+});
+
+test("step routing never resumes on an unattested adapter in the fallback chain", async () => {
+  const f = await fixture();
+  const { api, state, resume } = await adapterResume(f, { chained: true });
+  state.loaded = [];
+  await resume();
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  expect((await api.inspect(context(), "task")).specialist_revision).toBeNull();
+  const last = (await taskEvents(f, "task", "routing")).at(-1);
+  expect(last).toMatchObject({
+    phase: "resume",
+    status: "fallback",
+    ref: "baseline:baseline@1",
+    resume: { action: "fallback", to_ref: "baseline:baseline@1" },
+  });
+  const rejected = last?.rejected as { ref: string; reasons: string[] }[];
+  for (const ref of [
+    "specialist:adapter-primary@1",
+    "specialist:adapter-chained@1",
+  ])
+    expect(rejected.find((item) => item.ref === ref)?.reasons).toContain(
+      "serving_unattested",
+    );
+  resumed.finish("completed");
+  await resumed.disposed;
+  await api.close();
+});
+
+test("step routing treats an unreachable attestor as lost attestation on resume", async () => {
+  const f = await fixture();
+  const { api, state, resume } = await adapterResume(f);
+  state.throws = true;
+  await resume();
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    phase: "resume",
+    status: "fallback",
+    ref: "baseline:baseline@1",
+    resume: { action: "fallback", reason: "serving_unattested" },
+  });
+  resumed.finish("completed");
+  await resumed.disposed;
+  await api.close();
+});
+
+test("step routing keeps a free specialist session paused rather than fall back to a paid model", async () => {
+  const f = await fixture();
+  const dir = join(f.root, "paid-baseline");
+  await mkdir(join(dir, ".mars"), { recursive: true });
+  await writeFile(
+    join(dir, ".mars", "models.json"),
+    JSON.stringify({
+      version: 1,
+      providers: [
+        {
+          id: "fixture",
+          kind: "openai-compatible",
+          baseUrl: "https://fixture.invalid/v1",
+          apiKeyEnv: "FIXTURE_KEY",
+        },
+      ],
+      models: [
+        ...["free", "specialist"].map((name) => ({
+          id: `fixture/${name}`,
+          providerId: "fixture",
+          model: name === "free" ? "fixture" : name,
+          capabilities: { tools: true, vision: false, contextWindow: 32768 },
+          pricing: { free: true },
+        })),
+        {
+          id: "fixture/paid",
+          providerId: "fixture",
+          model: "paid",
+          capabilities: { tools: true, vision: false, contextWindow: 32768 },
+          pricing: { free: false, inputPerMTokUsd: 1, outputPerMTokUsd: 1 },
+        },
+      ],
+      routes: { default: ["fixture/free"] },
+      policy: { allowPaid: true },
+    }),
+  );
+  const routed = await loadModelRegistry({
+    cwd: dir,
+    home: dir,
+    env: { FIXTURE_KEY: "dummy-not-live" },
+  });
+  const specialists = new MemoryArtifacts();
+  const registry = createSpecialistRegistry(
+    join(f.root, "specialists"),
+    specialists,
+    {
+      catalog: routed,
+      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+    },
+  );
+  await registry.registerBaseline(
+    context(),
+    makeBaseline(scope, {
+      model_id: "fixture/free",
+      provider_id: "fixture",
+      provider_model: "fixture",
+    }),
+  );
+  const promoted = await makeSpecialistFixture(specialists, {
+    scope,
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+  });
+  await registry.registerSpecialist(context(), promoted.registration);
+  await registry.promote(context(), "specialist-1", "1", null);
+  const paid = await makeSpecialistFixture(specialists, {
+    scope,
+    specialistId: "paid-specialist",
+    modelId: "fixture/paid",
+    providerId: "fixture",
+    providerModel: "paid",
+  });
+  await registry.registerSpecialist(context(), paid.registration);
+  const next = await makeSpecialistFixture(specialists, {
+    scope,
+    revision: "2",
+    currentRevision: "1",
+    modelId: "fixture/specialist",
+    providerId: "fixture",
+    providerModel: "specialist",
+    fallbackRef: "specialist:paid-specialist@1",
+  });
+  await registry.registerSpecialist(context(), next.registration);
+  await registry.promote(context(), "specialist-1", "2", "1");
+  const api = await f.makeHost(routed, undefined, undefined, {
+    router: registry,
+    steps: new SpecialistTaskRouter(registry),
+    domain: "coding/mechanical-edit",
+    paid_consent: true,
+  });
+  const input = task();
+  await api.create(context(), {
+    ...input,
+    budget: { ...input.budget, max_usd: 1 },
+  });
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  expect(session.options.modelId).toBe("fixture/specialist");
+  session.finish("paused");
+  await session.disposed;
+  const before = await readFile(
+    join(session.options.stateDir, "launch.json"),
+    "utf8",
+  );
+
+  await registry.promote(context(), "paid-specialist", "1", null);
+  await registry.rollback(context(), "specialist-1", "2");
+  await expect(
+    api.resume(
+      context(),
+      "task",
+      (await api.inspect(context(), "task")).revision,
+    ),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.sessions).toHaveLength(1);
+  expect((await api.inspect(context(), "task")).status).toBe("paused");
+  expect(
+    await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+  ).toBe(before);
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    phase: "resume",
+    status: "fallback",
+    ref: "specialist:paid-specialist@1",
+    resume: {
+      action: "refused",
+      reason: "fallback_paid_refused",
+      to_model_id: null,
+    },
+  });
+  await api.close();
+});
+
+test("step routing honours a budget hold reserved before pause when the pin loses attestation", async () => {
+  const f = await fixture();
+  Reflect.deleteProperty(f.store, "recordBudget");
+  const { api, state, resume, launch } = await adapterResume(f, {
+    beforePause: (store) =>
+      required(store.reserveBudget).call(store, context(), "task", "pool", {
+        tokens: task().budget.max_tokens,
+        usd: 0,
+      }),
+  });
+  const before = await launch();
+  state.loaded = [];
   await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
   expect(f.sessions).toHaveLength(1);
-  expect(
-    (await taskEvents(f, "task", "routing")).map((item) => [
-      item.status,
-      item.ref,
-    ]),
-  ).toEqual([
-    ["routed", "specialist:specialist-1@2"],
-    ["fallback", "baseline:baseline@1"],
-    ["pinned", "baseline:baseline@1"],
-  ]);
+  expect((await api.inspect(context(), "task")).status).toBe("paused");
+  expect(await launch()).toEqual(before);
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    phase: "resume",
+    status: "budget_exhausted",
+    step_reasons: ["budget_tokens_exhausted"],
+    resume: { action: "refused", reason: "budget_exhausted" },
+  });
   await api.close();
 });
 

@@ -56,6 +56,92 @@ export const FrozenRoutingSchema = z
   .strict();
 export type FrozenRouting = z.infer<typeof FrozenRoutingSchema>;
 
+/** Why a resumed specialist launch stayed paused instead of continuing. */
+export type ResumeRefusal =
+  | "routing_unavailable"
+  | "budget_exhausted"
+  | "pinned_binding_changed"
+  | "pinned_not_invalidated"
+  | "unattested_adapter_refused"
+  | "fallback_paid_refused"
+  | "fallback_model_unavailable"
+  | "rebind_limit_reached";
+
+const PIN_INVALIDATION_STEPS = new Set([
+  "pinned_rolled_back",
+  "pinned_superseded",
+  "pinned_retired",
+]);
+const PIN_INVALIDATION_REJECTIONS = new Set([
+  "pinned_rolled_back",
+  "pinned_superseded",
+  "pinned_retired",
+  "serving_unattested",
+  "model_binding_mismatch",
+  "invalidated",
+  "archived",
+]);
+
+/**
+ * The reason a pinned specialist is no longer a verified target (rolled back,
+ * retired, superseded, or its serving binding lost attestation), or null when
+ * it was only dropped for budget or capability and so must stay paused.
+ */
+export function pinInvalidation(
+  evidence: {
+    fallback_from?: unknown;
+    step_reasons?: unknown;
+    rejected?: unknown;
+  },
+  ref: string | null,
+): string | null {
+  if (ref === null || evidence.fallback_from !== ref) return null;
+  const rejected = Array.isArray(evidence.rejected) ? evidence.rejected : [];
+  const reasons = rejected.flatMap((item: unknown) => {
+    const entry = item as { ref?: unknown; reasons?: unknown } | null;
+    return entry?.ref === ref && Array.isArray(entry.reasons)
+      ? entry.reasons.filter((r): r is string => typeof r === "string")
+      : [];
+  });
+  const lifecycle = reasons.find(
+    (reason) =>
+      PIN_INVALIDATION_REJECTIONS.has(reason) || reason.startsWith("serving_"),
+  );
+  if (lifecycle) return lifecycle;
+  const steps = Array.isArray(evidence.step_reasons)
+    ? evidence.step_reasons
+    : [];
+  return (
+    steps.find(
+      (reason): reason is string =>
+        typeof reason === "string" && PIN_INVALIDATION_STEPS.has(reason),
+    ) ?? null
+  );
+}
+
+/** How a resumed specialist launch continues after re-routing its pin. */
+export interface ResumeRoutingOutcome {
+  action: "pinned" | "fallback" | "refused";
+  /** The invalidation reason for a fallback, the refusal reason otherwise. */
+  reason: string | null;
+  from_ref: string | null;
+  to_ref: string | null;
+  from_model_id: string;
+  to_model_id: string | null;
+}
+
+export const ModelRebindSchema = z
+  .object({
+    from_model_id: z.string().min(1),
+    to_model_id: z.string().min(1),
+    from_ref: z.string().min(1).nullable(),
+    to_ref: z.string().min(1).nullable(),
+    decision_id: z.string().uuid(),
+    step_reasons: z.array(z.string().min(1)).max(16),
+  })
+  .strict();
+export type ModelRebind = z.infer<typeof ModelRebindSchema>;
+
 /**
  * Workbench task ids are free-form; the registry only accepts its own id
  * pattern. Ids that already match are used as-is, others get a stable alias
@@ -192,7 +278,11 @@ export async function routeTaskStep(
 /** Task-evidence payload for one routing step (refs and reason codes only). */
 export function routingStepEvidence(
   step: TaskRoutingStep,
-  extra: { child_task_id?: string; phase: "launch" | "child" | "resume" },
+  extra: {
+    child_task_id?: string;
+    phase: "launch" | "child" | "resume";
+    resume?: ResumeRoutingOutcome;
+  },
 ): Record<string, unknown> {
   return {
     operation: "routing",
@@ -207,5 +297,6 @@ export function routingStepEvidence(
     step_reasons: step.step_reasons,
     rejected: step.rejected,
     lost_refs: step.lost_refs,
+    ...(extra.resume ? { resume: extra.resume } : {}),
   };
 }

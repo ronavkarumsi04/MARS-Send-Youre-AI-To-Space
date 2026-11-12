@@ -25,7 +25,7 @@ import {
 } from "./repository-context";
 import { WorkbenchError } from "./server";
 import { FrozenSkillsSchema, validateFrozenSkills } from "./skills-context";
-import { FrozenRoutingSchema } from "./specialist-routing";
+import { FrozenRoutingSchema, ModelRebindSchema } from "./specialist-routing";
 
 /** Immutable per-task launch metadata, pinned in the host-private state root. */
 export const launchSchema = z
@@ -48,6 +48,11 @@ export const launchSchema = z
     knowledge_graph: FrozenGraphSummarySchema.optional(),
     instructions: FrozenInstructionsSchema.optional(),
     routing: FrozenRoutingSchema.optional(),
+    /**
+     * Resume-time model replacements, oldest first: a lost specialist pin was
+     * replaced by its routed fallback and the saved journal rebound to it.
+     */
+    model_rebinds: z.array(ModelRebindSchema).min(1).max(32).optional(),
     collaboration: FrozenCollaborationSchema.optional(),
     /** Host-run checks fixed at launch; the model never sees or edits them. */
     required_checks: z.array(RequiredCheckSchema).max(32).optional(),

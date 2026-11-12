@@ -2133,6 +2133,74 @@ describe("@mars/tasks durable store", () => {
     await store.close();
   });
 
+  test("resume records a routed specialist revision change in the same revision", async () => {
+    const rootDir = makeRoot();
+    const store = await openStore(rootDir);
+    const task = makeTask();
+    await store.create(context(), task);
+    const running = await store.update(context("run"), task.task_id, 0, {
+      status: "running",
+      specialist_revision: "specialist:specialist-1@2",
+    });
+    const paused = await store.update(
+      context("pause"),
+      task.task_id,
+      running.revision,
+      { status: "paused" },
+    );
+    for (const patch of [
+      {},
+      { specialist_revision: "" },
+      { status: "running" },
+      [] as unknown,
+    ]) {
+      await expect(
+        store.resume(
+          context("bad-patch"),
+          task.task_id,
+          paused.revision,
+          patch as never,
+        ),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+    }
+    expect((await store.inspect(context(), task.task_id)).status).toBe(
+      "paused",
+    );
+    const resumeContext = context("fallback-resume");
+    const resumed = await store.resume(
+      resumeContext,
+      task.task_id,
+      paused.revision,
+      { specialist_revision: null },
+    );
+    expect(resumed).toMatchObject({
+      status: "running",
+      specialist_revision: null,
+      revision: paused.revision + 1,
+    });
+    expect(
+      await store.resume(resumeContext, task.task_id, paused.revision, {
+        specialist_revision: null,
+      }),
+    ).toEqual(resumed);
+    const last = (await collect(store.events(context(), task.task_id))).at(-1);
+    if (!last) throw new Error("missing resume event");
+    const payload = JSON.parse(
+      new TextDecoder().decode(
+        await store.artifacts.get(context(), last.payload),
+      ),
+    );
+    expect(payload).toEqual({
+      change: "status",
+      from: "paused",
+      to: "running",
+      from_revision: paused.revision,
+      to_revision: paused.revision + 1,
+      specialist_revision: { from: "specialist:specialist-1@2", to: null },
+    });
+    await store.close();
+  });
+
   test("keeps lifecycle state unchanged when artifact persistence fails", async () => {
     const rootDir = makeRoot();
     const store = await openStore(rootDir);
