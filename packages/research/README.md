@@ -52,11 +52,11 @@ Exports: `createResearchService`, `RetryableResearchError`, `ResearchError`, `Re
 
 ## Live dispatch status
 
-`@mars/research-worker` ([documentation/RESEARCH_WORKER.md](../../documentation/RESEARCH_WORKER.md)) is the production worker for this control plane: it searches through an injected provider, fetches behind an injected `fetch` with SSRF, robots and byte guards, captures every page as evidence before citing it, and drives model calls through the existing model registry. It is verified offline only; its live mode is opt-in and unverified until a human runs it. No host wires it yet.
+`@mars/research-worker` ([documentation/RESEARCH_WORKER.md](../../documentation/RESEARCH_WORKER.md)) is the production worker for this control plane: it searches through an injected provider, fetches behind an injected `fetch` with SSRF, robots and byte guards, captures every page as evidence before citing it, and drives model calls through the existing model registry. It is verified offline only; its live mode is opt-in and unverified until a human runs it. `mars serve --research-search brave|searxng|tavily` wires it into the workbench.
 
 ## Known gaps
 
-- No host wires the worker yet, and live retrieval remains unverified.
+- The worker is wired through `mars serve --research-search`; live retrieval remains unverified.
 - Token and USD ceilings depend on truthful worker-reported usage.
 - Citation capture records provenance, not source authenticity or truth.
 - Parent lifecycle wiring, task-revision reconciliation, and RPC privacy boundaries remain the host's responsibility.

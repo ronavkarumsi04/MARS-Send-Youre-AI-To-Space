@@ -8,7 +8,7 @@ The caller supplies a validated task, a private workspace directory, a protected
 
 Only approved `mars_read`, `mars_write` and `mars_execute` tools are registered. Ambient tools, extensions, project instructions, MCP, LSP, IRC, custom-tool discovery, prompt-cache warming, title generation and automatic model substitution are disabled. The active tool set is verified after initialization. The workspace provider must enforce path confinement and secret exclusions independently, and execute commands in its verified no-network container boundary. There is no host-shell fallback in this package.
 
-Automatic model selection uses an available tool-capable model in the configured default route and skips paid models even if the user's registry permits paid routing. Explicit paid selection requires `allowPaid` and known input/output prices. The selected model is pinned to the persisted session: model changes require a new task/session rather than silently substituting providers on resume. This first execution bridge supports text and function tools, not images or portable reasoning blocks.
+Automatic model selection uses an available tool-capable model in the configured default route and skips paid models even if the user's registry permits paid routing. Explicit paid selection requires `allowPaid` and known input/output prices. The selected model is pinned to the persisted session: the host rebinds only when an invalidated specialist pin resumes on its routed fallback, recorded in `model_rebinds`. This first execution bridge supports text and function tools, not images or portable reasoning blocks.
 
 ## Persistence and recovery
 
