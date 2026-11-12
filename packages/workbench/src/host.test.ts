@@ -517,7 +517,7 @@ async function fixture() {
         };
       },
     });
-  const routedRegistry = async () => {
+  const routedRegistry = async (paid = false) => {
     const dir = join(root, "routed");
     await mkdir(join(dir, ".mars"), { recursive: true });
     await writeFile(
@@ -532,14 +532,20 @@ async function fixture() {
             apiKeyEnv: "FIXTURE_KEY",
           },
         ],
-        models: ["free", "specialist"].map((name) => ({
-          id: `fixture/${name}`,
-          providerId: "fixture",
-          model: name === "free" ? "fixture" : name,
-          capabilities: { tools: true, vision: false, contextWindow: 32768 },
-          pricing: { free: true },
-        })),
+        models: ["free", "specialist", ...(paid ? ["paid"] : [])].map(
+          (name) => ({
+            id: `fixture/${name}`,
+            providerId: "fixture",
+            model: name === "free" ? "fixture" : name,
+            capabilities: { tools: true, vision: false, contextWindow: 32768 },
+            pricing:
+              name === "paid"
+                ? { free: false, inputPerMTokUsd: 1, outputPerMTokUsd: 1 }
+                : { free: true },
+          }),
+        ),
         routes: { default: ["fixture/free"] },
+        ...(paid ? { policy: { allowPaid: true } } : {}),
       }),
     );
     return loadModelRegistry({
@@ -1984,10 +1990,11 @@ const adapterResume = async (
   f: Awaited<ReturnType<typeof fixture>>,
   options: {
     chained?: boolean;
+    changedBinding?: { model: string; unattested?: boolean };
     beforePause?: (store: DurableTaskStore) => Promise<unknown>;
   } = {},
 ) => {
-  const routed = await f.routedRegistry();
+  const routed = await f.routedRegistry(true);
   const specialists = new MemoryArtifacts();
   const chatTemplate = artifactRef("template-adapter-specialist");
   const adapters = {
@@ -2073,9 +2080,28 @@ const adapterResume = async (
   await registry.promote(context(), "adapter-primary", "1", null);
   // Only the primary adapter is loaded when the task starts.
   state.loaded = [adapters.primary.sha256];
+  const steps = new SpecialistTaskRouter(registry);
   const api = await f.makeHost(routed, undefined, undefined, {
     router: registry,
-    steps: new SpecialistTaskRouter(registry),
+    steps: {
+      async routeStep(context, input) {
+        const result = await steps.routeStep(context, input);
+        if (
+          result.step.step > 1 &&
+          options.changedBinding &&
+          result.step.selected
+        ) {
+          result.step.selected = {
+            ...result.step.selected,
+            model_id: options.changedBinding.model,
+            ...(options.changedBinding.unattested
+              ? { serving_attestation: "absent" as const }
+              : {}),
+          };
+        }
+        return result;
+      },
+    },
     domain: "coding/mechanical-edit",
   });
   const input = task();
@@ -2108,6 +2134,68 @@ const adapterResume = async (
     );
   return { api, state, session, resume, launch };
 };
+
+test("step routing rebinds a verified changed binding without changing the pin", async () => {
+  const f = await fixture();
+  const { api, session, resume, launch } = await adapterResume(f, {
+    changedBinding: { model: "fixture/free" },
+  });
+  await resume();
+  const resumed = required(f.sessions[1]);
+  expect(resumed.options.modelId).toBe("fixture/free");
+  expect(resumed.options.sessionFile).toBe(
+    join(session.options.stateDir, "session.jsonl"),
+  );
+  expect(resumed.options.rebindFromModelIds).toEqual(["fixture/specialist"]);
+  expect((await api.inspect(context(), "task")).specialist_revision).toBe(
+    "specialist:adapter-primary@1",
+  );
+  expect((await launch()).model_rebinds).toEqual([
+    expect.objectContaining({
+      from_model_id: "fixture/specialist",
+      to_model_id: "fixture/free",
+      from_ref: "specialist:adapter-primary@1",
+      to_ref: "specialist:adapter-primary@1",
+      step_reasons: [],
+    }),
+  ]);
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    resume: { action: "rebound", reason: "pinned_binding_changed" },
+  });
+  await api.close();
+});
+
+test("step routing refuses an unattested changed binding without rewriting launch", async () => {
+  const f = await fixture();
+  const { api, resume, launch } = await adapterResume(f, {
+    changedBinding: { model: "fixture/free", unattested: true },
+  });
+  const before = await launch();
+  await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
+  expect(await launch()).toEqual(before);
+  expect(f.sessions).toHaveLength(1);
+  expect((await api.inspect(context(), "task")).status).toBe("paused");
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    resume: { action: "refused", reason: "unattested_adapter_refused" },
+  });
+  await api.close();
+});
+
+test("step routing refuses a paid changed binding for a free session", async () => {
+  const f = await fixture();
+  const { api, resume, launch } = await adapterResume(f, {
+    changedBinding: { model: "fixture/paid" },
+  });
+  const before = await launch();
+  await expect(resume()).rejects.toMatchObject({ code: "unavailable" });
+  expect(await launch()).toEqual(before);
+  expect(f.sessions).toHaveLength(1);
+  expect((await api.inspect(context(), "task")).status).toBe("paused");
+  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+    resume: { action: "refused", reason: "fallback_paid_refused" },
+  });
+  await api.close();
+});
 
 test("step routing resumes a specialist that lost serving attestation on the base model", async () => {
   const f = await fixture();
@@ -2218,142 +2306,170 @@ test("step routing treats an unreachable attestor as lost attestation on resume"
   await api.close();
 });
 
-test("step routing keeps a free specialist session paused rather than fall back to a paid model", async () => {
-  const f = await fixture();
-  const dir = join(f.root, "paid-baseline");
-  await mkdir(join(dir, ".mars"), { recursive: true });
-  await writeFile(
-    join(dir, ".mars", "models.json"),
-    JSON.stringify({
-      version: 1,
-      providers: [
-        {
-          id: "fixture",
-          kind: "openai-compatible",
-          baseUrl: "https://fixture.invalid/v1",
-          apiKeyEnv: "FIXTURE_KEY",
-        },
-      ],
-      models: [
-        ...["free", "specialist"].map((name) => ({
-          id: `fixture/${name}`,
-          providerId: "fixture",
-          model: name === "free" ? "fixture" : name,
-          capabilities: { tools: true, vision: false, contextWindow: 32768 },
-          pricing: { free: true },
-        })),
-        {
-          id: "fixture/paid",
-          providerId: "fixture",
-          model: "paid",
-          capabilities: { tools: true, vision: false, contextWindow: 32768 },
-          pricing: { free: false, inputPerMTokUsd: 1, outputPerMTokUsd: 1 },
-        },
-      ],
-      routes: { default: ["fixture/free"] },
-      policy: { allowPaid: true },
-    }),
-  );
-  const routed = await loadModelRegistry({
-    cwd: dir,
-    home: dir,
-    env: { FIXTURE_KEY: "dummy-not-live" },
-  });
-  const specialists = new MemoryArtifacts();
-  const registry = createSpecialistRegistry(
-    join(f.root, "specialists"),
-    specialists,
-    {
-      catalog: routed,
-      evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
-    },
-  );
-  await registry.registerBaseline(
-    context(),
-    makeBaseline(scope, {
-      model_id: "fixture/free",
-      provider_id: "fixture",
-      provider_model: "fixture",
-    }),
-  );
-  const promoted = await makeSpecialistFixture(specialists, {
-    scope,
-    modelId: "fixture/specialist",
-    providerId: "fixture",
-    providerModel: "specialist",
-  });
-  await registry.registerSpecialist(context(), promoted.registration);
-  await registry.promote(context(), "specialist-1", "1", null);
-  const paid = await makeSpecialistFixture(specialists, {
-    scope,
-    specialistId: "paid-specialist",
-    modelId: "fixture/paid",
-    providerId: "fixture",
-    providerModel: "paid",
-  });
-  await registry.registerSpecialist(context(), paid.registration);
-  const next = await makeSpecialistFixture(specialists, {
-    scope,
-    revision: "2",
-    currentRevision: "1",
-    modelId: "fixture/specialist",
-    providerId: "fixture",
-    providerModel: "specialist",
-    fallbackRef: "specialist:paid-specialist@1",
-  });
-  await registry.registerSpecialist(context(), next.registration);
-  await registry.promote(context(), "specialist-1", "2", "1");
-  const api = await f.makeHost(routed, undefined, undefined, {
-    router: registry,
-    steps: new SpecialistTaskRouter(registry),
-    domain: "coding/mechanical-edit",
-    paid_consent: true,
-  });
-  const input = task();
-  await api.create(context(), {
-    ...input,
-    budget: { ...input.budget, max_usd: 1 },
-  });
-  await api.start(context(), {
-    task_id: "task",
-    expected_revision: 0,
-    approvals: { read: true, write: false, execute: false },
-  });
-  const session = required(f.sessions[0]);
-  expect(session.options.modelId).toBe("fixture/specialist");
-  session.finish("paused");
-  await session.disposed;
-  const before = await readFile(
-    join(session.options.stateDir, "launch.json"),
-    "utf8",
-  );
-
-  await registry.promote(context(), "paid-specialist", "1", null);
-  await registry.rollback(context(), "specialist-1", "2");
-  await expect(
-    api.resume(
+for (const scenario of [
+  "free-base",
+  "no-free-target",
+  "paid-launch",
+] as const) {
+  test(`step routing paid fallback policy: ${scenario}`, async () => {
+    const f = await fixture();
+    const dir = join(f.root, "paid-baseline");
+    await mkdir(join(dir, ".mars"), { recursive: true });
+    await writeFile(
+      join(dir, ".mars", "models.json"),
+      JSON.stringify({
+        version: 1,
+        providers: [
+          {
+            id: "fixture",
+            kind: "openai-compatible",
+            baseUrl: "https://fixture.invalid/v1",
+            apiKeyEnv: "FIXTURE_KEY",
+          },
+        ],
+        models: [
+          ...["free", "specialist"].map((name) => ({
+            id: `fixture/${name}`,
+            providerId: "fixture",
+            model: name === "free" ? "fixture" : name,
+            capabilities: { tools: true, vision: false, contextWindow: 32768 },
+            pricing:
+              scenario === "paid-launch" && name === "specialist"
+                ? { free: false, inputPerMTokUsd: 1, outputPerMTokUsd: 1 }
+                : { free: true },
+          })),
+          {
+            id: "fixture/paid",
+            providerId: "fixture",
+            model: "paid",
+            capabilities: { tools: true, vision: false, contextWindow: 32768 },
+            pricing: { free: false, inputPerMTokUsd: 1, outputPerMTokUsd: 1 },
+          },
+        ],
+        routes: { default: ["fixture/free"] },
+        policy: { allowPaid: true },
+      }),
+    );
+    const routed = await loadModelRegistry({
+      cwd: dir,
+      home: dir,
+      env: { FIXTURE_KEY: "dummy-not-live" },
+    });
+    const specialists = new MemoryArtifacts();
+    const registry = createSpecialistRegistry(
+      join(f.root, "specialists"),
+      specialists,
+      {
+        catalog: routed,
+        evidenceVerifier: evidenceVerifier({ ownerIds: [scope.owner_id] }),
+      },
+    );
+    await registry.registerBaseline(
+      context(),
+      makeBaseline(scope, {
+        model_id: "fixture/free",
+        provider_id: "fixture",
+        provider_model: "fixture",
+        ...(scenario === "no-free-target"
+          ? { roles: ["reviewer" as const] }
+          : {}),
+      }),
+    );
+    const promoted = await makeSpecialistFixture(specialists, {
+      scope,
+      modelId: "fixture/specialist",
+      providerId: "fixture",
+      providerModel: "specialist",
+    });
+    await registry.registerSpecialist(context(), promoted.registration);
+    await registry.promote(context(), "specialist-1", "1", null);
+    const paid = await makeSpecialistFixture(specialists, {
+      scope,
+      specialistId: "paid-specialist",
+      modelId: "fixture/paid",
+      providerId: "fixture",
+      providerModel: "paid",
+    });
+    await registry.registerSpecialist(context(), paid.registration);
+    const next = await makeSpecialistFixture(specialists, {
+      scope,
+      revision: "2",
+      currentRevision: "1",
+      modelId: "fixture/specialist",
+      providerId: "fixture",
+      providerModel: "specialist",
+      fallbackRef: "specialist:paid-specialist@1",
+    });
+    await registry.registerSpecialist(context(), next.registration);
+    await registry.promote(context(), "specialist-1", "2", "1");
+    const api = await f.makeHost(routed, undefined, undefined, {
+      router: registry,
+      steps: new SpecialistTaskRouter(registry),
+      domain: "coding/mechanical-edit",
+      paid_consent: true,
+    });
+    const input = task();
+    await api.create(context(), {
+      ...input,
+      budget: { ...input.budget, max_usd: 1 },
+    });
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+    });
+    const session = required(f.sessions[0]);
+    expect(session.options.modelId).toBe("fixture/specialist");
+    session.finish("paused");
+    await session.disposed;
+    await registry.promote(context(), "paid-specialist", "1", null);
+    await registry.rollback(context(), "specialist-1", "2");
+    if (scenario === "no-free-target")
+      await registry.retire(context(), "specialist-1", "1");
+    const before = await readFile(
+      join(session.options.stateDir, "launch.json"),
+      "utf8",
+    );
+    const resuming = api.resume(
       context(),
       "task",
       (await api.inspect(context(), "task")).revision,
-    ),
-  ).rejects.toMatchObject({ code: "unavailable" });
-  expect(f.sessions).toHaveLength(1);
-  expect((await api.inspect(context(), "task")).status).toBe("paused");
-  expect(
-    await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
-  ).toBe(before);
-  expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
-    phase: "resume",
-    status: "fallback",
-    ref: "specialist:paid-specialist@1",
-    resume: {
-      action: "refused",
-      reason: "fallback_paid_refused",
-      to_model_id: null,
-    },
+    );
+    if (scenario === "no-free-target") {
+      await expect(resuming).rejects.toMatchObject({ code: "unavailable" });
+      expect(f.sessions).toHaveLength(1);
+      expect((await api.inspect(context(), "task")).status).toBe("paused");
+      expect(
+        await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+      ).toBe(before);
+      expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+        resume: { action: "refused", reason: "fallback_paid_refused" },
+      });
+      await api.close();
+      return;
+    }
+    await resuming;
+    expect(f.sessions).toHaveLength(2);
+    expect(f.sessions[1]?.options.modelId).toBe(
+      scenario === "paid-launch" ? "fixture/paid" : "fixture/free",
+    );
+    expect((await taskEvents(f, "task", "routing")).at(-1)).toMatchObject({
+      phase: "resume",
+      status: "fallback",
+      resume: {
+        action: "fallback",
+        ...(scenario === "paid-launch"
+          ? { reason: "pinned_rolled_back", to_model_id: "fixture/paid" }
+          : {
+              reason: "fallback_paid_skipped",
+              skipped_refs: ["specialist:paid-specialist@1"],
+              to_model_id: "fixture/free",
+            }),
+      },
+    });
+    await api.close();
   });
-  await api.close();
-});
+}
 
 test("step routing honours a budget hold reserved before pause when the pin loses attestation", async () => {
   const f = await fixture();

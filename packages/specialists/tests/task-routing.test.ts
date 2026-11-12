@@ -109,6 +109,43 @@ const ADAPTER_REF = "specialist:adapter-specialist@1";
 const BASELINE_REF = "baseline:baseline@1";
 
 describe("specialist task routing", () => {
+  test("free guard skips general candidates without losing them and leaves pins unfiltered", async () => {
+    const { router } = await adapterSetup();
+    const first = await router.routeStep(context, {
+      request: routingRequest(),
+      free_target: (target) => target.kind === "baseline",
+    });
+    expect(first.step.selected?.ref).toBe(BASELINE_REF);
+    expect(first.step.paid_skipped).toEqual([ADAPTER_REF]);
+    expect(
+      first.step.rejected.find((item) => item.ref === ADAPTER_REF)?.reasons,
+    ).toContain("paid_skipped");
+    expect(first.step.lost_refs).toEqual([]);
+    const pinned = await router.routeStep(context, {
+      request: routingRequest(),
+      free_target: () => false,
+    });
+    expect(pinned.step.mode).toBe("pinned");
+    expect(pinned.step.selected?.ref).toBe(BASELINE_REF);
+    expect(pinned.step.paid_skipped).toEqual([]);
+  });
+
+  test("free guard exhaustion records skipped targets, absent guard adds no field", async () => {
+    const { router } = await adapterSetup();
+    const none = await router.routeStep(context, {
+      request: routingRequest(),
+      free_target: () => false,
+    });
+    expect(none.step.selected).toBeNull();
+    expect(none.step.paid_skipped).toEqual([ADAPTER_REF, BASELINE_REF]);
+    expect(none.step.lost_refs).toEqual([]);
+    const unchanged = await router.routeStep(context, {
+      request: routingRequest(),
+    });
+    expect(unchanged.step.selected?.ref).toBe(ADAPTER_REF);
+    expect(unchanged.step).not.toHaveProperty("paid_skipped");
+  });
+
   test("routes an attested in-budget adapter and keeps it pinned", async () => {
     const { router, registry, steps } = await adapterSetup();
     const first = await router.routeStep(context, {
@@ -303,6 +340,37 @@ describe("specialist task routing", () => {
       "fallback",
       "pinned",
     ]);
+  });
+
+  test("free guard skips a configured chain entry without marking it lost", async () => {
+    const { router, registry, artifacts } = await setup();
+    const v1 = await makeSpecialistFixture(artifacts, {
+      specialistId: "chain",
+      revision: "1",
+    });
+    await registry.registerSpecialist(context, v1.registration);
+    await registry.promote(context, "chain", "1", null);
+    const v2 = await makeSpecialistFixture(artifacts, {
+      specialistId: "chain",
+      revision: "2",
+      currentRevision: "1",
+      fallbackRef: "specialist:chain@1",
+    });
+    await registry.registerSpecialist(context, v2.registration);
+    await registry.promote(context, "chain", "2", "1");
+    await router.routeStep(context, { request: routingRequest() });
+    await registry.rollback(context, "chain", "2");
+    const result = await router.routeStep(context, {
+      request: routingRequest(),
+      free_target: (target) => target.kind === "baseline",
+    });
+    expect(result.step.selected?.ref).toBe(BASELINE_REF);
+    expect(result.step.paid_skipped).toEqual(["specialist:chain@1"]);
+    expect(result.step.rejected).toContainEqual({
+      ref: "specialist:chain@1",
+      reasons: ["paid_skipped"],
+    });
+    expect(result.step.lost_refs).toEqual(["specialist:chain@2"]);
   });
 
   test("workspace callers walk a project specialist's fallback chain", async () => {

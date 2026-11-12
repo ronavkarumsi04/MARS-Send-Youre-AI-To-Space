@@ -86,14 +86,19 @@ behavior.
    the resume, and the runtime rebinds the saved journal to the fallback
    model (`mars.model_rebind` + a new `mars.binding`), keeping its
    conversation, budget ledger and deadline. The resume routing event
-   carries a `resume` record: `action` (`pinned`, `fallback` or
+   carries a `resume` record: `action` (`pinned`, `fallback`, `rebound` or
    `refused`), the invalidation or refusal `reason`, and the from/to refs
    and models. Resume never starts an adapter without verified attestation,
-   and a free session never falls back to a paid model
-   (`fallback_paid_refused`); a paid fallback needs a paid launch and
-   `paid_consent`. A pin dropped only for budget or capability
-   (`pinned_not_invalidated`), an exhausted budget, a changed serving binding
-   for the same pin, or a routing error leaves the task paused with
+   and a free session never falls back to a paid model. Paid candidates are
+   skipped when the launch was free or paid consent is absent; a free fallback
+   records `fallback_paid_skipped`, `skipped_refs` and the original `invalidation`.
+   No free target leaves it paused with `fallback_paid_refused`. A paid fallback
+   needs a paid launch and `paid_consent`. A verified serving binding changed
+   on the same revision rebinds the journal (`rebound`, `pinned_binding_changed`)
+   without changing `specialist_revision`, subject to the same model availability,
+   free/paid guards and 32-rebind cap. A kept pin changed to paid is refused,
+   not skipped. A pin dropped only for budget or capability
+   (`pinned_not_invalidated`), an exhausted budget, or a routing error leaves the task paused with
    `unavailable` and the launch unchanged.
 3. Execution passes `{ model: selected.model_id }` to the existing
    `ModelRouter` through the execution/model-bridge, keeping the selected
