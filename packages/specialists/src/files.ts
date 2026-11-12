@@ -1,4 +1,12 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import type { ArtifactRef, RequestContext } from "@mars/contracts";
 import { z } from "zod";
@@ -25,8 +33,23 @@ export function createFileArtifactStore(dir: string) {
       await mkdir(dir, { recursive: true, mode: 0o700 });
       await chmod(dir, 0o700);
       const file = join(dir, digest);
-      await writeFile(file, copy, { mode: 0o600 });
-      await chmod(file, 0o600);
+      let exists = false;
+      try {
+        exists = sha256(await readFile(file)) === digest;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (exists) {
+        await chmod(file, 0o600);
+      } else {
+        const temporary = join(dir, `.${digest}.${randomUUID()}.tmp`);
+        try {
+          await writeFile(temporary, copy, { mode: 0o600, flag: "wx" });
+          await rename(temporary, file);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      }
       return {
         artifact_id: `sha256:${digest}`,
         sha256: digest,

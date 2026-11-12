@@ -1,8 +1,39 @@
 import { expect, test } from "bun:test";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createFileArtifactStore, loadSpecialistTrust } from "../src/index";
 import { context, createTempRoot, removeTempRoot } from "./helpers";
+
+test("concurrent artifact puts never expose partial bytes to readers", async () => {
+  const root = await createTempRoot();
+  try {
+    const store = createFileArtifactStore(join(root, "artifacts"));
+    const bytes = new Uint8Array(1024 * 1024).fill(42);
+    const ref = await store.put(context, bytes, "application/octet-stream");
+    const before = await stat(join(root, "artifacts", ref.sha256), {
+      bigint: true,
+    });
+    const results = await Promise.allSettled([
+      ...Array.from({ length: 4 }, async () => {
+        for (let i = 0; i < 8; i++)
+          await store.put(context, bytes, ref.media_type);
+      }),
+      ...Array.from({ length: 4 }, async () => {
+        for (let i = 0; i < 8; i++)
+          expect(await store.get(context, ref)).toEqual(Buffer.from(bytes));
+      }),
+    ]);
+    expect(results.filter((result) => result.status === "rejected")).toEqual(
+      [],
+    );
+    const after = await stat(join(root, "artifacts", ref.sha256), {
+      bigint: true,
+    });
+    expect(after.mtimeNs).toBe(before.mtimeNs);
+  } finally {
+    await removeTempRoot(root);
+  }
+});
 
 test("file artifacts round trip, restrict permissions and reject corruption and invalid refs", async () => {
   const root = await createTempRoot();
@@ -22,6 +53,12 @@ test("file artifacts round trip, restrict permissions and reject corruption and 
       ).rejects.toThrow();
       await writeFile(join(dir, ref.sha256), "corrupt");
       await expect(store.get(context, ref)).rejects.toThrow();
+      expect(await store.put(context, bytes, ref.media_type)).toEqual(ref);
+      expect(await store.get(context, ref)).toEqual(Buffer.from(bytes));
+      expect((await stat(join(dir, ref.sha256))).mode & 0o777).toBe(0o600);
+      expect((await readdir(dir)).some((file) => file.endsWith(".tmp"))).toBe(
+        false,
+      );
       await expect(
         store.get(context, { ...ref, sha256: "../escape" }),
       ).rejects.toThrow();
