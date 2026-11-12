@@ -322,8 +322,14 @@ when it is absent rather than silently evaluating the base. It sends
 temperature **0**, bounds each completion by the remaining per-arm token budget
 and per-request cap (1024 by default), counts actual requests and reported input
 and output tokens, honors cancellation, and rejects missing usage or overspend.
-The service records a matched per-job seed, but the adapter **does not forward
-seed** to serving; this is not a claim of server-side seeded determinism.
+Every request of every arm in a job forwards the same integer `seed` in the
+OpenAI-compatible body: `servingSeed(job.seed)` is the seed itself when it is
+a decimal safe integer, otherwise `parseInt(sha256(seed)[0..8], 16)`. The
+forwarded seed is also an input of each arm's `agent_manifest_sha256`. vLLM
+applies it per request on a best-effort basis (batching, kernels and hardware
+can still change outputs), so this is not a claim of bit-exact server-side
+determinism. `createOpenAICompatibleAdapter` sends `seed` only when the request
+sets one, and refuses a negative or non-safe-integer seed before any request.
 Without `--prompt-optimized`, the prompt-optimized arm is identical to base.
 Self-hosted cost is recorded as **$0**, not a measurement of GPU or host costs.
 

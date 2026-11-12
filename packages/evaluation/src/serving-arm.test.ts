@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { sha256 } from "@mars/contracts/canonical";
 import { startFakeVllm } from "../../providers-vllm/src/index";
-import { createServingArmEvaluator } from "./serving-arm";
+import { createServingArmEvaluator, servingSeed } from "./serving-arm";
 import type { ArmEvaluationInput } from "./specialist-comparison";
 
 const input = (): ArmEvaluationInput => ({
@@ -187,5 +188,93 @@ test("serving evaluator rejects malformed responses and missing usage, invalid g
         ),
     });
     await expect(evaluator.evaluate(input())).rejects.toThrow();
+  }
+});
+
+test("serving seed uses decimal safe integers and otherwise hashes the job seed", () => {
+  expect(servingSeed("0")).toBe(0);
+  expect(servingSeed("12345")).toBe(12345);
+  expect(servingSeed(String(Number.MAX_SAFE_INTEGER))).toBe(
+    Number.MAX_SAFE_INTEGER,
+  );
+  for (const seed of ["9007199254740992", "-1", "1.5", "seed", ""]) {
+    expect(servingSeed(seed)).toBe(
+      Number.parseInt(sha256(seed).slice(0, 8), 16),
+    );
+  }
+  expect(Number.isSafeInteger(servingSeed("a1b2c3d4e5f60718"))).toBe(true);
+});
+
+test("every arm of one job forwards the same matched seed to vLLM and different jobs differ", async () => {
+  let completions = 0;
+  const server = startFakeVllm({
+    completions: () => {
+      completions++;
+      return "answer";
+    },
+  });
+  try {
+    const evaluator = createServingArmEvaluator({
+      baseUrl: `${server.url}/v1`,
+      apiKeyEnv: "KEY",
+      env: {},
+      baseServedModel: "mars-base",
+      evaluator_id: "eval",
+      evaluator_revision: "1",
+      harness: { component: "h", revision: "1" },
+      suite: { suite_id: "s", revision: "1" },
+      promptOptimizedSystemPrompt: "optimized",
+      grade: () => 1,
+    });
+    const arms = [
+      "base",
+      "prompt_optimized_baseline",
+      "current_specialist",
+      "candidate",
+    ] as const;
+    const runJob = async (jobSeed: string) => {
+      const manifests: string[] = [];
+      for (const arm of arms) {
+        const request = input();
+        request.seed = jobSeed;
+        request.repeats = 2;
+        request.target = {
+          ...request.target,
+          arm,
+          adapter: {
+            artifact_id: "adapter",
+            sha256: (arm === "candidate" ? "c" : "d").repeat(64),
+            byte_length: 1,
+            media_type: "application/octet-stream",
+          },
+        };
+        const result = await evaluator.evaluate(request);
+        expect(result.model_requests).toBe(2);
+        manifests.push(result.agent_manifest_sha256);
+      }
+      return manifests;
+    };
+    const first = await runJob("a1b2c3d4e5f60718");
+    const second = await runJob("1f2e3d4c5b6a7980");
+    const bodies = server
+      .modelRequests()
+      .map((request) => request.body as Record<string, unknown>);
+    expect(completions).toBe(16);
+    expect(bodies).toHaveLength(16);
+    for (const body of bodies) expect(body.temperature).toBe(0);
+    const firstSeeds = new Set(bodies.slice(0, 8).map((body) => body.seed));
+    const secondSeeds = new Set(bodies.slice(8).map((body) => body.seed));
+    expect([...firstSeeds]).toEqual([servingSeed("a1b2c3d4e5f60718")]);
+    expect([...secondSeeds]).toEqual([servingSeed("1f2e3d4c5b6a7980")]);
+    expect(servingSeed("a1b2c3d4e5f60718")).not.toBe(
+      servingSeed("1f2e3d4c5b6a7980"),
+    );
+    expect(new Set(bodies.map((body) => body.model))).toEqual(
+      new Set(["mars-base", "c".repeat(64), "d".repeat(64)]),
+    );
+    for (let arm = 0; arm < arms.length; arm++)
+      expect(first[arm]).not.toBe(second[arm]);
+  } finally {
+    await server.stop();
   }
 });
