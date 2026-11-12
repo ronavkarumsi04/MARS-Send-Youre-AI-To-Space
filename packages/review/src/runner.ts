@@ -71,6 +71,8 @@ export interface ReviewDependencies {
   idleMs?: number;
   timeoutMs?: number;
   clock?: () => number;
+  /** Schedule idle work and return its cancellation function. */
+  scheduleIdle?: (callback: () => Promise<void>, delayMs: number) => () => void;
 }
 export interface ReviewResult {
   reviewId: string;
@@ -175,7 +177,7 @@ export class ReviewRunner {
   private counters = new Map<string, number>();
   private pending = new Map<string, Turn>();
   private live = new Set<string>();
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private cancelTimer: (() => void) | undefined;
   private running: Promise<ReviewResult> | undefined;
   private abort: AbortController | undefined;
   private stopped = false;
@@ -251,26 +253,32 @@ export class ReviewRunner {
     );
   }
   private arm() {
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     if (this.stopped || this.running || this.live.size || !this.pending.size)
       return;
-    this.timer = setTimeout(
-      () => {
-        this.timer = undefined;
+    const schedule =
+      this.deps.scheduleIdle ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(() => void callback(), delayMs);
+        timer.unref();
+        return () => clearTimeout(timer);
+      });
+    this.cancelTimer = schedule(
+      async () => {
+        this.cancelTimer = undefined;
         const next = this.pending.entries().next();
         if (next.done) return;
         const [key, turn] = next.value;
         this.pending.delete(key);
-        void this.reviewNow(turn).catch(() => undefined);
+        await this.reviewNow(turn).catch(() => undefined);
       },
       Math.max(0, this.quietUntil - this.now(), this.cooldown - this.now()),
     );
-    this.timer.unref();
   }
   /** Foreground work is starting: defer scheduling and cancel in-flight review. */
   beginLiveTurn(sessionId: string) {
     this.live.add(sessionId);
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     this.abort?.abort();
   }
   endLiveTurn(sessionId: string) {
@@ -326,7 +334,7 @@ export class ReviewRunner {
       this.now() < this.cooldown
     )
       return result;
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     this.pending.delete(turn.sessionId);
     const abort = new AbortController();
     this.abort = abort;
@@ -550,7 +558,7 @@ export class ReviewRunner {
   /** Clears pending work, aborts in-flight review and drains it. */
   async stop() {
     this.stopped = true;
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     this.pending.clear();
     this.counters.clear();
     this.abort?.abort();
