@@ -72,10 +72,9 @@ There is no `agent.publish` RPC. Answers are stored through the host-only
 `fail(request_id, reason_code)`), driven by `createTeamAgentWorker` in the
 workbench process. A client can never publish an answer.
 
-Not implemented: artifact shares (artifact access gate); the chat-side backing
-of the agent `TeamReferencePort` by `code_references`/`repo_access`; any VS Code
-wiring (the inbox stream client, reference picker, preview panel and the @MARS
-composer action are later UI tasks).
+Not implemented: artifact shares (artifact access gate); the reference picker,
+preview panel and @MARS composer action. The agent `TeamReferencePort` is backed
+by `code_references`/`repo_access`, and the VS Code inbox has an RPC-backed client.
 
 ## Code references (PR 4, service half)
 
@@ -197,9 +196,9 @@ carries only ids between them:
 Rules the implementation keeps:
 
 - **Frozen provenance.** `provenance` is written once at draft time from the
-  stored `seq` and `body_sha256`; a later edit or deletion (no RPC exists yet;
-  the test mutates the row directly) never changes it. A new draft after an
-  edit gets a new link and the new hash.
+  stored `seq` and `body_sha256`; a later edit or deletion through the message
+  RPCs never changes it. A new draft after an edit gets a new link and the new
+  hash.
 - **One launch per link.** The `launch_key` is minted by the service
   (`tc-<sha256(team_id, link_id)[0:48]>`, unique per team) and returned on
   every replay, so an interrupted confirm — same `request_id` or a fresh one

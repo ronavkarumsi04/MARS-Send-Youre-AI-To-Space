@@ -50,7 +50,7 @@ Exports: `ReviewRunner`, `REVIEW_LIMITS`, `eligible`, `createRegistryReviewGatew
 
 ## Not implemented
 
-Live-model acceptance; host-side `review.jsonl` inspection or proposal accept/reject/undo commands; a `skip_background_review`-style flag on the execution session (eligibility is decided from `Turn.origin`/`sessionId` supplied by the host); Hermes `_digest_history` summarisation (the transcript is passed as supplied, bounded by size); multi-model or paid routing.
+Live-model acceptance; host-side `review.jsonl` inspection; a `skip_background_review`-style flag on the execution session (eligibility is decided from `Turn.origin`/`sessionId` supplied by the host); Hermes `_digest_history` summarisation (the transcript is passed as supplied, bounded by size); multi-model or paid routing. Proposal accept/reject/undo commands are available through `mars skills`.
 
 ## Attribution
 

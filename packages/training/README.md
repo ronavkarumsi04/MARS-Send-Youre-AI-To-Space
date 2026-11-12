@@ -120,7 +120,8 @@ The cache defaults to `~/.cache/mars-training-hf` (`MARS_TRAINING_HF_CACHE`).
 ## Not done / blocked
 
 - Held-out agent-level evaluation comparing an adapter with its base:
-  **BLOCKED** (no model API key; no serving path for adapters yet — Milestone 7).
+  **BLOCKED** on live acceptance (no model API key or real serving host;
+  the vLLM-backed evaluation path is implemented and offline-tested — Milestone 7).
 - No useful specialist has been trained; the only real run is the plumbing proof.
 - QLoRA is implemented but unverified: no CUDA device exists here, and the
   CPU lock does not include bitsandbytes.

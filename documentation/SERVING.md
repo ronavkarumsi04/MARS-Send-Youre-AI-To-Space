@@ -91,10 +91,10 @@ or a version that goes off-pin after startup (`serving_unattested`) prevents
 adapter selection and falls back to an eligible baseline. Baseline execution
 uses the ordinary free-only default model route; configure that route explicitly
 if it must resolve to the vLLM base. An off-pin vLLM at initial attach refuses
-startup instead. A paused specialist session cannot silently change its journal's
-model: loss of its pin on resume leaves it paused with `unavailable` while the
-routing event records the fallback. No synthetic-fixture evidence is enabled in
-production registry construction.
+startup instead. An invalidated specialist pin can resume on an eligible routed
+fallback, recorded in the routing event, launch `model_rebinds` and journal;
+unsafe or unavailable fallbacks leave it paused. No synthetic-fixture evidence
+is enabled in production registry construction.
 
 ## Offline verified vs blocked
 

@@ -54,7 +54,7 @@ Name 64 chars; 10 versions; 50 drafts; curator 14/30 days; lock 30 s; threat sca
 
 ## Not implemented
 
-Scoping by owner/project; semantic discovery; a scheduler for `runCurator` (nothing in this repository calls it outside tests); CLI/RPC commands for accept/reject/undo/pin; an evaluation gate before acceptance; OpenClaw's reviewer prompt and tool surface; Hermes curator backups and run reports.
+Scoping by owner/project; semantic discovery; OpenClaw's reviewer prompt and tool surface; Hermes curator backups and run reports. Curator scheduling, operator commands and a held-out acceptance gate are implemented.
 
 ## Attribution
 

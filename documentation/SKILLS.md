@@ -103,8 +103,8 @@ Statuses are `active`, `stale` and `archived` (`SkillLifecycleStatus`).
   `getRevision`, `submitProposal`) and `MemoryProposalService`; it never holds
   `accept`, `applyBatch` or `batch`.
 - Humans (or the host on their behalf) accept, reject, undo, pin, restore and
-  run the curator. No CLI or RPC command for these exists yet (see "Not
-  implemented").
+  run the curator through `mars skills`; proposal review also has RPC methods
+  and a VS Code Skills view.
 
 ## How skills enter sessions
 
@@ -285,9 +285,10 @@ verdict rather than counting twice. Outcome credit is advisory: a ledger
 failure never changes a task, and ranking falls back to relevance only.
 
 Limits of this evidence: the baseline is every other credited task, not a
-matched control, so different task mixes can confound it. The held-out A/B
-gate before acceptance is the next step. Outcomes are keyed by skill name and
-count every content version; `versions` reports how many there were.
+matched control, so different task mixes can confound it. A held-out A/B gate
+is enforced before applicable proposal acceptance unless explicitly overridden
+with a recorded reason. Outcomes are keyed by skill name and count every
+content version; `versions` reports how many there were.
 
 ## Not implemented or not verified
 
@@ -302,11 +303,11 @@ count every content version; `versions` reports how many there were.
   once at startup and every 6 hours (`SKILL_CURATOR_INTERVAL_MS`); teardown
   waits for an in-flight pass. Hermes' usage-interval/idle rules
   (`should_run_now`) are not ported. `mars skills curate` runs it on demand.
-- **Operator surface is CLI-only.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|gate|gates|accept|reject|undo|curate>`
+- **Operator surface.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|gate|gates|accept|reject|undo|curate>`
   operates on the same store as `mars serve` (`--state`, `--source`,
-  `--project` defaults match it; changes are recorded with `--actor`). There
-  are no RPC methods or VS Code view yet, and no command to inspect
-  `review.jsonl`.
+  `--project` defaults match it; changes are recorded with `--actor`). Proposal
+  review also has RPC methods and a VS Code Skills view; there is no command
+  to inspect `review.jsonl`.
 - **No live gate trials.** `accept` enforces the held-out gate (below), but
   producing real paired runs needs a live model; until then trials files are
   supplied by hand or the gate is skipped with a recorded reason.
