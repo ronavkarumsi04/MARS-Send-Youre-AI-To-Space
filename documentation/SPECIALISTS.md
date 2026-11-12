@@ -101,7 +101,11 @@ behavior.
 
 `mars serve --specialists-registry DIR --specialists-trust FILE
 --specialists-domain AREA/KIND [--specialists-complexity light|medium|heavy]`
-constructs the registry and per-step router. Complexity defaults to `medium`;
+constructs the registry and per-step router. It
+cannot be combined with `--omniroute`: the gateway creates a separate model
+catalog that specialist routing cannot currently share. This combination is
+refused as a usage error.
+Complexity defaults to `medium`;
 paid consent is false. It uses the workbench catalog, including attached vLLM
 models. `--vllm` plus `--vllm-profile FILE` is required for adapter attestation;
 without an attestor adapters never route. Unattested, unloaded or off-pin targets

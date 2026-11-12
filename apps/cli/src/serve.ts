@@ -324,6 +324,10 @@ export async function runServer(
       ? { complexity: values["specialists-complexity"] }
       : {}),
   });
+  if (specialistFlags && values.omniroute)
+    throw new ServeUsageError(
+      "--specialists-registry cannot be combined with --omniroute",
+    );
   const research = researchFromFlags(
     {
       ...(values["research-search"] !== undefined

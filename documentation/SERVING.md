@@ -74,6 +74,8 @@ mars serve --source ./repo --state /private/mars-state \
 and `--specialists-domain AREA/KIND`. Optional `--specialists-complexity` accepts
 `light|medium|heavy` (default `medium`). Dependent flags without the registry are
 usage errors. Without these flags the listening summary has `specialists: null`.
+`--specialists-registry` cannot be combined with `--omniroute`: the gateway
+builds a separate model catalog that specialist routing cannot currently share.
 With them it reports only domain, complexity, `serving_attestation: "vllm"|"none"`
 and `step_routing: true`, not registry paths or secrets.
 

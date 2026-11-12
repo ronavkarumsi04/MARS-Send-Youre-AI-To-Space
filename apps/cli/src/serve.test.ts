@@ -3,7 +3,25 @@ import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_WORKBENCH_PORT } from "@mars/workbench";
-import { specialistsFromFlags } from "./serve";
+import { runServer, ServeUsageError, specialistsFromFlags } from "./serve";
+
+test("serve refuses specialist routing combined with OmniRoute", async () => {
+  const error = await runServer([
+    "--omniroute",
+    "--specialists-registry",
+    "registry",
+    "--specialists-trust",
+    "trust.json",
+    "--specialists-domain",
+    "coding/edit",
+    "--source",
+    "/nonexistent-specialist-source",
+  ]).catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(ServeUsageError);
+  expect((error as Error).message).toContain(
+    "--specialists-registry cannot be combined with --omniroute",
+  );
+});
 
 test("specialists flags are opt-in and validate required domain, trust and complexity", () => {
   expect(specialistsFromFlags({})).toBeUndefined();
