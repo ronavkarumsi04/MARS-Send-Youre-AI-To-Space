@@ -7,9 +7,11 @@ import {
   test,
 } from "bun:test";
 import type { RequestContext } from "@mars/contracts";
+import { createTaskStore } from "../../tasks/src";
 import {
   type RoutingDecision,
   type ServingAttestor,
+  SpecialistRegistry,
   SpecialistRegistryError,
   SpecialistTaskRouter,
   type TaskRoutingStep,
@@ -19,6 +21,7 @@ import {
   context,
   createRegistry,
   createTempRoot,
+  evidenceVerifier,
   fakeCatalog,
   fakeModel,
   installNoNetworkStub,
@@ -31,12 +34,14 @@ import {
 } from "./helpers";
 
 const roots: string[] = [];
+const artifactStores: Awaited<ReturnType<typeof createTaskStore>>[] = [];
 let restoreFetch: (() => void) | undefined;
 beforeAll(() => {
   restoreFetch = installNoNetworkStub();
 });
 afterAll(() => restoreFetch?.());
 afterEach(async () => {
+  for (const store of artifactStores.splice(0)) store.close();
   await Promise.all(roots.splice(0).map(removeTempRoot));
 });
 
@@ -123,9 +128,21 @@ async function multiBindingSetup(
 ) {
   const root = await createTempRoot();
   roots.push(root);
-  const artifacts = new MemoryArtifacts();
-  const adapter = artifactRef("multi-adapter", new Uint8Array([4, 5, 6]));
-  const chatTemplate = artifactRef("multi-template");
+  const store = await createTaskStore({ rootDir: `${root}/artifacts` });
+  artifactStores.push(store);
+  // The helper only manufactures signed fixture documents; the real registry
+  // loads their bytes from the durable store, never from MemoryArtifacts.
+  const documents = new MemoryArtifacts();
+  const adapter = await store.artifacts.put(
+    context,
+    new Uint8Array([4, 5, 6]),
+    "application/octet-stream",
+  );
+  const chatTemplate = await store.artifacts.put(
+    context,
+    new TextEncoder().encode("template"),
+    "text/plain",
+  );
   const state = {
     absent: new Set<string>(),
     throwing: new Set<string>(),
@@ -150,7 +167,11 @@ async function multiBindingSetup(
       ),
     ],
   });
-  const registry = createRegistry(root, artifacts, {
+  const registry = new SpecialistRegistry({
+    rootDir: `${root}/registry`,
+    artifacts: store.artifacts,
+    allowSyntheticFixtures: true,
+    evidenceVerifier: evidenceVerifier(),
     catalog: {
       policy: catalog.policy,
       getModel: (id) =>
@@ -179,10 +200,18 @@ async function multiBindingSetup(
   });
   await registry.registerBaseline(context, makeBaseline());
   const useAdapter = options.adapter !== false;
+  const lineageRef = await makeLineageArtifact(documents, context.scope, {
+    specialistId: "multi",
+  });
+  const datasetLineage = await store.artifacts.put(
+    context,
+    await documents.get(context, lineageRef),
+    "application/json",
+  );
   const serving = options.reverse
     ? [...MULTI_BINDINGS].reverse()
     : MULTI_BINDINGS;
-  const fixture = await makeSpecialistFixture(artifacts, {
+  const fixture = await makeSpecialistFixture(documents, {
     specialistId: "multi",
     serving: serving.map((binding) => ({
       ...binding,
@@ -198,12 +227,15 @@ async function multiBindingSetup(
             tokenizer: { component: "tokenizer/base", revision: "1" },
             chat_template_sha256: chatTemplate.sha256,
           },
-          datasetLineage: await makeLineageArtifact(artifacts, context.scope, {
-            specialistId: "multi",
-          }),
+          datasetLineage,
         }
       : {}),
   });
+  fixture.registration.evaluation = await store.artifacts.put(
+    context,
+    fixture.reportBytes,
+    "application/json",
+  );
   await registry.registerSpecialist(context, fixture.registration);
   await registry.promote(context, "multi", "1", null);
   state.calls.length = 0;
