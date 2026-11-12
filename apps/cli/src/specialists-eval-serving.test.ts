@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELD_OUT_SPLIT_SCHEMA, requestSha256 } from "@mars/datasets";
@@ -307,6 +307,23 @@ for (const mode of [
     }
   }, 60_000);
 }
+
+test("profile base mismatch refuses before any completion", async () => {
+  const f = await setup("improved");
+  try {
+    const file = join(f.root, "profile.json");
+    const profile = JSON.parse(await readFile(file, "utf8"));
+    profile.base_model.revision = "different-revision";
+    await writeFile(file, JSON.stringify(profile));
+    await expect(
+      runSpecialistsEvaluate(f.args, { env: f.env, write: () => {} }),
+    ).rejects.toMatchObject({ code: "profile_mismatch" });
+    expect(f.server.modelRequests()).toHaveLength(0);
+  } finally {
+    await f.server.stop();
+    await rm(f.root, { recursive: true, force: true });
+  }
+}, 60_000);
 
 test("default serving evaluation refuses invalid trust, expectations and budgets without completions", async () => {
   const f = await setup("improved");

@@ -26,6 +26,7 @@ import {
   vllmOrigin,
 } from "@mars/providers-vllm";
 import {
+  compatibleBase,
   createFileArtifactStore,
   createSpecialistRegistry,
   loadSpecialistTrust,
@@ -57,6 +58,7 @@ export type SpecialistsEvalRefusalCode =
   | "trust_invalid"
   | "expectations_invalid"
   | "candidate_not_served"
+  | "profile_mismatch"
   | "evaluation_refused";
 
 /** A clean refusal; the message names flags and variable names, never values. */
@@ -488,11 +490,14 @@ async function openServingEvaluation(
     request_id: randomUUID(),
   };
   try {
-    const subject = await subjectResolverFromRegistry(registry).resolve(
-      context,
-      id,
-      revision,
+    const subject = (await registry.inspect(context, id)).revisions.find(
+      (view) => view.registration.revision === revision,
     );
+    if (subject && !compatibleBase(subject.registration, profile.base_model))
+      throw new SpecialistsEvalRefusal(
+        "profile_mismatch",
+        "--vllm-profile base must match the registered --specialist base",
+      );
     const snapshot = await readVllmServing(client, profile);
     if (
       !subject ||
