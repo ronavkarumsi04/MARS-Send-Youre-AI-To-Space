@@ -43,6 +43,8 @@ export interface TaskRoutingInput {
   usage?: TaskRoutingUsage;
   /** Absolute task deadline in epoch milliseconds. */
   deadline_at?: number;
+  /** Optional free-target guard for non-pinned candidates only. */
+  free_target?: (target: SelectedTarget) => boolean;
 }
 
 /** Task evidence for one routing step. Contains refs and codes, never paths. */
@@ -59,6 +61,7 @@ export interface TaskRoutingStep {
   rejected: Array<{ ref: string; reasons: string[] }>;
   step_reasons: StepReasonCode[];
   lost_refs: string[];
+  paid_skipped?: string[];
   remaining: { tokens: number; usd: number; duration_ms: number };
 }
 
@@ -136,7 +139,15 @@ export class SpecialistTaskRouter {
     const previous = this.locks.get(key) ?? Promise.resolve();
     const run = previous
       .catch(() => undefined)
-      .then(() => this.step(context, request, usage, input.deadline_at));
+      .then(() =>
+        this.step(
+          context,
+          request,
+          usage,
+          input.deadline_at,
+          input.free_target,
+        ),
+      );
     this.locks.set(key, run);
     try {
       return await run;
@@ -150,6 +161,7 @@ export class SpecialistTaskRouter {
     request: RoutingRequest,
     usage: TaskRoutingUsage,
     deadlineAt: number | undefined,
+    freeTarget?: (target: SelectedTarget) => boolean,
   ): Promise<TaskRoutingResult> {
     const prior =
       (await this.registry.taskRoutingState(
@@ -158,6 +170,7 @@ export class SpecialistTaskRouter {
         request.role,
       )) ?? null;
     const lost = new Set(prior?.lost_refs ?? []);
+    const paidSkipped = new Set<string>();
     const stepReasons = new Set<StepReasonCode>();
     const rejected = new Map<string, Set<string>>();
     const decisionIds: string[] = [];
@@ -200,7 +213,11 @@ export class SpecialistTaskRouter {
         extra: Partial<RoutingRequest>,
       ): Promise<RoutingDecision> => {
         const exclude = [
-          ...new Set([...(request.exclude_refs ?? []), ...lost]),
+          ...new Set([
+            ...(request.exclude_refs ?? []),
+            ...lost,
+            ...paidSkipped,
+          ]),
         ];
         const decision = await this.registry.route(context, {
           ...budgeted,
@@ -237,6 +254,20 @@ export class SpecialistTaskRouter {
         const pick = guarded(decision);
         return pick && pick.target.ref === ref ? pick : null;
       };
+      const freePick = (pick: Pick_ | null): Pick_ | null => {
+        if (!pick || !freeTarget || freeTarget(pick.target)) return pick;
+        paidSkipped.add(pick.target.ref);
+        reject(pick.target.ref, ["paid_skipped"]);
+        return null;
+      };
+      const routeFree = async (): Promise<Pick_ | null> => {
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const pick = guarded(await route({}));
+          const allowed = freePick(pick);
+          if (allowed || !pick) return allowed;
+        }
+        return null;
+      };
 
       if (pinned) {
         const lossReason = await this.pinLoss(context, pinned);
@@ -257,14 +288,14 @@ export class SpecialistTaskRouter {
             if (lost.has(ref) || (request.exclude_refs ?? []).includes(ref)) {
               continue;
             }
-            chosen = await tryRef(ref);
+            chosen = freePick(await tryRef(ref));
             if (chosen) break;
           }
-          if (!chosen) chosen = guarded(await route({}));
+          if (!chosen) chosen = await routeFree();
           if (chosen) mode = "fallback";
         }
       } else {
-        chosen = guarded(await route({}));
+        chosen = await routeFree();
         if (chosen) mode = chosen.decision.fallback ? "fallback" : "routed";
         if (chosen?.decision.fallback) {
           fallbackFrom = chosen.decision.fallback.from;
@@ -312,6 +343,7 @@ export class SpecialistTaskRouter {
       })),
       step_reasons: [...stepReasons].sort(),
       lost_refs: state.lost_refs,
+      ...(freeTarget ? { paid_skipped: [...paidSkipped] } : {}),
       remaining: {
         tokens: Math.max(0, tokens),
         usd,

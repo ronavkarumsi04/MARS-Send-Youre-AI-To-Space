@@ -2134,6 +2134,22 @@ export async function createWorkbenchHost(
         "worker",
         {
           usage,
+          ...((launch.model_classification ?? classifyModel(launch.model_id))
+            ?.free === true || specialists.paid_consent !== true
+            ? {
+                free_target: (
+                  target: NonNullable<RoutedTaskStep["step"]["selected"]>,
+                ) => {
+                  if (target.kind === "baseline") return true;
+                  try {
+                    return selectModel(target.model_id, needsTools).pricing
+                      .free;
+                  } catch {
+                    return true;
+                  }
+                },
+              }
+            : {}),
           ...(launch.deadline ? { deadline_at: launch.deadline } : {}),
         },
       );
@@ -2228,7 +2244,11 @@ export async function createWorkbenchHost(
     if (routed.step.mode === "budget_exhausted")
       return refuse("budget_exhausted");
     if (!routing || !selected || routing.outcome === "unavailable")
-      return refuse("routing_unavailable");
+      return refuse(
+        routed.step.paid_skipped?.length
+          ? "fallback_paid_refused"
+          : "routing_unavailable",
+      );
     // Defense in depth: the step router already refuses these.
     if (
       selected.adapter_sha256 !== null &&
@@ -2236,10 +2256,8 @@ export async function createWorkbenchHost(
     )
       return refuse("unattested_adapter_refused");
     if (routing.ref === pinned.ref) {
-      // The saved journal is bound to its model: a changed serving binding
-      // for the same pin cannot continue this session.
       if (routing.model_id !== pinned.model_id)
-        return refuse("pinned_binding_changed");
+        return rebind(routing, "rebound", "pinned_binding_changed");
       return {
         outcome: {
           ...base,
@@ -2252,46 +2270,64 @@ export async function createWorkbenchHost(
     // Only a pin that is no longer a verified target moves; one dropped for
     // budget or capability keeps the session paused, as before.
     if (!invalidation) return refuse("pinned_not_invalidated");
-    // A baseline fallback has no pinned model and uses the free-only default.
-    let model: ReturnType<typeof selectModel>;
-    try {
-      model = selectModel(routing.model_id ?? undefined, needsTools);
-    } catch {
-      return refuse("fallback_model_unavailable");
-    }
-    const launchedFree =
-      (launch.model_classification ?? classifyModel(launch.model_id))?.free ===
-      true;
-    if (
-      !model.pricing.free &&
-      (launchedFree || options.specialists?.paid_consent !== true)
-    )
-      return refuse("fallback_paid_refused");
-    const rebind = {
-      from_model_id: launch.model_id,
-      to_model_id: model.id,
-      from_ref: pinned.ref,
-      to_ref: routing.ref,
-      decision_id: routing.decision_id,
-      step_reasons: routed.step.step_reasons,
-    };
-    const history = launch.model_rebinds ?? [];
-    if (history.length >= 32) return refuse("rebind_limit_reached");
-    return {
-      outcome: {
-        ...base,
-        action: "fallback",
-        reason: invalidation,
+    return rebind(
+      routing,
+      "fallback",
+      routed.step.paid_skipped?.length ? "fallback_paid_skipped" : invalidation,
+    );
+
+    function rebind(
+      routing: FrozenRouting,
+      action: "fallback" | "rebound",
+      reason: string,
+    ): { outcome: ResumeRoutingOutcome; rebound?: Launch } {
+      // A baseline fallback has no pinned model and uses the free-only default.
+      let model: ReturnType<typeof selectModel>;
+      try {
+        model = selectModel(routing.model_id ?? undefined, needsTools);
+      } catch {
+        return refuse("fallback_model_unavailable");
+      }
+      const launchedFree =
+        (launch.model_classification ?? classifyModel(launch.model_id))
+          ?.free === true;
+      if (
+        !model.pricing.free &&
+        (launchedFree || options.specialists?.paid_consent !== true)
+      )
+        return refuse("fallback_paid_refused");
+      const rebind = {
+        from_model_id: launch.model_id,
         to_model_id: model.id,
-      },
-      rebound: {
-        ...launch,
-        model_id: model.id,
-        model_classification: classifyModel(model.id) ?? undefined,
-        routing,
-        model_rebinds: [...history, rebind],
-      },
-    };
+        from_ref: pinned.ref,
+        to_ref: routing.ref,
+        decision_id: routing.decision_id,
+        step_reasons: routed.step.step_reasons,
+      };
+      const history = launch.model_rebinds ?? [];
+      if (history.length >= 32) return refuse("rebind_limit_reached");
+      return {
+        outcome: {
+          ...base,
+          action,
+          reason,
+          ...(action === "fallback" && routed.step.paid_skipped?.length
+            ? {
+                skipped_refs: routed.step.paid_skipped,
+                ...(invalidation ? { invalidation } : {}),
+              }
+            : {}),
+          to_model_id: model.id,
+        },
+        rebound: {
+          ...launch,
+          model_id: model.id,
+          model_classification: classifyModel(model.id) ?? undefined,
+          routing,
+          model_rebinds: [...history, rebind],
+        },
+      };
+    }
   };
   const freezeLaunchMemory = async (
     context: RequestContext,

@@ -60,7 +60,6 @@ export type FrozenRouting = z.infer<typeof FrozenRoutingSchema>;
 export type ResumeRefusal =
   | "routing_unavailable"
   | "budget_exhausted"
-  | "pinned_binding_changed"
   | "pinned_not_invalidated"
   | "unattested_adapter_refused"
   | "fallback_paid_refused"
@@ -121,9 +120,11 @@ export function pinInvalidation(
 
 /** How a resumed specialist launch continues after re-routing its pin. */
 export interface ResumeRoutingOutcome {
-  action: "pinned" | "fallback" | "refused";
+  action: "pinned" | "fallback" | "rebound" | "refused";
   /** The invalidation reason for a fallback, the refusal reason otherwise. */
   reason: string | null;
+  skipped_refs?: string[];
+  invalidation?: string;
   from_ref: string | null;
   to_ref: string | null;
   from_model_id: string;
