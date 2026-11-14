@@ -9,6 +9,7 @@ import type {
 import {
   acceptWithGate,
   describeGate,
+  discoverSkills,
   evaluateSkillGate,
   GATE_POLICY,
   GateTrialsSchema,
@@ -22,7 +23,7 @@ import { resolveWorkbenchLocation } from "./workbench-location";
 
 export const SKILLS_USAGE = [
   "Usage: mars skills <command> [ARGS] [--state PRIVATE_DIR] [--source DIR] [--project ID] [--actor ID] [--json]",
-  "  list [--all]                          live skills (--all includes archived) and the store revision",
+  "  list [--all]                          live store skills, repository skills with lock provenance, and the store revision",
   "  show NAME                             one skill with its content",
   "  versions NAME                         saved versions of a skill",
   "  restore-version NAME VERSION_ID       bring back a saved version (the current one is versioned first)",
@@ -73,6 +74,10 @@ function isControl(char: string): boolean {
     (code < 0x20 && char !== "\n" && char !== "\t") ||
     (code >= 0x7f && code <= 0x9f)
   );
+}
+
+function terminalField(value: string): string {
+  return value.replaceAll(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "\uFFFD");
 }
 
 function renderGate(result: SkillGateResult): string {
@@ -156,7 +161,7 @@ export async function runSkills(args: string[]): Promise<void> {
     throw new SkillsUsageError(
       `mars skills gate requires --trials and --evidence.\n${SKILLS_USAGE}`,
     );
-  const { state } = await resolveWorkbenchLocation({
+  const { state, source } = await resolveWorkbenchLocation({
     source: values.source,
     project: values.project,
     state: values.state,
@@ -182,11 +187,25 @@ export async function runSkills(args: string[]): Promise<void> {
           (skill) => values.all || skill.status !== "archived",
         );
         const revision = await store.getRevision();
+        const repository = await discoverSkills({ root: source });
         print(
-          { revision, skills },
+          { revision, skills, repository },
           [
             `skill store revision ${revision.slice(0, 12)}; ${skills.length} skill(s)`,
             ...skills.map(renderSkill),
+            `repository skills (untrusted): ${repository.skills.length}`,
+            ...repository.skills.map(
+              (skill) =>
+                `${skill.name} [${skill.provenance.status}] source=${terminalField(skill.provenance.source ?? "unknown")} hash=${skill.provenance.computedHash ?? "unavailable"}${skill.provenance.lockedHash ? ` locked=${skill.provenance.lockedHash}` : ""} (${terminalField(skill.path)})`,
+            ),
+            ...repository.warnings.map(
+              (warning) =>
+                `warning: ${terminalField(warning.path)}: ${terminalField(warning.message)}`,
+            ),
+            ...repository.skipped.map(
+              (skip) =>
+                `skipped: ${terminalField(skip.path)}: ${terminalField(skip.reason)}`,
+            ),
           ].join("\n"),
         );
         return;

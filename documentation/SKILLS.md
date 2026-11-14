@@ -31,7 +31,7 @@ description: How this project writes release notes.
 
 - Names match `^[a-z0-9][a-z0-9-]{0,63}$`; `constructor` and `prototype` are
   rejected.
-- The frontmatter parser (`packages/skills/src/frontmatter.ts`) is a
+- The store/command frontmatter parser (`packages/skills/src/frontmatter.ts`) is a
   dependency-free **flat subset of YAML**: unindented `key: value` lines, keys
   matching `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` (never `__proto__`), no duplicate
   keys, values either JSON double-quoted, single-quoted, or plain. Plain values
@@ -40,6 +40,68 @@ description: How this project writes release notes.
   multi-line descriptions and billion-laughs constructs cannot be expressed.
 - Every piece of content is passed through `scanThreat` from `@mars/memory`
   before it is stored (see "Threat scanning").
+
+## Skills from skills.sh
+
+Run `npx skills add owner/repo` in the project checkout, then restart MARS so
+the next session snapshots the installed skills. MARS does not run the installer,
+fetch sources, execute bundled scripts, or read global (`-g`) installs.
+The CLI's default project symlink mode copies files into
+`.agents/skills/<name>/` and links `.claude/skills/<name>` to
+`../../.agents/skills/<name>`; Codex reads `.agents/skills` directly. Copy-mode
+installs in supported convention folders work too. Existing source precedence
+is unchanged; aliases of the same real `SKILL.md` load once, while distinct
+copies with the same frontmatter name still appear in `shadowed`.
+
+- **Confinement:** discovery resolves links component by component inside the
+  checkout (including symlinked ancestor folders), never outside it. Broken,
+  cyclic and escaping links are ignored. Reads use Linux directory-fd traversal
+  with `O_NOFOLLOW`, failing closed if `/proc/self/fd` is unavailable; other
+  platforms remain unverified, as does the product runtime. No linked code runs.
+- **Integrity, not trust:** discovered skills carry `provenance` with the lock's
+  `source` (for GitHub, `owner/repo`), `sourceType`, `lockedHash`, locally computed
+  `computedHash`, and `status`: `match`, `modified`, `unpinned`, or `unverified`.
+  `skills-lock.json` **v2** is read-only, keyed by installed folder name. A hash
+  mismatch warns and marks `modified` without blocking discovery. Missing
+  entries/empty migrated hashes are `unpinned`; invalid/unsupported locks and
+  bounded-hash failures warn and are `unverified`, never a partial match.
+  The lock is a local, unauthenticated source claim, not a signature. Neither
+  a matching hash nor a lock entry grants tools, changes ranking, or sets the
+  lifecycle `pinned` flag.
+- **Hash compatibility:** follows the upstream README's v2 algorithm and all
+  three published vectors: omit `metadata.json`, `.git`, `__pycache__`, and
+  `__pypackages__` directories; dereference only links contained in the skill
+  folder, omitting broken/looping/escaping links; normalize CRLF to LF only for
+  files without NUL bytes; sort relative `/` paths by UTF-8 bytes; SHA-256 over
+  each `path + NUL + decimal byte length + NUL + content`. Verification is
+  bounded to 4,096 visited entries, 16 MiB of file content and depth 64 per skill
+  (in addition to discovery's existing skill-count/`SKILL.md` byte limits).
+- **Import frontmatter decision:** `parseImportedFrontmatter` accepts existing
+  flat scalars and folded/literal **description only** (`>`, `>-`, `|`, `|-`),
+  with uniformly space-indented lines and paragraph breaks. It ignores opaque
+  optional nested keys such as `metadata` and block/flow `allowed-tools` lists;
+  these are not permission declarations in MARS. Required fields must be scalar.
+  Anchors, aliases, tags, duplicate top-level keys, tab indentation, other block
+  scalars, `+`/explicit indentation indicators and more-indented description
+  blocks are unsupported; discovery skips them as `frontmatter` with a clear
+  warning. No general YAML evaluator or alias expansion is introduced. The
+  strict store/command parser is unchanged.
+- **Threat scanning:** every imported `SKILL.md`, including ignored metadata,
+  passes `scanThreat` before admission, even when its lock hash matches. Blocked
+  content is reported as `threat:<pattern>`. Remaining content is still frozen
+  as untrusted evidence, not instructions or permission to use tools. Supporting
+  files are hashed, not executed or injected into the skill context.
+
+Inspect `mars skills list --source DIR` (or `--json`): repository skills and
+their source/hash/status, warnings and skips are shown separately from the
+lifecycle store; the store revision does not pretend to cover repository files.
+
+Layout/schema verified against
+[`vercel-labs/skills` at b716f9d](https://github.com/vercel-labs/skills/tree/b716f9dc2ba36b6aa8f0080615e5a3a6caeac63b)
+(`src/installer.ts`, `src/local-lock.ts`, `src/skill-hash.ts`, and the
+[README algorithm/vectors](https://github.com/vercel-labs/skills/blob/b716f9dc2ba36b6aa8f0080615e5a3a6caeac63b/README.md#lock-file-content-hash), MIT).
+The synthetic CLI-layout fixture and compatibility tests are offline only;
+no live model/provider run has occurred.
 
 ## Lifecycle
 

@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "skills": {
+    "release-guide": {
+      "source": "example-org/release-skills",
+      "sourceType": "github",
+      "skillPath": "skills/release-guide/SKILL.md",
+      "computedHash": "7887cc385fafb06f6b621c1464cdaca016c852999bb960f9703bf16efcd45be1"
+    }
+  }
+}
