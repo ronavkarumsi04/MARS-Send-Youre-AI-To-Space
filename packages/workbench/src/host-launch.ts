@@ -34,6 +34,14 @@ export const launchSchema = z
     task_id: z.string().min(1),
     scope: ScopeSchema,
     model_id: z.string().min(1),
+    edit_format: z
+      .object({
+        format: z.enum(["hashline", "replace", "apply_patch"]),
+        requested: z.enum(["hashline", "replace", "apply_patch"]),
+        source: z.enum(["config", "default"]),
+      })
+      .strict()
+      .optional(),
     model_classification: z
       .object({ tier: z.enum(["free", "paid", "local"]), free: z.boolean() })
       .strict()

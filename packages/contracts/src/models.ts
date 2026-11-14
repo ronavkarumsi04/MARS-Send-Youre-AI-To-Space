@@ -39,6 +39,7 @@ export const ModelConfigSchema = z
     id,
     providerId: id,
     model: id,
+    editFormat: z.enum(["hashline", "replace", "apply_patch"]).optional(),
     capabilities: z
       .object({
         tools: z.boolean(),

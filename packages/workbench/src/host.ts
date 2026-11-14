@@ -1606,9 +1606,9 @@ export async function createWorkbenchHost(
       return result;
     };
     return {
-      read: (path) =>
+      read: (path, toolName) =>
         hooked(
-          "mars_read",
+          toolName ?? "mars_read",
           path,
           () => authorize("read"),
           async (context) =>
@@ -1617,9 +1617,9 @@ export async function createWorkbenchHost(
               await options.workspace.read(context, workspace, path),
             ),
         ),
-      write: (path, bytes) =>
+      write: (path, bytes, toolName) =>
         hooked(
-          "mars_write",
+          toolName ?? "mars_write",
           path,
           async () => {
             const context = await authorize("write");
@@ -2724,6 +2724,19 @@ export async function createWorkbenchHost(
       },
     };
   };
+  const recordEditFormat = async (taskId: string, runtime: RuntimeSession) => {
+    await options.store
+      .appendEvent(
+        internalContext(options.scope),
+        taskId,
+        workbenchEvent({
+          operation: "edit_format.selected",
+          model_id: runtime.modelId,
+          ...runtime.editFormat,
+        }),
+      )
+      .catch(() => undefined);
+  };
   const announceConventions = async (
     running: Task,
     workspace: WorkspaceRef,
@@ -3144,6 +3157,7 @@ export async function createWorkbenchHost(
           scope: task.scope,
           cwd,
           model_id: runtime.modelId,
+          edit_format: runtime.editFormat,
           model_classification: classifyModel(model.id) ?? undefined,
           deadline: opened.deadline,
           approvals: params.approvals,
@@ -3173,6 +3187,7 @@ export async function createWorkbenchHost(
         );
         if (closing) throw new WorkbenchError("unavailable");
         await opened.release();
+        await recordEditFormat(task.task_id, runtime);
         await announceConventions(
           running,
           workspace,
@@ -3330,6 +3345,11 @@ export async function createWorkbenchHost(
           runtime.modelId !== launch.model_id
         )
           throw new WorkbenchError("conflict");
+        await rewriteLaunch(launchLocation, task, {
+          ...launch,
+          edit_format: runtime.editFormat,
+        });
+        await recordEditFormat(taskId, runtime);
         run(
           running,
           workspace,
