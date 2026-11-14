@@ -16,7 +16,7 @@ test("small reads are unchanged through the threshold and large reads outline", 
   const large = "x".repeat(24 * 1024 + 1);
   expect(renderRead("a.txt", bytes(large))).toContain("1 lines, 24577 bytes");
   expect(renderRead("a.txt", bytes(large))).toContain(
-    "Call mars_read with path, start_line and end_line",
+    "Call mars_read with path, offset",
   );
   expect(renderRead("a.txt", bytes(large))).toContain("line truncated");
   expect(

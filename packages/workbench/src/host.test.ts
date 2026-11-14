@@ -1165,6 +1165,71 @@ test("saved facts are omitted rather than exhausting a small model context", asy
   await api.close();
 });
 
+test("host optional context reserves the grep tool exactly when search is bound", async () => {
+  for (const grep of [false, true]) {
+    const f = await fixture();
+    const small = await f.smallRegistry();
+    const memory = createMemoryStore({ rootDir: join(f.root, "memory") });
+    cleanup.push(() => memory.close());
+    await memory.batch(context(), 0, [
+      {
+        operation: "add",
+        entry: {
+          entry_id: "fact",
+          scope,
+          target: "project",
+          fact: "small saved note",
+          revision: 0,
+          source_event_ids: [],
+          observed_at: "2026-01-01T00:00:00Z",
+          verified_at: null,
+          supersedes: null,
+          deleted: false,
+        },
+      },
+    ]);
+    if (grep)
+      f.workspace.search = async () => ({
+        matches: [],
+        truncated: false,
+        limitReached: false,
+      });
+    const input = task();
+    const approvals = { read: true, write: false, execute: false };
+    const instruction = `\n\nAcceptance criteria:\n${input.acceptance_criteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+    const surface = { approvals, recall: true, instruction };
+    const base = initialRequestAllowance(surface);
+    const grepBytes =
+      initialRequestAllowance({ ...surface, grep: true }) - base;
+    expect(grepBytes).toBeGreaterThan(0);
+    input.request = "r".repeat(
+      8192 - MIN_INITIAL_OUTPUT_RESERVE - base - grepBytes - 256,
+    );
+    const api = await f.makeHost(small, memory);
+    await api.create(context(), input);
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals,
+    });
+    const session = required(f.sessions[0]);
+    const actual = required(session.instructions[0]);
+    expect(Boolean(session.options.tools.grep)).toBe(grep);
+    expect(actual.includes("small saved note")).toBe(!grep);
+    expect(
+      initialRequestAllowance({
+        approvals,
+        recall: true,
+        grep,
+        instruction: actual,
+      }) + MIN_INITIAL_OUTPUT_RESERVE,
+    ).toBeLessThanOrEqual(8192);
+    session.finish("completed");
+    await session.disposed;
+    await api.close();
+  }
+});
+
 test("read denial disables saved context and recall; index failure is a sanitized non-fatal projection event", async () => {
   const f = await fixture();
   const memory: WorkbenchMemory = {

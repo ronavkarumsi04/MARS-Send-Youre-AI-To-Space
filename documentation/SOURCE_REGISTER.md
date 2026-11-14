@@ -38,7 +38,9 @@ This is an audit baseline, not a list of implemented integrations; the Owner col
 
 ## Interpretation
 
-### omp-derived file-edit defaults (18.14.0, MIT)
+### omp-derived file-edit defaults (MIT)
+
+Current runtime dependencies, including the evaluation harness’s newly added direct SDK/AI dependencies, are pinned to 18.20.0. Rechecked installed 18.20.0 `src/utils/edit-mode.ts:22–47` and `src/edit/settings.ts:47`: MARS’s existing default hashline and model-specific replace choices remain compatible. The 18.14.0 references below record the original derivation, not the current runtime version.
 
 `packages/execution/src/edit-format.ts` minimally re-expresses the installed omp 18.14.0 edit-mode defaults and case-insensitive model taxonomy matching, without importing pi-catalog or copying its classifier. `anchored-edit.ts` is an independent implementation of the per-line hashline idea from [the harness post](https://blog.can.ac/2026/02/12/the-harness-problem/), not omp 18.14's per-file tag implementation. There is no claim of better results: only offline/fake-model tests exist, no real model has used `mars_edit`, and no MARS format benchmark has run.
 

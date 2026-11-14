@@ -20,6 +20,7 @@ import {
   minimumPoweredTasks,
   POWER_DESIGN,
   parseEditBenchmarkArm,
+  parseReadResult,
   runEditBenchmark,
   runEditTrial,
   SCRIPTED_PROFILES,
@@ -188,6 +189,25 @@ test("offline end to end: scripted small model, both arms, sealed report, transc
     (await readFile(run.files.trials, "utf8")).trim().split("\n"),
   ).toHaveLength(20);
 }, 120_000);
+
+test("scripted reads recognize outlines and plain or anchored MARS pages", () => {
+  const outline = parseReadResult(
+    "a.ts: 100 lines, 25000 bytes. Outlined because file exceeds the 24576-byte summary threshold.\nHeuristic outline (not AST-exact):\n1-100: export class A\n\nHead (1 requested lines; bounded preview):\n1: export class A {\n\nCall mars_read with path, offset",
+  );
+  expect(outline.complete).toBe(false);
+  expect(outline.content).toBeNull();
+  expect(outline.lines.get(1)).toBe("export class A {");
+  const plain = parseReadResult(
+    "a.ts · lines 2-2 of 3\nbody\n[continue with offset=3]",
+  );
+  expect(plain.complete).toBe(false);
+  expect(plain.lines.get(2)).toBe("body");
+  const anchored = parseReadResult("a.ts · lines 1-1 of 1\n1:abc|body");
+  expect(anchored.complete).toBe(true);
+  expect(anchored.content).toBe("body\n");
+  expect(parseReadResult("").content).toBe("");
+  expect(parseReadResult("a.ts · lines 1-0 of 0\n").complete).toBe(false);
+});
 
 test("below the power minimum the run is exploratory and no verdict is computed", async () => {
   const fluent = await offlineRun("patch-fluent");

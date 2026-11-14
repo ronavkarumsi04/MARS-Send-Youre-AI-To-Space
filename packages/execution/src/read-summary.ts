@@ -212,5 +212,5 @@ export function renderRead(
     preview.push(line);
     bytes += Buffer.byteLength(line, "utf8") + 1;
   }
-  return `${header}\n${symbols}${outline.truncated ? "\n[outline symbol limit reached]" : ""}\n\nHead (${Math.min(config.headLines, lines.length)} requested lines; bounded preview):\n${preview.join("\n")}\n\nCall mars_read with path, start_line and end_line (1-based, inclusive) for the needed section. Explicit ranges are capped at ${MAX_READ_BYTES} UTF-8 bytes.`;
+  return `${header}\n${symbols}${outline.truncated ? "\n[outline symbol limit reached]" : ""}\n\nHead (${Math.min(config.headLines, lines.length)} requested lines; bounded preview):\n${preview.join("\n")}\n\nCall mars_read with path, offset (1-based) and limit (1-2000 lines) for the needed section and edit anchors. Range pages are bounded to ${MAX_READ_BYTES} UTF-8 bytes; follow continuation offsets.`;
 }

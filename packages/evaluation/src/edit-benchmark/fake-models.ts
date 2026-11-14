@@ -186,6 +186,21 @@ function parsePagedRead(result: string): ReadView | null {
 export function parseReadResult(result: string): ReadView {
   const paged = parsePagedRead(result);
   if (paged) return paged;
+  if (
+    /^.*: \d+ lines, \d+ bytes\. Outlined because file exceeds /u.test(result)
+  ) {
+    const preview =
+      result
+        .split(/\n\nHead \([^\n]*\):\n/)[1]
+        ?.split("\n\nCall mars_read")[0] ?? "";
+    const lines = new Map<number, string>();
+    for (const row of preview.split("\n")) {
+      const numbered = /^(\d+): (.*)$/.exec(row);
+      if (numbered && !row.endsWith(" [line truncated]"))
+        lines.set(Number(numbered[1]), numbered[2] ?? "");
+    }
+    return { content: null, lines, tag: null, complete: false };
+  }
   const header = /^\[[^\]\n#]+#([0-9A-Fa-f]{4})\]\n?/.exec(result);
   if (!header) {
     // omp middle-truncates any tool result over 50 KiB, including mars_read.
@@ -556,7 +571,7 @@ export function createScriptedEditModel(options: {
         call(
           readTool,
           readTool === "mars_read"
-            ? { path, offset: from, limit: to - from + 1 }
+            ? { path, offset: from, limit: Math.min(2000, to - from + 1) }
             : { path: `${path}:${from}-${to}` },
         );
       const lastRead = events.findLast((event) => event.kind === "read");
@@ -599,9 +614,6 @@ export function createScriptedEditModel(options: {
             view.lines.get(n) === lines[n - 1] ||
             view.lines.get(n - lines.length - 1) === lines[n - 1],
         );
-        // mars_apply_patch sessions have no ranged mars_read.
-        if (!visible && editTool === "mars_apply_patch")
-          return say(`I cannot see the part of ${path} that needs editing.`);
         if (!visible) return rangeRead(from, to);
       }
       const known =

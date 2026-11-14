@@ -29,6 +29,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { z } from "zod";
 import {
+  anchorOf,
   anchorRecovery,
   applyEdits,
   applyReplace,
@@ -48,7 +49,6 @@ import {
   toChatRequest,
 } from "./model-bridge";
 import {
-  ReadRequestSchema,
   type ReadSummaryOptions,
   ReadSummaryOptionsSchema,
   renderRead,
@@ -1363,8 +1363,10 @@ export interface GrepFormatter {
 }
 
 export const DEFAULT_GREP_FORMATTER: GrepFormatter = {
-  match: ({ path, lineNumber, line }) => `${path}:${lineNumber}:${line}`,
-  context: (path, { lineNumber, line }) => `${path}-${lineNumber}-${line}`,
+  match: ({ path, lineNumber, line }) =>
+    `${path}:${anchorOf(lineNumber, line)}|${line}`,
+  context: (path, { lineNumber, line }) =>
+    `${path}:${anchorOf(lineNumber, line)}|${line}`,
 };
 
 function grepTool(
@@ -1431,7 +1433,11 @@ function readTool(
         .parse(params);
       const content = await tools.read(path);
       const ranged = offset !== undefined || limit !== undefined;
-      if (!ranged && content.byteLength > ReadSummaryOptionsSchema.parse(summary).thresholdBytes)
+      if (
+        !ranged &&
+        content.byteLength >
+          ReadSummaryOptionsSchema.parse(summary).thresholdBytes
+      )
         return toolResult(renderRead(path, content, {}, summary));
       const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
       if (format !== "hashline" && !ranged) return toolResult(text);

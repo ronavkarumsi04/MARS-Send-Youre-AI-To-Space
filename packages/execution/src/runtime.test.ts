@@ -133,9 +133,9 @@ test("mars_grep formats search results, supports a formatter seam and journals t
       expect((await session.run(f.task.request)).status).toBe("completed");
       expect(requests).toHaveLength(2);
       for (const line of [
-        "src/a.ts-1-before",
-        "src/a.ts:2:needle",
-        "src/a.ts-3-after",
+        `src/a.ts:${anchorOf(1, "before")}|before`,
+        `src/a.ts:${anchorOf(2, "needle")}|needle`,
+        `src/a.ts:${anchorOf(3, "after")}|after`,
       ])
         expect(JSON.stringify(requests[1])).toContain(
           `${custom ? "anchor|" : ""}${line}`,
@@ -301,11 +301,9 @@ test("mars_read outlines large files, returns ranges and refuses policy-denied r
                         name: "mars_read",
                         arguments: JSON.stringify({
                           path: "large.ts",
-                          ...(kind === "range"
-                            ? { start_line: 2, end_line: 2 }
-                            : {}),
+                          ...(kind === "range" ? { offset: 2, limit: 1 } : {}),
                           ...(kind === "invalid"
-                            ? { start_line: 0, unexpected: true }
+                            ? { offset: 0, unexpected: true }
                             : {}),
                         }),
                       },
@@ -325,7 +323,7 @@ test("mars_read outlines large files, returns ranges and refuses policy-denied r
         expect(result).toContain("16-byte summary threshold");
       }
       if (kind === "range") {
-        expect(result).toContain("second\\n");
+        expect(result).toContain(`${anchorOf(2, "second")}|second`);
         expect(result).not.toContain("export function large");
       }
       if (kind === "denied")
@@ -360,7 +358,7 @@ test("mars_read checkTool refuses reads outside an active run", async () => {
     const tool = sdkSession?.getToolByName("mars_read");
     if (!tool) throw new Error("Missing read tool");
     await expect(
-      tool.execute("stopped", { path: "a.ts", start_line: 1 }),
+      tool.execute("stopped", { path: "a.ts", offset: 1 }),
     ).rejects.toThrow("not authorized");
     expect(reads).toBe(0);
   } finally {
@@ -1755,7 +1753,7 @@ test("mars_read returns anchors, bounded ranges, empty guidance and row-boundary
     const large = await callFileTool(
       f,
       "mars_read",
-      { path: "large" },
+      { path: "large", offset: 1 },
       { task },
     );
     expect(large.relayed).toMatch(
@@ -1801,7 +1799,7 @@ test.each(["replace", "apply_patch"] as const)(
       await writeFile(join(f.cwd, "large"), "x\n".repeat(100_000));
       expect(
         (await callFileTool(f, "mars_read", { path: "large" }, extra)).relayed,
-      ).toContain("File exceeds tool output limit");
+      ).toContain("Heuristic outline");
       expect(
         (
           await callFileTool(
@@ -2290,11 +2288,13 @@ test("edits reject oversized files, content, results and invalid UTF-8 without w
         task,
         tools: {
           ...f.tools,
-          read: async () => new Uint8Array(1024 * 1024 + 1),
+          read: async () =>
+            new TextEncoder().encode(`first\n${"x".repeat(1024 * 1024)}`),
         },
       },
     );
-    expect(oversizedRead.relayed).toContain("1 MiB read limit");
+    expect(oversizedRead.relayed).toContain(`${anchorOf(1, "first")}|first`);
+    expect(oversizedRead.relayed).toContain("continue with offset=2");
     expect(writes).toBe(0);
   } finally {
     await f.cleanup();
