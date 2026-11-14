@@ -111,7 +111,7 @@ export function parseImportedFrontmatter(
       // Opaque optional YAML is never evaluated, expanded, or used as capabilities.
       if (
         nested.some(
-          (s) => s.includes("\t") || /(?:^\s*(?:-\s+)?|:\s*)[&*!]/.test(s),
+          (s) => s.includes("\t") || /(?:^\s*(?:-\s+)?|:\s+)[&*!]/.test(s),
         ) ||
         /^[&*!]/.test(value)
       )
