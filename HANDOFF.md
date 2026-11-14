@@ -1,5 +1,7 @@
 # HANDOFF
 
+Dependency upgrade: all workspace `@oh-my-pi/*` packages are now pinned to **18.20.0**. Earlier 18.14.0 references below describe historical research and PR observations; see `documentation/SOURCE_REGISTER.md` for current provenance.
+
 Running log of where the MARS project stands, what was decided, and what is next.
 Maintained by the active Devin session; update it in every PR that changes scope.
 Covers all three repositories:

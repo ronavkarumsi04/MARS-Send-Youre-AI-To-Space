@@ -793,7 +793,7 @@ describe("@mars/tasks durable store", () => {
     const observed = {
       upstream: {
         runtime: "oh-my-pi" as const,
-        package_version: "18.14.0",
+        package_version: "18.20.0",
         session_id: "session-1",
         entry_ids: ["entry-1"],
       },
@@ -817,7 +817,7 @@ describe("@mars/tasks durable store", () => {
     });
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: "session-1",
       session_file: path.join(tmpdir(), "session.jsonl"),
     };
@@ -868,7 +868,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("privacy-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -987,7 +987,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("path-guard-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -1096,7 +1096,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("shared-directory-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: realSessionFile,
     };
@@ -1306,7 +1306,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("request-id-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: realSessionFile,
     };
@@ -1458,7 +1458,7 @@ describe("@mars/tasks durable store", () => {
     const recordTask = makeTask("prebind-record-task");
     const bindingFor = (task: Task, sessionFile: string) => ({
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     });
@@ -1546,7 +1546,7 @@ describe("@mars/tasks durable store", () => {
     const taskC = makeTask("cross-task-c");
     const bindingFor = (task: Task, sessionFile: string) => ({
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     });
@@ -1634,7 +1634,7 @@ describe("@mars/tasks durable store", () => {
     const cleanTask = makeTask("clean-same-scope-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -1812,7 +1812,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("malformed-payload-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: path.join(rootDir, "missing-session.jsonl"),
     };
@@ -1871,7 +1871,7 @@ describe("@mars/tasks durable store", () => {
       task.task_id,
       {
         runtime: "oh-my-pi",
-        package_version: "18.14.0",
+        package_version: "18.20.0",
         session_id: task.session_id,
         session_file: sessionFile,
       },

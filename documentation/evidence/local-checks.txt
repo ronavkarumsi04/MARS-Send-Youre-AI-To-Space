@@ -1,4 +1,6 @@
 MARS Milestone 0 actual local verification
+
+Historical evidence: 18.14.0 output below is preserved verbatim. Current Oh My Pi dependency pins are 18.20.0; this file is not evidence of the upgrade checks.
 Started: 2026-10-30T19:56:59.201892+00:00
 Platform: Linux-6.8.0-1061-aws-x86_64-with-glibc2.35
 Working directory: /home/ubuntu/mars-clean-verification-4jiw9pwe

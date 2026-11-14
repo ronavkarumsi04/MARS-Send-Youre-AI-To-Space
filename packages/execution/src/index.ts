@@ -30,6 +30,7 @@ export function registerRuntimeCleanup(
   id: string,
   cleanup: () => Promise<void>,
 ): () => void {
+  postmortem.installProcessHandlers();
   return postmortem.register(id, cleanup, {
     exitOnly: true,
     deadlineMs: 30_000,

@@ -1,5 +1,7 @@
 # MARS UI: implementation prompt and design specification
 
+Dependency upgrade: the workspace now pins all Oh My Pi packages to **18.20.0**. References to 18.14.0 below identify the original UI research/theme evidence, not the current install version; use the current installed package paths when implementing this specification.
+
 Status: specification, partially implemented. The read-only `mars session` client, shared UI core and read-only MARS Shell scaffold exist; later functionality remains specified here. Section 9 is the prompt an engineering session is given verbatim; sections 1–8 are what it references. The research behind every borrowed idea is in Appendix A and in `documentation/ui-research/`.
 
 Scope: (1) the MARS terminal client — the interactive `mars` session in `apps/cli`, built from Oh My Pi's `@oh-my-pi/pi-tui` components as a client of the workbench RPC; (2) the MARS Shell desktop app, specified here for the first time; (3) the VS Code extension (`apps/vscode`), which stays a secondary client and must only remain consistent with the contracts below.

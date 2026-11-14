@@ -1,5 +1,7 @@
 # Pinned source register
 
+Current runtime pins: all `@oh-my-pi/*` dependencies use **18.20.0** (release tag `c308970263ae13744ea15ab67302e3dac840e266`); npm integrity values are in `sources/manifest.json` and `bun.lock`. The 18.14.0 observations in the source audit remain historical, not a claim that the new package bytes equal the audited source. Source equivalence remains not attested. Built-in tools remain disabled; MARS supplies only its own `mars_*` CustomTools.
+
 This is an audit baseline, not a list of implemented integrations; the Owner column notes which components now have attributed ports in this repository (`integration_status: workbench-context-only` in the manifest), all verified offline only. Runtime artifact pins and source audit commits are distinct. Full per-module sources, acceptance plans, runtime requirements, notices and observed checks live in [`sources/manifest.json`](../sources/manifest.json).
 
 | Component | Audit revision | License | Owner |

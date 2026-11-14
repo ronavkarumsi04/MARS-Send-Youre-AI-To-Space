@@ -41,7 +41,7 @@ const event: EventEnvelope = {
   parent_event_id: null,
   run_id: "run-1",
   producer: "execution",
-  versions: [{ component: "execution", revision: "18.14.0" }],
+  versions: [{ component: "execution", revision: "18.20.0" }],
   payload: artifact,
   source_event_ids: [],
   access: "private",
