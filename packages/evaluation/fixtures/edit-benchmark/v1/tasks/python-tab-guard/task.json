@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "python-tab-guard",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In stats.py, make `average` return 0 for an empty list by adding the guard `if not items:` / `return 0` right after its docstring. The file is indented with tabs; keep tab indentation exactly.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Tab-indented Python; a space-indented edit fails the byte comparison."
+  }
+}

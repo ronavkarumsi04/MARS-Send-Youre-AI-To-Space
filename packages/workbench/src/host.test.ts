@@ -439,6 +439,7 @@ async function fixture() {
       | "memoryProposals"
       | "skillOutcomes"
       | "browser"
+      | "editFormats"
     > & {
       canExecute?: boolean;
       workspaceOverrides?: Partial<WorkspaceHost>;
@@ -6864,4 +6865,64 @@ test("a room that closed while the host was down settles its delegation hold on 
   const again = await makeHost();
   expect(await committed()).toBe(15);
   await again.close();
+});
+
+test("launch picks the edit format from verified benchmark evidence and records the decision with the report digest", async () => {
+  const f = await fixture();
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      editFormats: {
+        repository: "fixture-repo",
+        evidence: [
+          {
+            schema: "mars.edit-format-evidence/v1",
+            report_sha256: "c".repeat(64),
+            model_id: "fixture/free",
+            repository: "fixture-repo",
+            generated_at: "2026-11-14T00:00:00.000Z",
+            simulated: false,
+            arms: [
+              {
+                format: "apply_patch",
+                trials: 10,
+                verified_solves: 6,
+                solve_rate: 0.6,
+                cost_per_verified_solve_usd: 0,
+                tokens_per_verified_solve: 1200,
+              },
+            ],
+          },
+        ],
+      },
+    },
+  );
+  await api.create(context(), task());
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    model_id: "fixture/free",
+    approvals: { read: true, write: true, execute: false },
+  });
+  const session = required(f.sessions[0]);
+  expect(session.options.editFormat).toBe("apply_patch");
+  expect(await taskEvents(f, "task", "edit_format")).toEqual([
+    expect.objectContaining({
+      operation: "edit_format",
+      schema: "mars.edit-format-decision/v1",
+      model_id: "fixture/free",
+      repository: "fixture-repo",
+      format: "apply_patch",
+      source: "benchmark",
+      reason: "best_verified_solve_rate",
+      report_sha256: "c".repeat(64),
+    }),
+  ]);
+  session.finish("completed");
+  await api.close();
 });

@@ -923,6 +923,39 @@ test("systemPromptOverride replaces the fixed prompt only when supplied", async 
   }
 }, 30000);
 
+test("the runtime forwards its seed on every model request and gates the edit tool by editFormat", async () => {
+  const f = await fixture();
+  const bodies: Record<string, unknown>[] = [];
+  const fetch = async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return sse({ content: "Done." });
+  };
+  const patch = { apply: async () => "applied" };
+  try {
+    const seeded = await f.open({ fetch, seed: 4242, patch });
+    expect(seeded.toolNames).toContain("mars_apply_patch");
+    await seeded.run(f.task.request);
+    expect(bodies[0]?.seed).toBe(4242);
+    const unseeded = await f.open({
+      fetch,
+      patch,
+      editFormat: "apply_patch",
+    });
+    expect(unseeded.toolNames).toContain("mars_apply_patch");
+    await unseeded.run(f.task.request);
+    expect(Object.hasOwn(bodies[1] ?? {}, "seed")).toBe(false);
+    for (const seed of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      await expect(f.open({ fetch, seed })).rejects.toThrow(
+        "Runtime seed must be a non-negative safe integer.",
+      );
+    await expect(
+      f.open({ fetch, editFormat: "unknown" as "apply_patch" }),
+    ).rejects.toThrow("Unknown MARS edit format.");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
 test("mars_apply_patch is a host-bound tool: Oh My Pi passes the patch text to the host applier and relays its summary", async () => {
   const f = await fixture();
   const requests: Record<string, unknown>[] = [];

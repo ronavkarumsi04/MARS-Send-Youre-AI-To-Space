@@ -10,6 +10,7 @@ import {
   ModelRouter,
 } from "@mars/providers";
 import { remoteWorkspaceDoctor } from "@mars/workspaces-remote";
+import { runBench } from "./bench";
 import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
 import { runDatasets } from "./datasets";
@@ -249,6 +250,10 @@ const REDACTED_FAILURES = new Map<string | undefined, string>([
     "MARS specialists evaluation could not complete safely. Check the held-out split, serving URL, model key variable and specialist registry state.",
   ],
   [
+    "bench",
+    "MARS bench could not complete safely. Check the suite, output directory, model registry entry and budget flags.",
+  ],
+  [
     "serve",
     "MARS workbench could not start or stop safely. Check the source, private state directory, port, optional pinned local image, and research model/search configuration.",
   ],
@@ -376,6 +381,8 @@ try {
     await runEvolution(process.argv.slice(3));
   } else if (command === "datasets") {
     await runDatasets(process.argv.slice(3));
+  } else if (command === "bench") {
+    await runBench(process.argv.slice(3));
   } else if (command === "specialists") {
     if (process.argv[3] === "evaluate") {
       await runSpecialistsEvaluate(process.argv.slice(4));
@@ -385,7 +392,7 @@ try {
     }
   } else {
     console.error(
-      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution|datasets|specialists>",
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|memory|skills|team|evolution|datasets|specialists|bench>",
     );
     process.exitCode = 2;
   }

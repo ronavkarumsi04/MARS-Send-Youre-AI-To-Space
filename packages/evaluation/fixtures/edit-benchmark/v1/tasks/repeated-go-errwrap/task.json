@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "repeated-go-errwrap",
+  "category": "repeated_lines",
+  "complexity": "medium",
+  "instruction": "In app/start.go, wrap only the error returned after `openDatabase` as `return fmt.Errorf(\"open database: %w\", err)`. The other two `return err` lines stay unchanged. The file uses tab indentation.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Three identical tab-indented error blocks."
+  }
+}

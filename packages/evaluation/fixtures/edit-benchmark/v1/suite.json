@@ -1,0 +1,23 @@
+{
+  "schema": "mars.edit-benchmark-suite/v1",
+  "suite_id": "mars-edit-heldout-v1",
+  "revision": "1",
+  "domain": "code/edit",
+  "tasks": [
+    "multi-site-rename",
+    "multi-site-port",
+    "python-tab-guard",
+    "makefile-race-flag",
+    "yaml-worker-replicas",
+    "markdown-hard-breaks",
+    "large-file-off-by-one",
+    "large-file-missing-return",
+    "repeated-null-guard",
+    "repeated-go-errwrap"
+  ],
+  "provenance": {
+    "origin": "authored",
+    "created": "2026-11-14",
+    "statement": "Written for this benchmark in this repository; not copied from public benchmarks, MARS datasets or training lineages. Registered as held-out split mars-edit-heldout-v1."
+  }
+}

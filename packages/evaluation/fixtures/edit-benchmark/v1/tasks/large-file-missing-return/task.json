@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "large-file-missing-return",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In transforms.py, `transform_121` builds `result` but never returns it. Add `return result` as the last line of that function (4-space indentation), matching the other transforms. Change nothing else.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Generated 1119-line file; the fix site looks like 159 others."
+  }
+}

@@ -8,6 +8,7 @@ import {
 import {
   type ModelProviderRegistry,
   ModelRouter,
+  type OpenAICompatibleChatRequest,
   ProviderError,
 } from "@mars/providers";
 import {
@@ -150,6 +151,8 @@ export interface ModelBridgeOptions {
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   signal: AbortSignal;
   onFailure?(code: ModelFailureCode): void;
+  /** OpenAI-compatible sampling seed forwarded on every request (non-negative safe integer). */
+  seed?: number;
 }
 
 export function createModelBridge(options: ModelBridgeOptions) {
@@ -252,10 +255,15 @@ export function createModelBridge(options: ModelBridgeOptions) {
         let emittedText = "";
         let done = false;
         stream.push({ type: "start", partial: output });
-        for await (const event of router.stream(
-          { ...request, maxTokens },
-          { model: selected.id, require: { tools: !!context.tools?.length } },
-        )) {
+        const routed: OpenAICompatibleChatRequest = {
+          ...request,
+          maxTokens,
+          ...(options.seed !== undefined ? { seed: options.seed } : {}),
+        };
+        for await (const event of router.stream(routed, {
+          model: selected.id,
+          require: { tools: !!context.tools?.length },
+        })) {
           signal.throwIfAborted();
           if (event.type === "text-delta") {
             if (textIndex < 0) {

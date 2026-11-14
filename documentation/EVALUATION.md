@@ -356,3 +356,108 @@ spawn round trip. Real attestor code against fake endpoints and injected fake
 attestor paths are offline checks, as are simulated fixture evaluators (zero
 model requests). **Blocked/unverified:** GPU host, real pinned vLLM, real model
 key, live adapter serving/completions and any resulting quality improvement.
+
+## Edit-format benchmark: MARS harness vs stock Oh My Pi
+
+`packages/evaluation/src/edit-benchmark/` measures whether MARS's harness
+improves small models more than stock Oh My Pi (omp), and supplies the
+evidence for per-model edit-format selection.
+
+### Pre-registered success bar (written before any live run)
+
+> MARS's best edit format beats `omp-stock` on host-verified solve rate for
+> small models with **p < 0.05 on the paired exact two-sided sign test** over
+> tasks (a task counts as solved when a strict majority of its repeats
+> solved), **and** its cost per verified solve is **not worse** (USD when
+> either arm is priced, otherwise total input + output tokens per verified
+> solve). Results are published whichever way they go.
+
+The bar is encoded as `PREREGISTERED_BAR` (`mars-vs-omp-stock/v1`) in
+`report.ts` and every report carries the verdict (`met`, `significant`,
+`cost_not_worse`, summary). Nothing is "proven better than omp" until this
+benchmark has run live on real small models; as of this writing it has not.
+
+### Arms (same tasks, model, seed and per-task budget)
+
+- `mars:<format>` for every format in `MARS_EDIT_FORMATS` (`@mars/execution`);
+  today only `apply_patch`. A new format plugs in by adding it there and a
+  `MarsEditFormatDriver` in `arms.ts` (which tool it binds and how). MARS arms
+  run `openRuntimeSession` with only `mars_*` tools (read + write approval, no
+  execute), workspace-confined file tools and the given format.
+- `omp-stock`: the same model through Oh My Pi's `createAgentSession` with its
+  own built-in `read`, `edit`, `write`, `grep` and its default, model-resolved
+  edit mode (`edit.mode` default `hashline`, with omp's per-model fallback to
+  `replace`; recorded per trial as `edit_mode`). Tools that spawn processes or
+  reach the network are excluded so both arms run without commands. The model
+  is reached through the same MARS model bridge (budget ledger, seed); tool
+  calls are re-emitted with one `toolcall_delta` because omp's streamed `edit`
+  consumes argument text.
+- Each trial runs in a fresh throwaway copy of the task tree; process-wide
+  `fetch` is replaced by a refusing guard for the trial (refusals are counted),
+  and only the injected model transport reaches the endpoint. Verification is
+  on the host: the copy must equal the expected tree byte for byte.
+
+Per arm the report records solve rate with Wilson 95% interval
+(`wilsonInterval` from `@mars/skills`), edit-call failure rate, mean turns
+(model requests), input/output tokens, cost and tokens per verified solve with
+a seeded task-bootstrap 95% interval, and wall time; plus a paired comparison
+(best MARS arm vs `omp-stock`: both/neither/discordant tasks, exact sign test).
+The forwarded integer seed per (task, repeat) is `servingSeed` (PR #219) of a
+job seed derived like the specialist comparison's; the suite is a
+`mars.held-out-split/v1` and `--training-lineage` files are checked with
+`findHeldOutLeakage` (refused as `heldout_leakage`).
+
+Outputs under `--out`: `report.json` (`mars.edit-benchmark-report/v1`,
+`report_sha256` over canonical JSON, HMAC `attestation` with a signing key),
+`report.md`, `trials.jsonl` and raw journals under `transcripts/`.
+
+### Task set
+
+`packages/evaluation/fixtures/edit-benchmark/v1`: ten tasks authored for this
+benchmark on 2026-11-14 (not copied from public benchmarks, MARS datasets or
+training lineages): multi-site edits (rename across two files, one constant in
+JSON + Python), whitespace-sensitive files (tab-indented Python, Makefile
+recipes, YAML, Markdown hard breaks), large files (~1.3k and ~800 lines, one
+change deep inside) and repeated similar lines (identical guard blocks, Go
+`if err != nil`). Each task has `task.json` (instruction, category,
+provenance), `before/` and `after/`. Third-party base models' pretraining data
+cannot be inspected, so contamination is unlikely but not provable.
+
+### Commands
+
+```sh
+# CI / offline: scripted fake models, zero real model calls
+bun apps/cli/src/main.ts bench edit-formats --offline --profile small-model --out /tmp/edit-bench
+
+# Live (NOT run in this repository yet): refuses without --live, --model and --max-usd
+bun apps/cli/src/main.ts bench edit-formats --live --model ollama/qwen3-coder \
+  --max-usd 0 --repeats 3 --out ./edit-bench-qwen3 \
+  --signing-key-env MARS_BENCH_KEY --signing-key-id local
+```
+
+The model comes from the MARS model registry (`~/.mars/models.json` or
+`$MARS_HOME/models.json`: Ollama, OpenRouter free/cheap models, Kimi or any
+OpenAI-compatible endpoint). The run is refused up front unless
+`trials × --max-usd-per-task` (default `--max-usd / trials`) fits under
+`--max-usd`; each trial's ledger enforces its own token/USD/time budget.
+
+Offline profiles (`SCRIPTED_PROFILES`) emit each format deterministically from
+the forwarded seed, with failure modes per format: malformed patches and wrong
+whitespace (`apply_patch`), wrong whitespace and ambiguous matches
+(`replace`), stale anchors (`hashline`). `patch-fluent` and `patch-hostile`
+exercise both verdict directions; these reports are `simulated: true`.
+
+### Evidence-based per-model edit-format selection
+
+`selectEditFormat` (`@mars/execution`) takes `mars.edit-format-evidence/v1`
+records (from `editFormatEvidenceFromReport` on a verified report) and picks,
+for the session's model on this repository, the newest report's format with
+the best verified solve rate (ties: lower cost per verified solve in USD, then
+tokens). Without such a report, or when no available format solved anything,
+it falls back to the static default (`DEFAULT_MARS_EDIT_FORMAT`). Simulated
+reports never decide. The workbench (`WorkbenchHostOptions.editFormats`,
+`mars serve --edit-format-evidence DIR [--edit-format-repository NAME]
+[--edit-format-key-env NAME --edit-format-key-id ID]`) applies it on launch and
+resume, passes `editFormat` to the runtime and records an
+`operation: "edit_format"` task event with the decision and `report_sha256`,
+like routing evidence. Delegated children use the static default.

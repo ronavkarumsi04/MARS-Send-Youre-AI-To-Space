@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "repeated-null-guard",
+  "category": "repeated_lines",
+  "complexity": "light",
+  "instruction": "In src/repo.ts, make `findOwner` return the string \"unknown\" (instead of null) when `repo` is undefined. Only the guard inside `findOwner` changes; the identical guards in the other functions stay as they are.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Three byte-identical guard blocks; only the middle one changes."
+  }
+}

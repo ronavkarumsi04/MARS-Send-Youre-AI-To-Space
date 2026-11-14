@@ -12,8 +12,10 @@ import {
 import { grep } from "@oh-my-pi/pi-natives";
 import { postmortem } from "@oh-my-pi/pi-utils";
 
+export * from "./edit-format";
 export {
   type BudgetLedger,
+  createModelBridge,
   DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   ExecutionLimitError,
   type ModelFailureCode,

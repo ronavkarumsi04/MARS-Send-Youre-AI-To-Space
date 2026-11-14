@@ -1,0 +1,11 @@
+services:
+  api:
+    image: ledger-api:1.4.2
+    replicas: 2
+    resources:
+      memory: 512Mi
+  worker:
+    image: ledger-worker:1.4.2
+    replicas: 4
+    resources:
+      memory: 256Mi

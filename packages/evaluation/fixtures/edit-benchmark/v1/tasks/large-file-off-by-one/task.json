@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "large-file-off-by-one",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "src/handlers.ts has an off-by-one bug in `handler137`: its loop condition uses `<=` and must use `<` like every other handler. Fix only that line.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Generated 1443-line file (29696 bytes); one line deep in the file changes."
+  }
+}
