@@ -1451,7 +1451,13 @@ function editTool(
         }).decode(current);
         const result =
           "old" in input
-            ? applyReplace(text, input.old, input.new, input.replace_all)
+            ? applyReplace(
+                text,
+                input.old,
+                input.new,
+                input.replace_all,
+                MAX_EDIT_FILE_BYTES,
+              )
             : applyEdits(text, input.edits);
         if (!result.ok)
           throw new Error(`${result.error.message}\n${result.error.recovery}`);

@@ -441,6 +441,37 @@ describe("exact replacement", () => {
     expect(success(applyReplace("a", "a", "")).text).toBe("");
   });
 
+  test("replacement byte limit counts UTF-8, BOM and CRLF before expansion", () => {
+    const text = "\uFEFFa\r\na\r\n";
+    const expected = "\uFEFF😀\r\n中\r\n😀\r\n中\r\n";
+    const bytes = Buffer.byteLength(expected, "utf8");
+    expect(success(applyReplace(text, "a", "😀\n中", true, bytes)).text).toBe(
+      expected,
+    );
+    expect(
+      failure(applyReplace(text, "a", "😀\n中", true, bytes - 1), "invalid")
+        .message,
+    ).toContain("nothing written");
+    expect(success(applyReplace("\uFEFFa\r\n", "a\n", "", true, 3)).text).toBe(
+      "\uFEFF",
+    );
+    const start = performance.now();
+    const error = failure(
+      applyReplace(
+        "a".repeat(100000),
+        "a",
+        "x".repeat(64 * 1024),
+        true,
+        1024 * 1024,
+      ),
+      "invalid",
+    );
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(error.message).toBe(
+      "Edited file exceeds 1 MiB limit; nothing written.",
+    );
+  });
+
   test("bounds multiple-match diagnostics and long candidate rows", () => {
     const error = failure(
       applyReplace(Array.from({ length: 100 }, () => "a").join("\n"), "a", "b"),

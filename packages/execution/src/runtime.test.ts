@@ -1895,6 +1895,46 @@ test("mars_replace uniqueness errors include plain recovery, replace_all writes 
   }
 });
 
+test("mars_replace rejects explosive replace_all before allocation without changing the file", async () => {
+  const f = await fixture(1_000_000, { editFormat: "replace" });
+  let writes = 0;
+  try {
+    const original = "a".repeat(100000);
+    await writeFile(join(f.cwd, "a.txt"), original);
+    const start = performance.now();
+    const result = await callFileTool(
+      f,
+      "mars_replace",
+      {
+        path: "a.txt",
+        old: "a",
+        new: "x".repeat(64 * 1024),
+        replace_all: true,
+      },
+      {
+        task: { ...f.task, budget: { ...f.task.budget, max_tokens: 500_000 } },
+        tools: {
+          ...f.tools,
+          write: async () => {
+            writes++;
+          },
+        },
+      },
+    );
+    expect(performance.now() - start).toBeLessThan(3000);
+    expect(result.relayed).toContain(
+      "Edited file exceeds 1 MiB limit; nothing written.",
+    );
+    expect(writes).toBe(0);
+    expect(await readFile(join(f.cwd, "a.txt"), "utf8")).toBe(original);
+    expect(JSON.stringify(result.session.journalSnapshot())).toContain(
+      '"isError":true',
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("initial allowance uses exactly the selected edit declaration and conservative omission", () => {
   const base = {
     approvals: { read: true, write: true, execute: false },

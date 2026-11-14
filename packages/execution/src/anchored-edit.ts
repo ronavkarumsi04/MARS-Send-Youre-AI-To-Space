@@ -386,6 +386,7 @@ export function applyReplace(
   old: string,
   replacement: string,
   replaceAll = false,
+  maxResultBytes?: number,
 ): EditResult {
   const model = parseText(text);
   const normalized = serializeText({ ...model, bom: false, eol: "\n" });
@@ -426,6 +427,38 @@ export function applyReplace(
         recovery: replaceRecovery(text, old),
       },
     };
+  }
+  if (maxResultBytes !== undefined) {
+    const newlines = (text: string) => {
+      let count = 0;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === "\n") count++;
+      }
+      return count;
+    };
+    const resultBytes =
+      Buffer.byteLength(normalized, "utf8") +
+      offsets.length *
+        (Buffer.byteLength(value, "utf8") - Buffer.byteLength(needle, "utf8")) +
+      (model.bom ? 3 : 0) +
+      (model.eol === "\r\n"
+        ? newlines(normalized) +
+          offsets.length * (newlines(value) - newlines(needle))
+        : 0);
+    if (resultBytes > maxResultBytes) {
+      const limit =
+        maxResultBytes === 1024 * 1024 ? "1 MiB" : `${maxResultBytes} byte`;
+      return {
+        ok: false,
+        error: {
+          kind: "invalid",
+          opIndex: 1,
+          anchor: "",
+          message: `Edited file exceeds ${limit} limit; nothing written.`,
+          recovery: "",
+        },
+      };
+    }
   }
   const result = normalized.split(needle).join(value);
   const updated = parseText(result);
