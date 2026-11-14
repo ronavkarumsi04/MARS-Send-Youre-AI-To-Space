@@ -8,15 +8,17 @@
  * conventions; no upstream source is used. Discovery is read-only, offline,
  * bounded (skill count and bytes per file) and never executes anything.
  */
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { SkillRecord } from "@mars/contracts";
+import { scanThreat } from "@mars/memory";
+import { CheckoutFS } from "./checkout-fs";
 import type {
   DiscoveredSkill,
   SkillDiscoveryResult,
   SkillSource,
 } from "./conventions-types";
-import { parseFrontmatter } from "./frontmatter";
-import { entryKind, readBoundedUtf8, sortedEntries } from "./fs";
+import { parseImportedFrontmatter } from "./frontmatter";
+import { readSkillsLock, skillProvenance } from "./provenance";
 
 export interface SkillDiscoveryOptions {
   /** Absolute path of the trusted checkout. */
@@ -58,35 +60,30 @@ const posix = (...parts: string[]) => parts.join("/");
 
 /** Candidate skill folders for one source: `[relative folder, folder name]`, deterministic. */
 async function candidateFolders(
-  root: string,
+  fs: CheckoutFS,
   source: SkillSource,
 ): Promise<Array<{ relative: string; folder: string }>> {
   const out: Array<{ relative: string; folder: string }> = [];
-  const base = join(root, ...source.split("/"));
-  if ((await entryKind(base)) !== "directory") return out;
-  for (const name of await sortedEntries(base)) {
+  const base = source;
+  for (const name of (await fs.directory(base)) ?? []) {
     if (name.startsWith(".")) continue;
-    const kind = await entryKind(join(base, name));
-    if (kind !== "directory") continue;
+    if (!(await fs.directory(join(base, name)))) continue;
     out.push({ relative: posix(source, name), folder: name });
   }
   if (source === "skills") {
     const vendor = join(base, "vendor");
-    if ((await entryKind(vendor)) === "directory")
-      for (const vendorName of await sortedEntries(vendor)) {
-        if (vendorName.startsWith(".")) continue;
-        const vendorDir = join(vendor, vendorName);
-        if ((await entryKind(vendorDir)) !== "directory") continue;
-        for (const name of await sortedEntries(vendorDir)) {
-          if (name.startsWith(".")) continue;
-          if ((await entryKind(join(vendorDir, name))) !== "directory")
-            continue;
-          out.push({
-            relative: posix(source, "vendor", vendorName, name),
-            folder: name,
-          });
-        }
+    for (const vendorName of (await fs.directory(vendor)) ?? []) {
+      if (vendorName.startsWith(".")) continue;
+      const vendorDir = join(vendor, vendorName);
+      for (const name of (await fs.directory(vendorDir)) ?? []) {
+        if (name.startsWith(".")) continue;
+        if (!(await fs.directory(join(vendorDir, name)))) continue;
+        out.push({
+          relative: posix(source, "vendor", vendorName, name),
+          folder: name,
+        });
       }
+    }
   }
   return out;
 }
@@ -94,7 +91,6 @@ async function candidateFolders(
 export async function discoverSkills(
   options: SkillDiscoveryOptions,
 ): Promise<SkillDiscoveryReport> {
-  const root = resolve(options.root);
   const maxSkills = options.maxSkills ?? DEFAULT_MAX_SKILLS;
   const maxBytes = options.maxContentBytes ?? DEFAULT_MAX_SKILL_BYTES;
   if (!Number.isInteger(maxSkills) || maxSkills < 0)
@@ -108,65 +104,121 @@ export async function discoverSkills(
     warnings: [],
   };
   const byName = new Map<string, DiscoveredSkill>();
-  for (const source of SKILL_SOURCES) {
-    for (const { relative, folder } of await candidateFolders(root, source)) {
-      const path = posix(relative, SKILL_FILE);
-      const absolute = join(root, ...relative.split("/"), SKILL_FILE);
-      const kind = await entryKind(absolute);
-      if (kind === null) continue;
-      if (kind !== "file") {
-        report.skipped.push({ path, reason: kind });
-        continue;
-      }
-      if (report.skills.length >= maxSkills) {
-        report.skipped.push({ path, reason: "limit" });
-        continue;
-      }
-      const read = await readBoundedUtf8(absolute, maxBytes);
-      if ("reason" in read) {
-        report.skipped.push({ path, reason: read.reason });
-        continue;
-      }
-      const { text: content, bytes } = read;
-      const frontmatter = parseFrontmatter(content);
-      if (!frontmatter) {
-        report.skipped.push({ path, reason: "frontmatter" });
-        continue;
-      }
-      const name = frontmatter.name?.trim() ?? "";
-      const description = frontmatter.description?.trim() ?? "";
-      if (!name || !description) {
-        report.skipped.push({ path, reason: "missing-name-or-description" });
-        continue;
-      }
-      if (!isValidSkillName(name)) {
-        report.skipped.push({ path, reason: "invalid-name" });
-        continue;
-      }
-      if (name !== folder)
-        report.warnings.push({
-          path,
-          message: `frontmatter name "${name}" differs from folder "${folder}"`,
-        });
-      const existing = byName.get(name);
-      if (existing) {
-        report.shadowed.push({ name, path, shadowed_by: existing.path });
-        continue;
-      }
-      const skill: DiscoveredSkill = {
-        name,
-        description,
-        path,
-        source,
-        content,
-        bytes,
-        frontmatter: { ...frontmatter },
-      };
-      byName.set(name, skill);
-      report.skills.push(skill);
+  const seenPaths = new Set<string>();
+  const fs = await CheckoutFS.open(options.root);
+  try {
+    let lock: Awaited<ReturnType<typeof readSkillsLock>> = new Map();
+    let invalidLock = false;
+    try {
+      lock = await readSkillsLock(fs);
+    } catch {
+      invalidLock = true;
+      report.warnings.push({
+        path: "skills-lock.json",
+        message:
+          "Invalid or unsupported skills-lock.json; provenance is unverified (only version 2 is supported).",
+      });
     }
+    for (const source of SKILL_SOURCES) {
+      for (const { relative, folder } of await candidateFolders(fs, source)) {
+        const path = posix(relative, SKILL_FILE);
+        const entry = await fs.entry(path);
+        if (!entry) continue;
+        const realPath = entry.path;
+        const isFile = (await entry.handle.stat()).isFile();
+        await entry.handle.close();
+        if (seenPaths.has(realPath)) continue;
+        seenPaths.add(realPath);
+        if (!isFile) {
+          report.skipped.push({ path, reason: "not-file" });
+          continue;
+        }
+        if (report.skills.length >= maxSkills) {
+          report.skipped.push({ path, reason: "limit" });
+          continue;
+        }
+        const read = await fs.read(realPath, maxBytes);
+        if ("reason" in read) {
+          report.skipped.push({ path, reason: read.reason });
+          continue;
+        }
+        let content: string;
+        try {
+          content = new TextDecoder("utf-8", {
+            fatal: true,
+            ignoreBOM: true,
+          }).decode(read.data);
+        } catch {
+          report.skipped.push({ path, reason: "encoding" });
+          continue;
+        }
+        const bytes = read.data.length;
+        const threat = scanThreat(content);
+        if (threat) {
+          report.skipped.push({ path, reason: `threat:${threat}` });
+          continue;
+        }
+        const frontmatter = parseImportedFrontmatter(content);
+        if (!frontmatter) {
+          report.skipped.push({ path, reason: "frontmatter" });
+          report.warnings.push({
+            path,
+            message:
+              "Unsupported frontmatter: require scalar name/description; only description block scalars and ignored optional metadata/lists are supported; YAML anchors, aliases and tags are forbidden.",
+          });
+          continue;
+        }
+        const name = frontmatter.name?.trim() ?? "";
+        const description = frontmatter.description?.trim() ?? "";
+        if (!name || !description) {
+          report.skipped.push({ path, reason: "missing-name-or-description" });
+          continue;
+        }
+        if (!isValidSkillName(name)) {
+          report.skipped.push({ path, reason: "invalid-name" });
+          continue;
+        }
+        if (name !== folder)
+          report.warnings.push({
+            path,
+            message: `frontmatter name "${name}" differs from folder "${folder}"`,
+          });
+        const existing = byName.get(name);
+        if (existing) {
+          report.shadowed.push({ name, path, shadowed_by: existing.path });
+          continue;
+        }
+        const provenance = await skillProvenance(fs, relative, folder, lock);
+        if (invalidLock) provenance.status = "unverified";
+        if (
+          provenance.status === "modified" ||
+          provenance.status === "unverified"
+        )
+          report.warnings.push({
+            path,
+            message:
+              provenance.status === "modified"
+                ? "Skill modified: computedHash does not match skills-lock.json; remains untrusted."
+                : "Skill provenance unverified: invalid lock or hash resource limit/unreadable files; remains untrusted.",
+          });
+        const skill: DiscoveredSkill = {
+          name,
+          description,
+          path,
+          source,
+          content,
+          bytes,
+          frontmatter: { ...frontmatter },
+          provenance,
+        };
+        byName.set(name, skill);
+        report.skills.push(skill);
+      }
+    }
+    return report;
+  } finally {
+    await fs.close();
   }
-  return report;
 }
 
 /**

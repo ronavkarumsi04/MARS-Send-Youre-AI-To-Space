@@ -10,7 +10,7 @@ import {
 import type { SkillOutcomeRow, SkillTrialRow } from "./outcomes";
 import { wilsonInterval } from "./selection";
 
-export interface SkillProvenance {
+export interface SkillEvidenceProvenance {
   origin: "store" | SkillSource;
   path?: string;
   lock?: unknown;
@@ -22,7 +22,7 @@ export interface SkillEvidenceInput {
   provenance?: readonly {
     scope_key?: string;
     skill: string;
-    provenance: SkillProvenance;
+    provenance: SkillEvidenceProvenance;
   }[];
   policy?: Readonly<Required<SkillGateOptions>>;
 }

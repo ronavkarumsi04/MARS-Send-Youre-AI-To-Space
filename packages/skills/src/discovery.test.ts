@@ -53,6 +53,10 @@ describe("discoverSkills", () => {
         path: ".codex/skills/renamed/SKILL.md",
         message: 'frontmatter name "zeta" differs from folder "renamed"',
       },
+      {
+        path: ".agents/skills/broken/SKILL.md",
+        message: expect.stringContaining("Unsupported frontmatter"),
+      },
     ]);
     const alpha = report.skills[0];
     expect(alpha?.description).toBe(
@@ -105,7 +109,7 @@ describe("discoverSkills", () => {
     });
   });
 
-  it("skips symlinked folders and files, oversize files, invalid names and non-UTF-8 content", async () => {
+  it("deduplicates in-checkout symlinked folders/files and skips oversize, invalid names and non-UTF-8 content", async () => {
     await mkdir(join(root, "skills", "real"), { recursive: true });
     await writeFile(join(root, "skills", "real", "SKILL.md"), skill("real"));
     await symlink(join(root, "skills", "real"), join(root, "skills", "linked"));
@@ -133,11 +137,11 @@ describe("discoverSkills", () => {
     );
     const report = await discoverSkills({ root });
     expect(report.skills.map((s) => s.name)).toEqual(["real"]);
+    expect(report.skills[0]?.path).toBe("skills/file-link/SKILL.md");
     expect(report.skipped).toEqual([
       { path: "skills/Upper/SKILL.md", reason: "invalid-name" },
       { path: "skills/big/SKILL.md", reason: "oversize" },
       { path: "skills/binary/SKILL.md", reason: "encoding" },
-      { path: "skills/file-link/SKILL.md", reason: "symlink" },
       { path: "skills/proto/SKILL.md", reason: "invalid-name" },
     ]);
     expect(report.shadowed).toEqual([]);
