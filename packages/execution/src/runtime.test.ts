@@ -931,7 +931,7 @@ test("systemPromptOverride replaces the fixed prompt only when supplied", async 
 }, 30000);
 
 test("the runtime forwards its seed on every model request and gates the edit tool by editFormat", async () => {
-  const f = await fixture();
+  const f = await fixture(32000, { editFormat: "apply_patch" });
   const bodies: Record<string, unknown>[] = [];
   const fetch = async (_url: string, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)));
@@ -962,6 +962,39 @@ test("the runtime forwards its seed on every model request and gates the edit to
     await f.cleanup();
   }
 }, 30000);
+
+test.each(["hashline", "replace", "apply_patch"] as const)(
+  "explicit runtime %s selection overrides the model setting without losing fallback evidence",
+  async (editFormat) => {
+    const f = await fixture(32000, { editFormat: "replace" });
+    try {
+      const session = await f.open({
+        editFormat,
+        patch: { apply: async () => "applied" },
+      });
+      expect(session.editFormat).toEqual({
+        format: editFormat,
+        requested: editFormat,
+        source: "config",
+      });
+      expect(session.toolNames).toContain(
+        editFormat === "hashline"
+          ? "mars_edit"
+          : editFormat === "replace"
+            ? "mars_replace"
+            : "mars_apply_patch",
+      );
+      const fallback = await f.open({ editFormat });
+      expect(fallback.editFormat).toEqual({
+        format: editFormat === "apply_patch" ? "hashline" : editFormat,
+        requested: editFormat,
+        source: "config",
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
 
 test("mars_apply_patch is a host-bound tool: Oh My Pi passes the patch text to the host applier and relays its summary", async () => {
   const f = await fixture(32000, { editFormat: "apply_patch" });

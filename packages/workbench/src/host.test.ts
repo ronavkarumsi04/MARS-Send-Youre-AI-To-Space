@@ -498,9 +498,12 @@ async function fixture(editFormat?: "hashline" | "replace" | "apply_patch") {
           journalSnapshot: () => ({ session_id: "upstream", entries: [] }),
           modelId: options.modelId ?? "fixture/free",
           editFormat: resolveEditFormat(
-            required(
-              options.registry.getModel(options.modelId ?? "fixture/free"),
-            ),
+            {
+              ...required(
+                options.registry.getModel(options.modelId ?? "fixture/free"),
+              ),
+              ...(options.editFormat ? { editFormat: options.editFormat } : {}),
+            },
             { patchAvailable: Boolean(options.patch) },
           ),
           journalPath:
@@ -7030,6 +7033,23 @@ test("launch picks the edit format from verified benchmark evidence and records 
   });
   const session = required(f.sessions[0]);
   expect(session.options.editFormat).toBe("apply_patch");
+  const selection = {
+    format: "hashline",
+    requested: "apply_patch",
+    source: "config",
+  };
+  expect(
+    JSON.parse(
+      await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+    ).edit_format,
+  ).toEqual(selection);
+  expect(await taskEvents(f, "task", "edit_format.selected")).toEqual([
+    {
+      operation: "edit_format.selected",
+      model_id: "fixture/free",
+      ...selection,
+    },
+  ]);
   expect(await taskEvents(f, "task", "edit_format")).toEqual([
     expect.objectContaining({
       operation: "edit_format",
