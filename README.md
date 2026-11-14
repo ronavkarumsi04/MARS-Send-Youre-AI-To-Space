@@ -10,6 +10,7 @@ The local workbench connects the VS Code client and CLI to durable tasks, isolat
 - A [26-component source audit](documentation/SOURCE_REGISTER.md), with exact commits, licenses, APIs, integration owners, runtime requirements, risks, and proposed acceptance tests.
 - Initial [shared TypeScript contracts](packages/contracts/src/index.ts), with runtime schemas for tasks, budgets, events, scope, and immutable artifact references.
 - Oh My Pi start/resume/cancel/steer through the existing configurable model registry. No second agent loop or task database.
+- Host-bound file edits selected per model: `mars_edit` uses per-line hash anchors, `mars_replace` uses exact substrings, or `mars_apply_patch` uses the host patch applier; `mars_write` remains available. Model `editFormat` overrides omp-derived defaults; launch/event evidence records the selection. Only fake-model/offline tests so far: no real model has used `mars_edit`, and no edit-format benchmark has run. Semantics and limits in [documentation/EXECUTION_WORKBENCH.md](documentation/EXECUTION_WORKBENCH.md#file-reads-and-edits).
 - Authenticated loopback RPC, private connection-file import into VS Code SecretStorage, task progress/artifacts/diffs, checkpoint/restore, and isolated task copies that leave the source checkout unchanged.
 - Digest-pinned Docker execution with no host-shell fallback; command execution is disabled when no sandbox is configured.
 - Offline integration tests using the actual SDK with injected model responses; these are **not** live-model or real VS Code UI acceptance evidence.

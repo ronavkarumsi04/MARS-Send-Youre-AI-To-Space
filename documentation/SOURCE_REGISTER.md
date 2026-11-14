@@ -36,6 +36,12 @@ This is an audit baseline, not a list of implemented integrations; the Owner col
 
 ## Interpretation
 
+### omp-derived file-edit defaults (18.14.0, MIT)
+
+`packages/execution/src/edit-format.ts` minimally re-expresses the installed omp 18.14.0 edit-mode defaults and case-insensitive model taxonomy matching, without importing pi-catalog or copying its classifier. `anchored-edit.ts` is an independent implementation of the per-line hashline idea from [the harness post](https://blog.can.ac/2026/02/12/the-harness-problem/), not omp 18.14's per-file tag implementation. There is no claim of better results: only offline/fake-model tests exist, no real model has used `mars_edit`, and no MARS format benchmark has run.
+
+Installed-package sources inspected: `pi-coding-agent/src/utils/edit-mode.ts:22–44`, `src/edit/settings.ts:40`, `CHANGELOG.md:143`; `pi-catalog/src/identity/index.ts:2`, `compat/taxonomy.ts:55–81,456+` and `compat/rules/taxonomy/{kimi,mimo,minimax,deepseek,stepfun,openai,glm,qwen}.kdl`. See the code header for matching scope. Release-reference links: [edit mode](https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/src/utils/edit-mode.ts), [settings](https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/src/edit/settings.ts), [changelog](https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/CHANGELOG.md). The existing source audit pin above remains unchanged; inspecting installed 18.14.0 files does not attest package-byte equivalence to the release commit. Background references are recorded on `omp-execution-sdk` in the manifest.
+
 `audit_checks` and `acceptance_plan` are historical source-audit observations/plans. A proposed acceptance plan is not a passed test. Current MARS checks are recorded separately in the milestone report. A test performed in an upstream audit fixture is not a test of this integrated platform.
 
 The master specification remains unchanged, with its original 32 planning references. The manifest replaces mutable implementation references with commit-specific license and module URLs. Papers and explanatory articles in the specification are background references, not executable dependencies.

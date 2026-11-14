@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
+import { ModelConfigSchema } from "@mars/contracts";
 import {
   DEFAULT_MARS_EDIT_FORMAT,
+  defaultEditFormat,
   EDIT_FORMAT_EVIDENCE_SCHEMA,
   type EditFormatEvidence,
+  resolveEditFormat,
   selectEditFormat,
 } from "./edit-format";
 
@@ -119,4 +122,81 @@ test("the newest report decides; formats that never solved or are unavailable ar
     ["hashline", false],
     ["apply_patch", true],
   ]);
+});
+test.each([
+  "deepseek/deepseek-v4",
+  "KIMI-K2.5",
+  "xiaomi/MiMo-v2",
+  "MiniMax-M2",
+  "stepfun/step-3.5-flash",
+  "gpt-5.3-codex-spark",
+  "GLM-5.3-Flash",
+  "Qwen3.8-Flash-Next",
+  "qwen-3.8-27b",
+  "moonshotai/opaque",
+  "K3",
+  "hailuo-02",
+])("omp defaults select replace for %s in either name", (name) => {
+  expect(defaultEditFormat({ id: name, model: "stub" })).toBe("replace");
+  expect(defaultEditFormat({ id: "alias", model: name })).toBe("replace");
+});
+
+test.each([
+  "stub",
+  "gpt-5.4",
+  "claude-sonnet",
+  "qwen3.6-27b",
+  "qwen3.80",
+  "glm-5.3",
+  "glm-5.2-flash",
+  "deepseek-r1-distill-qwen-32b",
+])("other models retain hashline: %s", (model) => {
+  expect(defaultEditFormat({ id: "alias", model })).toBe("hashline");
+});
+
+test("explicit configuration wins and patch fallback records the requested format", () => {
+  const model = {
+    id: "kimi-k2",
+    model: "stub",
+    editFormat: "hashline" as const,
+  };
+  expect(resolveEditFormat(model, { patchAvailable: false })).toEqual({
+    format: "hashline",
+    requested: "hashline",
+    source: "config",
+  });
+  expect(
+    resolveEditFormat(
+      { ...model, editFormat: "apply_patch" },
+      { patchAvailable: false },
+    ),
+  ).toEqual({ format: "hashline", requested: "apply_patch", source: "config" });
+  expect(
+    resolveEditFormat(
+      { ...model, editFormat: "apply_patch" },
+      { patchAvailable: true },
+    ).format,
+  ).toBe("apply_patch");
+  expect(
+    resolveEditFormat({ id: "alias", model: "stub" }, { patchAvailable: false })
+      .source,
+  ).toBe("default");
+});
+
+test("model config accepts only supported edit format overrides", () => {
+  const model = {
+    id: "alias",
+    model: "stub",
+    providerId: "p",
+    capabilities: { tools: true, vision: false, contextWindow: 32000 },
+    pricing: { free: true },
+  };
+  for (const editFormat of ["hashline", "replace", "apply_patch"] as const) {
+    expect(ModelConfigSchema.parse({ ...model, editFormat }).editFormat).toBe(
+      editFormat,
+    );
+  }
+  expect(
+    ModelConfigSchema.safeParse({ ...model, editFormat: "unknown" }).success,
+  ).toBe(false);
 });

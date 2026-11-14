@@ -35,6 +35,7 @@ import {
   optionalInstructionCapacity,
   type RuntimeOutcome,
   type RuntimeSessionOptions,
+  resolveEditFormat,
 } from "@mars/execution";
 import { createMemoryStore } from "@mars/memory";
 import type { ModelProviderRegistry } from "@mars/providers";
@@ -289,7 +290,7 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 
-async function fixture() {
+async function fixture(editFormat?: "hashline" | "replace" | "apply_patch") {
   const root = await mkdtemp(join(tmpdir(), "mars-host-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const store = await createTaskStore({
@@ -406,6 +407,7 @@ async function fixture() {
           id: "fixture/free",
           providerId: "fixture",
           model: "fixture",
+          ...(editFormat ? { editFormat } : {}),
           capabilities: { tools: true, vision: false, contextWindow: 32768 },
           pricing: { free: true },
         },
@@ -495,6 +497,12 @@ async function fixture() {
           toolNames: [],
           journalSnapshot: () => ({ session_id: "upstream", entries: [] }),
           modelId: options.modelId ?? "fixture/free",
+          editFormat: resolveEditFormat(
+            required(
+              options.registry.getModel(options.modelId ?? "fixture/free"),
+            ),
+            { patchAvailable: Boolean(options.patch) },
+          ),
           journalPath:
             options.sessionFile ?? join(options.stateDir, "session.jsonl"),
           run: (instruction: string) => {
@@ -5321,6 +5329,117 @@ const taskEvents = async (
   return payloads;
 };
 
+for (const editFormat of [undefined, "replace", "apply_patch"] as const) {
+  test(`edit format ${editFormat ?? "default"} is recorded once per launch/resume, including legacy launch files`, async () => {
+    const f = await fixture(editFormat);
+    const api = await f.makeHost();
+    await api_start(api, "task", { read: true, write: true, execute: false });
+    const first = required(f.sessions[0]);
+    const selected = {
+      format: editFormat === "replace" ? "replace" : "hashline",
+      requested: editFormat ?? "hashline",
+      source: editFormat ? "config" : "default",
+    };
+    const file = join(first.options.stateDir, "launch.json");
+    const launch = JSON.parse(await readFile(file, "utf8"));
+    expect(launch.edit_format).toEqual(selected);
+    const event = {
+      operation: "edit_format.selected",
+      model_id: "fixture/free",
+      ...selected,
+    };
+    expect(await taskEvents(f, "task", "edit_format.selected")).toEqual([
+      event,
+    ]);
+    first.finish("paused");
+    await first.disposed;
+    delete launch.edit_format;
+    await writeFile(file, JSON.stringify(launch));
+    const paused = await api.inspect(context(), "task");
+    await api.resume(context(), "task", paused.revision);
+    expect(JSON.parse(await readFile(file, "utf8")).edit_format).toEqual(
+      selected,
+    );
+    expect(await taskEvents(f, "task", "edit_format.selected")).toEqual([
+      event,
+      event,
+    ]);
+    const second = required(f.sessions[1]);
+    second.finish("completed");
+    await second.disposed;
+    await api.close();
+  });
+}
+
+test("edit-format evidence append failure cannot fail launch or resume", async () => {
+  const f = await fixture();
+  const append = f.store.appendEvent.bind(f.store);
+  let attempts = 0;
+  f.store.appendEvent = async (...args) => {
+    const payload = args[2].payload;
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "operation" in payload &&
+      payload.operation === "edit_format.selected"
+    ) {
+      attempts++;
+      throw new Error("Evidence unavailable");
+    }
+    return append(...args);
+  };
+  const api = await f.makeHost();
+  await api_start(api, "task", { read: true, write: true, execute: false });
+  required(f.sessions[0]).finish("paused");
+  await required(f.sessions[0]).disposed;
+  const paused = await api.inspect(context(), "task");
+  await api.resume(context(), "task", paused.revision);
+  required(f.sessions[1]).finish("completed");
+  await required(f.sessions[1]).disposed;
+  expect(attempts).toBe(2);
+  expect((await api.inspect(context(), "task")).status).toBe("completed");
+  await api.close();
+});
+
+for (const tool of ["mars_edit", "mars_replace"] as const) {
+  test(`${tool} read/write hooks retain the actual tool name and write approval`, async () => {
+    const f = await fixture(tool === "mars_edit" ? "hashline" : "replace");
+    const calls: Array<{ event: string; tool?: string; path?: string }> = [];
+    const api = await conventionsHost(f, {
+      hooks: {
+        async run(event, hookContext) {
+          calls.push({ event, ...hookContext });
+          return [];
+        },
+      },
+    });
+    await api_start(api, "task", { read: true, write: true, execute: false });
+    const session = required(f.sessions[0]);
+    calls.length = 0;
+    await session.options.tools.read("tracked.txt", tool);
+    await session.options.tools.write(
+      "added.txt",
+      new TextEncoder().encode("new"),
+      tool,
+    );
+    expect(calls).toEqual([
+      { event: "pre-tool", tool, path: "tracked.txt" },
+      { event: "post-tool", tool, path: "tracked.txt" },
+      { event: "pre-tool", tool, path: "added.txt" },
+      { event: "post-tool", tool, path: "added.txt" },
+    ]);
+    expect(f.writes).toEqual(["added.txt"]);
+    session.finish("completed");
+    await session.disposed;
+    calls.length = 0;
+    await expect(
+      session.options.tools.write("denied.txt", new Uint8Array(), tool),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(calls).toEqual([]);
+    await api.close();
+  });
+}
+
 test("repository conventions expand slash commands and freeze instruction files and skill folders into the launch", async () => {
   const f = await fixture();
   const repoSkill: SkillRecord = {
@@ -5625,7 +5744,7 @@ test("a tool call the task is not allowed to make runs no hook at all", async ()
 });
 
 test("mars_apply_patch can delete or move a binary file: existence never decodes content", async () => {
-  const f = await fixture();
+  const f = await fixture("apply_patch");
   const png = await f.store.artifacts.put(
     context(),
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x80]),
@@ -5710,7 +5829,7 @@ async function api_start(
 }
 
 test("mars_apply_patch is declared only with read and write approval and writes, removes and reads through the workspace provider", async () => {
-  const f = await fixture();
+  const f = await fixture("apply_patch");
   const seen: string[] = [];
   const api = await conventionsHost(f, {
     async applyPatch(patch, files) {

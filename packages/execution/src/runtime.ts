@@ -22,10 +22,15 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { z } from "zod";
 import {
-  DEFAULT_MARS_EDIT_FORMAT,
-  isMarsEditFormat,
-  type MarsEditFormat,
-} from "./edit-format";
+  anchorRecovery,
+  applyEdits,
+  applyReplace,
+  editOpsSchema,
+  formatAnchored,
+  parseText,
+  replaceRecovery,
+} from "./anchored-edit";
+import { type EditFormat, resolveEditFormat } from "./edit-format";
 import {
   type BudgetLedger,
   createModelBridge,
@@ -49,9 +54,13 @@ const TOOLS = {
     name: "mars_read",
     label: "Read workspace file",
     description:
-      "Read one UTF-8 file relative to the task workspace. Paths are validated by the workspace provider.",
+      "Read workspace UTF-8. Optional offset is 1-based; limit is 1-2000 lines. Hashline sessions return line:hash|text anchors. Paths are provider-validated.",
     loadMode: "essential" as const,
-    parameters: defineSchema({ path: "string" }),
+    parameters: defineSchema({
+      path: "string",
+      "offset?": "number",
+      "limit?": "number",
+    }),
   },
   mars_history: {
     name: "mars_history",
@@ -114,6 +123,35 @@ const TOOLS = {
     loadMode: "essential" as const,
     parameters: defineSchema({ patch: "string" }),
   },
+  mars_edit: {
+    name: "mars_edit",
+    label: "Edit anchored workspace lines",
+    description:
+      "Apply up to 100 sequential line edits using line:hash anchors from mars_read. replace/delete accept inclusive end; inserts accept BOF/EOF. content is newline-separated text. Atomic on rejection; use recovery anchors to retry.",
+    loadMode: "essential" as const,
+    parameters: defineSchema({
+      path: "string",
+      edits: defineSchema({
+        op: "'replace' | 'delete' | 'insert_before' | 'insert_after'",
+        anchor: "string",
+        "end?": "string",
+        "content?": "string",
+      }).array(),
+    }),
+  },
+  mars_replace: {
+    name: "mars_replace",
+    label: "Replace exact workspace text",
+    description:
+      "Replace exact old text with new in one workspace file. old must be non-empty and unique unless replace_all is true. Include surrounding context to disambiguate. CRLF is preserved.",
+    loadMode: "essential" as const,
+    parameters: defineSchema({
+      path: "string",
+      old: "string",
+      new: "string",
+      "replace_all?": "boolean",
+    }),
+  },
   mars_execute: {
     name: "mars_execute",
     label: "Run approved workspace command",
@@ -146,6 +184,7 @@ export function initialRequestAllowance(options: {
   watch?: boolean;
   knowledgeGraph?: boolean;
   patch?: boolean;
+  editFormat?: EditFormat;
   teamContext?: boolean;
   instruction: string;
 }): number {
@@ -161,8 +200,8 @@ export function initialRequestAllowance(options: {
     ...(options.knowledgeGraph ? GRAPH_TOOLS : []),
     ...(options.teamContext ? TEAM_TOOLS : []),
     ...(options.approvals.write ? [TOOLS.mars_write] : []),
-    ...(options.approvals.write && options.approvals.read && options.patch
-      ? [TOOLS.mars_apply_patch]
+    ...(options.approvals.write && options.approvals.read
+      ? [allowanceEditTool(options.editFormat, options.patch ?? false)]
       : []),
     ...(options.approvals.execute ? [TOOLS.mars_execute] : []),
   ];
@@ -193,6 +232,7 @@ export function optionalInstructionCapacity(options: {
   watch?: boolean;
   knowledgeGraph?: boolean;
   patch?: boolean;
+  editFormat?: EditFormat;
   instruction: string;
 }): number {
   const allowance = initialRequestAllowance(options);
@@ -201,6 +241,26 @@ export function optionalInstructionCapacity(options: {
     options.budget.max_tokens,
   );
   return Math.max(0, limit - allowance - MIN_INITIAL_OUTPUT_RESERVE);
+}
+
+function allowanceEditTool(format: EditFormat | undefined, patch: boolean) {
+  if (format === "replace") return TOOLS.mars_replace;
+  if (format === "hashline" || (format === "apply_patch" && !patch))
+    return TOOLS.mars_edit;
+  if (format === "apply_patch") return TOOLS.mars_apply_patch;
+  const candidates = [
+    TOOLS.mars_edit,
+    TOOLS.mars_replace,
+    ...(patch ? [TOOLS.mars_apply_patch] : []),
+  ];
+  const size = (tool: (typeof candidates)[number]) =>
+    Buffer.byteLength(
+      JSON.stringify(toChatRequest({ messages: [], tools: [tool] as never })),
+      "utf8",
+    );
+  return candidates.reduce((largest, tool) =>
+    size(tool) > size(largest) ? tool : largest,
+  );
 }
 
 const ledgerSchema = z
@@ -214,8 +274,15 @@ const ledgerSchema = z
   .strict();
 
 export interface RuntimeTools {
-  read(path: string): Promise<Uint8Array>;
-  write(path: string, content: Uint8Array): Promise<void>;
+  read(
+    path: string,
+    toolName?: "mars_edit" | "mars_replace",
+  ): Promise<Uint8Array>;
+  write(
+    path: string,
+    content: Uint8Array,
+    toolName?: "mars_edit" | "mars_replace",
+  ): Promise<void>;
   execute(
     argv: string[],
   ): Promise<{ exit_code: number; stdout: string; stderr: string }>;
@@ -724,9 +791,9 @@ export interface RuntimeSessionOptions {
   seed?: number;
   /**
    * Which MARS edit tool the session exposes (see `selectEditFormat`);
-   * absent means `DEFAULT_MARS_EDIT_FORMAT`.
+   * absent means the model's configured format or omp-derived default.
    */
-  editFormat?: MarsEditFormat;
+  editFormat?: EditFormat;
 }
 
 export const MAX_SYSTEM_PROMPT_CHARS = 16_000;
@@ -754,8 +821,10 @@ export interface RuntimeOutcome {
 export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const task = TaskSchema.parse(options.task);
   const systemPrompt = resolveSystemPrompt(options.systemPromptOverride);
-  const editFormat = options.editFormat ?? DEFAULT_MARS_EDIT_FORMAT;
-  if (!isMarsEditFormat(editFormat))
+  if (
+    options.editFormat !== undefined &&
+    !["hashline", "replace", "apply_patch"].includes(options.editFormat)
+  )
     throw new Error("Unknown MARS edit format.");
   if (
     options.seed !== undefined &&
@@ -767,6 +836,14 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     options.registry,
     options.modelId,
     Object.values(approvals).some(Boolean) || options.teamContext !== undefined,
+  );
+  const editFormat = resolveEditFormat(
+    options.editFormat === undefined
+      ? selected
+      : { ...selected, editFormat: options.editFormat },
+    {
+      patchAvailable: options.patch !== undefined,
+    },
   );
   const cwd = await realpath(options.cwd);
   const requestedState = resolve(options.stateDir);
@@ -964,7 +1041,9 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const { recall, collaboration, proposals, patch } = options;
   const { research, browser, watch, knowledgeGraph, teamContext } = options;
   const customTools: CustomTool[] = [
-    ...(approvals.read ? [readTool(deps, options.tools)] : []),
+    ...(approvals.read
+      ? [readTool(deps, options.tools, editFormat.format)]
+      : []),
     ...(approvals.read && recall ? [historyTool(deps, recall)] : []),
     ...(collaboration ? collaborationTools(deps, collaboration) : []),
     ...(collaboration?.delegation
@@ -978,11 +1057,16 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     ...(approvals.write ? [writeTool(deps, options.tools)] : []),
     // A patch reads workspace files before writing them, so the tool needs
     // both approvals.
-    ...(approvals.write &&
-    approvals.read &&
-    patch &&
-    editFormat === "apply_patch"
-      ? [applyPatchTool(deps, patch)]
+    ...(approvals.write && approvals.read
+      ? editFormat.format === "apply_patch" && patch
+        ? [applyPatchTool(deps, patch)]
+        : [
+            editTool(
+              deps,
+              options.tools,
+              editFormat.format === "replace" ? "replace" : "hashline",
+            ),
+          ]
       : []),
     ...(teamContext ? [teamContextTool(deps, teamContext)] : []),
     ...(approvals.execute ? [executeTool(deps, options.tools)] : []),
@@ -1040,6 +1124,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     throw error;
   }
   const session = created.session;
+  manager.appendCustomEntry("mars.edit_format", editFormat);
   const journalPath = manager.getSessionFile();
   if (!journalPath) {
     await session.dispose();
@@ -1089,6 +1174,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     sessionId: manager.getSessionId(),
     journalPath,
     modelId: selected.id,
+    editFormat,
     /** Exact tool allow-list of this session, sorted; nothing outside it exists for the model. */
     toolNames: [...expectedTools],
     journalSnapshot(): { session_id: string; entries: unknown[] } {
@@ -1232,21 +1318,168 @@ const boundedText =
     return toolResult(value);
   };
 
-function readTool({ checkTool }: ToolDeps, tools: RuntimeTools): CustomTool {
+function readTool(
+  { checkTool }: ToolDeps,
+  tools: RuntimeTools,
+  format: EditFormat,
+): CustomTool {
   return {
     ...TOOLS.mars_read,
     async execute(_id, params, _update, _ctx, signal) {
       await checkTool("read", signal);
-      const { path } = z
-        .object({ path: z.string().min(1).max(4096) })
+      const { path, offset, limit } = z
+        .object({
+          path: z.string().min(1).max(4096),
+          offset: z.number().int().positive().optional(),
+          limit: z.number().int().min(1).max(2000).optional(),
+        })
         .strict()
         .parse(params);
       const content = await tools.read(path);
-      if (content.length > 128 * 1024)
+      const ranged = offset !== undefined || limit !== undefined;
+      if (content.length > MAX_EDIT_FILE_BYTES)
+        throw new Error("File exceeds 1 MiB read limit.");
+      if (format !== "hashline" && !ranged && content.length > 128 * 1024)
         throw new Error("File exceeds tool output limit.");
-      return toolResult(
-        new TextDecoder("utf-8", { fatal: true }).decode(content),
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
+      if (format !== "hashline" && !ranged) return toolResult(text);
+      return {
+        ...toolResult(
+          readRows(path, text, format === "hashline", offset ?? 1, limit),
+        ),
+        details: { meta: { pagedSource: true } },
+      };
+    },
+  };
+}
+
+const MAX_EDIT_FILE_BYTES = 1024 * 1024;
+const MAX_EDIT_CONTENT_BYTES = 128 * 1024;
+
+function readRows(
+  path: string,
+  text: string,
+  hashed: boolean,
+  offset: number,
+  limit?: number,
+): string {
+  const { lines } = parseText(text);
+  if (!lines.length)
+    return `${path} · lines 0-0 of 0\nFile is empty; insert with anchor BOF.`;
+  const end = Math.min(
+    lines.length,
+    limit === undefined ? lines.length : offset + limit - 1,
+  );
+  const header = `${path} · lines ${Math.min(offset, lines.length + 1)}-${Math.max(offset - 1, end)} of ${lines.length}`;
+  const rows = [header];
+  let bytes = Buffer.byteLength(header, "utf8");
+  let last = offset - 1;
+  for (let n = offset; n <= end; n++) {
+    const row = hashed ? formatAnchored(lines, n, n) : (lines[n - 1] ?? "");
+    const notice = `[truncated at line ${n - 1} of ${lines.length}; continue with offset=${n}]`;
+    const size = Buffer.byteLength(row, "utf8") + 1;
+    if (
+      bytes + size + Buffer.byteLength(notice, "utf8") + 1 >
+      MAX_TOOL_OUTPUT_CHARS
+    ) {
+      rows.push(notice);
+      return rows.join("\n");
+    }
+    rows.push(row);
+    bytes += size;
+    last = n;
+  }
+  if (last < lines.length && last >= offset)
+    rows.push(`[continue with offset=${last + 1}]`);
+  return rows.join("\n");
+}
+
+function editTool(
+  { checkTool }: ToolDeps,
+  tools: RuntimeTools,
+  format: "hashline" | "replace",
+): CustomTool {
+  return {
+    ...(format === "hashline" ? TOOLS.mars_edit : TOOLS.mars_replace),
+    async execute(_id, params, _update, _ctx, signal) {
+      await checkTool("read", signal);
+      await checkTool("write", signal);
+      const pathSchema = z.string().min(1).max(4096);
+      const input =
+        format === "hashline"
+          ? z
+              .object({ path: pathSchema, edits: z.unknown() })
+              .strict()
+              .parse(params)
+          : z
+              .object({
+                path: pathSchema,
+                old: z.string(),
+                new: z.string(),
+                replace_all: z.boolean().optional(),
+              })
+              .strict()
+              .parse(params);
+      const validatedEdits = editOpsSchema.safeParse(
+        "old" in input ? undefined : input.edits,
       );
+      const contentSize =
+        "old" in input
+          ? Buffer.byteLength(input.old, "utf8") +
+            Buffer.byteLength(input.new, "utf8")
+          : validatedEdits.success
+            ? validatedEdits.data.reduce(
+                (size, op) =>
+                  size +
+                  ("content" in op ? Buffer.byteLength(op.content, "utf8") : 0),
+                0,
+              )
+            : 0;
+      if (contentSize > MAX_EDIT_CONTENT_BYTES)
+        throw new Error("Edit content exceeds 128 KiB limit; nothing written.");
+      const toolName = format === "hashline" ? "mars_edit" : "mars_replace";
+      let previous: Uint8Array | undefined;
+      for (let reads = 1; reads <= 3; reads++) {
+        await checkTool("read", signal);
+        await checkTool("write", signal);
+        const current = new Uint8Array(await tools.read(input.path, toolName));
+        if (current.length > MAX_EDIT_FILE_BYTES)
+          throw new Error("File exceeds 1 MiB edit limit; nothing written.");
+        const text = new TextDecoder("utf-8", {
+          fatal: true,
+          ignoreBOM: true,
+        }).decode(current);
+        const result =
+          "old" in input
+            ? applyReplace(text, input.old, input.new, input.replace_all)
+            : applyEdits(text, input.edits);
+        if (!result.ok)
+          throw new Error(`${result.error.message}\n${result.error.recovery}`);
+        const bytes = new TextEncoder().encode(result.text);
+        if (bytes.length > MAX_EDIT_FILE_BYTES)
+          throw new Error("Edited file exceeds 1 MiB limit; nothing written.");
+        if (previous && Buffer.from(previous).equals(Buffer.from(current))) {
+          await checkTool("write", signal);
+          await tools.write(input.path, bytes, toolName);
+          return toolResult(result.summary);
+        }
+        if (reads === 3) {
+          const recovery =
+            "old" in input
+              ? replaceRecovery(text, input.old)
+              : anchorRecovery(
+                  text,
+                  validatedEdits.success
+                    ? (validatedEdits.data[0]?.anchor ?? "BOF")
+                    : "BOF",
+                );
+          throw new Error(
+            `Edit rejected: file kept changing before write; nothing written. Retry.\n${recovery}`,
+          );
+        }
+        previous = current;
+      }
+      throw new Error("Edit rejected; nothing written.");
     },
   };
 }

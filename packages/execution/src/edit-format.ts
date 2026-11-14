@@ -1,7 +1,8 @@
+import type { ModelConfig } from "@mars/contracts";
+
 /**
- * Edit formats the MARS runtime can expose to a model, and the evidence-based
- * per-model choice between them. Every format is a `mars_*` tool that writes
- * through the workspace provider; none enables an Oh My Pi built-in tool.
+ * Formats with benchmark drivers, and the evidence-based choice between them.
+ * Runtime model configuration additionally supports hashline and replace.
  */
 export const MARS_EDIT_FORMATS = ["apply_patch"] as const;
 export type MarsEditFormat = (typeof MARS_EDIT_FORMATS)[number];
@@ -177,5 +178,49 @@ export function selectEditFormat(input: {
     reason: "best_verified_solve_rate",
     report_sha256: report.report_sha256,
     candidates,
+  };
+}
+export type EditFormat = "hashline" | "replace" | "apply_patch";
+
+// omp 18.14.0 edit-mode defaults (MIT): pi-coding-agent/src/utils/edit-mode.ts
+// lines 22-44, src/edit/settings.ts:40, CHANGELOG.md:143. Minimal matching from
+// pi-catalog/src/identity/index.ts:2 -> compat/taxonomy.ts:55-81, 456 onward;
+// class tokens/families come from compat/rules/taxonomy/{kimi,mimo,minimax,
+// deepseek,stepfun,openai,glm,qwen}.kdl.
+// no pi-catalog runtime dependency or ambient omp settings/environment overrides.
+export function defaultEditFormat(
+  model: Pick<ModelConfig, "id" | "model">,
+): EditFormat {
+  return [model.id, model.model].some((name) => {
+    const lower = name.toLowerCase();
+    if (lower.includes("distill-qwen")) return false;
+    return (
+      /(?:^|[/.:\s_-])(?:kimi|mimo|minimax|deepseek|stepfun)(?=$|[/.:\s_\d-])/.test(
+        lower,
+      ) ||
+      /(?:^|[/.:\s])(?:step|hailuo)(?=$|[-_.:\d])/.test(lower) ||
+      /(?:^|\/)moonshotai\//.test(lower) ||
+      /(?:^|\/)k3(?:-256k|\.1-pro(?:-highspeed)?)?$/.test(lower) ||
+      /codex[-_]spark/.test(lower) ||
+      /(?:^|[/.:\s])glm[-_ ]?5\.3(?:\.0)?(?:[-_ ]|$).*flash/.test(lower) ||
+      /(?:^|[/.:\s])qwen[-_ ]?3\.8(?:\.0)?(?=$|[-_: /])/.test(lower)
+    );
+  })
+    ? "replace"
+    : "hashline";
+}
+
+export function resolveEditFormat(
+  model: Pick<ModelConfig, "id" | "model" | "editFormat">,
+  options: { patchAvailable: boolean },
+): { format: EditFormat; requested: EditFormat; source: "config" | "default" } {
+  const requested = model.editFormat ?? defaultEditFormat(model);
+  return {
+    format:
+      requested === "apply_patch" && !options.patchAvailable
+        ? "hashline"
+        : requested,
+    requested,
+    source: model.editFormat === undefined ? "default" : "config",
   };
 }

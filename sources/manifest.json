@@ -160,7 +160,24 @@
         "Source/native license notices need artifact-specific review before redistribution."
       ],
       "integration_status": "initialization-only",
-      "background_references": []
+      "background_references": [
+        {
+          "url": "https://blog.can.ac/2026/02/12/the-harness-problem/",
+          "notes": "Per-line hashline idea only; independently implemented in packages/execution/src/anchored-edit.ts, unlike omp 18.14's per-file tags. No real-model use or comparative benchmark verified."
+        },
+        {
+          "url": "https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/src/utils/edit-mode.ts",
+          "notes": "Release reference for installed omp 18.14.0 edit-mode defaults inspected at lines 22-44, minimally re-expressed in packages/execution/src/edit-format.ts. Also inspected pi-catalog/src/identity/index.ts and compat/taxonomy.ts plus Kimi/MiMo/MiniMax/DeepSeek/StepFun/OpenAI/GLM/Qwen taxonomy rules. MIT; no classifier copied or pi-catalog runtime dependency. Installed-package/release-source byte equivalence remains not attested; existing source-audit pin is unchanged."
+        },
+        {
+          "url": "https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/src/edit/settings.ts",
+          "notes": "Installed 18.14.0 line 40 sets default edit.mode=hashline. No ambient omp setting or environment override imported into MARS."
+        },
+        {
+          "url": "https://github.com/can1357/oh-my-pi/blob/31147f9d1a76608549821c3759f8487b4d66c72d/packages/coding-agent/CHANGELOG.md",
+          "notes": "Installed 18.14.0 line 143 documents replace defaults. Defaults are upstream-derived, not MARS-measured; offline/fake-model verification only."
+        }
+      ]
     },
     {
       "id": "omp-session-journal",

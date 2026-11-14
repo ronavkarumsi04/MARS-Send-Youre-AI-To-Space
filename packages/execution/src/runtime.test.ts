@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Task } from "@mars/contracts";
+import type { ModelConfig, Task } from "@mars/contracts";
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { AgentSession, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { anchorOf } from "./anchored-edit";
+import type { EditFormat } from "./edit-format";
 import {
   type BudgetLedger,
   createModelBridge,
@@ -15,6 +17,7 @@ import {
 } from "./model-bridge";
 import {
   boundPatchSummary,
+  initialRequestAllowance,
   MAX_SYSTEM_PROMPT_CHARS,
   openRuntimeSession,
   type RuntimeSession,
@@ -32,7 +35,10 @@ function sse(delta: Record<string, unknown>, reason = "stop") {
   );
 }
 
-async function fixture(contextWindow = 32000) {
+async function fixture(
+  contextWindow = 32000,
+  modelConfig: Partial<ModelConfig> = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "mars-runtime-test-"));
   const cwd = join(root, "workspace");
   const home = join(root, "home");
@@ -57,6 +63,7 @@ async function fixture(contextWindow = 32000) {
           model: "stub",
           capabilities: { tools: true, vision: false, contextWindow },
           pricing: { free: true },
+          ...modelConfig,
         },
         {
           id: "fixture/paid",
@@ -957,7 +964,7 @@ test("the runtime forwards its seed on every model request and gates the edit to
 }, 30000);
 
 test("mars_apply_patch is a host-bound tool: Oh My Pi passes the patch text to the host applier and relays its summary", async () => {
-  const f = await fixture();
+  const f = await fixture(32000, { editFormat: "apply_patch" });
   const requests: Record<string, unknown>[] = [];
   const patches: string[] = [];
   const patchText =
@@ -1037,7 +1044,7 @@ test("boundPatchSummary keeps the whole result within the byte limit at a charac
 });
 
 test("mars_apply_patch keeps a persisted patch successful when its summary exceeds the output limit", async () => {
-  const f = await fixture(1_000_000);
+  const f = await fixture(1_000_000, { editFormat: "apply_patch" });
   const requests: Record<string, unknown>[] = [];
   const summary = `Success. Updated the following files:\n${"A a/very/long/path/to/a/generated/file.txt\n".repeat(4_000)}`;
   expect(summary.length).toBeGreaterThan(128 * 1024);
@@ -1088,7 +1095,7 @@ test("mars_apply_patch keeps a persisted patch successful when its summary excee
 }, 30000);
 
 test("mars_apply_patch is not declared without read approval, without write approval or without a host applier", async () => {
-  const f = await fixture();
+  const f = await fixture(32000, { editFormat: "apply_patch" });
   const requests: Record<string, unknown>[] = [];
   try {
     const respond = async (_url: string, init?: RequestInit) => {
@@ -1118,7 +1125,7 @@ test("mars_apply_patch is not declared without read approval, without write appr
 }, 30000);
 
 test("openRuntimeSession declares every capability's tools in a fixed order and gates them on approvals", async () => {
-  const f = await fixture();
+  const f = await fixture(32000, { editFormat: "apply_patch" });
   const declared: string[][] = [];
   const unused = async () => "unused";
   const respond = async (_url: string, init?: RequestInit) => {
@@ -1219,10 +1226,697 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
           ].includes(name),
       ),
     );
+    for (const format of ["hashline", "replace"] as const) {
+      const other = await fixture(32000, { editFormat: format });
+      try {
+        const selected = await other.open({
+          ...capabilities,
+          approvals: { read: true, write: true, execute: true },
+        });
+        await selected.run(other.task.request);
+        const expected = order.map((name) =>
+          name === "mars_apply_patch"
+            ? format === "hashline"
+              ? "mars_edit"
+              : "mars_replace"
+            : name,
+        );
+        expect(declared.at(-1)).toEqual(expected);
+        expect(selected.toolNames).toEqual([...expected].sort());
+      } finally {
+        await other.cleanup();
+      }
+    }
   } finally {
     await f.cleanup();
   }
 }, 30000);
+
+type RuntimeFixture = Awaited<ReturnType<typeof fixture>>;
+
+async function callFileTool(
+  f: RuntimeFixture,
+  name: string,
+  args: Record<string, unknown>,
+  extra: Partial<Parameters<typeof openRuntimeSession>[0]> = {},
+) {
+  const requests: Array<{
+    messages: Array<{ role: string; content: string }>;
+  }> = [];
+  const session = await f.open({
+    ...extra,
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1
+        ? sse(
+            {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "file_call",
+                  type: "function",
+                  function: { name, arguments: JSON.stringify(args) },
+                },
+              ],
+            },
+            "tool_calls",
+          )
+        : sse({ content: "Done." });
+    },
+  });
+  const outcome = await session.run(
+    "Use the file tool, then report its result.",
+  );
+  expect(outcome.status).toBe("completed");
+  expect(requests).toHaveLength(2);
+  const relayed =
+    requests[1]?.messages.find((message) => message.role === "tool")?.content ??
+    "";
+  return { session, requests, relayed };
+}
+
+test("edit defaults and overrides select only one tool and journal evidence once per open", async () => {
+  for (const [model, override, expected, requested, source] of [
+    ["stub", undefined, "hashline", "hashline", "default"],
+    ["DeepSeek-v4", undefined, "replace", "replace", "default"],
+    ["kimi-k2.5", undefined, "replace", "replace", "default"],
+    ["Qwen3.8-Flash-Next", undefined, "replace", "replace", "default"],
+    ["DeepSeek-v4", "hashline", "hashline", "hashline", "config"],
+    ["stub", "replace", "replace", "replace", "config"],
+    ["stub", "apply_patch", "hashline", "apply_patch", "config"],
+  ] as const) {
+    const f = await fixture(32000, {
+      model,
+      ...(override ? { editFormat: override } : {}),
+    });
+    try {
+      const session = await f.open({
+        fetch: async () => sse({ content: "Done." }),
+      });
+      expect(session.editFormat).toEqual({
+        format: expected,
+        requested,
+        source,
+      });
+      expect(
+        session.toolNames.filter((name) =>
+          ["mars_edit", "mars_replace", "mars_apply_patch"].includes(name),
+        ),
+      ).toEqual([expected === "replace" ? "mars_replace" : "mars_edit"]);
+      await session.run("Done");
+      const evidence = session
+        .journalSnapshot()
+        .entries.filter(
+          (entry) =>
+            (entry as { customType?: string }).customType ===
+            "mars.edit_format",
+        );
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).toMatchObject({ data: session.editFormat });
+      const path = session.journalPath;
+      await session.dispose();
+      const resumed = await f.open({
+        sessionFile: path,
+        fetch: async () => sse({ content: "Done." }),
+      });
+      expect(
+        resumed
+          .journalSnapshot()
+          .entries.filter(
+            (entry) =>
+              (entry as { customType?: string }).customType ===
+              "mars.edit_format",
+          ),
+      ).toHaveLength(2);
+    } finally {
+      await f.cleanup();
+    }
+  }
+}, 30000);
+
+test("mars_read returns anchors, bounded ranges, empty guidance and row-boundary truncation", async () => {
+  const f = await fixture(1_000_000);
+  const task = { ...f.task, budget: { ...f.task.budget, max_tokens: 500_000 } };
+  try {
+    await writeFile(join(f.cwd, "a.txt"), "a\r\nb\r\n😀中");
+    const range = await callFileTool(f, "mars_read", {
+      path: "a.txt",
+      offset: 2,
+      limit: 1,
+    });
+    expect(range.relayed).toBe(
+      `a.txt · lines 2-2 of 3\n${anchorOf(2, "b")}|b\n[continue with offset=3]`,
+    );
+    await writeFile(join(f.cwd, "empty"), "");
+    expect(
+      (await callFileTool(f, "mars_read", { path: "empty" })).relayed,
+    ).toContain("anchor BOF");
+    await writeFile(
+      join(f.cwd, "large"),
+      Array.from({ length: 4000 }, () => "😀".repeat(20)).join("\n"),
+    );
+    const large = await callFileTool(
+      f,
+      "mars_read",
+      { path: "large" },
+      { task },
+    );
+    expect(large.relayed).toMatch(
+      /\n\[truncated at line (\d+) of 4000; continue with offset=(\d+)\]$/,
+    );
+    expect(Buffer.byteLength(large.relayed)).toBeLessThanOrEqual(128 * 1024);
+    const last = large.relayed.split("\n").at(-2) ?? "";
+    expect(last).toMatch(/^\d+:[a-z2-9]{3}\|(?:😀)+$/u);
+    expect(
+      (await callFileTool(f, "mars_read", { path: "a.txt", offset: 0 }))
+        .relayed,
+    ).toContain("greater than 0");
+    expect(
+      (await callFileTool(f, "mars_read", { path: "a.txt", limit: 2001 }))
+        .relayed,
+    ).toContain("2000");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test.each(["replace", "apply_patch"] as const)(
+  "%s reads preserve raw behavior and support plain ranged reads",
+  async (editFormat) => {
+    const f = await fixture(1_000_000, { editFormat });
+    const extra = { patch: { apply: async () => "unused" } };
+    try {
+      await writeFile(join(f.cwd, "a.txt"), "a\r\nb\r\n");
+      // omp's existing coerceToolResult/sanitizeText normalizes CRLF on the wire.
+      expect(
+        (await callFileTool(f, "mars_read", { path: "a.txt" }, extra)).relayed,
+      ).toBe("a\nb\n");
+      expect(
+        (
+          await callFileTool(
+            f,
+            "mars_read",
+            { path: "a.txt", offset: 2, limit: 1 },
+            extra,
+          )
+        ).relayed,
+      ).toBe("a.txt · lines 2-2 of 2\nb");
+      await writeFile(join(f.cwd, "large"), "x\n".repeat(100_000));
+      expect(
+        (await callFileTool(f, "mars_read", { path: "large" }, extra)).relayed,
+      ).toContain("File exceeds tool output limit");
+      expect(
+        (
+          await callFileTool(
+            f,
+            "mars_read",
+            { path: "large", offset: 99_999, limit: 2 },
+            extra,
+          )
+        ).relayed,
+      ).toBe("large · lines 99999-100000 of 100000\nx\nx");
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30000,
+);
+
+test.each([
+  "a\nb\n",
+  "a\r\nb\r\n",
+  "a\nb",
+  "\uFEFFa\r\nb",
+  "😀e\u0301\n中文",
+  "",
+])(
+  "mars_edit round trips %j through host read/write exactly once",
+  async (text) => {
+    const f = await fixture();
+    let writes = 0;
+    const reads: string[] = [];
+    try {
+      await writeFile(join(f.cwd, "a.txt"), text);
+      const first = text.replace(/^\uFEFF/, "").split(/\r?\n/)[0] ?? "";
+      const edits = text
+        ? [{ op: "replace", anchor: anchorOf(1, first), content: "新😀" }]
+        : [{ op: "insert_after", anchor: "BOF", content: "新😀" }];
+      const { relayed } = await callFileTool(
+        f,
+        "mars_edit",
+        { path: "a.txt", edits },
+        {
+          tools: {
+            ...f.tools,
+            read: async (path) => {
+              reads.push(path);
+              return f.tools.read(path);
+            },
+            write: async (path, bytes) => {
+              writes++;
+              expect(path).toBe("a.txt");
+              return f.tools.write(path, bytes);
+            },
+          },
+        },
+      );
+      expect(writes).toBe(1);
+      expect(reads).toEqual(["a.txt", "a.txt"]);
+      expect(await readFile(join(f.cwd, "a.txt"), "utf8")).toBe(
+        text ? text.replace(first, "新😀") : "新😀",
+      );
+      expect(relayed).toContain(`${anchorOf(1, "新😀")}|新😀`);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30000,
+);
+
+test("mars_edit stale and third-op failures relay recovery in the next request and never write", async () => {
+  const f = await fixture();
+  let writes = 0;
+  const tools = {
+    ...f.tools,
+    write: async () => {
+      writes++;
+    },
+  };
+  try {
+    await writeFile(join(f.cwd, "a.txt"), "fresh\nb\nc");
+    const stale = await callFileTool(
+      f,
+      "mars_edit",
+      { path: "a.txt", edits: [{ op: "delete", anchor: anchorOf(1, "old") }] },
+      { tools },
+    );
+    expect(stale.relayed).toContain("is stale");
+    expect(stale.relayed).toContain(`${anchorOf(1, "fresh")}|fresh`);
+    expect(JSON.stringify(stale.session.journalSnapshot())).toContain(
+      '"isError":true',
+    );
+    const atomic = await callFileTool(
+      f,
+      "mars_edit",
+      {
+        path: "a.txt",
+        edits: [
+          { op: "replace", anchor: anchorOf(1, "fresh"), content: "changed" },
+          { op: "delete", anchor: anchorOf(2, "b") },
+          { op: "delete", anchor: anchorOf(2, "b") },
+        ],
+      },
+      { tools },
+    );
+    expect(atomic.relayed).toContain("Edit 3 rejected, nothing written");
+    expect(atomic.relayed).toContain(`${anchorOf(1, "fresh")}|fresh`);
+    expect(writes).toBe(0);
+    expect(await readFile(join(f.cwd, "a.txt"), "utf8")).toBe("fresh\nb\nc");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test("mars_edit rejects a TOCTOU change with fresh anchors before writing", async () => {
+  const f = await fixture();
+  let reads = 0;
+  let writes = 0;
+  try {
+    const result = await callFileTool(
+      f,
+      "mars_edit",
+      {
+        path: "a",
+        edits: [{ op: "replace", anchor: anchorOf(1, "old"), content: "new" }],
+      },
+      {
+        tools: {
+          ...f.tools,
+          read: async () =>
+            new TextEncoder().encode(++reads === 1 ? "old" : "concurrent"),
+          write: async () => {
+            writes++;
+          },
+        },
+      },
+    );
+    expect(reads).toBe(2);
+    expect(writes).toBe(0);
+    expect(result.relayed).toContain("is stale");
+    expect(result.relayed).toContain(`${anchorOf(1, "concurrent")}|concurrent`);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const format of ["hashline", "replace"] as const) {
+  test(`${format} revalidates a changed second read and writes fresh content once`, async () => {
+    const f = await fixture(32000, { editFormat: format });
+    let reads = 0;
+    const writes: string[] = [];
+    const tool = format === "hashline" ? "mars_edit" : "mars_replace";
+    try {
+      const result = await callFileTool(
+        f,
+        tool,
+        {
+          path: "a",
+          ...(format === "hashline"
+            ? {
+                edits: [
+                  { op: "replace", anchor: anchorOf(1, "old"), content: "new" },
+                ],
+              }
+            : { old: "old", new: "new" }),
+        },
+        {
+          tools: {
+            ...f.tools,
+            read: async (_path, name) => {
+              expect(name).toBe(tool);
+              return new TextEncoder().encode(
+                ++reads === 1 ? "old\nfirst" : "old\nfresh",
+              );
+            },
+            write: async (_path, bytes, name) => {
+              expect(name).toBe(tool);
+              writes.push(new TextDecoder().decode(bytes));
+            },
+          },
+        },
+      );
+      expect(reads).toBe(3);
+      expect(writes).toEqual(["new\nfresh"]);
+      expect(result.relayed).not.toContain("rejected");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test(`${format} caps conflict retries at three reads with bounded format-specific recovery`, async () => {
+    const f = await fixture(32000, { editFormat: format });
+    let reads = 0;
+    let writes = 0;
+    try {
+      const result = await callFileTool(
+        f,
+        format === "hashline" ? "mars_edit" : "mars_replace",
+        {
+          path: "a",
+          ...(format === "hashline"
+            ? {
+                edits: [
+                  { op: "replace", anchor: anchorOf(1, "old"), content: "new" },
+                ],
+              }
+            : { old: "old", new: "new" }),
+        },
+        {
+          tools: {
+            ...f.tools,
+            read: async () =>
+              new TextEncoder().encode(
+                `old\nrevision ${++reads}\n${"context\n".repeat(10000)}`,
+              ),
+            write: async () => {
+              writes++;
+            },
+          },
+        },
+      );
+      expect(reads).toBe(3);
+      expect(writes).toBe(0);
+      expect(result.relayed).toContain("file kept changing");
+      expect(result.relayed).toContain(
+        format === "hashline" ? `${anchorOf(1, "old")}|old` : "1|old",
+      );
+      expect(Buffer.byteLength(result.relayed)).toBeLessThan(9 * 1024);
+      expect(result.relayed.split("\n").length).toBeLessThan(66);
+      expect(JSON.stringify(result.session.journalSnapshot())).toContain(
+        '"isError":true',
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("mars_replace returns the fresh replacement failure with plain recovery", async () => {
+  const f = await fixture(32000, { editFormat: "replace" });
+  let reads = 0;
+  let writes = 0;
+  try {
+    const result = await callFileTool(
+      f,
+      "mars_replace",
+      { path: "a", old: "old", new: "new" },
+      {
+        tools: {
+          ...f.tools,
+          read: async () =>
+            new TextEncoder().encode(++reads === 1 ? "old" : "old\nold"),
+          write: async () => {
+            writes++;
+          },
+        },
+      },
+    );
+    expect(reads).toBe(2);
+    expect(writes).toBe(0);
+    expect(result.relayed).toContain("multiple matches at lines 1, 2");
+    expect(result.relayed).toContain("1|old\n2|old");
+    expect(result.relayed).not.toContain(`${anchorOf(1, "old")}|`);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("edit tools are absent without both approvals and respect host path isolation", async () => {
+  const f = await fixture();
+  let writes = 0;
+  try {
+    for (const approvals of [
+      { read: true, write: false, execute: false },
+      { read: false, write: true, execute: false },
+    ]) {
+      const session = await f.open({
+        approvals,
+        fetch: async () => sse({ content: "Done." }),
+      });
+      expect(session.toolNames).not.toContain("mars_edit");
+      expect(session.toolNames).not.toContain("mars_replace");
+    }
+    const result = await callFileTool(
+      f,
+      "mars_edit",
+      {
+        path: "../outside",
+        edits: [{ op: "insert_after", anchor: "BOF", content: "x" }],
+      },
+      {
+        tools: {
+          ...f.tools,
+          read: async (path) => {
+            expect(path).toBe("../outside");
+            throw new Error("Workspace provider refused escaping path");
+          },
+          write: async () => {
+            writes++;
+          },
+        },
+      },
+    );
+    expect(result.relayed).toContain(
+      "Workspace provider refused escaping path",
+    );
+    expect(writes).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("cancellation during an edit read forbids the subsequent read and write", async () => {
+  const f = await fixture();
+  let release: (() => void) | undefined;
+  let entered: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  let writes = 0;
+  try {
+    const session = await f.open({
+      tools: {
+        ...f.tools,
+        read: async () => {
+          reads++;
+          entered?.();
+          await blocked;
+          return new TextEncoder().encode("a");
+        },
+        write: async () => {
+          writes++;
+        },
+      },
+      fetch: async () =>
+        sse(
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: "cancel_edit",
+                type: "function",
+                function: {
+                  name: "mars_edit",
+                  arguments: JSON.stringify({
+                    path: "a",
+                    edits: [
+                      { op: "replace", anchor: anchorOf(1, "a"), content: "b" },
+                    ],
+                  }),
+                },
+              },
+            ],
+          },
+          "tool_calls",
+        ),
+    });
+    const running = session.run("Edit");
+    await started;
+    const cancelling = session.cancel();
+    release?.();
+    await cancelling;
+    expect((await running).status).toBe("cancelled");
+    expect(reads).toBe(1);
+    expect(writes).toBe(0);
+    await expect(session.run("Again")).rejects.toThrow("stopped");
+  } finally {
+    release?.();
+    await f.cleanup();
+  }
+}, 30000);
+
+test("edits reject oversized files, content, results and invalid UTF-8 without writes", async () => {
+  const f = await fixture(4_000_000);
+  const task = {
+    ...f.task,
+    budget: { ...f.task.budget, max_tokens: 2_000_000 },
+  };
+  let writes = 0;
+  try {
+    for (const [bytes, content, expected] of [
+      [new Uint8Array(1024 * 1024 + 1), "x", "File exceeds 1 MiB"],
+      [new Uint8Array([255]), "x", "encoded data"],
+      [
+        new TextEncoder().encode("a"),
+        "中".repeat(44_000),
+        "content exceeds 128 KiB",
+      ],
+      [
+        new TextEncoder().encode("a".repeat(1024 * 1024 - 1)),
+        "bbb",
+        "Edited file exceeds 1 MiB",
+      ],
+    ] as const) {
+      const result = await callFileTool(
+        f,
+        "mars_edit",
+        { path: "a", edits: [{ op: "insert_before", anchor: "BOF", content }] },
+        {
+          task,
+          tools: {
+            ...f.tools,
+            read: async () => bytes,
+            write: async () => {
+              writes++;
+            },
+          },
+        },
+      );
+      expect(result.relayed).toContain(expected);
+    }
+    const oversizedRead = await callFileTool(
+      f,
+      "mars_read",
+      { path: "a", offset: 1, limit: 1 },
+      {
+        task,
+        tools: {
+          ...f.tools,
+          read: async () => new Uint8Array(1024 * 1024 + 1),
+        },
+      },
+    );
+    expect(oversizedRead.relayed).toContain("1 MiB read limit");
+    expect(writes).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test("mars_replace uniqueness errors include plain recovery, replace_all writes once", async () => {
+  const f = await fixture(32000, { editFormat: "replace" });
+  let writes = 0;
+  const tools = {
+    ...f.tools,
+    write: async (path: string, content: Uint8Array) => {
+      writes++;
+      await f.tools.write(path, content);
+    },
+  };
+  try {
+    await writeFile(join(f.cwd, "a.txt"), "\uFEFFa\r\na");
+    const rejected = await callFileTool(
+      f,
+      "mars_replace",
+      { path: "a.txt", old: "a", new: "新" },
+      { tools },
+    );
+    expect(rejected.relayed).toContain("multiple matches at lines 1, 2");
+    expect(rejected.relayed).toContain("1|a\n2|a");
+    expect(writes).toBe(0);
+    expect(
+      (
+        await callFileTool(
+          f,
+          "mars_replace",
+          { path: "a.txt", old: "a", new: "新", replace_all: true },
+          { tools },
+        )
+      ).relayed,
+    ).toContain("Replaced 2 match(es)");
+    expect(writes).toBe(1);
+    expect(await readFile(join(f.cwd, "a.txt"), "utf8")).toBe("\uFEFF新\r\n新");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("initial allowance uses exactly the selected edit declaration and conservative omission", () => {
+  const base = {
+    approvals: { read: true, write: true, execute: false },
+    recall: false,
+    instruction: "Edit",
+    patch: true,
+  };
+  const sizes = (["hashline", "replace", "apply_patch"] as EditFormat[]).map(
+    (editFormat) => initialRequestAllowance({ ...base, editFormat }),
+  );
+  expect(initialRequestAllowance(base)).toBe(Math.max(...sizes));
+  expect(
+    initialRequestAllowance({
+      ...base,
+      editFormat: "apply_patch",
+      patch: false,
+    }),
+  ).toBe(
+    initialRequestAllowance({ ...base, editFormat: "hashline", patch: false }),
+  );
+  expect(new Set(sizes).size).toBe(3);
+});
 
 test("a model request past the model's requestTimeoutMs fails as provider_timeout, not a generic error", async () => {
   const f = await fixture();
