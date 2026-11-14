@@ -113,6 +113,7 @@ export interface TaskPatch {
  */
 export interface TaskResumePatch {
   specialist_revision?: string | null;
+  upstream_package_version?: { from: string; to: string };
 }
 
 export interface UpstreamSessionBinding {
@@ -353,12 +354,32 @@ function resumePatch(input: unknown): TaskResumePatch | undefined {
   if (input === null || typeof input !== "object" || Array.isArray(input))
     throw invalidInput("Invalid resume patch");
   const keys = Object.keys(input);
-  if (keys.length === 0 || keys.some((key) => key !== "specialist_revision"))
+  if (
+    keys.length === 0 ||
+    keys.some(
+      (key) =>
+        key !== "specialist_revision" && key !== "upstream_package_version",
+    )
+  )
     throw invalidInput("Resume patch must contain supported fields");
-  const value = (input as Record<string, unknown>).specialist_revision;
-  if (value !== null && (typeof value !== "string" || value.length === 0))
-    throw invalidInput("Invalid specialist revision");
-  return { specialist_revision: value as string | null };
+  const values = input as Record<string, unknown>;
+  const patch: TaskResumePatch = {};
+  if ("specialist_revision" in values) {
+    const value = values.specialist_revision;
+    if (value !== null && (typeof value !== "string" || value.length === 0))
+      throw invalidInput("Invalid specialist revision");
+    patch.specialist_revision = value as string | null;
+  }
+  if ("upstream_package_version" in values) {
+    const version = z
+      .object({ from: nonempty, to: nonempty })
+      .strict()
+      .safeParse(values.upstream_package_version);
+    if (!version.success || version.data.from === version.data.to)
+      throw invalidInput("Invalid upstream runtime version transition");
+    patch.upstream_package_version = version.data;
+  }
+  return patch;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -1869,6 +1890,9 @@ export async function createTaskStore(
         to: "running",
         from_revision: snapshot.revision,
         to_revision: snapshot.revision + 1,
+        ...(patch?.upstream_package_version
+          ? { upstream_package_version: patch.upstream_package_version }
+          : {}),
         ...(patch && "specialist_revision" in patch
           ? {
               specialist_revision: {
@@ -1893,6 +1917,21 @@ export async function createTaskStore(
           fail("stale_revision", "Task revision is stale");
         if (current.status !== "paused")
           fail("invalid_transition", "Only paused tasks can be resumed");
+        if (patch?.upstream_package_version) {
+          const binding = readBinding(key, taskId);
+          if (
+            !binding ||
+            binding.package_version !== patch.upstream_package_version.from
+          )
+            fail("conflict", "Upstream runtime version changed before resume");
+          const bindingJson = canonicalJson({
+            ...binding,
+            package_version: patch.upstream_package_version.to,
+          });
+          db.query(
+            "UPDATE session_bindings SET record_json = ?, record_sha256 = ? WHERE scope_key = ? AND task_id = ?",
+          ).run(bindingJson, sha256(bindingJson), key, taskId);
+        }
         const updated = TaskSchema.parse({
           ...current,
           ...(patch && "specialist_revision" in patch

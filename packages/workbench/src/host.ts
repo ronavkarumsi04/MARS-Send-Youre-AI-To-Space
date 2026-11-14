@@ -3287,8 +3287,23 @@ export async function createWorkbenchHost(
         context,
         taskId,
         revision,
-        ...(specialistRevision !== task.specialist_revision
-          ? [{ specialist_revision: specialistRevision }]
+        ...(specialistRevision !== task.specialist_revision ||
+        binding.package_version !== EXECUTION_PACKAGE_VERSION
+          ? [
+              {
+                ...(specialistRevision !== task.specialist_revision
+                  ? { specialist_revision: specialistRevision }
+                  : {}),
+                ...(binding.package_version !== EXECUTION_PACKAGE_VERSION
+                  ? {
+                      upstream_package_version: {
+                        from: binding.package_version,
+                        to: EXECUTION_PACKAGE_VERSION,
+                      },
+                    }
+                  : {}),
+              },
+            ]
           : []),
       );
       let runtime: RuntimeSession | undefined;

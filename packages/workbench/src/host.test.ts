@@ -29,6 +29,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
   MAX_RUNTIME_INSTRUCTION_LENGTH,
   MIN_INITIAL_OUTPUT_RESERVE,
@@ -1422,6 +1423,74 @@ test("the exact runtime character limit is accepted without truncating request o
   await session.disposed;
   expect((await api.inspect(context(), "task")).status).toBe("completed");
   await api.close();
+});
+
+test("a paused legacy-runtime task resumes with an audited current-version binding", async () => {
+  const f = await fixture();
+  const bind = f.store.bindUpstreamSession.bind(f.store);
+  f.store.bindUpstreamSession = (context, taskId, binding) =>
+    bind(context, taskId, { ...binding, package_version: "18.14.0" });
+  const api = await f.makeHost();
+  await api.create(context(), task());
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  f.store.bindUpstreamSession = bind;
+  required(f.sessions[0]).finish("paused");
+  await required(f.sessions[0]).disposed;
+  await api.close();
+  const previous = required(await f.store.upstreamSession(context(), "task"));
+  if (!previous) throw new Error("Missing legacy binding");
+  expect(previous.package_version).toBe("18.14.0");
+  const replacement = await f.makeHost();
+  const paused = await replacement.inspect(context(), "task");
+  const running = await replacement.resume(context(), "task", paused.revision);
+  expect(running.status).toBe("running");
+  expect(await f.store.upstreamSession(context(), "task")).toEqual({
+    ...previous,
+    package_version: EXECUTION_PACKAGE_VERSION,
+  });
+  const session = required(f.sessions[1]);
+  expect(session.options.sessionFile).toBe(previous.session_file);
+  await session.options.onEvent?.({
+    type: "message_end",
+    journal_path: previous.session_file,
+    session_id: previous.session_id,
+    entry_id: "resumed-entry",
+  });
+  const payloads: Array<Record<string, unknown>> = [];
+  for await (const event of f.store.events(context(), "task"))
+    payloads.push(
+      JSON.parse(
+        new TextDecoder().decode(
+          await f.store.artifacts.get(context(), event.payload),
+        ),
+      ),
+    );
+  expect(
+    payloads.some(
+      (payload) =>
+        JSON.stringify(payload.upstream_package_version) ===
+        JSON.stringify({ from: "18.14.0", to: EXECUTION_PACKAGE_VERSION }),
+    ),
+  ).toBe(true);
+  expect(payloads).toContainEqual({
+    upstream: {
+      runtime: "oh-my-pi",
+      package_version: EXECUTION_PACKAGE_VERSION,
+      session_id: previous.session_id,
+      entry_ids: ["resumed-entry"],
+    },
+    kind: "message_end",
+  });
+  session.finish("completed");
+  await session.disposed;
+  expect((await replacement.inspect(context(), "task")).status).toBe(
+    "completed",
+  );
+  await replacement.close();
 });
 
 test("paused steering survives host restart, is consumed on resume, and usage counts only new tokens", async () => {
