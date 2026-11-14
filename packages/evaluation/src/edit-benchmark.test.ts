@@ -14,9 +14,12 @@ import {
   loadEditBenchmarkSuite,
   parseEditBenchmarkArm,
   runEditBenchmark,
+  runEditTrial,
   SCRIPTED_PROFILES,
   scriptedModelRegistry,
+  stockToolPaths,
   verifyEditBenchmarkReport,
+  verifyWorkspace,
   wilsonInterval,
 } from "./index";
 
@@ -252,5 +255,123 @@ test("refusals: missing baseline, budget cap too low, held-out leakage", async (
       ],
     }),
   ).rejects.toThrow("heldout_leakage");
+  expect(model.requests()).toBe(0);
+});
+
+test("omp-stock tool calls naming paths outside the throwaway workspace are refused", async () => {
+  expect(stockToolPaths("read", { path: "src/a.ts:10-20" })).toEqual([
+    "src/a.ts",
+  ]);
+  expect(
+    stockToolPaths("edit", {
+      input: "[../escape.ts#ABCD]\nPUT 1.=1:\n+x\nMV /tmp/x",
+    }),
+  ).toEqual(["../escape.ts", "/tmp/x"]);
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  let calls = 0;
+  const fetch = async () => {
+    calls += 1;
+    const delta =
+      calls === 1
+        ? {
+            tool_calls: [
+              {
+                index: 0,
+                id: "c1",
+                type: "function",
+                function: {
+                  name: "read",
+                  arguments: JSON.stringify({ path: "/etc/hostname" }),
+                },
+              },
+            ],
+          }
+        : { content: "Done." };
+    return new Response(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: calls === 1 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5 } })}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  const result = await runEditTrial({
+    arm: "omp-stock",
+    task: suite.tasks[2] as (typeof suite.tasks)[number],
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch,
+    workRoot: join(root, "work"),
+    transcriptRoot: join(root, "tx"),
+  });
+  expect(result.path_refusals).toBe(1);
+  expect(result.solved).toBe(false);
+}, 60_000);
+
+test("omp-stock resolves its edit mode from the upstream model name, not the MARS alias", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(
+    root,
+    "local/coder",
+    "kimi-k2",
+  );
+  const model = createScriptedEditModel({
+    tasks: suite.tasks,
+    profile: SCRIPTED_PROFILES.oracle as (typeof SCRIPTED_PROFILES)[string],
+  });
+  const result = await runEditTrial({
+    arm: "omp-stock",
+    task: suite.tasks[3] as (typeof suite.tasks)[number],
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch: model.fetch,
+    workRoot: join(root, "work"),
+    transcriptRoot: join(root, "tx"),
+  });
+  expect(result.edit_mode).toBe("replace");
+  expect(result.solved).toBe(true);
+}, 60_000);
+
+test("an uninspectable workspace never verifies, even when the expected tree is empty", async () => {
+  const root = await scratch();
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(join(root, "big.txt"), "x".repeat(129 * 1024));
+  const task = {
+    ...(suite.tasks[0] as (typeof suite.tasks)[number]),
+    after: new Map<string, Uint8Array>(),
+  };
+  const verification = await verifyWorkspace(root, task);
+  expect(verification).toMatchObject({ solved: false, unreadable: true });
+});
+
+test("duplicate arms are refused before any trial runs", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: suite.tasks,
+    profile: SCRIPTED_PROFILES.oracle as (typeof SCRIPTED_PROFILES)[string],
+  });
+  await expect(
+    runEditBenchmark({
+      suite,
+      arms: ["mars:apply_patch", "mars:apply_patch", "omp-stock"],
+      registry,
+      env,
+      modelId,
+      fetch: model.fetch,
+      repeats: 1,
+      budgetPerTask: budget,
+      maxTotalUsd: 100,
+      repository: "r",
+      outDir: join(root, "out"),
+      simulated: true,
+    }),
+  ).rejects.toThrow("Benchmark arms must be distinct.");
   expect(model.requests()).toBe(0);
 });

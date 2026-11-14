@@ -141,6 +141,8 @@ export interface TrialResult {
   /** Oh My Pi's resolved edit mode for the stock arm; the MARS format otherwise. */
   edit_mode: string;
   network_refusals: number;
+  /** Stock-arm tool calls refused because a path left the throwaway workspace. */
+  path_refusals: number;
   verification: Awaited<ReturnType<typeof verifyWorkspace>>;
   transcript: string | null;
 }
@@ -348,6 +350,7 @@ export async function runEditTrial(input: TrialInput): Promise<TrialResult> {
       wall_ms: Date.now() - started,
       edit_mode: run.edit_mode,
       network_refusals: run.network_refusals,
+      path_refusals: run.path_refusals ?? 0,
       verification,
       transcript: await keepTranscript(input, run.journal),
     };
@@ -363,6 +366,7 @@ interface ArmRun {
   edit_failures: number;
   ledger: Pick<BudgetLedger, "input_tokens" | "output_tokens">;
   edit_mode: string;
+  path_refusals?: number;
   journal: string | undefined;
 }
 
@@ -425,6 +429,57 @@ async function runMars(
   }
 }
 
+/** Every path a stock tool call names: `path` arguments and patch/hashline headers. */
+export function stockToolPaths(
+  tool: string,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  const paths: string[] = [];
+  if (typeof args?.path === "string")
+    paths.push(tool === "read" ? args.path.replace(/:[^/]*$/, "") : args.path);
+  if (tool === "edit" && typeof args?.input === "string")
+    for (const line of args.input.split("\n")) {
+      const header =
+        /^\[([^\]#]+)#[0-9A-Fa-f]{4}\]\s*$/.exec(line)?.[1] ??
+        /^\*\*\* (?:Update File|Add File|Delete File|Move to): (.+)$/.exec(
+          line,
+        )?.[1] ??
+        /^MV (.+)$/.exec(line.trim())?.[1];
+      if (header) paths.push(header.trim());
+    }
+  return paths;
+}
+
+/** Paths that are URLs/URIs or resolve (through symlinks) outside `root`. */
+async function pathsOutside(
+  root: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  const outside: string[] = [];
+  for (const path of paths) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path) || path.startsWith("~")) {
+      outside.push(path);
+      continue;
+    }
+    let probe = resolve(root, path);
+    if (!isInsideOrEqual(root, probe)) {
+      outside.push(path);
+      continue;
+    }
+    for (;;) {
+      try {
+        if (!isInsideOrEqual(root, await realpath(probe))) outside.push(path);
+        break;
+      } catch {
+        const parent = dirname(probe);
+        if (parent === probe) break;
+        probe = parent;
+      }
+    }
+  }
+  return outside;
+}
+
 /**
  * The MARS bridge reports each tool call whole (start, end). Oh My Pi's
  * built-in `edit` consumes streamed argument text, as every streaming
@@ -475,6 +530,7 @@ async function runOmpStock(
   };
   const controller = new AbortController();
   let failure: string | null = null;
+  let pathRefusals = 0;
   const bridge = createModelBridge({
     registry: input.registry,
     selected: model,
@@ -490,6 +546,11 @@ async function runOmpStock(
     ...(input.env ? { env: input.env } : {}),
   });
   const providerId = `omp-stock-${randomUUID()}`;
+  // Oh My Pi picks per-model edit modes (e.g. replace for Kimi/DeepSeek) from
+  // the model name it sees, so the stock session is registered under the
+  // upstream model name, not the MARS registry alias. The bridge still routes
+  // by the alias.
+  const stockModelId = model.model;
   const authStorage = await AuthStorage.create(":memory:");
   const models = new ModelRegistry(authStorage);
   models.registerProvider(providerId, {
@@ -499,8 +560,8 @@ async function runOmpStock(
     streamSimple: withToolCallDeltas(bridge),
     models: [
       {
-        id: model.id,
-        name: model.id,
+        id: stockModelId,
+        name: stockModelId,
         reasoning: false,
         input: ["text"],
         supportsTools: model.capabilities.tools,
@@ -517,7 +578,7 @@ async function runOmpStock(
       },
     ],
   });
-  const registered = models.find(providerId, model.id);
+  const registered = models.find(providerId, stockModelId);
   if (!registered) throw new Error("Failed to register the benchmark model.");
   const manager = SessionManager.create(workspace, stateDir);
   const settings = Settings.isolated({
@@ -567,6 +628,21 @@ async function runOmpStock(
     Math.max(1, ledger.deadline - Date.now()),
   );
   deadline.unref();
+  const original = session.agent.beforeToolCall;
+  session.agent.beforeToolCall = async (ctx, signal) => {
+    const outside = await pathsOutside(
+      workspace,
+      stockToolPaths(ctx.tool.name, ctx.args as Record<string, unknown>),
+    );
+    if (outside.length > 0) {
+      pathRefusals += 1;
+      return {
+        block: true,
+        reason: `Path is outside the benchmark workspace: ${outside[0]}`,
+      };
+    }
+    return original ? original(ctx, signal) : undefined;
+  };
   let editCalls = 0;
   let editFailures = 0;
   const unsubscribe = session.subscribe((event) => {
@@ -577,7 +653,7 @@ async function runOmpStock(
   });
   const editMode = resolveEditMode({
     settings,
-    getActiveModelString: () => model.id,
+    getActiveModelString: () => stockModelId,
   });
   try {
     const active = session.getActiveToolNames().sort();
@@ -612,6 +688,7 @@ async function runOmpStock(
       edit_failures: editFailures,
       ledger,
       edit_mode: editMode,
+      path_refusals: pathRefusals,
       journal: manager.getSessionFile(),
     };
   } finally {

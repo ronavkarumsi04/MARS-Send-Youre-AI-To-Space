@@ -79,6 +79,8 @@ export async function runEditBenchmark(
   if (!Number.isInteger(options.repeats) || options.repeats < 1)
     throw new Error("repeats must be a positive integer.");
   if (options.arms.length === 0) throw new Error("No benchmark arms.");
+  if (new Set(options.arms).size !== options.arms.length)
+    throw new Error("Benchmark arms must be distinct.");
   if (!options.arms.includes(OMP_STOCK_ARM))
     throw new Error("The omp-stock baseline arm is required.");
   if (!options.arms.some((arm) => arm !== OMP_STOCK_ARM))

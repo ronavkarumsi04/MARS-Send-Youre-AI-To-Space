@@ -189,6 +189,8 @@ export function assertHeldOut(
 
 export interface TreeVerification {
   solved: boolean;
+  /** True when the workspace could not be inspected; always unsolved. */
+  unreadable?: boolean;
   changed: string[];
   missing: string[];
   unexpected: string[];
@@ -200,7 +202,21 @@ export async function verifyWorkspace(
   root: string,
   task: EditBenchmarkTask,
 ): Promise<TreeVerification> {
-  const actual = await readTree(root).catch(() => new Map());
+  let actual: Map<string, Uint8Array>;
+  try {
+    actual = await readTree(root);
+  } catch {
+    // An uninspectable workspace (oversized file, symlink, unreadable entry)
+    // never counts as a solve, even for tasks that expect an empty tree.
+    return {
+      solved: false,
+      changed: [],
+      missing: [...task.after.keys()],
+      unexpected: [],
+      mismatched: [],
+      unreadable: true,
+    };
+  }
   const same = (a: Uint8Array | undefined, b: Uint8Array | undefined) =>
     a !== undefined &&
     b !== undefined &&

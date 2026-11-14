@@ -47,6 +47,7 @@ export interface ArmSummary {
   wall_ms_total: number;
   wall_ms_mean: number;
   network_refusals: number;
+  path_refusals: number;
 }
 
 export interface PairedComparison {
@@ -122,6 +123,7 @@ export function summarizeArm(
     wall_ms_mean:
       rows.length === 0 ? 0 : sum((row) => row.wall_ms) / rows.length,
     network_refusals: sum((row) => row.network_refusals),
+    path_refusals: sum((row) => row.path_refusals),
   };
 }
 

@@ -446,10 +446,12 @@ export function createScriptedEditModel(options: {
 export async function scriptedModelRegistry(
   root: string,
   modelId = "scripted/small",
+  upstreamModel?: string,
 ) {
   const home = join(root, "home");
   await mkdir(join(home, ".mars"), { recursive: true, mode: 0o700 });
-  const [providerId, model] = modelId.split("/") as [string, string];
+  const [providerId, alias] = modelId.split("/") as [string, string];
+  const model = upstreamModel ?? alias;
   await writeFile(
     join(home, ".mars", "models.json"),
     JSON.stringify({
