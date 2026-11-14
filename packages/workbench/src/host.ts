@@ -1203,6 +1203,20 @@ export async function createWorkbenchHost(
       // content hashes; crediting them as "no skills" would skew the baseline.
       const selection = launch?.skills?.selection;
       if (!selection) return;
+      let cost = 0;
+      let unpriced = false;
+      try {
+        for await (const event of options.store.events(
+          internalContext(options.scope),
+          task.task_id,
+        )) {
+          if (!event.usage) continue;
+          if (event.usage.cost_usd === null) unpriced = true;
+          else cost += event.usage.cost_usd;
+        }
+      } catch {
+        unpriced = true;
+      }
       await options.skillOutcomes.record({
         scope_key: JSON.stringify([
           options.scope.owner_id,
@@ -1215,6 +1229,7 @@ export async function createWorkbenchHost(
           sha256,
         })),
         verified,
+        cost_usd: unpriced ? null : cost,
         recorded_at: Date.now(),
       });
     } catch {

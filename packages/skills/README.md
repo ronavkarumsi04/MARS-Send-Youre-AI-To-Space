@@ -52,6 +52,22 @@ Error codes (`SkillError.code`): `invalid-name`, `invalid-content`, `frontmatter
 
 Name 64 chars; 10 versions; 50 drafts; curator 14/30 days; lock 30 s; threat scan 65,536 code points. There is no content-size limit in the store itself: callers (the review output whitelist caps skill content at 8000 characters) must bound it.
 
+## Evidence API
+
+`SkillOutcomeLedger.record` accepts optional nullable `cost_usd`; existing
+databases migrate automatically. `outcomes(scopeKey?)` reads raw rows.
+`recordTrials(scopeKey, skill, trials, recordedAt?)` validates and upserts
+held-out `GateTrial` pairs independently of proposals; `trials(scopeKey?, skill?)`
+reads them. `stats()` is unchanged.
+
+`skillEvidenceReport({ outcomes, trials, provenance?, policy? })` is pure and
+returns sorted `SkillEvidenceEntry[]` per scope/skill. It combines observational
+Wilson intervals and costs with paired-only helps/no_evidence/hurts verdicts
+under `GATE_POLICY`. Optional provenance entries have `{ skill, scope_key?,
+provenance: { origin, path?, lock? } }`; scoped entries override global entries.
+See [Evidence report](../../documentation/SKILLS.md#evidence-report) for rules
+and CLI commands. No live trials exist yet; verification is offline only.
+
 ## Not implemented
 
 Scoping by owner/project; semantic discovery; OpenClaw's reviewer prompt and tool surface; Hermes curator backups and run reports. Curator scheduling, operator commands and a held-out acceptance gate are implemented.

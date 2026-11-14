@@ -1,12 +1,117 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { SkillStore } from "@mars/skills";
+import { SkillOutcomeLedger, SkillStore } from "@mars/skills";
 
 const entrypoint = resolve(import.meta.dir, "main.ts");
 const skill = (name: string, body: string) =>
   `---\nname: ${name}\ndescription: How to ${name}.\n---\n${body}\n`;
+
+test("trials and reports support imported skills, scopes, JSON and complete text evidence", async () => {
+  const state = mkdtempSync(join(tmpdir(), "mars-evidence-cli-"));
+  try {
+    const source = join(state, "checkout");
+    mkdirSync(join(source, ".agents", "skills", "imported"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(source, ".agents", "skills", "imported", "SKILL.md"),
+      skill("imported", "Check fixtures."),
+    );
+    const cli = (args: string[]) => run(state, [...args, "--source", source]);
+    expect((await cli(["report"])).stdout).toContain("No evidence recorded.");
+    expect(JSON.parse((await cli(["report", "--json"])).stdout)).toEqual([]);
+    const file = join(state, "pairs.json");
+    writeFileSync(
+      file,
+      JSON.stringify(
+        Array.from({ length: 10 }, (_, i) => ({
+          task_id: `t${i}`,
+          baseline: { verified: i >= 6, cost_usd: 1 },
+          candidate: { verified: true, cost_usd: 1 },
+        })),
+      ),
+    );
+    const emptyScope = await cli(["trials", "imported", "--trials", file]);
+    expect(emptyScope.exit).not.toBe(0);
+    expect(emptyScope.stderr).toContain("known scopes: (none)");
+    expect(
+      (await cli(["trials", "imported", "--trials", file, "--scope", "repo"]))
+        .exit,
+    ).toBe(0);
+    expect((await cli(["trials", "imported", "--trials", file])).exit).toBe(0);
+    const ledger = new SkillOutcomeLedger(
+      join(state, "skill-outcomes", "outcomes.sqlite"),
+    );
+    ledger.record({
+      scope_key: "repo",
+      task_id: "observed",
+      skills: [{ name: "imported", sha256: "a".repeat(64) }],
+      verified: true,
+      cost_usd: 2,
+      recorded_at: 1,
+    });
+    ledger.record({
+      scope_key: "other",
+      task_id: "empty",
+      skills: [],
+      verified: false,
+      recorded_at: 1,
+    });
+    ledger.close();
+    const report = await cli([
+      "report",
+      "imported",
+      "--scope",
+      "repo",
+      "--json",
+    ]);
+    expect(report.exit).toBe(0);
+    expect(JSON.parse(report.stdout)).toMatchObject([
+      {
+        skill: "imported",
+        scope_key: "repo",
+        verdict: "helps",
+        provenance: {
+          origin: ".agents/skills",
+          path: ".agents/skills/imported/SKILL.md",
+        },
+        with: { cost_per_verified_solve: 2 },
+      },
+    ]);
+    const text = await cli(["report", "imported"]);
+    expect(text.exit).toBe(0);
+    for (const fragment of [
+      ".agents/skills",
+      "tasks=1",
+      "Wilson 95%",
+      "difference=",
+      "cost per verified solve=",
+      "trials=10, wins=6, losses=0, ties=4, discordant=6",
+      "p (helps)=0.01563",
+      "p (hurts)=",
+      "cost ratio=1.000",
+      "verdict=helps",
+      "reasons=none",
+      "alpha=0.05, min_trials=10, max_regressions=0, max_cost_ratio=1.25",
+    ])
+      expect(text.stdout).toContain(fragment);
+    const ambiguous = await cli(["trials", "imported", "--trials", file]);
+    expect(ambiguous.exit).not.toBe(0);
+    expect(ambiguous.stderr).toContain('known scopes: "other", "repo"');
+    expect(
+      JSON.parse((await cli(["report", "missing", "--json"])).stdout),
+    ).toEqual([]);
+    writeFileSync(file, "{}");
+    expect(
+      (await cli(["trials", "imported", "--trials", file, "--scope", "repo"]))
+        .exit,
+    ).not.toBe(0);
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
+}, 60_000);
 
 async function run(state: string, args: string[]) {
   const child = Bun.spawn(

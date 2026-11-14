@@ -14,9 +14,12 @@ import {
   GATE_POLICY,
   GateTrialsSchema,
   SkillError,
+  type SkillEvidenceEntry,
+  type SkillEvidenceProvenance,
   type SkillGateResult,
   SkillOutcomeLedger,
   SkillStore,
+  skillEvidenceReport,
 } from "@mars/skills";
 import { CliUsageError } from "./cli-errors";
 import { resolveWorkbenchLocation } from "./workbench-location";
@@ -32,6 +35,8 @@ export const SKILLS_USAGE = [
   "  proposals [--status pending|accepted|rejected]  proposals from background review",
   "  gate PROPOSAL_ID --trials FILE --evidence ID[,ID...]  run the held-out A/B gate on a JSON trials file and save the verdict",
   "  gates PROPOSAL_ID                     saved gate verdicts and overrides for a proposal",
+  "  trials NAME --trials FILE [--scope KEY]  save held-out pairs for any skill",
+  "  report [NAME] [--scope KEY] [--json]   verified solve-rate and cost evidence",
   "  accept PROPOSAL_ID [--without-gate --reason TEXT]  apply a pending proposal; one that creates or updates a skill needs a passing gate verdict (or --without-gate with a reason, which is recorded); fails if a skill it targets changed since it was made (proposals saved before per-skill checks: if any skill changed)",
   "  reject PROPOSAL_ID --reason TEXT      close a pending proposal without writing skills",
   "  undo REVIEW_ID                        undo every skill change one background review made; fails if a touched skill changed since",
@@ -53,6 +58,8 @@ const COMMANDS: Record<string, number> = {
   proposals: 0,
   gate: 1,
   gates: 1,
+  trials: 1,
+  report: 0,
   accept: 1,
   reject: 1,
   undo: 1,
@@ -84,6 +91,24 @@ function renderGate(result: SkillGateResult): string {
   return [
     `${result.passed ? "passed" : `failed (${result.reasons.join(", ")})`}: ${result.wins} won, ${result.losses} lost, ${result.ties} tied of ${result.trials} held-out task(s)`,
     `    pass rate ${(result.baseline_rate * 100).toFixed(1)}% -> ${(result.candidate_rate * 100).toFixed(1)}%; p=${result.p_value.toPrecision(3)} (alpha ${result.options?.alpha ?? "?"}); cost ratio ${result.cost_ratio.toFixed(2)}; digest ${result.digest}`,
+  ].join("\n");
+}
+
+function renderEvidence(entry: SkillEvidenceEntry): string {
+  const number = (value: number | null) =>
+    value === null ? "unknown" : value.toPrecision(4);
+  const side = (label: string, value: SkillEvidenceEntry["with"]) =>
+    `  ${label}: tasks=${value.tasks}, verified=${value.verified}, rate=${number(value.rate)} Wilson 95% [${number(value.interval.lower)}, ${number(value.interval.upper)}]; cost per verified solve=${number(value.cost_per_verified_solve)}`;
+  const h = entry.held_out;
+  const p = entry.policy;
+  return [
+    `${entry.skill} scope=${JSON.stringify(entry.scope_key)} provenance=${JSON.stringify(entry.provenance)}`,
+    side("with", entry.with),
+    side("without", entry.without),
+    `  difference=${number(entry.difference)}`,
+    `  held-out trials=${h.trials}, wins=${h.wins}, losses=${h.losses}, ties=${h.ties}, discordant=${h.discordant}; p (helps)=${number(h.p_value)}, p (hurts)=${number(h.p_value_hurts)}, cost ratio=${h.cost_ratio_infinite ? "Infinity" : number(h.cost_ratio)}`,
+    `  verdict=${entry.verdict}; reasons=${h.reasons.join(", ") || "none"}`,
+    `  policy: alpha=${p.alpha}, min_trials=${p.min_trials}, max_regressions=${p.max_regressions}, max_cost_ratio=${p.max_cost_ratio}`,
   ].join("\n");
 }
 
@@ -137,7 +162,12 @@ export async function runSkills(args: string[]): Promise<void> {
     console.log(SKILLS_USAGE);
     return;
   }
-  if (positionals.length !== arity || positionals.some((p) => !p.trim()))
+  if (
+    (command === "report"
+      ? positionals.length > 1
+      : positionals.length !== arity) ||
+    positionals.some((p) => !p.trim())
+  )
     throw new SkillsUsageError(
       `mars skills ${command} takes ${arity} argument(s).\n${SKILLS_USAGE}`,
     );
@@ -161,6 +191,8 @@ export async function runSkills(args: string[]): Promise<void> {
     throw new SkillsUsageError(
       `mars skills gate requires --trials and --evidence.\n${SKILLS_USAGE}`,
     );
+  if (command === "trials" && !values.trials)
+    throw new SkillsUsageError("mars skills trials requires --trials.");
   const { state, source } = await resolveWorkbenchLocation({
     source: values.source,
     project: values.project,
@@ -182,6 +214,63 @@ export async function runSkills(args: string[]): Promise<void> {
   };
   try {
     switch (command) {
+      case "trials": {
+        const knownScopes = [
+          ...new Set(
+            [...ledger().outcomes(), ...ledger().trials()].map(
+              (row) => row.scope_key,
+            ),
+          ),
+        ].sort();
+        const scope =
+          values.scope ??
+          (knownScopes.length === 1 ? knownScopes[0] : undefined);
+        if (scope === undefined)
+          throw new SkillsUsageError(
+            `Specify --scope; known scopes: ${knownScopes.length ? knownScopes.map((key) => JSON.stringify(key)).join(", ") : "(none)"}.`,
+          );
+        try {
+          const trials = GateTrialsSchema.parse(
+            JSON.parse(await readFile(values.trials as string, "utf8")),
+          );
+          ledger().recordTrials(scope, first, trials);
+          print(
+            { skill: first, scope_key: scope, trials: trials.length },
+            `Recorded ${trials.length} held-out trial(s) for ${first} in scope ${JSON.stringify(scope)}.`,
+          );
+        } catch (error) {
+          throw new SkillsUsageError(
+            `Invalid trials file ${values.trials}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return;
+      }
+      case "report": {
+        const provenance = new Map<string, SkillEvidenceProvenance>();
+        for (const skill of (await discoverSkills({ root: source })).skills)
+          provenance.set(skill.name, {
+            origin: skill.source,
+            path: skill.path,
+            lock: skill.provenance,
+          });
+        for (const skill of await store.list())
+          provenance.set(skill.name, { origin: "store" });
+        const entries = skillEvidenceReport({
+          outcomes: ledger().outcomes(values.scope),
+          trials: ledger().trials(values.scope),
+          provenance: [...provenance].map(([skill, provenance]) => ({
+            skill,
+            provenance,
+          })),
+        }).filter((entry) => !first || entry.skill === first);
+        print(
+          entries,
+          entries.length
+            ? entries.map(renderEvidence).join("\n\n")
+            : "No evidence recorded.",
+        );
+        return;
+      }
       case "list": {
         const skills = (await store.list()).filter(
           (skill) => values.all || skill.status !== "archived",
@@ -372,6 +461,7 @@ function parse(args: string[]) {
       status: { type: "string" },
       reason: { type: "string" },
       trials: { type: "string" },
+      scope: { type: "string" },
       evidence: { type: "string" },
       "without-gate": { type: "boolean" },
       all: { type: "boolean" },
