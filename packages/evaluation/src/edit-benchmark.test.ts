@@ -322,6 +322,40 @@ test("mars:hashline and mars:replace drive the real mars_edit / mars_replace too
   }
 }, 180_000);
 
+test("hashline oracle pages for anchors even when outline preview text includes the edit", async () => {
+  const root = await scratch();
+  const task = suiteV2.tasks.find((task) => task.task_id === "sds-rename-2");
+  if (!task) throw new Error("Missing outline-preview regression task");
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: [task],
+    profile: SCRIPTED_PROFILES.oracle as (typeof SCRIPTED_PROFILES)[string],
+  });
+  const transcriptRoot = join(root, "tx");
+  const result = await runEditTrial({
+    arm: "mars:hashline",
+    task,
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch: model.fetch,
+    workRoot: join(root, "work"),
+    transcriptRoot,
+  });
+  expect(result.solved).toBe(true);
+  expect(result.edit_failures).toBe(0);
+  if (!result.transcript) throw new Error("Missing oracle transcript");
+  const transcript = await readFile(
+    join(transcriptRoot, result.transcript),
+    "utf8",
+  );
+  expect(transcript).toContain("Outlined because file exceeds");
+  expect(transcript).toContain('"offset":');
+}, 60_000);
+
 test("a rejected edit the model then retries counts as an edit failure, not a lost solve", async () => {
   const { run } = await offlineRun("recovering", {
     arms: ["mars:hashline", "mars:replace", "mars:apply_patch", "omp-stock"],

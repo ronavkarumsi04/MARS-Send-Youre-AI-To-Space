@@ -620,7 +620,10 @@ export function createScriptedEditModel(options: {
         editTool === "mars_edit"
           ? anchoredRows(last.kind === "edit" ? last.result : lastRead.result)
           : null;
-      if (format === "hashline" && last.kind === "edit") {
+      if (
+        format === "hashline" &&
+        (editTool === "mars_edit" || last.kind === "edit")
+      ) {
         // Anchors must come from lines the latest result displayed.
         const shown = known
           ? new Map([...known].map(([n, row]) => [n, row.text]))
