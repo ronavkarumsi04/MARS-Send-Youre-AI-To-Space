@@ -70,14 +70,14 @@ Lifecycle semantics adapted from `openclaw/openclaw` at `7d9677ce36db4aeea2ce36a
 
 ```ts
 const report = await discoverSkills({ root, maxSkills: 256, maxContentBytes: 65_536 });
-report.skills   // DiscoveredSkill[]: { name, description, path, source, content, bytes, frontmatter }
+report.skills   // DiscoveredSkill[]: { name, description, path, source, content, bytes, frontmatter, provenance }
 report.shadowed // later copies of a name already taken by an earlier source
 report.skipped  // { path, reason: "symlink" | "oversize" | "encoding" | "frontmatter" | "missing-name-or-description" | "invalid-name" | "limit" | ... }
 report.warnings // e.g. frontmatter name differs from the folder name
 const records = toSkillRecords(report); // SkillRecord[] (status "active", unpinned, epoch timestamps, useCount 0) for freezeSkills
 ```
 
-Scanned in order: `skills/<name>/SKILL.md` (plus `skills/vendor/<vendor>/<name>/SKILL.md`, the layout this repository vendors watch-skill in), `.claude/skills/<name>/SKILL.md`, `.codex/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`. One folder level only; dot-folders (for example the store's `skills/.archive`) are ignored. Frontmatter goes through `parseFrontmatter`; `name` and `description` are required and `name` must satisfy the store rule `^[a-z0-9][a-z0-9-]{0,63}$`. First location wins; results are ordered by source then path, so output is deterministic. Symlinked folders or files, non-UTF-8 content, files over `maxContentBytes` (default 64 KiB) and anything past `maxSkills` (default 256) are skipped and reported.
+Scanned in order: `skills/<name>/SKILL.md` (plus `skills/vendor/<vendor>/<name>/SKILL.md`, the layout this repository vendors watch-skill in), `.claude/skills/<name>/SKILL.md`, `.codex/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`. One folder level only; dot-folders (for example the store's `skills/.archive`) are ignored. Frontmatter goes through the safe read-only `parseImportedFrontmatter` subset; `name` and `description` are required and `name` must satisfy the store rule `^[a-z0-9][a-z0-9-]{0,63}$`. First location wins; results are ordered by source then path, so output is deterministic. Checkout-confined symlink aliases are deduplicated by real file path. External/broken/cyclic links are ignored. Threat-scanned imports remain untrusted; non-UTF-8 content, files over `maxContentBytes` (default 64 KiB) and anything past `maxSkills` (default 256) are skipped and reported. Discovery requires Linux `/proc/self/fd` confinement. See [Skills from skills.sh](../../documentation/SKILLS.md#skills-from-skillssh) for import YAML decisions, v2 provenance hashing and bounds, and `mars skills list` output.
 
 ### Hooks (`loadHooks`, `runHooks`)
 

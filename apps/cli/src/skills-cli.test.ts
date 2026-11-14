@@ -215,3 +215,32 @@ test("mars skills drives the proposal, undo, pin, archive and version lifecycle"
     rmSync(state, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("mars skills list shows installed repository provenance separately from lifecycle skills", async () => {
+  const state = mkdtempSync(join(tmpdir(), "mars-skills-provenance-cli-"));
+  const source = resolve(
+    import.meta.dir,
+    "../../../packages/skills/test/fixtures/discovery/skills-sh",
+  );
+  try {
+    const listed = await run(state, ["list", "--source", source, "--json"]);
+    expect(listed.exit).toBe(0);
+    const report = JSON.parse(listed.stdout);
+    expect(report.skills).toEqual([]);
+    expect(report.repository.skills).toHaveLength(1);
+    expect(report.repository.skills[0].provenance).toMatchObject({
+      source: "example-org/release-skills",
+      status: "match",
+      computedHash:
+        "7887cc385fafb06f6b621c1464cdaca016c852999bb960f9703bf16efcd45be1",
+    });
+    const text = await run(state, ["list", "--source", source]);
+    expect(text.exit).toBe(0);
+    expect(text.stdout).toContain("repository skills (untrusted): 1");
+    expect(text.stdout).toContain(
+      "release-guide [match] source=example-org/release-skills hash=7887cc",
+    );
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
+});

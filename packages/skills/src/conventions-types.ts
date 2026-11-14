@@ -5,6 +5,8 @@
  * modules rather than changing these shapes.
  */
 
+import type { SkillProvenance } from "./provenance";
+
 export type SkillSource =
   | "skills"
   | ".claude/skills"
@@ -20,6 +22,8 @@ export interface DiscoveredSkill {
   content: string;
   bytes: number;
   frontmatter: Record<string, string | undefined>;
+  /** Local lock claims and content integrity, never a trust or lifecycle pin. */
+  provenance: SkillProvenance;
 }
 
 export interface SkillDiscoveryResult {
