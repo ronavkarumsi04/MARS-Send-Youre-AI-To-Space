@@ -2,6 +2,7 @@ import { extname } from "node:path";
 import { z } from "zod";
 
 export const MAX_READ_BYTES = 128 * 1024;
+const MAX_OUTLINE_LINE_CHARS = 512;
 export const ReadSummaryOptionsSchema = z
   .object({
     thresholdBytes: z
@@ -45,7 +46,9 @@ export function structuralOutline(
   text: string,
   maxSymbols = 60,
 ): { symbols: OutlineSymbol[]; truncated: boolean } {
-  const lines = fileLines(text);
+  const lines = fileLines(text).map((line) =>
+    line.slice(0, MAX_OUTLINE_LINE_CHARS),
+  );
   const extension = extname(path).toLowerCase();
   const markdown = [".md", ".mdx", ".markdown"].includes(extension);
   const python = extension === ".py";

@@ -269,10 +269,18 @@ function sse(delta: Record<string, unknown>, reason = "stop") {
 }
 
 test("mars_read outlines large files, returns ranges and refuses policy-denied reads", async () => {
-  for (const kind of ["outline", "range", "denied", "invalid"] as const) {
+  for (const kind of [
+    "outline",
+    "long-line",
+    "range",
+    "denied",
+    "invalid",
+  ] as const) {
     const f = await fixture();
     const requests: Record<string, unknown>[] = [];
     let reads = 0;
+    let readStarted = 0;
+    let readDuration = Number.POSITIVE_INFINITY;
     try {
       const session = await f.open({
         readSummary: { thresholdBytes: 16 },
@@ -282,6 +290,10 @@ test("mars_read outlines large files, returns ranges and refuses policy-denied r
             reads += 1;
             if (kind === "denied")
               throw new Error("Read denied by host policy");
+            if (kind === "long-line") {
+              readStarted = performance.now();
+              return new TextEncoder().encode(`a(${"b):".repeat(333334)}`);
+            }
             return new TextEncoder().encode(
               `first\nsecond\n${"export function large() {}\n".repeat(6000)}`,
             );
@@ -289,6 +301,8 @@ test("mars_read outlines large files, returns ranges and refuses policy-denied r
         },
         fetch: async (_url, init) => {
           requests.push(JSON.parse(String(init?.body)));
+          if (kind === "long-line" && requests.length === 2)
+            readDuration = performance.now() - readStarted;
           return requests.length === 1
             ? sse(
                 {
@@ -321,6 +335,11 @@ test("mars_read outlines large files, returns ranges and refuses policy-denied r
       if (kind === "outline") {
         expect(result).toContain("Heuristic outline");
         expect(result).toContain("16-byte summary threshold");
+      }
+      if (kind === "long-line") {
+        expect(result).toContain("Heuristic outline");
+        expect(result).toContain("1 lines, 1000004 bytes");
+        expect(readDuration).toBeLessThan(1000);
       }
       if (kind === "range") {
         expect(result).toContain(`${anchorOf(2, "second")}|second`);

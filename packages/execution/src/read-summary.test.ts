@@ -8,6 +8,19 @@ import {
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
+test("long semicolon-free lines have bounded outline classification time", () => {
+  const text = `a(${"b):".repeat(333334)}`;
+  const start = performance.now();
+  expect(structuralOutline("long.ts", text).symbols).toEqual([]);
+  expect(performance.now() - start).toBeLessThan(1000);
+  const readStart = performance.now();
+  const result = renderRead("long.ts", bytes(text));
+  expect(performance.now() - readStart).toBeLessThan(1000);
+  expect(result).toContain("1 lines, 1000004 bytes");
+  expect(result).toContain("Heuristic outline");
+  expect(Buffer.byteLength(result)).toBeLessThan(MAX_READ_BYTES);
+});
+
 test("small reads are unchanged through the threshold and large reads outline", () => {
   for (const size of [24 * 1024 - 1, 24 * 1024]) {
     const text = `${"x".repeat(size - 2)}\r\n`;
