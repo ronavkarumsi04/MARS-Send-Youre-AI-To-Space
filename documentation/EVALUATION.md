@@ -365,17 +365,43 @@ evidence for per-model edit-format selection.
 
 ### Pre-registered success bar (written before any live run)
 
-> MARS's best edit format beats `omp-stock` on host-verified solve rate for
-> small models with **p < 0.05 on the paired exact two-sided sign test** over
+> MARS's default edit format for that model beats `omp-stock` on
+> host-verified solve rate for small models with **p < 0.05 on the paired exact two-sided sign test** over
 > tasks (a task counts as solved when a strict majority of its repeats
 > solved), **and** its cost per verified solve is **not worse** (USD when
 > either arm is priced, otherwise total input + output tokens per verified
 > solve). Results are published whichever way they go.
 
-The bar is encoded as `PREREGISTERED_BAR` (`mars-vs-omp-stock/v1`) in
+(Wording amended 2026-11-14 from "MARS's best edit format"; see the
+confirmatory-arm amendment below.) The bar is encoded as `PREREGISTERED_BAR`
+(`mars-vs-omp-stock/v2`; `v1` was the best-format wording) in
 `report.ts` and every report carries the verdict (`met`, `significant`,
 `cost_not_worse`, summary). Nothing is "proven better than omp" until this
 benchmark has run live on real small models; as of this writing it has not.
+
+### Amendment 2026-11-14 (before any live run): one confirmatory arm
+
+The v1 bar tested the *best* of the MARS arms, picked after seeing the
+results, at unadjusted alpha 0.05. With three MARS arms that is a
+multiple-comparisons problem: the chance of a false "MARS beats omp" is above
+5%. From 2026-11-14, still before any live data:
+
+- The confirmatory candidate is fixed before the run from the model under
+  test: the MARS arm whose format is `defaultEditFormat(model)` (`hashline`,
+  or `replace` for the models omp gives `replace`). Reports record it as
+  `verdict.confirmatory_arm` with `verdict.confirmatory_reason:
+  "static_default"`. Only that comparison against `omp-stock` computes the
+  pre-registered verdict at alpha 0.05. It is a single test, so the power
+  design and `MIN_POWERED_TASKS = 129` below are unchanged.
+- If the confirmatory arm did not run (for example `--arms` without it), the
+  verdict is `met: false`, "Not evaluable: confirmatory arm <arm> not run".
+  It never falls back to the best arm.
+- Every MARS arm's comparison with `omp-stock`, and the best measured arm, are
+  still reported under `secondary`, labelled "secondary (exploratory, not
+  adjusted for multiple comparisons)", with Holm-adjusted p-values across all
+  MARS-vs-omp-stock comparisons next to the raw p-values.
+- `selectEditFormat` is unchanged: routing may still use the best measured
+  arm. That is a product decision, not the confirmatory test.
 
 ### Amendment 2026-11-14 (before any live run): minimum suite size
 
@@ -460,8 +486,10 @@ Amended rules, in force from 2026-11-14:
 Per arm the report records solve rate with Wilson 95% interval
 (`wilsonInterval` from `@mars/skills`), edit-call failure rate, mean turns
 (model requests), input/output tokens, cost and tokens per verified solve with
-a seeded task-bootstrap 95% interval, and wall time; plus a paired comparison
-(best MARS arm vs `omp-stock`: both/neither/discordant tasks, exact sign test).
+a seeded task-bootstrap 95% interval, and wall time; plus the confirmatory
+paired comparison (the model's default-format MARS arm vs `omp-stock`:
+both/neither/discordant tasks, exact sign test) and the secondary comparisons
+of every MARS arm with raw and Holm-adjusted p-values.
 The forwarded integer seed per (task, repeat) is `servingSeed` (PR #219) of a
 job seed derived like the specialist comparison's; the suite is a
 `mars.held-out-split/v1` and `--training-lineage` files are checked with

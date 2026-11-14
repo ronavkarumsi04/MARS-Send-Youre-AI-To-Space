@@ -32,6 +32,8 @@ export interface ScriptedModelProfile {
   max_attempts: number;
   /** Only the first N attempts per file may be faulty (default: all). */
   faulty_attempts?: number;
+  /** Faults for Oh My Pi's own `edit` tool (omp-stock), per format; default `faults`. */
+  stock_faults?: ScriptedModelProfile["faults"];
 }
 
 export const SCRIPTED_PROFILES: Record<string, ScriptedModelProfile> = {
@@ -53,6 +55,33 @@ export const SCRIPTED_PROFILES: Record<string, ScriptedModelProfile> = {
     faults: {
       replace: { rate: 1, modes: ["ambiguous_match", "wrong_whitespace"] },
       hashline: { rate: 1, modes: ["stale_anchor"] },
+    },
+    max_attempts: 1,
+  },
+  // MARS's default-format tools are clean; stock omp's edit tool always fails.
+  "default-fluent": {
+    id: "default-fluent",
+    faults: {},
+    stock_faults: {
+      hashline: { rate: 1, modes: ["stale_anchor"] },
+      replace: { rate: 1, modes: ["ambiguous_match"] },
+    },
+    max_attempts: 1,
+  },
+  // MARS hashline always fails; stock omp (same hashline mode) is clean.
+  "default-hostile": {
+    id: "default-hostile",
+    faults: { hashline: { rate: 1, modes: ["stale_anchor"] } },
+    stock_faults: { hashline: { rate: 0, modes: ["stale_anchor"] } },
+    max_attempts: 1,
+  },
+  // A non-default arm (apply_patch) wins by more than the default (hashline).
+  "secondary-wins": {
+    id: "secondary-wins",
+    faults: { hashline: { rate: 0.5, modes: ["stale_anchor"] } },
+    stock_faults: {
+      hashline: { rate: 1, modes: ["stale_anchor"] },
+      replace: { rate: 1, modes: ["ambiguous_match"] },
     },
     max_attempts: 1,
   },
@@ -514,7 +543,10 @@ export function createScriptedEditModel(options: {
       const lastIndex = events.length - 1;
       const last = events[lastIndex];
       const fault = (attempt: number): ScriptedFailureMode | null => {
-        const spec = options.profile.faults[format];
+        const spec =
+          (editTool === "edit"
+            ? options.profile.stock_faults?.[format]
+            : undefined) ?? options.profile.faults[format];
         if (!spec || spec.modes.length === 0) return null;
         if (
           attempt >=

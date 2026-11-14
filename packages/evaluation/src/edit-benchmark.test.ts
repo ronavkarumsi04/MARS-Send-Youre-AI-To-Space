@@ -15,6 +15,7 @@ import {
   editBenchmarkArms,
   editFormatEvidenceFromReport,
   exactSignTest,
+  holmAdjust,
   loadEditBenchmarkSuite,
   MIN_POWERED_TASKS,
   minimumPoweredTasks,
@@ -190,9 +191,14 @@ test("offline end to end: scripted small model, both arms, sealed report, transc
 }, 120_000);
 
 test("below the power minimum the run is exploratory and no verdict is computed", async () => {
-  const fluent = await offlineRun("patch-fluent");
+  // The scripted model's static default format is hashline: the confirmatory arm.
+  const fluent = await offlineRun("default-fluent", {
+    arms: ["mars:hashline", "omp-stock"],
+  });
   expect(fluent.run.report.verdict).toMatchObject({
-    candidate: "mars:apply_patch",
+    candidate: "mars:hashline",
+    confirmatory_arm: "mars:hashline",
+    confirmatory_reason: "static_default",
     exploratory: true,
     suite_tasks: 10,
     min_powered_tasks: MIN_POWERED_TASKS,
@@ -204,7 +210,9 @@ test("below the power minimum the run is exploratory and no verdict is computed"
   expect(
     (fluent.run.report.paired as { candidate_only: string[] }).candidate_only,
   ).toHaveLength(10);
-  const hostile = await offlineRun("patch-hostile");
+  const hostile = await offlineRun("default-hostile", {
+    arms: ["mars:hashline", "omp-stock"],
+  });
   expect(hostile.run.report.verdict).toMatchObject({
     met: false,
     solve_rate_better: false,
@@ -212,7 +220,11 @@ test("below the power minimum the run is exploratory and no verdict is computed"
   expect(
     (hostile.run.report.paired as { baseline_only: string[] }).baseline_only,
   ).toHaveLength(10);
-  const oracle = await offlineRun("oracle", { tasks: 3, repeats: 2 });
+  const oracle = await offlineRun("oracle", {
+    tasks: 3,
+    repeats: 2,
+    arms: ["mars:hashline", "omp-stock"],
+  });
   expect(oracle.run.report.verdict).toMatchObject({ met: false });
   expect(
     (oracle.run.report.paired as { both_solved: number }).both_solved,
@@ -222,9 +234,13 @@ test("below the power minimum the run is exploratory and no verdict is computed"
 const suiteV2 = await loadEditBenchmarkSuite(EDIT_BENCHMARK_SUITE_V2_DIR);
 
 test("on the powered v2 suite the pre-registered verdict is computed whichever way it goes", async () => {
-  const fluent = await offlineRun("patch-fluent", { suite: suiteV2 });
+  const fluent = await offlineRun("default-fluent", {
+    suite: suiteV2,
+    arms: ["mars:hashline", "omp-stock"],
+  });
   expect(fluent.run.report.verdict).toMatchObject({
-    candidate: "mars:apply_patch",
+    candidate: "mars:hashline",
+    confirmatory_arm: "mars:hashline",
     exploratory: false,
     suite_tasks: suiteV2.tasks.length,
     met: true,
@@ -503,4 +519,83 @@ test("duplicate arms are refused before any trial runs", async () => {
     }),
   ).rejects.toThrow("Benchmark arms must be distinct.");
   expect(model.requests()).toBe(0);
+});
+
+test("the confirmatory arm is the static default even when another MARS arm wins by more", async () => {
+  const { run } = await offlineRun("secondary-wins", {
+    arms: ["mars:hashline", "mars:apply_patch", "omp-stock"],
+  });
+  const arms = run.report.arms as Array<{
+    arm: string;
+    verified_solves: number;
+  }>;
+  const solves = (arm: string) =>
+    arms.find((a) => a.arm === arm)?.verified_solves ?? 0;
+  expect(solves("mars:apply_patch")).toBeGreaterThan(solves("mars:hashline"));
+  expect(run.report.verdict).toMatchObject({
+    candidate: "mars:hashline",
+    confirmatory_arm: "mars:hashline",
+    confirmatory_reason: "static_default",
+  });
+  expect((run.report.paired as { candidate: string }).candidate).toBe(
+    "mars:hashline",
+  );
+  const secondary = run.report.secondary as {
+    label: string;
+    best_arm: string;
+    comparisons: Array<{
+      arm: string;
+      confirmatory: boolean;
+      p_raw: number;
+      p_holm: number;
+    }>;
+  };
+  expect(secondary.label).toBe(
+    "secondary (exploratory, not adjusted for multiple comparisons)",
+  );
+  expect(secondary.best_arm).toBe("mars:apply_patch");
+  expect(secondary.comparisons.map((c) => [c.arm, c.confirmatory])).toEqual([
+    ["mars:hashline", true],
+    ["mars:apply_patch", false],
+  ]);
+  for (const c of secondary.comparisons)
+    expect(c.p_holm).toBeGreaterThanOrEqual(c.p_raw);
+  expect(run.markdown).toContain(
+    "Secondary comparisons: secondary (exploratory, not adjusted for multiple comparisons)",
+  );
+  expect(run.markdown).toContain("Pre-registered arm: mars:hashline");
+}, 180_000);
+
+test("without the confirmatory arm the bar is not evaluable and never falls back", async () => {
+  const { run } = await offlineRun("patch-fluent", {
+    suite: suiteV2,
+    tasks: MIN_POWERED_TASKS,
+    arms: ["mars:apply_patch", "omp-stock"],
+  });
+  expect(run.report.verdict).toMatchObject({
+    candidate: null,
+    confirmatory_arm: "mars:hashline",
+    exploratory: false,
+    met: false,
+    significant: false,
+    summary: "Not evaluable: confirmatory arm mars:hashline not run.",
+  });
+  expect(run.report.paired).toBeNull();
+  // The winning non-default arm is still reported, only as secondary.
+  const secondary = run.report.secondary as {
+    best_arm: string;
+    comparisons: Array<{ arm: string; p_raw: number }>;
+  };
+  expect(secondary.best_arm).toBe("mars:apply_patch");
+  expect(secondary.comparisons[0]?.p_raw).toBeLessThan(0.05);
+}, 240_000);
+
+test("Holm adjustment matches hand-computed values", () => {
+  // Sorted 0.01, 0.03, 0.04 -> 3*0.01 = 0.03, 2*0.03 = 0.06, max(0.06, 1*0.04) = 0.06.
+  const adjusted = holmAdjust([0.01, 0.04, 0.03]);
+  expect(adjusted[0]).toBeCloseTo(0.03, 12);
+  expect(adjusted[1]).toBeCloseTo(0.06, 12);
+  expect(adjusted[2]).toBeCloseTo(0.06, 12);
+  expect(holmAdjust([0.5, 0.9, 0.6])).toEqual([1, 1, 1]);
+  expect(holmAdjust([])).toEqual([]);
 });
