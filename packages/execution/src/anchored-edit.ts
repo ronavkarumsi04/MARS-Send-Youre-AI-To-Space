@@ -401,10 +401,16 @@ export function applyReplace(
       from = offset + needle.length;
     }
   }
-  const matchLines = offsets.map(
-    (offset) => normalized.slice(0, offset).split("\n").length,
-  );
   if (!needle || offsets.length === 0 || (offsets.length > 1 && !replaceAll)) {
+    const matchLines: number[] = [];
+    let cursor = 0;
+    let line = 1;
+    for (const offset of offsets.slice(0, 10)) {
+      while (cursor < offset) {
+        if (normalized[cursor++] === "\n") line++;
+      }
+      matchLines.push(line);
+    }
     const reason = !needle
       ? "old must be non-empty"
       : offsets.length === 0
@@ -425,10 +431,16 @@ export function applyReplace(
   const updated = parseText(result);
   const rows = new Set<number>();
   let delta = 0;
+  let cursor = 0;
+  let start = 1;
+  const replacementLines = value.split("\n").length;
   for (const offset of offsets) {
-    const start = result.slice(0, offset + delta).split("\n").length;
-    for (let i = 0; i < value.split("\n").length; i++)
+    while (cursor < offset + delta) {
+      if (result[cursor++] === "\n") start++;
+    }
+    for (let i = 0; i < replacementLines && rows.size < 40; i++)
       addRegion(rows, updated.lines.length, start + i, 1);
+    if (rows.size >= 40) break;
     delta += value.length - needle.length;
   }
   return {

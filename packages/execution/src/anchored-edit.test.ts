@@ -415,6 +415,21 @@ describe("exact replacement", () => {
     expect(success(applyReplace("aaaa", "aa", "b", true)).text).toBe("bb");
   });
 
+  test("50k repeated lines have linear-time ambiguity and replace_all summaries", () => {
+    const text = "a\n".repeat(50000);
+    let start = performance.now();
+    const error = failure(applyReplace(text, "a", "b\nc"), "invalid");
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(error.message).toContain("lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10;");
+    start = performance.now();
+    const result = success(applyReplace(text, "a", "b\nc", true));
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(result.text).toBe("b\nc\n".repeat(50000));
+    expect(result.summary).toContain("Replaced 50000 match(es).");
+    expect(result.summary).toContain("40|c");
+    expect(result.summary.split("\n").length).toBeLessThanOrEqual(42);
+  });
+
   test("normalizes matching while preserving CRLF/BOM and final newline changes", () => {
     expect(
       success(applyReplace("\uFEFFa\r\nb\r\nc\r\n", "a\nb", "😀\n中")).text,
