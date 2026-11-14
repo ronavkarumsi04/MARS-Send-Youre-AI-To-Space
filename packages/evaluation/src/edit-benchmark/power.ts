@@ -16,7 +16,6 @@ export function signTestPower(
   let power = 0;
   for (let discordant = 0; discordant <= n; discordant += 1) {
     const pd = binomial(n, discordant, discordance);
-    if (pd < 1e-15) continue;
     let reject = 0;
     for (
       let wins = Math.floor(discordant / 2) + 1;

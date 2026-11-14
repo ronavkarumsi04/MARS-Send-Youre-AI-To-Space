@@ -111,6 +111,7 @@ test("the newest report decides; formats that never solved or are unavailable ar
     modelId: "ollama/qwen3-coder",
     repository: "repo",
     evidence: [older, newer],
+    available: ["apply_patch"],
   });
   expect(decision).toMatchObject({
     format: DEFAULT_MARS_EDIT_FORMAT,

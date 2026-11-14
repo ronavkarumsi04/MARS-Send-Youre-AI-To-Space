@@ -1,14 +1,21 @@
 import type { ModelConfig } from "@mars/contracts";
 
 /**
- * Formats with benchmark drivers, and the evidence-based choice between them.
- * Runtime model configuration additionally supports hashline and replace.
+ * Every MARS edit format has a benchmark driver and can be chosen by
+ * evidence. Order is the benchmark's default arm order.
  */
-export const MARS_EDIT_FORMATS = ["apply_patch"] as const;
+export const MARS_EDIT_FORMATS = [
+  "hashline",
+  "replace",
+  "apply_patch",
+] as const;
 export type MarsEditFormat = (typeof MARS_EDIT_FORMATS)[number];
 
-/** The static default when no benchmark evidence exists for a model. */
-export const DEFAULT_MARS_EDIT_FORMAT: MarsEditFormat = "apply_patch";
+/**
+ * The static default when no benchmark evidence exists and the model is
+ * unknown; with a model, `defaultEditFormat` (omp's per-model rule) applies.
+ */
+export const DEFAULT_MARS_EDIT_FORMAT: MarsEditFormat = "hashline";
 
 export function isMarsEditFormat(value: unknown): value is MarsEditFormat {
   return (
@@ -98,10 +105,14 @@ export function selectEditFormat(input: {
   evidence: readonly EditFormatEvidence[];
   available?: readonly MarsEditFormat[];
   staticDefault?: MarsEditFormat;
+  /** The selected model, for the per-model static default. */
+  model?: Pick<ModelConfig, "id" | "model">;
   allowSimulated?: boolean;
 }): EditFormatDecision {
   const available = input.available ?? MARS_EDIT_FORMATS;
-  const fallback = input.staticDefault ?? DEFAULT_MARS_EDIT_FORMAT;
+  const fallback =
+    input.staticDefault ??
+    (input.model ? defaultEditFormat(input.model) : DEFAULT_MARS_EDIT_FORMAT);
   const base = {
     schema: EDIT_FORMAT_DECISION_SCHEMA,
     model_id: input.modelId,

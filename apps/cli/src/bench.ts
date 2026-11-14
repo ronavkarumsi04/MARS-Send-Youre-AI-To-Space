@@ -22,7 +22,7 @@ import { CliUsageError } from "./cli-errors";
 
 export const BENCH_USAGE = [
   "Usage: mars bench edit-formats (--offline [--profile small-model|oracle|patch-fluent|patch-hostile] | --live --model ID --max-usd N)",
-  "         --out DIR [--arms mars:apply_patch,omp-stock] [--repeats 3] [--suite DIR] [--repository NAME]",
+  "         --out DIR [--arms mars:hashline,mars:replace,mars:apply_patch,omp-stock] [--repeats 3] [--suite DIR] [--repository NAME]",
   "         [--max-tokens N] [--max-tokens-per-task 1000000] [--max-usd-per-task N] [--max-duration-ms-per-task 300000]",
   "         [--training-lineage FILE]... [--signing-key-env NAME --signing-key-id ID] [--seed-salt TEXT]",
   "  Runs every task of the held-out edit suite in each MARS edit-format arm and in stock Oh My Pi (omp-stock)",

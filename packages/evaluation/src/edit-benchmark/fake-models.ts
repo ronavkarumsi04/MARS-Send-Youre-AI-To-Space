@@ -8,7 +8,8 @@ import type { EditBenchmarkTask } from "./tasks";
  * Deterministic scripted models for offline runs. A scripted model speaks the
  * OpenAI-compatible streaming protocol behind an injected `fetch`, reads the
  * files a task changes, then edits them in whichever edit format the arm's
- * tool list exposes (MARS `mars_apply_patch`, or Oh My Pi's `edit` in its
+ * tool list exposes (MARS `mars_edit` with anchored `mars_read`,
+ * `mars_replace` or `mars_apply_patch`, or Oh My Pi's `edit` in its
  * hashline / replace / apply_patch modes). Profiles inject realistic failure
  * modes (malformed patches, wrong whitespace, stale anchors, ambiguous
  * matches) per format, chosen from a hash of the forwarded request `seed`, so
@@ -29,6 +30,8 @@ export interface ScriptedModelProfile {
   >;
   /** Edit attempts per file before the scripted model gives up. */
   max_attempts: number;
+  /** Only the first N attempts per file may be faulty (default: all). */
+  faulty_attempts?: number;
 }
 
 export const SCRIPTED_PROFILES: Record<string, ScriptedModelProfile> = {
@@ -52,6 +55,17 @@ export const SCRIPTED_PROFILES: Record<string, ScriptedModelProfile> = {
       hashline: { rate: 1, modes: ["stale_anchor"] },
     },
     max_attempts: 1,
+  },
+  // Every format's first edit attempt per file fails; the retry is clean.
+  recovering: {
+    id: "recovering",
+    faults: {
+      apply_patch: { rate: 1, modes: ["malformed_patch"] },
+      replace: { rate: 1, modes: ["ambiguous_match"] },
+      hashline: { rate: 1, modes: ["stale_anchor"] },
+    },
+    max_attempts: 2,
+    faulty_attempts: 1,
   },
   "patch-hostile": {
     id: "patch-hostile",
@@ -116,8 +130,62 @@ export interface ReadView {
   complete: boolean;
 }
 
+const ANCHORED_ROW = /^(\d+):([abcdefghijkmnpqrstuvwxyz23456789]{3})\|(.*)$/;
+
+/** `line:hash|text` rows anywhere in a MARS tool result (reads, recoveries). */
+export function anchoredRows(
+  result: string,
+): Map<number, { anchor: string; text: string }> {
+  const rows = new Map<number, { anchor: string; text: string }>();
+  for (const row of result.split("\n")) {
+    const match = ANCHORED_ROW.exec(row);
+    if (match)
+      rows.set(Number(match[1]), {
+        anchor: `${match[1]}:${match[2]}`,
+        text: match[3] ?? "",
+      });
+  }
+  return rows;
+}
+
+/** A MARS paged `mars_read` result: `path · lines a-b of N`, then rows. */
+function parsePagedRead(result: string): ReadView | null {
+  const rows = result.split("\n");
+  const header = / · lines (\d+)-(\d+) of (\d+)$/.exec(rows[0] ?? "");
+  if (!header) return null;
+  const total = Number(header[3]);
+  const anchored = anchoredRows(result);
+  const lines = new Map<number, string>();
+  if (anchored.size > 0)
+    for (const [n, row] of anchored) lines.set(n, row.text);
+  else {
+    let n = Number(header[1]);
+    for (const row of rows.slice(1)) {
+      if (
+        /^\[(?:…\d+ln elided|truncated|continue|line \d+ truncated)/.test(row)
+      )
+        continue;
+      lines.set(n, row);
+      n += 1;
+    }
+  }
+  const complete =
+    lines.size === total &&
+    Array.from({ length: total }, (_, i) => i + 1).every((n) => lines.has(n));
+  return {
+    content: complete
+      ? `${Array.from({ length: total }, (_, i) => lines.get(i + 1)).join("\n")}\n`
+      : null,
+    lines,
+    tag: null,
+    complete,
+  };
+}
+
 /** A read result, with Oh My Pi hashline/line-number decoration and elisions decoded. */
 export function parseReadResult(result: string): ReadView {
+  const paged = parsePagedRead(result);
+  if (paged) return paged;
   const header = /^\[[^\]\n#]+#([0-9A-Fa-f]{4})\]\n?/.exec(result);
   if (!header) {
     // omp middle-truncates any tool result over 50 KiB, including mars_read.
@@ -292,6 +360,40 @@ function hashlineEdit(
   return [`[${path}#${anchor}]`, ...op].join("\n");
 }
 
+function marsEditArgs(
+  path: string,
+  region: Region,
+  anchorOf: (line: number) => string,
+  fault: ScriptedFailureMode | null,
+): Record<string, unknown> {
+  const anchor = (line: number) => {
+    const value = anchorOf(line);
+    return fault === "stale_anchor"
+      ? value.replace(
+          /:(\w{3})$/,
+          (_, hash) => `:${hash === "aaa" ? "bbb" : "aaa"}`,
+        )
+      : value;
+  };
+  const mangle =
+    fault === "wrong_whitespace" ? wrongWhitespace : (l: string) => l;
+  const added = region.added.map(mangle);
+  // mars_edit drops one trailing newline from content.
+  const content = added.join("\n") + (added.at(-1) === "" ? "\n" : "");
+  const first = region.start + 1;
+  const last = region.start + region.removed.length;
+  const end = last > first ? { end: anchorOf(last) } : {};
+  const op =
+    region.removed.length === 0
+      ? region.start === 0
+        ? { op: "insert_before", anchor: anchor(1), content }
+        : { op: "insert_after", anchor: anchor(region.start), content }
+      : region.added.length === 0
+        ? { op: "delete", anchor: anchor(first), ...end }
+        : { op: "replace", anchor: anchor(first), ...end, content };
+  return { path, edits: [op] };
+}
+
 export interface ScriptedModel {
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
   requests(): number;
@@ -352,6 +454,12 @@ export function createScriptedEditModel(options: {
     if (tools.has("mars_apply_patch")) {
       editTool = "mars_apply_patch";
       format = "apply_patch";
+    } else if (tools.has("mars_edit") && tools.has(readTool)) {
+      editTool = "mars_edit";
+      format = "hashline";
+    } else if (tools.has("mars_replace") && tools.has(readTool)) {
+      editTool = "mars_replace";
+      format = "replace";
     } else {
       const edit = tools.get("edit");
       if (!edit || !tools.has(readTool))
@@ -387,7 +495,10 @@ export function createScriptedEditModel(options: {
             return {
               kind: tc.function.name === readTool ? "read" : "edit",
               ranged:
-                typeof args.path === "string" && /:[\d,+-]+$/.test(args.path),
+                (typeof args.path === "string" &&
+                  /:[\d,+-]+$/.test(args.path)) ||
+                args.offset !== undefined ||
+                args.limit !== undefined,
               path,
               result: results.get(tc.id) ?? "",
             };
@@ -405,6 +516,11 @@ export function createScriptedEditModel(options: {
       const fault = (attempt: number): ScriptedFailureMode | null => {
         const spec = options.profile.faults[format];
         if (!spec || spec.modes.length === 0) return null;
+        if (
+          attempt >=
+          (options.profile.faulty_attempts ?? Number.POSITIVE_INFINITY)
+        )
+          return null;
         const draw = [
           body.seed ?? 0,
           options.profile.id,
@@ -430,9 +546,19 @@ export function createScriptedEditModel(options: {
       // what the edit applied until the file matches.
       if (
         !last ||
-        (last.kind !== "read" && (edits === 0 || fault(edits - 1) !== null))
+        (last.kind !== "read" &&
+          (edits === 0 ||
+            // mars_edit rejections carry recovery anchors to retry with.
+            (fault(edits - 1) !== null && editTool !== "mars_edit")))
       )
         return call(readTool, { path });
+      const rangeRead = (from: number, to: number) =>
+        call(
+          readTool,
+          readTool === "mars_read"
+            ? { path, offset: from, limit: to - from + 1 }
+            : { path: `${path}:${from}-${to}` },
+        );
       const lastRead = events.findLast((event) => event.kind === "read");
       if (!lastRead) return call(readTool, { path });
       const view = parseReadResult(lastRead.result);
@@ -473,13 +599,20 @@ export function createScriptedEditModel(options: {
             view.lines.get(n) === lines[n - 1] ||
             view.lines.get(n - lines.length - 1) === lines[n - 1],
         );
-        if (!visible && readTool === "mars_read")
+        // mars_apply_patch sessions have no ranged mars_read.
+        if (!visible && editTool === "mars_apply_patch")
           return say(`I cannot see the part of ${path} that needs editing.`);
-        if (!visible) return call(readTool, { path: `${path}:${from}-${to}` });
+        if (!visible) return rangeRead(from, to);
       }
+      const known =
+        editTool === "mars_edit"
+          ? anchoredRows(last.kind === "edit" ? last.result : lastRead.result)
+          : null;
       if (format === "hashline" && last.kind === "edit") {
-        // Hashline anchors must lie in lines the latest tag displayed.
-        const shown = parseReadResult(last.result).lines;
+        // Anchors must come from lines the latest result displayed.
+        const shown = known
+          ? new Map([...known].map(([n, row]) => [n, row.text]))
+          : parseReadResult(last.result).lines;
         const first = Math.max(1, region.start);
         const end = Math.max(first, region.start + region.removed.length);
         const anchored = Array.from(
@@ -487,15 +620,34 @@ export function createScriptedEditModel(options: {
           (_, i) => first + i,
         ).every((n) => shown.get(n) === lines[n - 1]);
         if (!anchored)
-          return call(readTool, {
-            path: `${path}:${Math.max(1, first - 2)}-${Math.min(lines.length, end + 3)}`,
-          });
+          return rangeRead(
+            Math.max(1, first - 2),
+            Math.min(lines.length, end + 3),
+          );
       }
       const current = fault(edits);
       if (editTool === "mars_apply_patch")
         return call(editTool, {
           patch: applyPatchEdit(path, lines, region, current),
         });
+      if (editTool === "mars_edit")
+        return call(
+          editTool,
+          marsEditArgs(
+            path,
+            region,
+            (n) => known?.get(n)?.anchor ?? `${n}:aaa`,
+            current,
+          ),
+        );
+      if (editTool === "mars_replace") {
+        const edit = replaceEdit(path, lines, region, current);
+        return call(editTool, {
+          path,
+          old: edit.old_string,
+          new: edit.new_string,
+        });
+      }
       if (format === "replace")
         return call(editTool, replaceEdit(path, lines, region, current));
       if (format === "hashline")
