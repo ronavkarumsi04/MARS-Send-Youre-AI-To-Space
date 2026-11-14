@@ -76,12 +76,14 @@ export class SkillOutcomeLedger {
         PRIMARY KEY (scope_key, task_id)
       )`,
     );
-    const columns = this.db
-      .query("SELECT name FROM pragma_table_info('skill_outcomes')")
-      .all() as { name: string }[];
-    if (!columns.some((column) => column.name === "cost_usd"))
-      this.db.exec("ALTER TABLE skill_outcomes ADD COLUMN cost_usd REAL");
-    this.db.exec(`CREATE TABLE IF NOT EXISTS skill_trials (
+    this.db
+      .transaction(() => {
+        const columns = this.db
+          .query("SELECT name FROM pragma_table_info('skill_outcomes')")
+          .all() as { name: string }[];
+        if (!columns.some((column) => column.name === "cost_usd"))
+          this.db.exec("ALTER TABLE skill_outcomes ADD COLUMN cost_usd REAL");
+        this.db.exec(`CREATE TABLE IF NOT EXISTS skill_trials (
       scope_key TEXT NOT NULL,
       skill TEXT NOT NULL,
       task_id TEXT NOT NULL,
@@ -89,6 +91,8 @@ export class SkillOutcomeLedger {
       recorded_at INTEGER NOT NULL,
       PRIMARY KEY (scope_key, skill, task_id)
     )`);
+      })
+      .immediate();
   }
 
   private createGates(): void {

@@ -223,6 +223,7 @@ test("migrates existing scoped databases without losing outcomes or changing sta
   );
   db.close();
   const ledger = new SkillOutcomeLedger(path);
+  const reopened = new SkillOutcomeLedger(path);
   try {
     expect(ledger.outcomes()[0]?.cost_usd).toBeNull();
     expect(ledger.outcomes()[0]?.recorded_at).toBe(7);
@@ -236,7 +237,19 @@ test("migrates existing scoped databases without losing outcomes or changing sta
       recorded_at: 8,
     });
     expect(ledger.outcomes()[0]?.cost_usd).toBe(0);
+    expect(reopened.outcomes()).toEqual(ledger.outcomes());
+    reopened.recordTrials(
+      "repo",
+      "imported",
+      pairs().map(({ task_id, baseline, candidate }) => ({
+        task_id,
+        baseline,
+        candidate,
+      })),
+    );
+    expect(ledger.trials("repo", "imported")).toHaveLength(10);
   } finally {
+    reopened.close();
     ledger.close();
     rmSync(dir, { recursive: true, force: true });
   }
