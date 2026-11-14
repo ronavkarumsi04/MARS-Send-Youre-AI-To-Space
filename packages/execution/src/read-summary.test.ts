@@ -21,6 +21,20 @@ test("long semicolon-free lines have bounded outline classification time", () =>
   expect(Buffer.byteLength(result)).toBeLessThan(MAX_READ_BYTES);
 });
 
+test("outline ranges count closing braces beyond the classification prefix", () => {
+  const text = [
+    "function first() {",
+    `  ${"x".repeat(600)}}`,
+    "",
+    "unrelated();",
+    "function second() {}",
+  ].join("\n");
+  expect(structuralOutline("long.ts", text).symbols).toEqual([
+    { label: "function first() {", startLine: 1, endLine: 2 },
+    { label: "function second() {}", startLine: 5, endLine: 5 },
+  ]);
+});
+
 test("small reads are unchanged through the threshold and large reads outline", () => {
   for (const size of [24 * 1024 - 1, 24 * 1024]) {
     const text = `${"x".repeat(size - 2)}\r\n`;

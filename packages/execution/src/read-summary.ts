@@ -46,9 +46,7 @@ export function structuralOutline(
   text: string,
   maxSymbols = 60,
 ): { symbols: OutlineSymbol[]; truncated: boolean } {
-  const lines = fileLines(text).map((line) =>
-    line.slice(0, MAX_OUTLINE_LINE_CHARS),
-  );
+  const lines = fileLines(text);
   const extension = extname(path).toLowerCase();
   const markdown = [".md", ".mdx", ".markdown"].includes(extension);
   const python = extension === ".py";
@@ -67,13 +65,13 @@ export function structuralOutline(
   let block = true;
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index] ?? "";
-    const line = raw.trim();
+    const line = raw.slice(0, MAX_OUTLINE_LINE_CHARS).trim();
     if (markdown && /^(```|~~~)/.test(line)) {
       fenced = !fenced;
       continue;
     }
     if (fenced) continue;
-    let level = raw.match(/^\s*/)?.[0].length ?? 0;
+    let level = raw.length - raw.trimStart().length;
     let label: string | undefined;
     if (markdown) {
       const heading = /^(#{1,6})\s+(.+)/.exec(line);
@@ -124,10 +122,11 @@ export function structuralOutline(
     if (python) {
       for (let row = start.line; row < end; row += 1) {
         const raw = lines[row] ?? "";
+        const trimmed = raw.trimStart();
         if (
-          raw.trim() &&
-          !raw.trim().startsWith("#") &&
-          (raw.match(/^\s*/)?.[0].length ?? 0) <= start.level
+          trimmed &&
+          !trimmed.startsWith("#") &&
+          raw.length - trimmed.length <= start.level
         ) {
           end = row;
           break;
@@ -149,7 +148,7 @@ export function structuralOutline(
           end = row + 1;
           break;
         }
-        if (!opened && /;\s*$/.test(raw)) {
+        if (!opened && raw.trimEnd().endsWith(";")) {
           end = row + 1;
           break;
         }
