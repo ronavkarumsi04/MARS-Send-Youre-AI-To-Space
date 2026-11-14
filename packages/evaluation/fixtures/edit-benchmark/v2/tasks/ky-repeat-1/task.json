@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "ky-repeat-1",
+  "category": "repeated_lines",
+  "complexity": "light",
+  "instruction": "In `source/types/hooks.ts`, the line `retryCount: number;` appears 3 times. Append ` // mars-bench: reviewed` to the end of only its first occurrence (line 52), leaving the other occurrences unchanged. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Disambiguating one of 3 identical lines. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "license": "MIT",
+      "path": "source/types/hooks.ts"
+    }
+  }
+}

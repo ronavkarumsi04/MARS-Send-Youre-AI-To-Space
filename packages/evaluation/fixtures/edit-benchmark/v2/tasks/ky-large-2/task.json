@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "ky-large-2",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `source/types/options.ts` (556 lines), on line 542 (`readonly method: NonNullable<RequestInit['method']>;`), change the string literal `'method'` to `'method_v2'`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 542 of 556. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "license": "MIT",
+      "path": "source/types/options.ts"
+    }
+  }
+}

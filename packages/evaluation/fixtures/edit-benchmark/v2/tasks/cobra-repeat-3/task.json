@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-repeat-3",
+  "category": "repeated_lines",
+  "complexity": "light",
+  "instruction": "In `bash_completions.go`, the line `if !c.IsAvailableCommand() && c != cmd.helpCommand {` appears 2 times. Append ` // mars-bench: reviewed` to the end of only its first occurrence (line 450), leaving the other occurrences unchanged. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Disambiguating one of 2 identical lines. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "bash_completions.go"
+    }
+  }
+}

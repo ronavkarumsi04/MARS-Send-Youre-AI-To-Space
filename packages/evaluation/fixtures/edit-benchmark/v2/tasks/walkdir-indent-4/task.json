@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "walkdir-indent-4",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `src/lib.rs`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 311 (`self.opts.min_depth = depth;`). Indent the new line with exactly the same leading whitespace as line 311 (8 spaces). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (8 spaces) in a rust file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/walkdir",
+      "commit": "6fd031c82ba5a4204b4ce6eae73dacb00dc072ec",
+      "license": "MIT OR Unlicense",
+      "path": "src/lib.rs"
+    }
+  }
+}

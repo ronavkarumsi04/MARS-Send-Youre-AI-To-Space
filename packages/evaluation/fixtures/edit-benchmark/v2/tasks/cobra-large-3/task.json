@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-large-3",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `bash_completions.go` (710 lines), on line 437 (`WriteStringAndCheck(buf, fmt.Sprintf(`if [[ $(type -t compopt) = \"builtin\" ]]; then`), change the string literal `\"builtin\"` to `\"builtin_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 437 of 710. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "bash_completions.go"
+    }
+  }
+}

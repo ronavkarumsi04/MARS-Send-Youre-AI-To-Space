@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "click-rename-5",
+  "category": "multi_site",
+  "complexity": "medium",
+  "instruction": "In `src/click/types.py`, rename the identifier `converted` to `converted_v2` at every whole-word occurrence in the file (7 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `converted` at 7 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/pallets/click",
+      "commit": "e38188e9e205005d5af5f9e59df51904c984586a",
+      "license": "BSD-3-Clause",
+      "path": "src/click/types.py"
+    }
+  }
+}

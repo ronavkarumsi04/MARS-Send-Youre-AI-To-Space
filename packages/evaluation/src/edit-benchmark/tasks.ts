@@ -28,6 +28,15 @@ const Provenance = z
     author: z.string().min(1).optional(),
     notes: z.string().min(1).optional(),
     statement: z.string().min(1).optional(),
+    source: z
+      .object({
+        repository: z.string().url(),
+        commit: z.string().regex(/^[a-f0-9]{40}$/),
+        license: z.string().min(1),
+        path: z.string().min(1),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -51,6 +60,21 @@ export const EditBenchmarkSuiteSchema = z
     domain: z.string().regex(/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/),
     tasks: z.array(Id).min(1),
     provenance: Provenance,
+    /** Upstream repositories derived tasks were taken from. */
+    sources: z
+      .array(
+        z
+          .object({
+            slug: Id,
+            repository: z.string().url(),
+            commit: z.string().regex(/^[a-f0-9]{40}$/),
+            license: z.string().min(1),
+            license_file: z.string().min(1),
+            language: z.string().min(1),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -65,13 +89,22 @@ export interface EditBenchmarkSuite {
   revision: string;
   domain: string;
   provenance: z.infer<typeof Provenance>;
+  sources: NonNullable<z.infer<typeof EditBenchmarkSuiteSchema>["sources"]>;
   tasks: EditBenchmarkTask[];
   /** Digest over every task's metadata and both trees. */
   sha256: string;
   split: HeldOutSplit & { sha256: string };
 }
 
-/** The curated held-out suite shipped with this package. */
+/**
+ * v2: 144 tasks derived from pinned, permissively licensed public code; sized
+ * for the pre-registered power analysis. Default for `mars bench`.
+ */
+export const EDIT_BENCHMARK_SUITE_V2_DIR = fileURLToPath(
+  new URL("../../fixtures/edit-benchmark/v2", import.meta.url),
+);
+
+/** v1: the original 10 hand-written tasks (kept intact; exploratory only). */
 export const EDIT_BENCHMARK_SUITE_V1_DIR = fileURLToPath(
   new URL("../../fixtures/edit-benchmark/v1", import.meta.url),
 );
@@ -120,6 +153,21 @@ export async function loadEditBenchmarkSuite(
     );
     if (meta.task_id !== id)
       throw new Error(`Task directory ${id} declares ${meta.task_id}.`);
+    if (meta.provenance.origin === "derived") {
+      const source = meta.provenance.source;
+      if (
+        !source ||
+        !suite.sources?.some(
+          (s) =>
+            s.repository === source.repository &&
+            s.commit === source.commit &&
+            s.license === source.license,
+        )
+      )
+        throw new Error(
+          `Derived task ${id} must name a source listed by the suite.`,
+        );
+    }
     const before = await readTree(join(root, "before"));
     const after = await readTree(join(root, "after"));
     if (before.size === 0) throw new Error(`Task ${id} has no files.`);
@@ -158,6 +206,7 @@ export async function loadEditBenchmarkSuite(
     revision: suite.revision,
     domain: suite.domain,
     provenance: suite.provenance,
+    sources: suite.sources ?? [],
     tasks,
     sha256: digest,
     split: createHeldOutGuard(split).split(),

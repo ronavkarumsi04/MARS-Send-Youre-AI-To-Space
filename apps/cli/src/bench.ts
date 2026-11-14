@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import type { TrainingLineageView } from "@mars/datasets";
 import {
   createScriptedEditModel,
-  EDIT_BENCHMARK_SUITE_V1_DIR,
+  EDIT_BENCHMARK_SUITE_V2_DIR,
   type EditBenchmarkArm,
   editBenchmarkArms,
   editFormatEvidenceFromReport,
@@ -23,7 +23,7 @@ import { CliUsageError } from "./cli-errors";
 export const BENCH_USAGE = [
   "Usage: mars bench edit-formats (--offline [--profile small-model|oracle|patch-fluent|patch-hostile] | --live --model ID --max-usd N)",
   "         --out DIR [--arms mars:apply_patch,omp-stock] [--repeats 3] [--suite DIR] [--repository NAME]",
-  "         [--max-tokens N] [--max-tokens-per-task 200000] [--max-usd-per-task N] [--max-duration-ms-per-task 300000]",
+  "         [--max-tokens N] [--max-tokens-per-task 1000000] [--max-usd-per-task N] [--max-duration-ms-per-task 300000]",
   "         [--training-lineage FILE]... [--signing-key-env NAME --signing-key-id ID] [--seed-salt TEXT]",
   "  Runs every task of the held-out edit suite in each MARS edit-format arm and in stock Oh My Pi (omp-stock)",
   "  with the same model, seed and per-task budget, then writes report.json (sha256, HMAC with a signing key),",
@@ -162,7 +162,7 @@ export async function runBench(
     };
   }
   const suite = await loadEditBenchmarkSuite(
-    resolve(values.suite ?? EDIT_BENCHMARK_SUITE_V1_DIR),
+    resolve(values.suite ?? EDIT_BENCHMARK_SUITE_V2_DIR),
   );
   const arms: EditBenchmarkArm[] = values.arms
     ? values.arms.split(",").map((arm) => {
@@ -259,7 +259,7 @@ export async function runBench(
       max_tokens: positiveInt(
         "--max-tokens-per-task",
         values["max-tokens-per-task"],
-        200_000,
+        1_000_000,
       ),
       max_usd: perTaskUsd,
       max_duration_ms: positiveInt(
@@ -281,7 +281,11 @@ export async function runBench(
       ? { seedSalt: values["seed-salt"] }
       : {}),
   });
-  const verdict = run.report.verdict as { met: boolean; summary: string };
+  const verdict = run.report.verdict as {
+    met: boolean;
+    exploratory: boolean;
+    summary: string;
+  };
   out(
     JSON.stringify(
       {
@@ -294,6 +298,7 @@ export async function runBench(
         trials: run.trials.length,
         model_requests: model.requests ? model.requests() : null,
         bar_met: verdict.met,
+        exploratory: verdict.exploratory,
         verdict: verdict.summary,
       },
       null,

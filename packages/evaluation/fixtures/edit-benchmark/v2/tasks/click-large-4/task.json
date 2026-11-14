@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "click-large-4",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `src/click/_compat.py` (591 lines), on line 588 (`\"stdout\": get_text_stdout,`), change the string literal `\"stdout\"` to `\"stdout_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 588 of 591. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/pallets/click",
+      "commit": "e38188e9e205005d5af5f9e59df51904c984586a",
+      "license": "BSD-3-Clause",
+      "path": "src/click/_compat.py"
+    }
+  }
+}

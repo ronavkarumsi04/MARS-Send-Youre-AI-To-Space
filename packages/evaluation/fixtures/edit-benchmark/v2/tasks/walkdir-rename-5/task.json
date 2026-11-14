@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "walkdir-rename-5",
+  "category": "multi_site",
+  "complexity": "medium",
+  "instruction": "In `src/dent.rs`, rename the identifier `crate` to `crate_v2` at every whole-word occurrence in the file (10 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `crate` at 10 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/walkdir",
+      "commit": "6fd031c82ba5a4204b4ce6eae73dacb00dc072ec",
+      "license": "MIT OR Unlicense",
+      "path": "src/dent.rs"
+    }
+  }
+}

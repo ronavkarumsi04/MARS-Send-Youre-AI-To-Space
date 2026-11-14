@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "sds-large-4",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `sds.c` (1329 lines), on line 828 (`* sdssplit(\"foo_-_bar\",\"_-_\"); will return two`), change the string literal `\"foo_-_bar\"` to `\"foo_-_bar_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 828 of 1329. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/antirez/sds",
+      "commit": "5347739b1581fcba74fd5cab1fc21d2aef317d71",
+      "license": "BSD-2-Clause",
+      "path": "sds.c"
+    }
+  }
+}

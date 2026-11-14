@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "click-large-2",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `src/click/parser.py` (534 lines), on line 526 (`\"Importing 'parser.split_arg_string' is deprecated, it will only be\"`), change the string literal `'parser.split_arg_string'` to `'parser.split_arg_string_v2'`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 526 of 534. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/pallets/click",
+      "commit": "e38188e9e205005d5af5f9e59df51904c984586a",
+      "license": "BSD-3-Clause",
+      "path": "src/click/parser.py"
+    }
+  }
+}

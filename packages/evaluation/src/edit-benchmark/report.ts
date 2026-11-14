@@ -6,6 +6,7 @@ import {
 } from "@mars/execution";
 import { z } from "zod";
 import { type EditBenchmarkArm, OMP_STOCK_ARM, type TrialResult } from "./arms";
+import { MIN_POWERED_TASKS } from "./power";
 import {
   bootstrapRatio,
   exactSignTest,
@@ -70,6 +71,10 @@ export interface BarVerdict {
   cost_basis: "usd" | "tokens";
   cost_not_worse: boolean | null;
   met: boolean;
+  /** True when the suite is below the power-analysis minimum: no verdict is computed. */
+  exploratory: boolean;
+  suite_tasks: number;
+  min_powered_tasks: number;
   summary: string;
 }
 
@@ -180,9 +185,16 @@ export function judgeBar(
   candidate: ArmSummary | null,
   baseline: ArmSummary | undefined,
   paired: PairedComparison | null,
+  suiteTasks: number,
 ): BarVerdict {
+  const power = {
+    exploratory: suiteTasks < MIN_POWERED_TASKS,
+    suite_tasks: suiteTasks,
+    min_powered_tasks: MIN_POWERED_TASKS,
+  };
   if (!candidate || !baseline || !paired)
     return {
+      ...power,
       bar_id: PREREGISTERED_BAR.id,
       candidate: candidate?.arm ?? null,
       solve_rate_better: false,
@@ -206,9 +218,22 @@ export function judgeBar(
     candidate.solve_rate > baseline.solve_rate;
   const significant =
     better && paired.sign_test.p_two_sided < PREREGISTERED_BAR.alpha;
-  const met = significant && costNotWorse;
   const p = paired.sign_test.p_two_sided.toPrecision(3);
+  if (power.exploratory)
+    return {
+      ...power,
+      bar_id: PREREGISTERED_BAR.id,
+      candidate: candidate.arm,
+      solve_rate_better: better,
+      significant: false,
+      cost_basis: priced ? "usd" : "tokens",
+      cost_not_worse: costNotWorse,
+      met: false,
+      summary: `Exploratory: the suite has ${suiteTasks} task(s), below the power-analysis minimum of ${MIN_POWERED_TASKS}, so the pre-registered verdict is not computed (${candidate.arm} vs omp-stock: ${paired.candidate_only.length} vs ${paired.baseline_only.length} discordant tasks, p = ${p}).`,
+    };
+  const met = significant && costNotWorse;
   return {
+    ...power,
     bar_id: PREREGISTERED_BAR.id,
     candidate: candidate.arm,
     solve_rate_better: better,
@@ -399,7 +424,7 @@ export function renderEditBenchmarkMarkdown(
     "",
     `${PREREGISTERED_BAR.statement}`,
     "",
-    `**${r.verdict.met ? "MET" : "NOT MET"}** — ${r.verdict.summary}`,
+    `**${r.verdict.exploratory ? "EXPLORATORY (no verdict)" : r.verdict.met ? "MET" : "NOT MET"}** — ${r.verdict.summary}`,
     "",
     "## Limitations",
     "",

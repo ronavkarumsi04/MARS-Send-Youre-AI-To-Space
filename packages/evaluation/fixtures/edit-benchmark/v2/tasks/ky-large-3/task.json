@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "ky-large-3",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `source/utils/merge.ts` (502 lines), on line 439 (`if (isRoot && key === 'retry' && isPlainObject(value) && (isReplace || !isMergeable(returnValue[key]))) {`), change the string literal `'retry'` to `'retry_v2'`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 439 of 502. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "license": "MIT",
+      "path": "source/utils/merge.ts"
+    }
+  }
+}

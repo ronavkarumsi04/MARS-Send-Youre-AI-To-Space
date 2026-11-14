@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "toml-indent-5",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `type_fields.go`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 190 (`if tagged >= 0 {`). Indent the new line with exactly the same leading whitespace as line 190 (3 tab(s)). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (3 tab(s)) in a go file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/toml",
+      "commit": "d733fc535e4a9f3c454e421a87b90ade5d49bf31",
+      "license": "MIT",
+      "path": "type_fields.go"
+    }
+  }
+}

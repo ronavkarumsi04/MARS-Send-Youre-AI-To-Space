@@ -120,8 +120,23 @@ export interface ReadView {
 export function parseReadResult(result: string): ReadView {
   const header = /^\[[^\]\n#]+#([0-9A-Fa-f]{4})\]\n?/.exec(result);
   if (!header) {
-    const lines = new Map(splitLines(result).map((line, i) => [i + 1, line]));
-    return { content: result, lines, tag: null, complete: true };
+    // omp middle-truncates any tool result over 50 KiB, including mars_read.
+    const rows = splitLines(result);
+    const cut = rows.findIndex((row) => /^\[…\d+ln elided/.test(row));
+    if (cut < 0)
+      return {
+        content: result,
+        lines: new Map(rows.map((line, i) => [i + 1, line])),
+        tag: null,
+        complete: true,
+      };
+    // Head lines keep their numbers; tail lines are keyed from the end (-1 = last).
+    const tail = rows.slice(cut + 1);
+    const lines = new Map<number, string>([
+      ...rows.slice(0, cut).map((line, i) => [i + 1, line] as [number, string]),
+      ...tail.map((line, i) => [i - tail.length, line] as [number, string]),
+    ]);
+    return { content: null, lines, tag: null, complete: false };
   }
   const lines = new Map<number, string>();
   let elided = false;
@@ -163,6 +178,17 @@ function changedRegion(current: string[], target: string[]): Region | null {
   )
     tail += 1;
   if (start === current.length && start === target.length) return null;
+  if (current.length === target.length) {
+    // Same line count: edit the first run of changed lines only, so
+    // scattered edits (renames) become one small edit per turn.
+    let end = start;
+    while (end < current.length && current[end] !== target[end]) end += 1;
+    return {
+      start,
+      removed: current.slice(start, end),
+      added: target.slice(start, end),
+    };
+  }
   return {
     start,
     removed: current.slice(start, current.length - tail),
@@ -395,22 +421,45 @@ export function createScriptedEditModel(options: {
       };
       if (edits > 0) {
         const previous = fault(edits - 1);
-        const silent = previous === null || previous === "wrong_whitespace";
-        if (silent) continue;
-        if (edits >= options.profile.max_attempts)
+        // A whitespace-mangled edit "succeeds" and the model believes it is done.
+        if (previous === "wrong_whitespace") continue;
+        if (previous !== null && edits >= options.profile.max_attempts)
           return say(`I could not apply the edit to ${path}.`);
       }
-      if (!last || last.kind !== "read") return call(readTool, { path });
-      const view = parseReadResult(last.result);
+      // Re-read after a failed edit; after a successful one, continue from
+      // what the edit applied until the file matches.
+      if (
+        !last ||
+        (last.kind !== "read" && (edits === 0 || fault(edits - 1) !== null))
+      )
+        return call(readTool, { path });
+      const lastRead = events.findLast((event) => event.kind === "read");
+      if (!lastRead) return call(readTool, { path });
+      const view = parseReadResult(lastRead.result);
+      const tagged =
+        last.kind === "edit" ? parseReadResult(last.result).tag : null;
+      const after = splitLines(text(task.after.get(path)));
       // An elided read shows only part of the file; the scripted model then
-      // works from the file it was given and re-reads the lines it edits.
-      const lines = splitLines(view.content ?? text(task.before.get(path)));
-      const region = changedRegion(
-        lines,
-        splitLines(text(task.after.get(path))),
-      );
+      // works from what it knows (the original plus the edits it applied)
+      // and re-reads the lines it edits.
+      let belief = splitLines(text(task.before.get(path)));
+      for (let attempt = 0; attempt < edits; attempt += 1) {
+        if (fault(attempt) !== null) continue;
+        const applied = changedRegion(belief, after);
+        if (!applied) break;
+        belief = [
+          ...belief.slice(0, applied.start),
+          ...applied.added,
+          ...belief.slice(applied.start + applied.removed.length),
+        ];
+      }
+      const lines =
+        last.kind === "read" && view.complete && view.content
+          ? splitLines(view.content)
+          : belief;
+      const region = changedRegion(lines, after);
       if (!region) continue;
-      if (!view.complete && !last.ranged) {
+      if (!view.complete && !lastRead.ranged) {
         const from = Math.max(1, region.start - 2);
         const to = Math.min(
           lines.length,
@@ -419,8 +468,28 @@ export function createScriptedEditModel(options: {
         const visible = Array.from(
           { length: to - from + 1 },
           (_, i) => from + i,
-        ).every((n) => view.lines.get(n) === lines[n - 1]);
+        ).every(
+          (n) =>
+            view.lines.get(n) === lines[n - 1] ||
+            view.lines.get(n - lines.length - 1) === lines[n - 1],
+        );
+        if (!visible && readTool === "mars_read")
+          return say(`I cannot see the part of ${path} that needs editing.`);
         if (!visible) return call(readTool, { path: `${path}:${from}-${to}` });
+      }
+      if (format === "hashline" && last.kind === "edit") {
+        // Hashline anchors must lie in lines the latest tag displayed.
+        const shown = parseReadResult(last.result).lines;
+        const first = Math.max(1, region.start);
+        const end = Math.max(first, region.start + region.removed.length);
+        const anchored = Array.from(
+          { length: end - first + 1 },
+          (_, i) => first + i,
+        ).every((n) => shown.get(n) === lines[n - 1]);
+        if (!anchored)
+          return call(readTool, {
+            path: `${path}:${Math.max(1, first - 2)}-${Math.min(lines.length, end + 3)}`,
+          });
       }
       const current = fault(edits);
       if (editTool === "mars_apply_patch")
@@ -431,7 +500,12 @@ export function createScriptedEditModel(options: {
         return call(editTool, replaceEdit(path, lines, region, current));
       if (format === "hashline")
         return call(editTool, {
-          input: hashlineEdit(path, view.tag ?? "0000", region, current),
+          input: hashlineEdit(
+            path,
+            tagged ?? view.tag ?? "0000",
+            region,
+            current,
+          ),
         });
       return call(editTool, {
         input: applyPatchEdit(path, lines, region, current),

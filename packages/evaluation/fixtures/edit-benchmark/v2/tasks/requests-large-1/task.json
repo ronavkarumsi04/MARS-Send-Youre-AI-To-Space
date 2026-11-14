@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "requests-large-1",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `src/requests/models.py` (1185 lines), on line 1154 (`reason = self.reason.decode(\"utf-8\")`), change the string literal `\"utf-8\"` to `\"utf-8_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 1154 of 1185. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/psf/requests",
+      "commit": "3c7baaa05ab4aa49cc819ce3a819d260de19c157",
+      "license": "Apache-2.0",
+      "path": "src/requests/models.py"
+    }
+  }
+}

@@ -145,6 +145,7 @@ export async function runEditBenchmark(
     best,
     arms.find((arm) => arm.arm === OMP_STOCK_ARM),
     paired,
+    options.suite.tasks.length,
   );
   const limitations = [
     ...(options.simulated

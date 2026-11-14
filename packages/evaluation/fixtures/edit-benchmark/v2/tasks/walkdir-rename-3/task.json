@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "walkdir-rename-3",
+  "category": "multi_site",
+  "complexity": "light",
+  "instruction": "In `walkdir-list/main.rs`, rename the identifier `correctly` to `correctly_v2` at every whole-word occurrence in the file (3 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `correctly` at 3 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/walkdir",
+      "commit": "6fd031c82ba5a4204b4ce6eae73dacb00dc072ec",
+      "license": "MIT OR Unlicense",
+      "path": "walkdir-list/main.rs"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-indent-2",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `bash_completionsV2.go`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 473 (`return err`). Indent the new line with exactly the same leading whitespace as line 473 (2 tab(s)). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (2 tab(s)) in a go file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "bash_completionsV2.go"
+    }
+  }
+}
