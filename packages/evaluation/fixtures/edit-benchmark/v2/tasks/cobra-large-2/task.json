@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-large-2",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `completions.go` (1025 lines), on line 452 (`strings.HasPrefix(flag.Value.Type(), \"stringTo\")`), change the string literal `\"stringTo\"` to `\"stringTo_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 452 of 1025. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "completions.go"
+    }
+  }
+}

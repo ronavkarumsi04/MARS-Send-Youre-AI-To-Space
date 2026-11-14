@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "ky-indent-5",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `source/types/ResponsePromise.ts`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 10 (`arrayBuffer: () => Promise<ArrayBuffer>;`). Indent the new line with exactly the same leading whitespace as line 10 (1 tab(s)). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (1 tab(s)) in a typescript file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "license": "MIT",
+      "path": "source/types/ResponsePromise.ts"
+    }
+  }
+}

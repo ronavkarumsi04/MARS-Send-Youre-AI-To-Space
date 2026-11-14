@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "sds-indent-2",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `sds.h`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 233 (`__attribute__((format(printf, 2, 3)));`). Indent the new line with exactly the same leading whitespace as line 233 (4 spaces). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (4 spaces) in a c file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/antirez/sds",
+      "commit": "5347739b1581fcba74fd5cab1fc21d2aef317d71",
+      "license": "BSD-2-Clause",
+      "path": "sds.h"
+    }
+  }
+}

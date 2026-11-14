@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "toml-rename-2",
+  "category": "multi_site",
+  "complexity": "light",
+  "instruction": "In `internal/tag/add.go`, rename the identifier `float` to `floatV2` at every whole-word occurrence in the file (4 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `float` at 4 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/toml",
+      "commit": "d733fc535e4a9f3c454e421a87b90ade5d49bf31",
+      "license": "MIT",
+      "path": "internal/tag/add.go"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "express-indent-3",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In `lib/view.js`, insert a new line containing the comment `// mars-bench: reviewed` immediately before line 115 (`var dir = dirname(loc);`). Indent the new line with exactly the same leading whitespace as line 115 (4 spaces). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Indentation-exact insertion (4 spaces) in a javascript file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/expressjs/express",
+      "commit": "43fca52d28a422c8be48fd489cbd4f2d6152bab6",
+      "license": "MIT",
+      "path": "lib/view.js"
+    }
+  }
+}

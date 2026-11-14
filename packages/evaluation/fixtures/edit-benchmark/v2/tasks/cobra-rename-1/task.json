@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-rename-1",
+  "category": "multi_site",
+  "complexity": "light",
+  "instruction": "In `bash_completions.go`, rename the identifier `s_index_of_word` to `s_index_of_wordV2` at every whole-word occurrence in the file (3 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `s_index_of_word` at 3 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "bash_completions.go"
+    }
+  }
+}

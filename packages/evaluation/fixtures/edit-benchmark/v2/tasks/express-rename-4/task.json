@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "express-rename-4",
+  "category": "multi_site",
+  "complexity": "light",
+  "instruction": "In `lib/response.js`, rename the identifier `support` to `supportV2` at every whole-word occurrence in the file (6 occurrences, including any in comments or strings). Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Whole-word rename of `support` at 6 sites in one real file. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/expressjs/express",
+      "commit": "43fca52d28a422c8be48fd489cbd4f2d6152bab6",
+      "license": "MIT",
+      "path": "lib/response.js"
+    }
+  }
+}

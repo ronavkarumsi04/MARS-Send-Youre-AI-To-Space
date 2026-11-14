@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "toml-repeat-2",
+  "category": "repeated_lines",
+  "complexity": "light",
+  "instruction": "In `internal/tag/rm.go`, the line `if err != nil {` appears 3 times. Append ` // mars-bench: reviewed` to the end of only its third occurrence (line 45), leaving the other occurrences unchanged. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Disambiguating one of 3 identical lines. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/toml",
+      "commit": "d733fc535e4a9f3c454e421a87b90ade5d49bf31",
+      "license": "MIT",
+      "path": "internal/tag/rm.go"
+    }
+  }
+}

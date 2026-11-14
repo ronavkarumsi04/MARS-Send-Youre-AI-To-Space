@@ -62,6 +62,18 @@ export const MARS_EDIT_FORMAT_DRIVERS: Record<
   MarsEditFormat,
   MarsEditFormatDriver
 > = {
+  // The real runtime tools: anchored mars_read + mars_edit.
+  hashline: {
+    format: "hashline",
+    editTools: ["mars_edit"],
+    bind: () => ({ editFormat: "hashline" }),
+  },
+  // The real runtime tools: mars_read + exact-text mars_replace.
+  replace: {
+    format: "replace",
+    editTools: ["mars_replace"],
+    bind: () => ({ editFormat: "replace" }),
+  },
   apply_patch: {
     format: "apply_patch",
     editTools: ["mars_apply_patch"],

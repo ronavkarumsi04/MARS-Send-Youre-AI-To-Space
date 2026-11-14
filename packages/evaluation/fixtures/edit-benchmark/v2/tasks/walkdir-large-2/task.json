@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "walkdir-large-2",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `src/lib.rs` (1195 lines), insert a new line containing the comment `// mars-bench: reviewed` immediately before line 640 (`Ok(child == &self.handle)`), indented exactly like that line. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Insertion at line 640 of 1195. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/walkdir",
+      "commit": "6fd031c82ba5a4204b4ce6eae73dacb00dc072ec",
+      "license": "MIT OR Unlicense",
+      "path": "src/lib.rs"
+    }
+  }
+}

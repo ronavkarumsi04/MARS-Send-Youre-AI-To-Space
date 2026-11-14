@@ -1681,9 +1681,11 @@ export async function createWorkbenchHost(
   ): Promise<{ editFormat: MarsEditFormat } | Record<string, never>> => {
     const config = options.editFormats;
     if (!config) return {};
+    const model = options.registry.getModel(modelId);
     const decision = selectEditFormat({
       modelId,
       repository: config.repository,
+      ...(model ? { model } : {}),
       evidence: config.evidence,
       ...(config.default ? { staticDefault: config.default } : {}),
       ...(config.allowSimulated ? { allowSimulated: true } : {}),

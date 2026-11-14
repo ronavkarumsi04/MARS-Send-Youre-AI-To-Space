@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "ky-large-1",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `source/core/Ky.ts` (1377 lines), on line 1301 (`validateTimeoutOption(updatedOptions.timeout, 'timeout');`), change the string literal `'timeout'` to `'timeout_v2'`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 1301 of 1377. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "license": "MIT",
+      "path": "source/core/Ky.ts"
+    }
+  }
+}

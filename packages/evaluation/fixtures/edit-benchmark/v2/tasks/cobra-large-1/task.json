@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "cobra-large-1",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `command.go` (2073 lines), on line 1192 (`if (requiredAnnotation[0] == \"true\") && !pflag.Changed {`), change the string literal `\"true\"` to `\"true_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 1192 of 2073. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/spf13/cobra",
+      "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+      "license": "Apache-2.0",
+      "path": "command.go"
+    }
+  }
+}

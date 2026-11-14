@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "express-repeat-2",
+  "category": "repeated_lines",
+  "complexity": "light",
+  "instruction": "In `lib/express.js`, the line `app: { configurable: true, enumerable: true, writable: true, value: app }` appears 2 times. Append ` // mars-bench: reviewed` to the end of only its first occurrence (line 46), leaving the other occurrences unchanged. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Disambiguating one of 2 identical lines. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/expressjs/express",
+      "commit": "43fca52d28a422c8be48fd489cbd4f2d6152bab6",
+      "license": "MIT",
+      "path": "lib/express.js"
+    }
+  }
+}

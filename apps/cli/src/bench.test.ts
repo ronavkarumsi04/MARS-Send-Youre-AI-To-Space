@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EDIT_BENCHMARK_SUITE_V1_DIR } from "@mars/evaluation";
 import { loadEditFormatEvidence, runBench } from "./bench";
 
 const roots: string[] = [];
@@ -58,6 +59,10 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
       "--offline",
       "--profile",
       "patch-fluent",
+      "--suite",
+      EDIT_BENCHMARK_SUITE_V1_DIR,
+      "--arms",
+      "mars:apply_patch,omp-stock",
       "--repeats",
       "1",
       "--out",
@@ -78,7 +83,9 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
     simulated: true,
     signed: true,
     trials: 20,
-    bar_met: true,
+    // v1 has 10 tasks, below the power minimum: exploratory, no verdict.
+    bar_met: false,
+    exploratory: true,
   });
   expect(summary.model_requests).toBeGreaterThan(0);
   expect(await readFile(join(out, "report.md"), "utf8")).toContain("SIMULATED");
@@ -93,3 +100,22 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
     report_sha256: summary.report_sha256,
   });
 }, 120_000);
+
+test("bench defaults to the v2 suite and all four arms", async () => {
+  const run = runBench(
+    [
+      "edit-formats",
+      "--offline",
+      "--out",
+      join(tmpdir(), "mars-bench-cli-unused"),
+      "--max-usd",
+      "1",
+      "--max-usd-per-task",
+      "1",
+    ],
+    () => undefined,
+    { env: {}, fetch: noNetwork },
+  );
+  // 144 v2 tasks x 3 repeats x 4 arms, refused before any trial runs.
+  await expect(run).rejects.toThrow("1728 trials");
+});

@@ -2,21 +2,30 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { findHeldOutLeakage } from "@mars/datasets";
 import { selectEditFormat } from "@mars/execution";
 import {
   bootstrapRatio,
   createScriptedEditModel,
   EDIT_BENCHMARK_SUITE_V1_DIR,
+  EDIT_BENCHMARK_SUITE_V2_DIR,
   EDIT_TASK_CATEGORIES,
+  type EditBenchmarkArm,
+  type EditBenchmarkSuite,
   editBenchmarkArms,
   editFormatEvidenceFromReport,
   exactSignTest,
   loadEditBenchmarkSuite,
+  MIN_POWERED_TASKS,
+  minimumPoweredTasks,
+  POWER_DESIGN,
   parseEditBenchmarkArm,
   runEditBenchmark,
   runEditTrial,
   SCRIPTED_PROFILES,
+  type ScriptedModelProfile,
   scriptedModelRegistry,
+  signTestPower,
   stockToolPaths,
   verifyEditBenchmarkReport,
   verifyWorkspace,
@@ -41,29 +50,33 @@ async function offlineRun(
     repeats?: number;
     tasks?: number;
     signer?: { key_id: string; secret: Uint8Array };
+    arms?: EditBenchmarkArm[];
+    suite?: EditBenchmarkSuite;
   } = {},
 ) {
   const root = await scratch();
   const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const from = options.suite ?? suite;
   const picked = {
-    ...suite,
-    tasks: suite.tasks.slice(0, options.tasks ?? suite.tasks.length),
+    ...from,
+    tasks: from.tasks.slice(0, options.tasks ?? from.tasks.length),
   };
   const model = createScriptedEditModel({
-    tasks: suite.tasks,
-    profile: SCRIPTED_PROFILES[profile] as (typeof SCRIPTED_PROFILES)[string],
+    tasks: from.tasks,
+    profile: SCRIPTED_PROFILES[profile] as ScriptedModelProfile,
   });
   const repeats = options.repeats ?? 1;
+  const arms = options.arms ?? ["mars:apply_patch", "omp-stock"];
   const run = await runEditBenchmark({
     suite: picked,
-    arms: editBenchmarkArms(),
+    arms,
     registry,
     env,
     modelId,
     fetch: model.fetch,
     repeats,
     budgetPerTask: budget,
-    maxTotalUsd: picked.tasks.length * repeats * 2,
+    maxTotalUsd: picked.tasks.length * repeats * arms.length,
     repository: "mars-repo",
     outDir: join(root, "out"),
     simulated: true,
@@ -111,7 +124,12 @@ test("statistics: exact sign test, Wilson interval and seeded bootstrap", () => 
 });
 
 test("arms derive from the MARS format table plus omp-stock", () => {
-  expect(editBenchmarkArms()).toEqual(["mars:apply_patch", "omp-stock"]);
+  expect(editBenchmarkArms()).toEqual([
+    "mars:hashline",
+    "mars:replace",
+    "mars:apply_patch",
+    "omp-stock",
+  ]);
   expect(parseEditBenchmarkArm("omp-stock")).toBe("omp-stock");
   expect(() => parseEditBenchmarkArm("mars:sed")).toThrow("Unknown arm");
 });
@@ -171,13 +189,18 @@ test("offline end to end: scripted small model, both arms, sealed report, transc
   ).toHaveLength(20);
 }, 120_000);
 
-test("the pre-registered bar is reported whichever way it goes", async () => {
+test("below the power minimum the run is exploratory and no verdict is computed", async () => {
   const fluent = await offlineRun("patch-fluent");
   expect(fluent.run.report.verdict).toMatchObject({
     candidate: "mars:apply_patch",
-    met: true,
-    significant: true,
+    exploratory: true,
+    suite_tasks: 10,
+    min_powered_tasks: MIN_POWERED_TASKS,
+    solve_rate_better: true,
+    significant: false,
+    met: false,
   });
+  expect(fluent.run.markdown).toContain("EXPLORATORY (no verdict)");
   expect(
     (fluent.run.report.paired as { candidate_only: string[] }).candidate_only,
   ).toHaveLength(10);
@@ -195,6 +218,112 @@ test("the pre-registered bar is reported whichever way it goes", async () => {
     (oracle.run.report.paired as { both_solved: number }).both_solved,
   ).toBe(3);
 }, 180_000);
+
+const suiteV2 = await loadEditBenchmarkSuite(EDIT_BENCHMARK_SUITE_V2_DIR);
+
+test("on the powered v2 suite the pre-registered verdict is computed whichever way it goes", async () => {
+  const fluent = await offlineRun("patch-fluent", { suite: suiteV2 });
+  expect(fluent.run.report.verdict).toMatchObject({
+    candidate: "mars:apply_patch",
+    exploratory: false,
+    suite_tasks: suiteV2.tasks.length,
+    met: true,
+    significant: true,
+  });
+  expect(fluent.run.markdown).not.toContain("EXPLORATORY");
+}, 240_000);
+
+test("exact sign-test power and the pre-registered minimum suite size", () => {
+  // Every task discordant and favouring MARS: 10-0 rejects (p = 0.00195),
+  // 5-0 cannot (p = 0.0625).
+  expect(signTestPower(10, 1, 1)).toBeCloseTo(1, 12);
+  expect(signTestPower(5, 1, 1)).toBe(0);
+  // 6 tasks all discordant at a 70% share: only 6-0 rejects (p = 0.03125).
+  expect(signTestPower(6, 1, 0.7)).toBeCloseTo(0.7 ** 6, 12);
+  expect(signTestPower(129, 0.4, 0.7)).toBeGreaterThanOrEqual(0.8);
+  expect(
+    minimumPoweredTasks(POWER_DESIGN.discordance, POWER_DESIGN.share, {
+      alpha: POWER_DESIGN.alpha,
+      target: POWER_DESIGN.target,
+    }),
+  ).toBe(MIN_POWERED_TASKS);
+});
+
+test("v2 is a powered, disjoint, provenance-recorded suite of real public code", () => {
+  expect(suiteV2.tasks.length).toBeGreaterThanOrEqual(MIN_POWERED_TASKS);
+  expect(new Set(suiteV2.tasks.map((task) => task.category))).toEqual(
+    new Set(EDIT_TASK_CATEGORIES),
+  );
+  expect(
+    new Set(suiteV2.sources.map((source) => source.language)).size,
+  ).toBeGreaterThanOrEqual(5);
+  const sources = new Map(
+    suiteV2.sources.map((source) => [source.repository, source]),
+  );
+  for (const task of suiteV2.tasks) {
+    const source = task.provenance.source;
+    expect(source).toBeDefined();
+    expect(sources.get(source?.repository ?? "")).toMatchObject({
+      commit: source?.commit,
+      license: source?.license,
+    });
+    expect(task.before.has(source?.path ?? "")).toBe(true);
+  }
+  const v1Ids = new Set(suite.tasks.map((task) => task.task_id));
+  expect(suiteV2.tasks.some((task) => v1Ids.has(task.task_id))).toBe(false);
+  expect(
+    findHeldOutLeakage((({ sha256: _, ...split }) => split)(suiteV2.split), {
+      task_ids: suite.tasks.map((task) => task.task_id),
+    }),
+  ).toEqual([]);
+});
+
+test("mars:hashline and mars:replace drive the real mars_edit / mars_replace tools", async () => {
+  const { run } = await offlineRun("oracle", {
+    tasks: 4,
+    arms: ["mars:hashline", "mars:replace", "omp-stock"],
+  });
+  const arms = run.report.arms as Array<Record<string, unknown>>;
+  expect(arms.map((arm) => [arm.arm, arm.verified_solves])).toEqual([
+    ["mars:hashline", 4],
+    ["mars:replace", 4],
+    ["omp-stock", 4],
+  ]);
+  expect(arms[0]?.edit_modes).toEqual(["hashline"]);
+  expect(arms[1]?.edit_modes).toEqual(["replace"]);
+  for (const trial of run.trials.filter((t) => t.arm !== "omp-stock")) {
+    expect(trial.edit_calls).toBeGreaterThan(0);
+    const transcript = await readFile(
+      join(run.files.transcripts, trial.transcript as string),
+      "utf8",
+    );
+    const tool = trial.arm === "mars:hashline" ? "mars_edit" : "mars_replace";
+    expect(transcript).toContain(`"toolName":"${tool}"`);
+  }
+}, 180_000);
+
+test("a rejected edit the model then retries counts as an edit failure, not a lost solve", async () => {
+  const { run } = await offlineRun("recovering", {
+    arms: ["mars:hashline", "mars:replace", "mars:apply_patch", "omp-stock"],
+  });
+  const hashline = run.trials.filter((t) => t.arm === "mars:hashline");
+  expect(hashline).toHaveLength(suite.tasks.length);
+  for (const trial of hashline) {
+    // A stale anchor is rejected with recovery anchors; the retry solves.
+    expect(trial.solved).toBe(true);
+    expect(trial.edit_failures).toBeGreaterThanOrEqual(1);
+    expect(trial.edit_calls).toBeGreaterThan(trial.edit_failures);
+  }
+  const summary = (run.report.arms as Array<Record<string, unknown>>).find(
+    (arm) => arm.arm === "mars:hashline",
+  );
+  expect(summary?.verified_solves).toBe(suite.tasks.length);
+  expect(summary?.edit_failure_rate).toBeGreaterThan(0);
+  for (const arm of ["mars:replace", "mars:apply_patch"])
+    expect(
+      run.trials.filter((t) => t.arm === arm && t.solved).length,
+    ).toBeGreaterThan(0);
+}, 240_000);
 
 test("selection evidence comes from a verified report; simulated reports only decide when allowed", async () => {
   const { run } = await offlineRun("patch-fluent", { tasks: 2 });

@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "requests-large-2",
+  "category": "large_file",
+  "complexity": "medium",
+  "instruction": "In `src/requests/adapters.py` (749 lines), on line 321 (`if url.lower().startswith(\"https\") and verify:`), change the string literal `\"https\"` to `\"https_v2\"`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 321 of 749. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/psf/requests",
+      "commit": "3c7baaa05ab4aa49cc819ce3a819d260de19c157",
+      "license": "Apache-2.0",
+      "path": "src/requests/adapters.py"
+    }
+  }
+}

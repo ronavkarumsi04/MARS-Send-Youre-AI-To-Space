@@ -1,0 +1,19 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "toml-large-3",
+  "category": "large_file",
+  "complexity": "heavy",
+  "instruction": "In `lex.go` (1246 lines), on line 557 (`// (i.e. not 'true' or 'false' but is something else word-like.)`), change the string literal `'true'` to `'true_v2'`. Change nothing else.",
+  "provenance": {
+    "origin": "derived",
+    "created": "2026-11-14",
+    "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+    "notes": "Single-literal change at line 557 of 1246. before/ is the unmodified upstream file; after/ applies the instructed edit.",
+    "source": {
+      "repository": "https://github.com/BurntSushi/toml",
+      "commit": "d733fc535e4a9f3c454e421a87b90ade5d49bf31",
+      "license": "MIT",
+      "path": "lex.go"
+    }
+  }
+}
