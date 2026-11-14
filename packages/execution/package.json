@@ -8,6 +8,7 @@
     "@mars/contracts": "workspace:*",
     "@mars/output-format": "workspace:*",
     "@mars/providers": "workspace:*",
+    "@mars/workspaces": "workspace:*",
     "@oh-my-pi/pi-ai": "18.20.0",
     "@oh-my-pi/pi-coding-agent": "18.20.0",
     "@oh-my-pi/pi-natives": "18.20.0",

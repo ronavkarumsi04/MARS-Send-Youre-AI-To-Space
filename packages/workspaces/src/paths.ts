@@ -9,7 +9,7 @@ export {
   isSecretPath as isSecret,
 } from "@mars/contracts";
 
-const ignoredNames = new Set([
+export const ignoredNames = new Set([
   ".git",
   ".hg",
   ".svn",

@@ -17,12 +17,245 @@ import {
 } from "./model-bridge";
 import {
   boundPatchSummary,
+  DEFAULT_GREP_FORMATTER,
   initialRequestAllowance,
   MAX_SYSTEM_PROMPT_CHARS,
   openRuntimeSession,
   type RuntimeSession,
   type RuntimeTools,
 } from "./runtime";
+
+test("mars_grep is essential only with read approval and a provider search binding", async () => {
+  for (const read of [true, false])
+    for (const available of [true, false]) {
+      const f = await fixture();
+      try {
+        const session = await f.open({
+          approvals: { read, write: false, execute: false },
+          tools: {
+            ...f.tools,
+            ...(available
+              ? {
+                  grep: async () => ({
+                    matches: [],
+                    truncated: false,
+                    limitReached: false,
+                  }),
+                }
+              : {}),
+          },
+        });
+        expect(session.toolNames.includes("mars_grep")).toBe(read && available);
+        expect(session.toolNames).not.toContain("grep");
+        const allowance = {
+          approvals: { read, write: false, execute: false },
+          recall: false,
+          instruction: "search",
+        };
+        const baseline = initialRequestAllowance(allowance);
+        const withGrep = initialRequestAllowance({
+          ...allowance,
+          grep: available,
+        });
+        if (read && available) expect(withGrep).toBeGreaterThan(baseline);
+        else expect(withGrep).toBe(baseline);
+      } finally {
+        await f.cleanup();
+      }
+    }
+});
+
+test("mars_grep formats search results, supports a formatter seam and journals tool calls", async () => {
+  for (const custom of [false, true]) {
+    const f = await fixture();
+    const requests: Record<string, unknown>[] = [];
+    const observed: string[] = [];
+    try {
+      const session = await f.open({
+        tools: {
+          ...f.tools,
+          async grep(request) {
+            expect(request.pattern).toBe("needle");
+            expect(request.signal).toBeInstanceOf(AbortSignal);
+            return {
+              matches: [
+                {
+                  path: "src/a.ts",
+                  lineNumber: 2,
+                  line: "needle",
+                  contextBefore: [{ lineNumber: 1, line: "before" }],
+                  contextAfter: [{ lineNumber: 3, line: "after" }],
+                },
+              ],
+              truncated: false,
+              limitReached: false,
+            };
+          },
+        },
+        ...(custom
+          ? {
+              grepFormatter: {
+                match: (match) =>
+                  `anchor|${DEFAULT_GREP_FORMATTER.match(match)}`,
+                context: (path, line) =>
+                  `anchor|${DEFAULT_GREP_FORMATTER.context(path, line)}`,
+              },
+            }
+          : {}),
+        onEvent: async (event) => {
+          if (event.tool_name === "mars_grep") observed.push(event.type);
+        },
+        fetch: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return requests.length === 1
+            ? sse(
+                {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_grep",
+                      type: "function",
+                      function: {
+                        name: "mars_grep",
+                        arguments: JSON.stringify({
+                          pattern: "needle",
+                          context: 1,
+                        }),
+                      },
+                    },
+                  ],
+                },
+                "tool_calls",
+              )
+            : sse({ content: "Found it." });
+        },
+      });
+      expect((await session.run(f.task.request)).status).toBe("completed");
+      expect(requests).toHaveLength(2);
+      for (const line of [
+        "src/a.ts-1-before",
+        "src/a.ts:2:needle",
+        "src/a.ts-3-after",
+      ])
+        expect(JSON.stringify(requests[1])).toContain(
+          `${custom ? "anchor|" : ""}${line}`,
+        );
+      expect(observed).toContain("tool_execution_start");
+      expect(observed).toContain("tool_execution_end");
+      expect(await readFile(session.journalPath, "utf8")).toContain(
+        '"toolName":"mars_grep"',
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("mars_grep handles empty results, strict params, host denial and oversized formatter output", async () => {
+  for (const kind of ["empty", "invalid", "denied", "oversized"] as const) {
+    const f = await fixture();
+    const requests: Record<string, unknown>[] = [];
+    let calls = 0;
+    try {
+      const session = await f.open({
+        tools: {
+          ...f.tools,
+          async grep() {
+            calls += 1;
+            if (kind === "denied")
+              throw new Error("Read approval revoked by host");
+            return {
+              matches:
+                kind === "oversized"
+                  ? [{ path: "a.ts", lineNumber: 1, line: "needle" }]
+                  : [],
+              truncated: false,
+              limitReached: false,
+            };
+          },
+        },
+        ...(kind === "oversized"
+          ? {
+              grepFormatter: {
+                match: () => "😀".repeat(20000),
+                context: () => "",
+              },
+            }
+          : {}),
+        fetch: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return requests.length === 1
+            ? sse(
+                {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_grep",
+                      type: "function",
+                      function: {
+                        name: "mars_grep",
+                        arguments: JSON.stringify({
+                          pattern: "needle",
+                          ...(kind === "invalid" ? { extra: true } : {}),
+                        }),
+                      },
+                    },
+                  ],
+                },
+                "tool_calls",
+              )
+            : sse({ content: "Done." });
+        },
+      });
+      await session.run(f.task.request);
+      expect(calls).toBe(kind === "invalid" ? 0 : 1);
+      const relayed = JSON.stringify(requests[1]);
+      if (kind === "empty") expect(relayed).toContain("No matches found.");
+      if (kind === "denied")
+        expect(relayed).toContain("Read approval revoked by host");
+      if (kind === "invalid") expect(relayed).toContain("extra");
+      if (kind === "oversized") {
+        expect(relayed).toContain("search output truncated / limit reached");
+        expect(Buffer.byteLength(relayed)).toBeLessThan(64 * 1024);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("mars_grep checkTool blocks searching outside an active run", async () => {
+  const f = await fixture();
+  let calls = 0;
+  let sdkSession: AgentSession | undefined;
+  const prompt = spyOn(AgentSession.prototype, "prompt").mockImplementation(
+    async function (this: AgentSession) {
+      sdkSession = this;
+      return true;
+    },
+  );
+  try {
+    const session = await f.open({
+      tools: {
+        ...f.tools,
+        async grep() {
+          calls += 1;
+          return { matches: [], truncated: false, limitReached: false };
+        },
+      },
+    });
+    await session.run(f.task.request);
+    const tool = sdkSession?.getToolByName("mars_grep");
+    if (!tool) throw new Error("Missing grep tool");
+    await expect(
+      tool.execute("stopped", { pattern: "needle" }),
+    ).rejects.toThrow("not authorized");
+    expect(calls).toBe(0);
+  } finally {
+    prompt.mockRestore();
+    await f.cleanup();
+  }
+});
 
 function sse(delta: Record<string, unknown>, reason = "stop") {
   return new Response(
@@ -1169,6 +1402,14 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
     return sse({ content: "Done." });
   };
   const capabilities = {
+    tools: {
+      ...f.tools,
+      grep: async () => ({
+        matches: [],
+        truncated: false,
+        limitReached: false,
+      }),
+    },
     recall: unused,
     collaboration: {
       send: unused,
@@ -1209,6 +1450,7 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
     await full.run(f.task.request);
     const order = [
       "mars_read",
+      "mars_grep",
       "mars_history",
       "mars_send",
       "mars_inbox",
@@ -1251,6 +1493,7 @@ test("openRuntimeSession declares every capability's tools in a fixed order and 
         (name) =>
           ![
             "mars_read",
+            "mars_grep",
             "mars_history",
             "mars_proposals",
             "mars_write",

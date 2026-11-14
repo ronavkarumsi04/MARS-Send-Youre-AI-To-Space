@@ -15,6 +15,18 @@ export {
   isValidArgv,
   resolveDockerConfig,
 } from "./sandbox";
+export type {
+  SearchLine,
+  WorkspaceSearchMatch,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+} from "./search";
+export {
+  MAX_SEARCH_BYTES,
+  MAX_SEARCH_COLUMNS,
+  SearchRequestSchema,
+  searchWorkspaceTree,
+} from "./search";
 export type { TreeFile, TreeSnapshot } from "./tree";
 export {
   assertArtifactBytes,

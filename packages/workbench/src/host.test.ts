@@ -5310,6 +5310,81 @@ const conventionsHost = (
     canExecute,
   });
 
+test("mars_grep uses the provider inside read authorization and pre/post hooks", async () => {
+  const f = await fixture();
+  const order: string[] = [];
+  let searches = 0;
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      canExecute: true,
+      workspaceOverrides: {
+        async search(_context, workspace, request) {
+          searches += 1;
+          expect(workspace.workspace_id).toBe("workspace");
+          expect(request.path).toBe("src");
+          order.push("provider");
+          return { matches: [], truncated: false, limitReached: false };
+        },
+      },
+      conventions: {
+        hooks: {
+          async run(event, hookContext, executor) {
+            if (hookContext.tool !== "mars_grep") return [];
+            expect(hookContext.path).toBe("src");
+            order.push(event);
+            const argv = ["hook", event];
+            const result = await executor(argv, 5000);
+            expect("skipped" in result).toBe(false);
+            return [
+              {
+                event,
+                tool: hookContext.tool,
+                argv,
+                outcome: "ran",
+                exit_code: 0,
+                stdout: "",
+                stderr: "",
+                blocked: false,
+              },
+            ];
+          },
+        },
+      },
+    },
+  );
+  await api_start(api, "task", { read: true, write: false, execute: true });
+  const session = required(f.sessions[0]);
+  await required(session.options.tools.grep)({
+    pattern: "needle",
+    path: "src",
+  });
+  expect(order).toEqual(["pre-tool", "provider", "post-tool"]);
+  expect(
+    (await taskEvents(f, "task", "hook.completed"))
+      .filter((event) => event.tool === "mars_grep")
+      .map((event) => event.event),
+  ).toEqual(["pre-tool", "post-tool"]);
+  session.finish("completed");
+  await session.disposed;
+  order.length = 0;
+  await api_start(api, "denied", { read: false, write: false, execute: true });
+  const denied = required(f.sessions[1]);
+  await expect(
+    required(denied.options.tools.grep)({ pattern: "needle", path: "src" }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  expect(searches).toBe(1);
+  expect(order).toEqual([]);
+  denied.finish("completed");
+  await denied.disposed;
+  await api.close();
+});
+
 const taskEvents = async (
   f: Awaited<ReturnType<typeof fixture>>,
   taskId: string,

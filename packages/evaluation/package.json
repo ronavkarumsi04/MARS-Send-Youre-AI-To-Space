@@ -11,8 +11,9 @@
     "@mars/execution": "workspace:*",
     "@mars/providers": "workspace:*",
     "@mars/skills": "workspace:*",
-    "@oh-my-pi/pi-ai": "18.14.0",
-    "@oh-my-pi/pi-coding-agent": "18.14.0",
+    "@oh-my-pi/pi-ai": "18.20.0",
+    "@oh-my-pi/pi-coding-agent": "18.20.0",
+    "@mars/workspaces": "workspace:*",
     "zod": "3.25.76"
   }
 }

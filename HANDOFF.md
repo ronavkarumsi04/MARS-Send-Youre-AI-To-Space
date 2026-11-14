@@ -2,7 +2,10 @@
 
 Dependency upgrade: all workspace `@oh-my-pi/*` packages are now pinned to **18.20.0**. Earlier 18.14.0 references below describe historical research and PR observations; see `documentation/SOURCE_REGISTER.md` for current provenance.
 
+`mars_grep` is a read-approved essential CustomTool bound by the workbench host to `LocalWorkspaceProvider.search` with authorization and pre/post hooks, never to the source checkout. Native regex search (or escaped literal mode) respects gitignore, ignored names and extra ignores; returned paths are workspace-relative and post-filtered for secrets, symlinks and realpath escapes. Hard limits: 200 matches, 5 context lines per side, 512 columns, 64 KiB result/output and 5 seconds of native search. Truncation is explicit. Default output is `path:LINE:text` / `path-LINE-text`; `GrepFormatter` is the session-level seam for future anchored lines (not on origin/main). Evaluation reuses the same workdir-scoped search; delegated children and read-only team-chat agents do not receive it. Offline scripted tests only; no live-model acceptance claimed.
+
 Running log of where the MARS project stands, what was decided, and what is next.
+Remote workspaces do not advertise `mars_grep` yet; no native local search is attempted against remote paths.
 Maintained by the active Devin session; update it in every PR that changes scope.
 Covers all three repositories:
 

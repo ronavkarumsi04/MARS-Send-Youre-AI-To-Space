@@ -208,6 +208,7 @@ const artifactResponseFits = (bytes: number, mediaType: string) =>
 export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
 export interface WorkspaceHost extends ExecutionProvider {
+  search?: LocalWorkspaceProvider["search"];
   reopen(context: RequestContext, taskId: string): Promise<WorkspaceRef>;
   cwd(context: RequestContext, workspace: WorkspaceRef): Promise<string>;
   diff(context: RequestContext, workspace: WorkspaceRef): Promise<DiffResult>;
@@ -1566,6 +1567,7 @@ export async function createWorkbenchHost(
     assertActive: () => Promise<void>,
     writePaths: readonly string[] = [],
     hookTaskId?: string,
+    includeSearch = true,
   ): RuntimeTools => {
     const authorize = async (permission: keyof Approvals) => {
       if (
@@ -1606,6 +1608,21 @@ export async function createWorkbenchHost(
       return result;
     };
     return {
+      ...(includeSearch && options.workspace.search
+        ? {
+            grep: (request: Parameters<NonNullable<RuntimeTools["grep"]>>[0]) =>
+              hooked(
+                "mars_grep",
+                request.path,
+                () => authorize("read"),
+                (context) => {
+                  if (!options.workspace.search)
+                    throw new WorkbenchError("unavailable");
+                  return options.workspace.search(context, workspace, request);
+                },
+              ),
+          }
+        : {}),
       read: (path, toolName) =>
         hooked(
           toolName ?? "mars_read",
@@ -1892,6 +1909,7 @@ export async function createWorkbenchHost(
         },
         launch.write_paths,
         launch.task_id,
+        false,
       ),
       base_revision: baseRevision,
     };
@@ -2091,6 +2109,7 @@ export async function createWorkbenchHost(
     watch: Boolean(options.watch),
     knowledgeGraph: Boolean(options.knowledgeGraph),
     patch: Boolean(options.conventions?.applyPatch),
+    grep: Boolean(options.workspace.search),
     instruction,
   });
   // The coordinator runs under the room budget minus the delegation pool

@@ -18,6 +18,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { openRuntimeSession, type RuntimeTools } from "@mars/execution";
 import { loadModelRegistry } from "@mars/providers";
+import { searchWorkspaceTree } from "@mars/workspaces";
 import { z } from "zod";
 import { claimCredential, claimCredentialFile } from "./credential";
 
@@ -107,6 +108,7 @@ function localTools(
     childEnv[key] = value;
   }
   return {
+    grep: (request) => searchWorkspaceTree(root, request),
     async read(path) {
       return new Uint8Array(await readFile(await resolveInside(path)));
     },

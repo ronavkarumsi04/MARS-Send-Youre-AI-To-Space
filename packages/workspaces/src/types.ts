@@ -7,6 +7,7 @@ import type {
   RequestContext,
   WorkspaceRef,
 } from "@mars/contracts";
+import type { WorkspaceSearchRequest, WorkspaceSearchResult } from "./search";
 import type { WorkspaceLimits } from "./tree";
 
 export interface ArtifactStore {
@@ -147,6 +148,11 @@ export interface PatchExportResult {
 }
 
 export interface LocalWorkspaceProvider extends ExecutionProvider {
+  search(
+    context: RequestContext,
+    workspace: WorkspaceRef,
+    request: WorkspaceSearchRequest,
+  ): Promise<WorkspaceSearchResult>;
   readonly providerId: string;
   /**
    * Runs a host-defined check in the sandbox against a disposable copy of
