@@ -340,6 +340,18 @@ describe("safe import frontmatter subset", () => {
     expect(parseFrontmatter(content(">\n  first"))).toBeUndefined();
   });
 
+  it("preserves flat-parser support for spaces before colons without allowing duplicate keys", () => {
+    const markdown =
+      "---\nname : release-guide\ndescription   : Safe description\nlicense : MIT\n---\nBody\n";
+    expect(parseImportedFrontmatter(markdown)).toEqual(
+      parseFrontmatter(markdown),
+    );
+    expect(parseImportedFrontmatter(markdown)?.name).toBe("release-guide");
+    expect(
+      parseImportedFrontmatter(content("safe", "name : duplicate\n")),
+    ).toBeUndefined();
+  });
+
   it("rejects anchors, aliases, tags, duplicate keys, nested required fields, and unsupported block indentation", () => {
     for (const value of [
       "&a *a",

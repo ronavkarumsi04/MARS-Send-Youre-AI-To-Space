@@ -66,7 +66,7 @@ export function parseImportedFrontmatter(
     if (/^\s/.test(line) || line.includes("\t")) return undefined;
     const pair = /^([^:]+):(?: (.*))?$/.exec(line.trimEnd());
     if (!pair?.[1]) return undefined;
-    const key = pair[1];
+    const key = pair[1].trim();
     if (!KEY.test(key) || key === "__proto__" || keys.has(key))
       return undefined;
     keys.add(key);
