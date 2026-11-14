@@ -268,6 +268,107 @@ function sse(delta: Record<string, unknown>, reason = "stop") {
   );
 }
 
+test("mars_read outlines large files, returns ranges and refuses policy-denied reads", async () => {
+  for (const kind of ["outline", "range", "denied", "invalid"] as const) {
+    const f = await fixture();
+    const requests: Record<string, unknown>[] = [];
+    let reads = 0;
+    try {
+      const session = await f.open({
+        readSummary: { thresholdBytes: 16 },
+        tools: {
+          ...f.tools,
+          async read() {
+            reads += 1;
+            if (kind === "denied")
+              throw new Error("Read denied by host policy");
+            return new TextEncoder().encode(
+              `first\nsecond\n${"export function large() {}\n".repeat(6000)}`,
+            );
+          },
+        },
+        fetch: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return requests.length === 1
+            ? sse(
+                {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_read",
+                      type: "function",
+                      function: {
+                        name: "mars_read",
+                        arguments: JSON.stringify({
+                          path: "large.ts",
+                          ...(kind === "range"
+                            ? { start_line: 2, end_line: 2 }
+                            : {}),
+                          ...(kind === "invalid"
+                            ? { start_line: 0, unexpected: true }
+                            : {}),
+                        }),
+                      },
+                    },
+                  ],
+                },
+                "tool_calls",
+              )
+            : sse({ content: "Done." });
+        },
+      });
+      await session.run(f.task.request);
+      expect(reads).toBe(kind === "invalid" ? 0 : 1);
+      const result = JSON.stringify(requests[1]);
+      if (kind === "outline") {
+        expect(result).toContain("Heuristic outline");
+        expect(result).toContain("16-byte summary threshold");
+      }
+      if (kind === "range") {
+        expect(result).toContain("second\\n");
+        expect(result).not.toContain("export function large");
+      }
+      if (kind === "denied")
+        expect(result).toContain("Read denied by host policy");
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("mars_read checkTool refuses reads outside an active run", async () => {
+  const f = await fixture();
+  let reads = 0;
+  let sdkSession: AgentSession | undefined;
+  const prompt = spyOn(AgentSession.prototype, "prompt").mockImplementation(
+    async function (this: AgentSession) {
+      sdkSession = this;
+      return true;
+    },
+  );
+  try {
+    const session = await f.open({
+      tools: {
+        ...f.tools,
+        async read() {
+          reads += 1;
+          return new Uint8Array();
+        },
+      },
+    });
+    await session.run(f.task.request);
+    const tool = sdkSession?.getToolByName("mars_read");
+    if (!tool) throw new Error("Missing read tool");
+    await expect(
+      tool.execute("stopped", { path: "a.ts", start_line: 1 }),
+    ).rejects.toThrow("not authorized");
+    expect(reads).toBe(0);
+  } finally {
+    prompt.mockRestore();
+    await f.cleanup();
+  }
+});
+
 async function fixture(
   contextWindow = 32000,
   modelConfig: Partial<ModelConfig> = {},

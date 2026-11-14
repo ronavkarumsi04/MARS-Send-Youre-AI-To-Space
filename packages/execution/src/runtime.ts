@@ -47,6 +47,12 @@ import {
   selectExecutionModel,
   toChatRequest,
 } from "./model-bridge";
+import {
+  ReadRequestSchema,
+  type ReadSummaryOptions,
+  ReadSummaryOptionsSchema,
+  renderRead,
+} from "./read-summary";
 
 export const MAX_RUNTIME_INSTRUCTION_LENGTH = 128 * 1024;
 /** Maximum characters a host-backed tool may return to the model. */
@@ -77,7 +83,7 @@ const TOOLS = {
     name: "mars_read",
     label: "Read workspace file",
     description:
-      "Read workspace UTF-8. Optional offset is 1-based; limit is 1-2000 lines. Hashline sessions return line:hash|text anchors. Paths are provider-validated.",
+      "Read workspace UTF-8; offset is 1-based, limit is 1-2000 lines. Large files outline; hashline ranges include anchors.",
     loadMode: "essential" as const,
     parameters: defineSchema({
       path: "string",
@@ -775,6 +781,7 @@ export interface RuntimeCollaboration {
 }
 
 export interface RuntimeSessionOptions {
+  readSummary?: ReadSummaryOptions;
   grepFormatter?: GrepFormatter;
   task: Task;
   cwd: string;
@@ -848,6 +855,7 @@ export interface RuntimeOutcome {
 
 export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const task = TaskSchema.parse(options.task);
+  const readSummary = ReadSummaryOptionsSchema.parse(options.readSummary ?? {});
   const systemPrompt = resolveSystemPrompt(options.systemPromptOverride);
   if (
     options.editFormat !== undefined &&
@@ -1070,7 +1078,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const { research, browser, watch, knowledgeGraph, teamContext } = options;
   const customTools: CustomTool[] = [
     ...(approvals.read
-      ? [readTool(deps, options.tools, editFormat.format)]
+      ? [readTool(deps, options.tools, editFormat.format, readSummary)]
       : []),
     ...(approvals.read && options.tools.grep
       ? [grepTool(deps, options.tools.grep, options.grepFormatter)]
@@ -1407,6 +1415,7 @@ function readTool(
   { checkTool }: ToolDeps,
   tools: RuntimeTools,
   format: EditFormat,
+  summary: ReadSummaryOptions,
 ): CustomTool {
   return {
     ...TOOLS.mars_read,
@@ -1422,10 +1431,8 @@ function readTool(
         .parse(params);
       const content = await tools.read(path);
       const ranged = offset !== undefined || limit !== undefined;
-      if (content.length > MAX_EDIT_FILE_BYTES)
-        throw new Error("File exceeds 1 MiB read limit.");
-      if (format !== "hashline" && !ranged && content.length > 128 * 1024)
-        throw new Error("File exceeds tool output limit.");
+      if (!ranged && content.byteLength > ReadSummaryOptionsSchema.parse(summary).thresholdBytes)
+        return toolResult(renderRead(path, content, {}, summary));
       const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
       if (format !== "hashline" && !ranged) return toolResult(text);
       return {

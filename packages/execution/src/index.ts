@@ -22,6 +22,11 @@ export {
   type SharedBudget,
   selectExecutionModel,
 } from "./model-bridge";
+export {
+  type ReadSummaryOptions,
+  renderRead,
+  structuralOutline,
+} from "./read-summary";
 export * from "./runtime";
 
 export const EXECUTION_PACKAGE_VERSION: string = VERSION;
