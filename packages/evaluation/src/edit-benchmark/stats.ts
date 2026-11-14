@@ -125,3 +125,21 @@ export function exactSignTest(
   );
   return { n, wins, losses, p_two_sided: Math.min(1, 2 * tail) };
 }
+
+/**
+ * Holm step-down adjusted p-values, in the input order: sort ascending,
+ * p_(i) * (m - i + 1), running maximum, capped at 1.
+ */
+export function holmAdjust(pValues: readonly number[]): number[] {
+  const m = pValues.length;
+  const order = pValues
+    .map((p, index) => ({ p, index }))
+    .sort((a, b) => a.p - b.p || a.index - b.index);
+  const adjusted = new Array<number>(m);
+  let running = 0;
+  order.forEach(({ p, index }, rank) => {
+    running = Math.max(running, Math.min(1, (m - rank) * p));
+    adjusted[index] = running;
+  });
+  return adjusted;
+}

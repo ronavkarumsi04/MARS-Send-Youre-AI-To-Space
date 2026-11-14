@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canonicalJson, sha256 } from "@mars/contracts/canonical";
 import type { TrainingLineageView } from "@mars/datasets";
 import {
+  defaultEditFormat,
   EXECUTION_PACKAGE_VERSION,
   selectExecutionModel,
 } from "@mars/execution";
@@ -17,13 +18,14 @@ import {
   type TrialResult,
 } from "./arms";
 import {
-  bestMarsArm,
+  type ConfirmatoryArm,
   type EditBenchmarkReport,
   judgeBar,
   PREREGISTERED_BAR,
   pairedComparison,
   renderEditBenchmarkMarkdown,
   sealReport,
+  secondaryComparisons,
   summarizeArm,
 } from "./report";
 import { assertHeldOut, type EditBenchmarkSuite } from "./tasks";
@@ -87,6 +89,11 @@ export async function runEditBenchmark(
     throw new Error("At least one mars:<format> arm is required.");
   assertHeldOut(options.suite, options.lineages ?? []);
   const model = selectExecutionModel(options.registry, options.modelId, true);
+  // Fixed before any trial: the arm in the model's static default format.
+  const confirmatory: ConfirmatoryArm = {
+    arm: `mars:${defaultEditFormat(model)}`,
+    reason: "static_default",
+  };
   const trialsPlanned =
     options.suite.tasks.length * options.repeats * options.arms.length;
   const worstUsd = trialsPlanned * options.budgetPerTask.max_usd;
@@ -139,14 +146,16 @@ export async function runEditBenchmark(
       }
     }
   const arms = options.arms.map((arm) => summarizeArm(arm, trials, jobSeed));
-  const best = bestMarsArm(arms);
-  const paired = best ? pairedComparison(best.arm, trials) : null;
-  const verdict = judgeBar(
-    best,
-    arms.find((arm) => arm.arm === OMP_STOCK_ARM),
+  const paired = options.arms.includes(confirmatory.arm)
+    ? pairedComparison(confirmatory.arm, trials)
+    : null;
+  const verdict = judgeBar({
+    confirmatory,
+    arms,
     paired,
-    options.suite.tasks.length,
-  );
+    suiteTasks: options.suite.tasks.length,
+  });
+  const secondary = secondaryComparisons(arms, trials, confirmatory.arm);
   const limitations = [
     ...(options.simulated
       ? [
@@ -157,6 +166,7 @@ export async function runEditBenchmark(
     `omp-stock runs Oh My Pi's own built-in tools (${OMP_STOCK_TOOLS.join(", ")}) with its default, model-resolved edit mode in a throwaway copy; MARS arms use only mars_* tools. Neither arm may run commands, and process-wide fetch is disabled during trials except the injected model transport.`,
     "Verification is host-side: the throwaway workspace must equal the expected tree byte for byte.",
     "Paired analysis counts a task as solved when a strict majority of its repeats solved.",
+    `Only the confirmatory arm (${confirmatory.arm}, the model's static default format) decides the pre-registered bar; other MARS-vs-omp-stock comparisons are ${"secondary (exploratory, not adjusted for multiple comparisons)"} and shown with Holm-adjusted p-values.`,
     "Seeds are forwarded to OpenAI-compatible endpoints; providers apply them best effort.",
   ];
   const unsigned = {
@@ -194,6 +204,7 @@ export async function runEditBenchmark(
     preregistered_bar: PREREGISTERED_BAR,
     arms,
     paired,
+    secondary,
     verdict,
     trials: trials.map(({ verification, ...rest }) => ({
       ...rest,

@@ -10,6 +10,7 @@ import { MIN_POWERED_TASKS } from "./power";
 import {
   bootstrapRatio,
   exactSignTest,
+  holmAdjust,
   type RatioInterval,
   wilsonInterval,
 } from "./stats";
@@ -17,17 +18,29 @@ import {
 export const EDIT_BENCHMARK_REPORT_SCHEMA = "mars.edit-benchmark-report/v1";
 
 /**
- * The success bar, fixed in documentation/EVALUATION.md before any live run:
- * MARS's best format must beat omp-stock on verified solve rate with
- * p < 0.05 on the paired exact sign test, and its cost per verified solve
- * must not be worse. The verdict is reported whichever way it goes.
+ * The success bar, fixed in documentation/EVALUATION.md before any live run
+ * (amended 2026-11-14, still before any live data): the MARS arm in the
+ * model's static default format, fixed before the run, must beat omp-stock
+ * on verified solve rate with p < 0.05 on the paired exact sign test, and
+ * its cost per verified solve must not be worse. One confirmatory test, so
+ * no multiplicity correction; other arms are secondary. The verdict is
+ * reported whichever way it goes.
  */
 export const PREREGISTERED_BAR = {
-  id: "mars-vs-omp-stock/v1",
+  id: "mars-vs-omp-stock/v2",
   alpha: 0.05,
   statement:
-    "MARS's best edit format beats omp-stock on host-verified solve rate for small models with p < 0.05 on the paired exact sign test over tasks, and its cost per verified solve is not worse (USD when either arm is priced, else total tokens).",
+    "MARS's default edit format for that model beats omp-stock on host-verified solve rate for small models with p < 0.05 on the paired exact sign test over tasks, and its cost per verified solve is not worse (USD when either arm is priced, else total tokens).",
 } as const;
+
+export const SECONDARY_LABEL =
+  "secondary (exploratory, not adjusted for multiple comparisons)";
+
+/** The pre-registered candidate: fixed from the model before any trial runs. */
+export interface ConfirmatoryArm {
+  arm: EditBenchmarkArm;
+  reason: "static_default";
+}
 
 export interface ArmSummary {
   arm: EditBenchmarkArm;
@@ -65,7 +78,10 @@ export interface PairedComparison {
 
 export interface BarVerdict {
   bar_id: string;
+  /** Always the confirmatory arm when it ran; never chosen from results. */
   candidate: EditBenchmarkArm | null;
+  confirmatory_arm: EditBenchmarkArm;
+  confirmatory_reason: ConfirmatoryArm["reason"];
   solve_rate_better: boolean;
   significant: boolean;
   cost_basis: "usd" | "tokens";
@@ -181,28 +197,39 @@ export function pairedComparison(
   };
 }
 
-export function judgeBar(
-  candidate: ArmSummary | null,
-  baseline: ArmSummary | undefined,
-  paired: PairedComparison | null,
-  suiteTasks: number,
-): BarVerdict {
+/**
+ * The pre-registered verdict for the confirmatory arm only. A missing
+ * confirmatory arm is "not evaluable"; it never falls back to another arm.
+ */
+export function judgeBar(input: {
+  confirmatory: ConfirmatoryArm;
+  arms: readonly ArmSummary[];
+  paired: PairedComparison | null;
+  suiteTasks: number;
+}): BarVerdict {
+  const { confirmatory, paired, suiteTasks } = input;
+  const candidate = input.arms.find((arm) => arm.arm === confirmatory.arm);
+  const baseline = input.arms.find((arm) => arm.arm === OMP_STOCK_ARM);
   const power = {
+    confirmatory_arm: confirmatory.arm,
+    confirmatory_reason: confirmatory.reason,
     exploratory: suiteTasks < MIN_POWERED_TASKS,
     suite_tasks: suiteTasks,
     min_powered_tasks: MIN_POWERED_TASKS,
   };
-  if (!candidate || !baseline || !paired)
+  if (!candidate || !baseline || !paired || paired.candidate !== candidate.arm)
     return {
       ...power,
       bar_id: PREREGISTERED_BAR.id,
-      candidate: candidate?.arm ?? null,
+      candidate: null,
       solve_rate_better: false,
       significant: false,
       cost_basis: "tokens",
       cost_not_worse: null,
       met: false,
-      summary: "Not evaluable: a MARS arm and omp-stock must both run.",
+      summary: !candidate
+        ? `Not evaluable: confirmatory arm ${confirmatory.arm} not run.`
+        : "Not evaluable: omp-stock did not run.",
     };
   const priced = candidate.cost_usd > 0 || baseline.cost_usd > 0;
   const pick = (arm: ArmSummary) =>
@@ -244,6 +271,46 @@ export function judgeBar(
     summary: met
       ? `Bar met: ${candidate.arm} beats omp-stock (${paired.candidate_only.length} vs ${paired.baseline_only.length} discordant tasks, p = ${p}) at no worse cost per verified solve.`
       : `Bar not met: ${candidate.arm} vs omp-stock — ${paired.candidate_only.length} vs ${paired.baseline_only.length} discordant tasks, p = ${p}; solve rate ${better ? "higher" : "not higher"}, cost per verified solve ${costNotWorse ? "not worse" : "worse"}.`,
+  };
+}
+
+export interface SecondaryComparison {
+  arm: EditBenchmarkArm;
+  confirmatory: boolean;
+  paired: PairedComparison;
+  p_raw: number;
+  /** Holm-adjusted across every MARS-vs-omp-stock comparison in the run. */
+  p_holm: number;
+}
+
+export interface SecondaryComparisons {
+  label: typeof SECONDARY_LABEL;
+  adjustment: "holm";
+  /** Highest verified solve rate (ties: lower cost per solve); descriptive only. */
+  best_arm: EditBenchmarkArm | null;
+  comparisons: SecondaryComparison[];
+}
+
+/** Every MARS arm vs omp-stock, raw and Holm-adjusted; never a verdict. */
+export function secondaryComparisons(
+  arms: readonly ArmSummary[],
+  trials: readonly TrialResult[],
+  confirmatory: EditBenchmarkArm,
+): SecondaryComparisons {
+  const mars = arms.filter((arm) => arm.arm !== OMP_STOCK_ARM);
+  const paired = mars.map((arm) => pairedComparison(arm.arm, trials));
+  const holm = holmAdjust(paired.map((p) => p.sign_test.p_two_sided));
+  return {
+    label: SECONDARY_LABEL,
+    adjustment: "holm",
+    best_arm: bestMarsArm(arms)?.arm ?? null,
+    comparisons: paired.map((p, index) => ({
+      arm: p.candidate,
+      confirmatory: p.candidate === confirmatory,
+      paired: p,
+      p_raw: p.sign_test.p_two_sided,
+      p_holm: holm[index] ?? 1,
+    })),
   };
 }
 
@@ -392,6 +459,7 @@ export function renderEditBenchmarkMarkdown(
     };
     arms: ArmSummary[];
     paired: PairedComparison | null;
+    secondary?: SecondaryComparisons;
     verdict: BarVerdict;
     limitations: string[];
   };
@@ -414,12 +482,29 @@ export function renderEditBenchmarkMarkdown(
         `| ${arm.arm} | ${arm.edit_modes.join(", ")} | ${arm.verified_solves}/${arm.trials} = ${pct(arm.solve_rate)} (${pct(arm.solve_rate_wilson95.lower)}–${pct(arm.solve_rate_wilson95.upper)}) | ${arm.edit_failures}/${arm.edit_calls}${arm.edit_failure_rate === null ? "" : ` (${pct(arm.edit_failure_rate)})`} | ${arm.turns_mean.toFixed(1)} | ${arm.input_tokens} / ${arm.output_tokens} | $${num(arm.cost_per_verified_solve_usd.estimate, 6)} (${num(arm.cost_per_verified_solve_usd.low, 6)}–${num(arm.cost_per_verified_solve_usd.high, 6)}) | ${num(arm.tokens_per_verified_solve.estimate, 0)} | ${(arm.wall_ms_total / 1000).toFixed(1)} s |`,
     ),
     "",
-    "## Paired analysis (per task, majority of repeats)",
+    "## Confirmatory comparison (per task, majority of repeats)",
+    "",
+    `Pre-registered arm: ${r.verdict.confirmatory_arm} (${r.verdict.confirmatory_reason}: the model's default edit format, fixed before the run).`,
     "",
     r.paired
       ? `${r.paired.candidate} vs omp-stock over ${r.paired.tasks} tasks: both ${r.paired.both_solved}, neither ${r.paired.neither_solved}, only ${r.paired.candidate} ${r.paired.candidate_only.length} (${r.paired.candidate_only.join(", ") || "—"}), only omp-stock ${r.paired.baseline_only.length} (${r.paired.baseline_only.join(", ") || "—"}). Exact two-sided sign test p = ${r.paired.sign_test.p_two_sided.toPrecision(3)}.`
-      : "Not available.",
+      : `Not available: ${r.verdict.confirmatory_arm} did not run.`,
     "",
+    ...(r.secondary
+      ? [
+          `## Secondary comparisons: ${r.secondary.label}`,
+          "",
+          `Best measured MARS arm: ${r.secondary.best_arm ?? "none"} (descriptive; it does not decide the bar). Holm-adjusted p-values cover all ${r.secondary.comparisons.length} MARS-vs-omp-stock comparisons.`,
+          "",
+          "| Arm | Only this arm | Only omp-stock | p (raw) | p (Holm) |",
+          "| --- | --- | --- | --- | --- |",
+          ...r.secondary.comparisons.map(
+            (c) =>
+              `| ${c.arm}${c.confirmatory ? " (confirmatory)" : ""} | ${c.paired.candidate_only.length} | ${c.paired.baseline_only.length} | ${c.p_raw.toPrecision(3)} | ${c.p_holm.toPrecision(3)} |`,
+          ),
+          "",
+        ]
+      : []),
     "## Pre-registered bar",
     "",
     `${PREREGISTERED_BAR.statement}`,
