@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -174,6 +175,48 @@ describe("skills.sh project installs", () => {
     const report = await discoverSkills({ root });
     expect(report.skills[0]?.provenance.status).toBe("unverified");
     expect(report.warnings[0]?.path).toBe("skills-lock.json");
+  });
+
+  it("resolves symlinks before subsequent dot-dot components, without lexically bypassing an escape", async () => {
+    await mkdir(join(skillDir(), "docs/subdir"));
+    await writeFile(join(skillDir(), "docs/target.md"), "actual target\n");
+    await symlink("docs/subdir", join(skillDir(), "via"));
+    await symlink("via/../target.md", join(skillDir(), "alias.md"));
+    await symlink(outside, join(skillDir(), "escape"));
+    await symlink("escape/../SKILL.md", join(skillDir(), "unsafe.md"));
+    const fs = await CheckoutFS.open(root);
+    try {
+      const read = await fs.read(join(skillDir(), "alias.md"), 100);
+      expect("data" in read && read.data.toString()).toBe("actual target\n");
+      expect(await fs.entry(join(skillDir(), "unsafe.md"))).toBeUndefined();
+    } finally {
+      await fs.close();
+    }
+  });
+
+  it("pins the checkout root and refuses a replaced ancestor that links outside", async () => {
+    const fs = await CheckoutFS.open(root);
+    const parked = `${root}-parked`;
+    const path = ".agents/skills/release-guide/SKILL.md";
+    const original = await readFile(join(root, path), "utf8");
+    await rename(root, parked);
+    try {
+      await symlink(outside, root);
+      const read = await fs.read(path, 4096);
+      expect("data" in read && read.data.toString()).toBe(original);
+    } finally {
+      await rm(root, { force: true });
+      await rename(parked, root);
+    }
+    try {
+      await rename(join(root, ".agents"), join(root, "parked-agents"));
+      await symlink(outside, join(root, ".agents"));
+      expect(await fs.read(path, 4096)).toEqual({
+        reason: "missing-or-unsafe-link",
+      });
+    } finally {
+      await fs.close();
+    }
   });
 
   it("uses unverified, not a partial hash, above the bounded hash budget", async () => {

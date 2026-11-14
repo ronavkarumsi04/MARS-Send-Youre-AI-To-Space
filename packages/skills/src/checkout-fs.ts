@@ -6,7 +6,7 @@ import {
   readlink,
   realpath,
 } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 export function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -46,10 +46,18 @@ export class CheckoutFS {
   async entry(
     path: string,
   ): Promise<{ handle: FileHandle; path: string } | undefined> {
-    let pending = relative(this.root, resolve(this.root, path))
-      .split(sep)
-      .filter(Boolean);
-    if (!inside(this.root, resolve(this.root, path))) return undefined;
+    const relativeParts = (value: string): string[] | undefined => {
+      if (!isAbsolute(value)) return value.split(sep).filter(Boolean);
+      if (value === this.root) return [];
+      if (!value.startsWith(this.root + sep)) return undefined;
+      return value
+        .slice(this.root.length + 1)
+        .split(sep)
+        .filter(Boolean);
+    };
+    const initial = relativeParts(path);
+    if (!initial) return undefined;
+    let pending: string[] = initial;
     let parent = await open(
       `/proc/self/fd/${this.handle.fd}`,
       constants.O_RDONLY | constants.O_DIRECTORY,
@@ -60,7 +68,19 @@ export class CheckoutFS {
     try {
       while (pending.length) {
         const name = pending.shift();
-        if (!name || name === "." || name === "..") return undefined;
+        if (!name || name === ".") continue;
+        if (name === "..") {
+          if (!parts.length) return undefined;
+          parts.pop();
+          pending = [...parts, ...pending];
+          parts = [];
+          await parent.close();
+          parent = await open(
+            `/proc/self/fd/${this.handle.fd}`,
+            constants.O_RDONLY | constants.O_DIRECTORY,
+          );
+          continue;
+        }
         const anchored = `/proc/self/fd/${parent.fd}/${name}`;
         let child: FileHandle;
         try {
@@ -72,10 +92,13 @@ export class CheckoutFS {
           const code = (error as NodeJS.ErrnoException).code;
           if (code !== "ELOOP") return undefined;
           if (++links > 40) return undefined;
-          const target = resolve(this.root, ...parts, await readlink(anchored));
-          if (!inside(this.root, target)) return undefined;
+          const target = await readlink(anchored);
+          const targetParts = relativeParts(target);
+          if (!targetParts) return undefined;
+          // Preserve .. until preceding symlinks have been resolved (POSIX semantics).
           pending = [
-            ...relative(this.root, target).split(sep).filter(Boolean),
+            ...(isAbsolute(target) ? [] : parts),
+            ...targetParts,
             ...pending,
           ];
           parts = [];
