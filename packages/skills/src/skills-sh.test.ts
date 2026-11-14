@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -228,6 +229,26 @@ describe("skills.sh project installs", () => {
     expect(report.skills[0]?.provenance.status).toBe("unverified");
     expect(report.skills[0]?.provenance.computedHash).toBeUndefined();
     expect(report.warnings[0]?.message).toContain("unverified");
+  });
+
+  it("never matches a partial hash when a supporting file or directory is unreadable", async () => {
+    for (const directory of [false, true]) {
+      const path = join(skillDir(), "private");
+      if (directory) await mkdir(path);
+      await writeFile(
+        directory ? join(path, "secret.md") : path,
+        "must be hashed\n",
+      );
+      await chmod(path, 0);
+      try {
+        const report = await discoverSkills({ root });
+        expect(report.skills[0]?.provenance.status).toBe("unverified");
+        expect(report.skills[0]?.provenance.computedHash).toBeUndefined();
+      } finally {
+        await chmod(path, directory ? 0o700 : 0o600);
+        await rm(path, { recursive: true });
+      }
+    }
   });
 });
 

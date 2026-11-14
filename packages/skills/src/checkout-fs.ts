@@ -45,6 +45,7 @@ export class CheckoutFS {
 
   async entry(
     path: string,
+    failOnIOError = false,
   ): Promise<{ handle: FileHandle; path: string } | undefined> {
     const relativeParts = (value: string): string[] | undefined => {
       if (!isAbsolute(value)) return value.split(sep).filter(Boolean);
@@ -90,7 +91,10 @@ export class CheckoutFS {
           );
         } catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "ELOOP") return undefined;
+          if (code !== "ELOOP") {
+            if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+            throw error;
+          }
           if (++links > 40) return undefined;
           const target = await readlink(anchored);
           const targetParts = relativeParts(target);
@@ -118,7 +122,8 @@ export class CheckoutFS {
       const result = { handle: parent, path: join(this.root, ...parts) };
       owned = false;
       return result;
-    } catch {
+    } catch (error) {
+      if (failOnIOError) throw error;
       return undefined;
     } finally {
       if (owned) await parent.close();

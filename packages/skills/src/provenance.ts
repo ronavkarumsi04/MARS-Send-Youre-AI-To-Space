@@ -68,7 +68,7 @@ export async function computeSkillHash(
       if (++count > MAX_HASH_ENTRIES) throw new Error("hash entry limit");
       if (name === "metadata.json") continue;
       const full = join(path, name);
-      const item = await fs.entry(full);
+      const item = await fs.entry(full, true);
       if (!item) continue; // Broken, looping and escaping links are excluded by v2.
       const canonical = item.path;
       const stat = await item.handle.stat();
