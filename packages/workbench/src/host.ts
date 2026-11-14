@@ -41,9 +41,11 @@ import {
   WorkbenchVaultSchema,
 } from "@mars/contracts";
 import {
+  type EditFormatEvidence,
   EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
   MAX_RUNTIME_INSTRUCTION_LENGTH,
+  type MarsEditFormat,
   MIN_INITIAL_OUTPUT_RESERVE,
   openRuntimeSession,
   optionalInstructionCapacity,
@@ -55,6 +57,7 @@ import {
   type RuntimeTools,
   type RuntimeWatch,
   type SharedBudget,
+  selectEditFormat,
   selectExecutionModel,
 } from "@mars/execution";
 import type { StatusReport } from "@mars/memory-vault";
@@ -242,6 +245,19 @@ const REVIEW_TRANSCRIPT_LENGTH = 8_000;
 /** Ledger hold for the delegation pool a room reserves at launch. */
 const DELEGATION_HOLD = "delegation";
 
+/**
+ * Verified edit-format benchmark evidence (see `@mars/evaluation`
+ * `editFormatEvidenceFromReport`) for this repository. Launches and resumes
+ * use the best verified format for their model, else `default`.
+ */
+export interface WorkbenchEditFormats {
+  repository: string;
+  evidence: readonly EditFormatEvidence[];
+  default?: MarsEditFormat;
+  /** Lets simulated (fake-model) reports decide; tests only. */
+  allowSimulated?: boolean;
+}
+
 export interface WorkbenchHostOptions {
   image?: string;
   /** Host-owned read seam; no vault path or store is accepted from an RPC client. */
@@ -276,6 +292,8 @@ export interface WorkbenchHostOptions {
   review?: WorkbenchReview;
   repositoryMap?: Pick<RepositoryMapProvider, "map">;
   specialists?: WorkbenchSpecialists;
+  /** Evidence-based per-model edit format; absent means the runtime's static default. */
+  editFormats?: WorkbenchEditFormats;
   collaboration?: WorkbenchCollaboration;
   research?: WorkbenchResearch;
   /** Background browser tasks; sessions get no browser tools without it. */
@@ -1637,6 +1655,34 @@ export async function createWorkbenchHost(
     };
   };
   /**
+   * Picks the session's edit format from verified benchmark evidence for the
+   * selected model on this repository (else the static default) and records
+   * the decision with the report digest as task evidence, like routing.
+   */
+  const editFormatFor = async (
+    context: RequestContext,
+    taskId: string,
+    modelId: string,
+  ): Promise<{ editFormat: MarsEditFormat } | Record<string, never>> => {
+    const config = options.editFormats;
+    if (!config) return {};
+    const decision = selectEditFormat({
+      modelId,
+      repository: config.repository,
+      evidence: config.evidence,
+      ...(config.default ? { staticDefault: config.default } : {}),
+      ...(config.allowSimulated ? { allowSimulated: true } : {}),
+    });
+    await options.store
+      .appendEvent(
+        context,
+        taskId,
+        workbenchEvent({ operation: "edit_format", ...decision }),
+      )
+      .catch(() => undefined);
+    return { editFormat: decision.format };
+  };
+  /**
    * Host-bound apply_patch: the applier only sees a filesystem seam whose
    * every operation re-authorizes against the task's approvals and claimed
    * paths and goes through the workspace provider. A patch reads before it
@@ -2604,8 +2650,10 @@ export async function createWorkbenchHost(
     const initialObservations: RuntimeObservation[] = [];
     let bound = false;
     let deadline = launch.provisionalDeadline;
+    const editFormat = await editFormatFor(context, taskId, launch.modelId);
     const runtime = await runtimeFactory({
       ...foregroundBudget(context, taskId),
+      ...editFormat,
       deadline: launch.provisionalDeadline,
       task: runtimeTask(running, collaboration),
       cwd,
@@ -3194,8 +3242,14 @@ export async function createWorkbenchHost(
       );
       let runtime: RuntimeSession | undefined;
       try {
+        const editFormat = await editFormatFor(
+          context,
+          running.task_id,
+          launch.model_id,
+        );
         runtime = await runtimeFactory({
           ...foregroundBudget(context, running.task_id),
+          ...editFormat,
           deadline: await fixedDeadline(context, running),
           task: runtimeTask(running, launch.collaboration),
           cwd,

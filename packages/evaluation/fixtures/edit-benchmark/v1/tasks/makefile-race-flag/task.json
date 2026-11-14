@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "makefile-race-flag",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In the Makefile, add the `-race` flag to the `go test ./...` recipe line of the `test` target so it reads `go test -race ./...`. Recipe lines must stay tab-indented.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Make requires a literal tab before recipe lines."
+  }
+}

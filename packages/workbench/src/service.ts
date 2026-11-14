@@ -81,7 +81,11 @@ import {
 } from "@mars/workspaces-remote";
 import type { WorkbenchCollaboration } from "./collaboration-context";
 import type { WorkbenchConventions } from "./conventions-context";
-import { createWorkbenchHost, type WorkbenchHostOptions } from "./host";
+import {
+  createWorkbenchHost,
+  type WorkbenchEditFormats,
+  type WorkbenchHostOptions,
+} from "./host";
 import { loadHostChecks } from "./host-checks";
 import {
   DEFAULT_WORKBENCH_PORT,
@@ -212,6 +216,8 @@ export interface WorkbenchServiceOptions {
   registry?: ModelProviderRegistry;
   /** Evidence-gated specialist router; launches use the registry default without it. */
   specialists?: WorkbenchSpecialists;
+  /** Verified per-model edit-format evidence; launches use the static default without it. */
+  editFormats?: WorkbenchEditFormats;
   /** Task-scoped collaboration rooms; launches stay single-agent without it. */
   collaboration?: WorkbenchCollaboration;
   /** Background research worker and control plane; sessions get no research tools without it. */
@@ -660,6 +666,7 @@ export async function createWorkbenchService(
       ...(review ? { review } : {}),
       repositoryMap,
       ...(options.specialists ? { specialists: options.specialists } : {}),
+      ...(options.editFormats ? { editFormats: options.editFormats } : {}),
       ...(options.collaboration
         ? { collaboration: options.collaboration }
         : {}),

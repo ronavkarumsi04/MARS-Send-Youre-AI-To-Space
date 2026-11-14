@@ -10,7 +10,8 @@
       "**",
       "!documentation",
       "!bun.lock",
-      "!packages/evaluation/fixtures/harbor"
+      "!packages/evaluation/fixtures/harbor",
+      "!packages/evaluation/fixtures/edit-benchmark"
     ]
   },
   "formatter": {

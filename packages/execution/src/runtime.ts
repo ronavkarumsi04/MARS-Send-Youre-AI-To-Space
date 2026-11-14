@@ -22,6 +22,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { z } from "zod";
 import {
+  DEFAULT_MARS_EDIT_FORMAT,
+  isMarsEditFormat,
+  type MarsEditFormat,
+} from "./edit-format";
+import {
   type BudgetLedger,
   createModelBridge,
   ExecutionLimitError,
@@ -715,6 +720,13 @@ export interface RuntimeSessionOptions {
    * default prompt, unchanged.
    */
   systemPromptOverride?: string;
+  /** OpenAI-compatible sampling seed forwarded on every model request (benchmarks, matched evaluation). */
+  seed?: number;
+  /**
+   * Which MARS edit tool the session exposes (see `selectEditFormat`);
+   * absent means `DEFAULT_MARS_EDIT_FORMAT`.
+   */
+  editFormat?: MarsEditFormat;
 }
 
 export const MAX_SYSTEM_PROMPT_CHARS = 16_000;
@@ -742,6 +754,14 @@ export interface RuntimeOutcome {
 export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const task = TaskSchema.parse(options.task);
   const systemPrompt = resolveSystemPrompt(options.systemPromptOverride);
+  const editFormat = options.editFormat ?? DEFAULT_MARS_EDIT_FORMAT;
+  if (!isMarsEditFormat(editFormat))
+    throw new Error("Unknown MARS edit format.");
+  if (
+    options.seed !== undefined &&
+    (!Number.isSafeInteger(options.seed) || options.seed < 0)
+  )
+    throw new Error("Runtime seed must be a non-negative safe integer.");
   const approvals = { ...options.approvals };
   const selected = selectExecutionModel(
     options.registry,
@@ -893,6 +913,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     },
     ...(options.env ? { env: options.env } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.seed !== undefined ? { seed: options.seed } : {}),
   });
   models.registerProvider(providerId, {
     api: providerId,
@@ -957,7 +978,10 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     ...(approvals.write ? [writeTool(deps, options.tools)] : []),
     // A patch reads workspace files before writing them, so the tool needs
     // both approvals.
-    ...(approvals.write && approvals.read && patch
+    ...(approvals.write &&
+    approvals.read &&
+    patch &&
+    editFormat === "apply_patch"
       ? [applyPatchTool(deps, patch)]
       : []),
     ...(teamContext ? [teamContextTool(deps, teamContext)] : []),

@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "yaml-worker-replicas",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In deploy/compose.yaml, set the worker service's replicas to 4. The api service's replicas must stay 2. Keep the two-space YAML indentation.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Indentation-significant YAML with a repeated key line."
+  }
+}

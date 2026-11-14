@@ -1,3 +1,4 @@
+export * from "./edit-benchmark";
 export * from "./harbor-records";
 export * from "./manifest";
 export * from "./pins";

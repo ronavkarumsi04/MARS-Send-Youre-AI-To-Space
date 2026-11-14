@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "multi-site-rename",
+  "category": "multi_site",
+  "complexity": "medium",
+  "instruction": "Rename the function `calcTotal` to `computeTotal` in src/inventory.ts and update every reference to it, including the import and call in src/report.ts. Do not rename `calcTotalWithTax`. Change nothing else.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Four reference sites across two files; a similarly named function must stay untouched."
+  }
+}

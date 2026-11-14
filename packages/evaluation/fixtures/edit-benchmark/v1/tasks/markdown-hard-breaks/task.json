@@ -1,0 +1,13 @@
+{
+  "schema": "mars.edit-benchmark-task/v1",
+  "task_id": "markdown-hard-breaks",
+  "category": "whitespace_sensitive",
+  "complexity": "light",
+  "instruction": "In RELEASE.md, change `support channel` to `on-call channel`. The checklist lines end with two trailing spaces (Markdown hard line breaks); preserve them.",
+  "provenance": {
+    "origin": "authored",
+    "author": "MARS S3 session (Devin)",
+    "created": "2026-11-14",
+    "notes": "Significant trailing whitespace."
+  }
+}

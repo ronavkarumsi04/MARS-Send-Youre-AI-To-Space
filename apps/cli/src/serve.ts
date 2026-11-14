@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createPlaywrightEngine } from "@mars/browser-worker";
 import { applyPatch, discoverInstructions } from "@mars/codex-tools";
@@ -26,6 +26,7 @@ import {
   type WorkbenchResearchOptions,
 } from "@mars/workbench";
 import { remoteWorkspaceFromFlags } from "@mars/workspaces-remote";
+import { loadEditFormatEvidence } from "./bench";
 import { ServeUsageError } from "./cli-errors";
 import { omnirouteFromFlags } from "./omniroute";
 import {
@@ -258,6 +259,10 @@ export async function runServer(
       "specialists-trust": { type: "string" },
       "specialists-domain": { type: "string" },
       "specialists-complexity": { type: "string" },
+      "edit-format-evidence": { type: "string" },
+      "edit-format-repository": { type: "string" },
+      "edit-format-key-env": { type: "string" },
+      "edit-format-key-id": { type: "string" },
       state: { type: "string" },
       port: { type: "string" },
       owner: { type: "string" },
@@ -296,6 +301,8 @@ export async function runServer(
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
         ...VLLM_SERVE_USAGE,
         "                  [--specialists-registry DIR --specialists-trust FILE --specialists-domain AREA/KIND] [--specialists-complexity light|medium|heavy]",
+        "                  [--edit-format-evidence DIR [--edit-format-repository NAME] [--edit-format-key-env NAME --edit-format-key-id ID]]",
+        "--edit-format-evidence loads `mars bench edit-formats` reports (report.json files; digest re-derived, HMAC checked when a key is given); each launch uses the best verified edit format for its model on this repository (default: the --source directory name), else the static default, and records the decision as task evidence. Simulated reports never decide.",
         "Specialists route per step with paid consent disabled. Trust secrets are UTF-8 environment values. Adapters fail closed to baseline unless --vllm and --vllm-profile attest the loaded adapter.",
         "                  [--workspace-provider local|remote] [--agent-server URL] [--agent-server-key-env MARS_AGENT_SERVER_API_KEY] [--agent-server-root /workspace/mars] [--agent-server-allow-insecure-http]",
         "--workspace-provider remote runs workspace shell/files/artifacts on a pinned OpenHands Agent Server (1.59.0) at --agent-server; planning and model calls stay in MARS. The session key is read from the named environment variable and never printed. A remote server interface is not an OS isolation guarantee: commands run with the Agent Server process's privileges on its host. Live remote acceptance is unverified.",
@@ -452,6 +459,32 @@ export async function runServer(
           };
         })()
       : undefined;
+  const editFormats = values["edit-format-evidence"]
+    ? await (async () => {
+        const keyEnv = values["edit-format-key-env"];
+        const keyId = values["edit-format-key-id"];
+        if ((keyEnv === undefined) !== (keyId === undefined))
+          throw new ServeUsageError(
+            "--edit-format-key-env and --edit-format-key-id go together",
+          );
+        const secret = keyEnv ? process.env[keyEnv] : undefined;
+        if (keyEnv && !secret)
+          throw new ServeUsageError("--edit-format-key-env: variable unset");
+        try {
+          return {
+            repository: values["edit-format-repository"] ?? basename(source),
+            evidence: await loadEditFormatEvidence(
+              resolve(values["edit-format-evidence"] as string),
+              keyId && secret
+                ? { key_id: keyId, secret: new TextEncoder().encode(secret) }
+                : undefined,
+            ),
+          };
+        } catch {
+          throw new ServeUsageError("--edit-format-evidence: report_invalid");
+        }
+      })()
+    : undefined;
   const service = await createWorkbenchService({
     sourceRoot: source,
     stateRoot: state,
@@ -475,6 +508,7 @@ export async function runServer(
     ...(omniroute ? { omniroute } : {}),
     ...(catalog ? { registry: catalog } : {}),
     ...(specialists ? { specialists } : {}),
+    ...(editFormats ? { editFormats } : {}),
     trustProjectConfig: trustProject,
   });
   await new Promise<void>((resolve, reject) => {
@@ -507,6 +541,12 @@ export async function runServer(
         conventions: conventions ? conventions.summary : null,
         omniroute: service.omniroute,
         vllm: vllm ? vllm.report : null,
+        edit_formats: editFormats
+          ? {
+              repository: editFormats.repository,
+              reports: editFormats.evidence.length,
+            }
+          : null,
         specialists: specialists
           ? {
               domain: specialists.domain,
