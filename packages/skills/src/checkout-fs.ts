@@ -123,20 +123,22 @@ export class CheckoutFS {
       const stat = await entry.handle.stat();
       if (!stat.isFile()) return { reason: "not-file" };
       if (stat.size > maxBytes) return { reason: "oversize" };
-      const buffer = Buffer.alloc(maxBytes + 1);
+      const chunks: Buffer[] = [];
       let length = 0;
-      while (length < buffer.length) {
+      while (length <= maxBytes) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - length));
         const { bytesRead } = await entry.handle.read(
           buffer,
-          length,
-          buffer.length - length,
+          0,
+          buffer.length,
           null,
         );
         if (!bytesRead) break;
+        chunks.push(buffer.subarray(0, bytesRead));
         length += bytesRead;
       }
       if (length > maxBytes) return { reason: "oversize" };
-      return { data: buffer.subarray(0, length), path: entry.path };
+      return { data: Buffer.concat(chunks, length), path: entry.path };
     } finally {
       await entry.handle.close();
     }

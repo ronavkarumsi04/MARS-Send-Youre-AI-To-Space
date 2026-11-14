@@ -291,6 +291,8 @@ describe("safe import frontmatter subset", () => {
     for (const extra of [
       "metadata:\n  key: &a value\n",
       "metadata:\n  key: *a\n",
+      "metadata: {key: &a value}\n",
+      "allowed-tools: [*alias]\n",
       "__proto__: bad\n",
       "metadata:\n\tkey: bad\n",
     ])
