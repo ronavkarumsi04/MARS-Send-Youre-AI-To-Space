@@ -62,6 +62,52 @@ test("workspace search is relative, honors scope, gitignore and glob, and distin
   }
 });
 
+test("file scopes search only that file even with a broad glob and matching siblings", async () => {
+  const f = await makeFixture({ git: false });
+  try {
+    const root = await f.provider.workspacePath(context, f.workspace);
+    await mkdir(join(root, "src"));
+    for (const name of ["a.ts", "b.ts", "nested/z.ts"]) {
+      await mkdir(dirname(join(root, "src", name)), { recursive: true });
+      await writeFile(join(root, "src", name), "needle sibling\n".repeat(20));
+    }
+    await writeFile(
+      join(root, "src", "z.ts"),
+      "before\nneedle target\nafter\n",
+    );
+    for (const glob of [undefined, "*.ts", "*.js"]) {
+      const result = await f.provider.search(context, f.workspace, {
+        pattern: "needle",
+        path: "src/z.ts",
+        ...(glob ? { glob } : {}),
+        max_matches: 1,
+        context: 1,
+      });
+      expect(result.matches).toEqual([
+        {
+          path: "src/z.ts",
+          lineNumber: 2,
+          line: "needle target",
+          contextBefore: [{ lineNumber: 1, line: "before" }],
+          contextAfter: [{ lineNumber: 3, line: "after" }],
+        },
+      ]);
+    }
+    expect(
+      (
+        await f.provider.search(context, f.workspace, {
+          pattern: "absent",
+          path: "src/z.ts",
+          glob: "*.ts",
+          max_matches: 1,
+        })
+      ).matches,
+    ).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("workspace search rejects escaping scopes and never returns secrets, ignored names or symlinks", async () => {
   const f = await makeFixture({ git: false, extraIgnores: ["generated*"] });
   try {

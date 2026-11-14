@@ -75,9 +75,9 @@ export async function searchWorkspaceTree(
   const searchRoot = fileScope ? dirname(target) : target;
   const maxCount = Math.min(input.max_matches ?? 100, 200);
   const context = Math.min(input.context ?? 0, 5);
-  const glob =
-    input.glob ??
-    (fileScope ? basename(target).replace(/[?*[\]{}]/g, "\\$&") : undefined);
+  const glob = fileScope
+    ? basename(target).replace(/[?*[\]{}]/g, "\\$&")
+    : input.glob;
   let found: Awaited<ReturnType<typeof grep>>;
   try {
     found = await grep({
@@ -86,6 +86,7 @@ export async function searchWorkspaceTree(
         : input.pattern,
       path: searchRoot,
       ...(glob ? { glob } : {}),
+      ...(fileScope ? { recursive: false } : {}),
       exclude: [...ignoredNames, ...extraIgnores],
       gitignore: true,
       hidden: true,
