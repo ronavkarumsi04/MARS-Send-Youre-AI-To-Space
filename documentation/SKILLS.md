@@ -303,7 +303,7 @@ content version; `versions` reports how many there were.
   once at startup and every 6 hours (`SKILL_CURATOR_INTERVAL_MS`); teardown
   waits for an in-flight pass. Hermes' usage-interval/idle rules
   (`should_run_now`) are not ported. `mars skills curate` runs it on demand.
-- **Operator surface.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|gate|gates|accept|reject|undo|curate>`
+- **Operator surface.** `mars skills <list|show|versions|restore-version|pin|unpin|archive|restore|proposals|gate|gates|trials|report|accept|reject|undo|curate>`
   operates on the same store as `mars serve` (`--state`, `--source`,
   `--project` defaults match it; changes are recorded with `--actor`). Proposal
   review also has RPC methods and a VS Code Skills view; there is no command
@@ -316,6 +316,54 @@ content version; `versions` reports how many there were.
 - **Not ported from upstream:** OpenClaw's reviewer prompt and `skill_manage`
   tool surface, Hermes `curator_backup`, run reports, and cron-referenced skill
   protection.
+
+## Evidence report
+
+`mars skills report [NAME] [--scope KEY] [--json]` answers, per repository scope
+and skill, whether it raised the verified solve rate here and at what cost.
+It supports learned and imported skills, even ones never added to the store.
+The with/without task split and Wilson 95% intervals are **observational**, not
+a matched control, and never decide the verdict. Versions list the distinct
+loaded content hashes; difference is the observed with rate minus without rate.
+
+Only held-out baseline/candidate pairs decide the verdict, using `GATE_POLICY`:
+at least 10 valid, distinct trials, at most 0 regressions, one-sided sign-test
+`p <= 0.05`, and candidate/baseline total spend ratio at most 1.25 establish
+`helps`. `hurts` requires at least 10 valid, distinct trials and either a
+reverse sign-test `p <= 0.05` or a cost ratio greater than 1.25 without a
+significant solve gain (`p > 0.05`). Otherwise the verdict is `no_evidence`,
+including insufficient, invalid or duplicate trials. Significant gain alone
+does not establish `helps` if the regression or cost gate fails. Reports show
+the paired counts, both p-values, cost ratio, gate reasons and policy.
+Learning-evidence requirements do not apply to these skill-level reports.
+
+Cost per verified solve is total task spend divided by verified solves. No
+verified solves, or any unknown task cost, makes it unknown (`null` in JSON).
+The host sums priced usage events; any unpriced event makes that task's spend
+unknown. An infinite held-out cost ratio is `null` plus
+`cost_ratio_infinite: true` in JSON, and `Infinity` in text.
+
+```sh
+mars skills trials NAME --trials pairs.json --scope REPO_KEY
+mars skills report NAME --scope REPO_KEY
+mars skills report --json
+```
+
+`trials` accepts the same `GateTrialsSchema` JSON pairs as `gate`, but needs no
+proposal or store entry. Re-recording a task replaces its pair in that scope
+and skill. Without `--scope`, it uses the ledger's sole known scope; zero or
+multiple scopes require an explicit choice and list the known scopes.
+
+Provenance identifies store skills (`origin: "store"`) or discovered skills
+in the resolved `--source` checkout (`origin` such as `.agents/skills`, plus
+the relative `path`). Store provenance wins on name collisions. Unknown
+provenance is `null`. The API also accepts optional opaque `lock` metadata for
+future skills.sh lock data; no lock reader is implemented, so the CLI leaves
+it absent. Unscoped caller provenance applies across scopes, with scoped
+entries taking precedence.
+
+**No live trials exist yet: this feature is offline-verified only.** Operators
+must supply actual paired runs before drawing conclusions about a skill.
 
 ## Acceptance gate
 

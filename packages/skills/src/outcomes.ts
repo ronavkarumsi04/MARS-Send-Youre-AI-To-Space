@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { SkillGateResult } from "./gate";
+import { isValidSkillName } from "./discovery";
+import { type GateTrial, GateTrialsSchema, type SkillGateResult } from "./gate";
 import type { SkillOutcomeStats } from "./selection";
 
 /** One loaded skill, bound to the exact content the task saw. */
@@ -17,6 +18,18 @@ export interface SkillOutcome {
   skills: readonly LoadedSkill[];
   /** The host's verdict for the task's exact candidate. */
   verified: boolean;
+  cost_usd?: number | null;
+  recorded_at: number;
+}
+
+export interface SkillOutcomeRow extends SkillOutcome {
+  scope_key: string;
+  cost_usd: number | null;
+}
+
+export interface SkillTrialRow extends GateTrial {
+  scope_key: string;
+  skill: string;
   recorded_at: number;
 }
 
@@ -63,6 +76,19 @@ export class SkillOutcomeLedger {
         PRIMARY KEY (scope_key, task_id)
       )`,
     );
+    const columns = this.db
+      .query("SELECT name FROM pragma_table_info('skill_outcomes')")
+      .all() as { name: string }[];
+    if (!columns.some((column) => column.name === "cost_usd"))
+      this.db.exec("ALTER TABLE skill_outcomes ADD COLUMN cost_usd REAL");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS skill_trials (
+      scope_key TEXT NOT NULL,
+      skill TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      trial TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      PRIMARY KEY (scope_key, skill, task_id)
+    )`);
   }
 
   private createGates(): void {
@@ -116,6 +142,11 @@ export class SkillOutcomeLedger {
   }
 
   record(outcome: SkillOutcome): void {
+    if (
+      outcome.cost_usd != null &&
+      (!Number.isFinite(outcome.cost_usd) || outcome.cost_usd < 0)
+    )
+      throw new Error("Invalid outcome cost.");
     if (!outcome.task_id || outcome.task_id.length > 256)
       throw new Error("Invalid task id.");
     const scopeKey = outcome.scope_key ?? "";
@@ -131,11 +162,12 @@ export class SkillOutcomeLedger {
     }
     this.db
       .query(
-        `INSERT INTO skill_outcomes (scope_key, task_id, skills, verified, recorded_at)
-         VALUES ($scope_key, $task_id, $skills, $verified, $recorded_at)
+        `INSERT INTO skill_outcomes (scope_key, task_id, skills, verified, recorded_at, cost_usd)
+         VALUES ($scope_key, $task_id, $skills, $verified, $recorded_at, $cost_usd)
          ON CONFLICT(scope_key, task_id) DO UPDATE SET
            skills = excluded.skills,
            verified = excluded.verified,
+           cost_usd = excluded.cost_usd,
            recorded_at = excluded.recorded_at`,
       )
       .run({
@@ -143,8 +175,76 @@ export class SkillOutcomeLedger {
         task_id: outcome.task_id,
         skills: JSON.stringify(outcome.skills),
         verified: outcome.verified ? 1 : 0,
+        cost_usd: outcome.cost_usd ?? null,
         recorded_at: outcome.recorded_at,
       });
+  }
+
+  outcomes(scopeKey?: string): SkillOutcomeRow[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM skill_outcomes WHERE (? IS NULL OR scope_key = ?) ORDER BY scope_key, task_id`,
+      )
+      .all(scopeKey ?? null, scopeKey ?? null) as {
+      scope_key: string;
+      task_id: string;
+      skills: string;
+      verified: number;
+      cost_usd: number | null;
+      recorded_at: number;
+    }[];
+    return rows.map((row) => ({
+      ...row,
+      skills: JSON.parse(row.skills) as LoadedSkill[],
+      verified: row.verified === 1,
+    }));
+  }
+
+  recordTrials(
+    scopeKey: string,
+    skill: string,
+    trials: readonly GateTrial[],
+    recordedAt = Date.now(),
+  ): void {
+    if (scopeKey.length > 1_024) throw new Error("Invalid scope key.");
+    if (!isValidSkillName(skill)) throw new Error("Invalid skill name.");
+    const parsed = GateTrialsSchema.parse(trials);
+    if (new Set(parsed.map((trial) => trial.task_id)).size !== parsed.length)
+      throw new Error("Duplicate trial.");
+    this.db.transaction(() => {
+      const insert =
+        this.db.query(`INSERT INTO skill_trials (scope_key, skill, task_id, trial, recorded_at)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope_key, skill, task_id) DO UPDATE SET trial = excluded.trial, recorded_at = excluded.recorded_at`);
+      for (const trial of parsed)
+        insert.run(
+          scopeKey,
+          skill,
+          trial.task_id,
+          JSON.stringify(trial),
+          recordedAt,
+        );
+    })();
+  }
+
+  trials(scopeKey?: string, skill?: string): SkillTrialRow[] {
+    const rows = this.db
+      .query(`SELECT scope_key, skill, trial, recorded_at FROM skill_trials
+      WHERE (? IS NULL OR scope_key = ?) AND (? IS NULL OR skill = ?) ORDER BY scope_key, skill, task_id`)
+      .all(
+        scopeKey ?? null,
+        scopeKey ?? null,
+        skill ?? null,
+        skill ?? null,
+      ) as {
+      scope_key: string;
+      skill: string;
+      trial: string;
+      recorded_at: number;
+    }[];
+    return rows.map(({ trial, ...row }) => ({
+      ...row,
+      ...(JSON.parse(trial) as GateTrial),
+    }));
   }
 
   /**

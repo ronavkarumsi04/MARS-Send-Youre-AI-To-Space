@@ -4555,6 +4555,16 @@ test("host verdicts credit the exact skill versions a task loaded, ranked by rel
         .update("Write a fixture file and check its content.")
         .digest("hex"),
     });
+    for (const cost_usd of [0.25, id === "task" ? 0.5 : null]) {
+      await f.store.appendEvent(context(), id, {
+        run_id: "fixture-run",
+        versions: [{ component: "fixture", revision: "1" }],
+        event_type: "tool.completed",
+        producer: "fixture",
+        payload: { operation: "fixture" },
+        usage: { input_tokens: 1, output_tokens: 1, cost_usd },
+      });
+    }
     session.finish("completed");
     await session.disposed;
   }
@@ -4562,6 +4572,7 @@ test("host verdicts credit the exact skill versions a task loaded, ranked by rel
     ["task", true],
     ["task-2", false],
   ]);
+  expect(recorded.map((row) => row.cost_usd)).toEqual([0.75, null]);
   expect(recorded[0]?.skills.map((s) => s.name)).toEqual([
     "fixture-writing",
     "release-notes",

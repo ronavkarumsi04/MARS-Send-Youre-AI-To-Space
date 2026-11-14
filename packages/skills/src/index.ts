@@ -7,5 +7,6 @@ export * from "./gated-accept";
 export * from "./hooks";
 export * from "./lock";
 export * from "./outcomes";
+export * from "./report";
 export * from "./selection";
 export * from "./store";
