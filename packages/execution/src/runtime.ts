@@ -1382,6 +1382,20 @@ function readRows(
       bytes + size + Buffer.byteLength(notice, "utf8") + 1 >
       MAX_TOOL_OUTPUT_CHARS
     ) {
+      if (n === offset) {
+        const truncated = `[line ${n} truncated; use ${hashed ? "mars_edit range replacement" : "mars_replace"} or mars_execute to inspect; continue with offset=${n + 1}]`;
+        const encoded = Buffer.from(row, "utf8");
+        let end = Math.max(
+          0,
+          MAX_TOOL_OUTPUT_CHARS -
+            bytes -
+            Buffer.byteLength(truncated, "utf8") -
+            2,
+        );
+        while (end > 0 && ((encoded[end] ?? 0) & 0xc0) === 0x80) end--;
+        rows.push(encoded.subarray(0, end).toString("utf8"), truncated);
+        return rows.join("\n");
+      }
       rows.push(notice);
       return rows.join("\n");
     }

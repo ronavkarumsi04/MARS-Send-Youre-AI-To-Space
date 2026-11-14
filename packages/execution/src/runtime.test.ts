@@ -1442,6 +1442,73 @@ test.each(["replace", "apply_patch"] as const)(
   30000,
 );
 
+test.each(["hashline", "replace"] as const)(
+  "%s oversized first row is UTF-8-safe and advances; full-line anchors still edit",
+  async (editFormat) => {
+    const f = await fixture(2_000_000, { editFormat });
+    const task = {
+      ...f.task,
+      budget: { ...f.task.budget, max_tokens: 1_000_000 },
+    };
+    try {
+      const longLine = "😀中".repeat(45000);
+      await writeFile(join(f.cwd, "long.txt"), `${longLine}\nsecond\nthird`);
+      const first = await callFileTool(
+        f,
+        "mars_read",
+        { path: "long.txt", offset: 1, limit: 1 },
+        { task },
+      );
+      expect(Buffer.byteLength(first.relayed, "utf8")).toBeLessThanOrEqual(
+        128 * 1024,
+      );
+      expect(first.relayed).toContain("line 1 truncated");
+      expect(first.relayed).toContain("continue with offset=2");
+      expect(first.relayed).not.toContain("\uFFFD");
+      const row = first.relayed.split("\n")[1] ?? "";
+      const prefix =
+        editFormat === "hashline" ? `${anchorOf(1, longLine)}|` : "";
+      expect(row.startsWith(prefix)).toBe(true);
+      expect(row.slice(prefix.length)).toMatch(/^(?:😀中)+(?:😀)?$/u);
+      const next = await callFileTool(
+        f,
+        "mars_read",
+        { path: "long.txt", offset: 2, limit: 1 },
+        { task },
+      );
+      expect(next.relayed).toContain("lines 2-2 of 3");
+      expect(next.relayed).toContain("second");
+      expect(next.relayed).toContain("continue with offset=3");
+      const last = await callFileTool(
+        f,
+        "mars_read",
+        { path: "long.txt", offset: 3, limit: 1 },
+        { task },
+      );
+      expect(last.relayed).toContain("third");
+      expect(last.relayed).not.toContain("continue with offset=");
+      if (editFormat === "hashline") {
+        const anchor = row.slice(0, row.indexOf("|"));
+        const edited = await callFileTool(
+          f,
+          "mars_edit",
+          {
+            path: "long.txt",
+            edits: [{ op: "replace", anchor, content: "short" }],
+          },
+          { task },
+        );
+        expect(edited.relayed).toContain("Applied 1 edits");
+        expect(await readFile(join(f.cwd, "long.txt"), "utf8")).toBe(
+          "short\nsecond\nthird",
+        );
+      }
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
 test.each([
   "a\nb\n",
   "a\r\nb\r\n",
