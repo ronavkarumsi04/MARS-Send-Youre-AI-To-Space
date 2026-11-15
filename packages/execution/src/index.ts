@@ -22,6 +22,11 @@ export {
   type SharedBudget,
   selectExecutionModel,
 } from "./model-bridge";
+export {
+  type ReadSummaryOptions,
+  renderRead,
+  structuralOutline,
+} from "./read-summary";
 export * from "./runtime";
 
 export const EXECUTION_PACKAGE_VERSION: string = VERSION;
@@ -30,6 +35,7 @@ export function registerRuntimeCleanup(
   id: string,
   cleanup: () => Promise<void>,
 ): () => void {
+  postmortem.installProcessHandlers();
   return postmortem.register(id, cleanup, {
     exitOnly: true,
     deadlineMs: 30_000,

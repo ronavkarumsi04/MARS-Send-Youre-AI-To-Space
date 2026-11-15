@@ -793,7 +793,7 @@ describe("@mars/tasks durable store", () => {
     const observed = {
       upstream: {
         runtime: "oh-my-pi" as const,
-        package_version: "18.14.0",
+        package_version: "18.20.0",
         session_id: "session-1",
         entry_ids: ["entry-1"],
       },
@@ -817,7 +817,7 @@ describe("@mars/tasks durable store", () => {
     });
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: "session-1",
       session_file: path.join(tmpdir(), "session.jsonl"),
     };
@@ -868,7 +868,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("privacy-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -987,7 +987,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("path-guard-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -1096,7 +1096,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("shared-directory-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: realSessionFile,
     };
@@ -1306,7 +1306,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("request-id-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: realSessionFile,
     };
@@ -1458,7 +1458,7 @@ describe("@mars/tasks durable store", () => {
     const recordTask = makeTask("prebind-record-task");
     const bindingFor = (task: Task, sessionFile: string) => ({
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     });
@@ -1546,7 +1546,7 @@ describe("@mars/tasks durable store", () => {
     const taskC = makeTask("cross-task-c");
     const bindingFor = (task: Task, sessionFile: string) => ({
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     });
@@ -1634,7 +1634,7 @@ describe("@mars/tasks durable store", () => {
     const cleanTask = makeTask("clean-same-scope-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: sessionFile,
     };
@@ -1812,7 +1812,7 @@ describe("@mars/tasks durable store", () => {
     const task = makeTask("malformed-payload-task");
     const binding = {
       runtime: "oh-my-pi" as const,
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: task.session_id,
       session_file: path.join(rootDir, "missing-session.jsonl"),
     };
@@ -1871,7 +1871,7 @@ describe("@mars/tasks durable store", () => {
       task.task_id,
       {
         runtime: "oh-my-pi",
-        package_version: "18.14.0",
+        package_version: "18.20.0",
         session_id: task.session_id,
         session_file: sessionFile,
       },
@@ -2131,6 +2131,127 @@ describe("@mars/tasks durable store", () => {
       await store.resume(resumeContext, task.task_id, paused.revision),
     ).toEqual(resumed);
     await store.close();
+  });
+
+  test("resume atomically rebinds the runtime version, audits it, and keeps observation matching strict", async () => {
+    const store = await openStore(makeRoot());
+    const task = makeTask();
+    const binding = {
+      runtime: "oh-my-pi" as const,
+      package_version: "18.14.0",
+      session_id: task.session_id,
+      session_file: path.join(makeRoot(), "journal.jsonl"),
+    };
+    await store.create(context("create"), task);
+    await store.bindUpstreamSession(context("bind"), task.task_id, binding);
+    const running = await store.update(context("run"), task.task_id, 0, {
+      status: "running",
+    });
+    const paused = await store.update(
+      context("pause"),
+      task.task_id,
+      running.revision,
+      { status: "paused" },
+    );
+    for (const value of [
+      {},
+      { from: "", to: "18.20.0" },
+      { from: "18.14.0", to: "18.14.0" },
+      { from: "18.14.0", to: "18.20.0", session_id: "other" },
+    ])
+      await expect(
+        store.resume(context("invalid"), task.task_id, paused.revision, {
+          upstream_package_version: value,
+        } as never),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(
+      store.resume(context("stale-binding"), task.task_id, paused.revision, {
+        upstream_package_version: { from: "18.13.0", to: "18.20.0" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.upstreamSession(context(), task.task_id)).toEqual(
+      binding,
+    );
+    expect((await store.inspect(context(), task.task_id)).status).toBe(
+      "paused",
+    );
+    const resumeContext = context("upgrade-resume");
+    const patch = {
+      upstream_package_version: { from: "18.14.0", to: "18.20.0" },
+    };
+    const resumed = await store.resume(
+      resumeContext,
+      task.task_id,
+      paused.revision,
+      patch,
+    );
+    expect(resumed.revision).toBe(paused.revision + 1);
+    expect(
+      await store.resume(resumeContext, task.task_id, paused.revision, patch),
+    ).toEqual(resumed);
+    expect(await store.upstreamSession(context(), task.task_id)).toEqual({
+      ...binding,
+      package_version: "18.20.0",
+    });
+    const last = (await collect(store.events(context(), task.task_id))).at(-1);
+    if (!last) throw new Error("Missing resume event");
+    const payload = JSON.parse(
+      new TextDecoder().decode(
+        await store.artifacts.get(context(), last.payload),
+      ),
+    );
+    expect(payload.upstream_package_version).toEqual(
+      patch.upstream_package_version,
+    );
+    expect(JSON.stringify(payload)).not.toContain(binding.session_file);
+    const observed = (version: string) =>
+      store.appendEvent(context(`observed-${version}`), task.task_id, {
+        event_type: "execution.observed",
+        run_id: binding.session_id,
+        producer: "test",
+        versions: [{ component: "oh-my-pi", revision: version }],
+        payload: {
+          upstream: {
+            runtime: binding.runtime,
+            package_version: version,
+            session_id: binding.session_id,
+            entry_ids: ["entry"],
+          },
+          kind: "turn",
+        },
+      });
+    await expect(observed("18.14.0")).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await observed("18.20.0");
+    await store.close();
+
+    const unbound = await openStore(makeRoot());
+    await unbound.create(context("create"), task);
+    const unboundRunning = await unbound.update(
+      context("run"),
+      task.task_id,
+      0,
+      { status: "running" },
+    );
+    const unboundPaused = await unbound.update(
+      context("pause"),
+      task.task_id,
+      unboundRunning.revision,
+      { status: "paused" },
+    );
+    await expect(
+      unbound.resume(
+        context("unbound"),
+        task.task_id,
+        unboundPaused.revision,
+        patch,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await unbound.inspect(context(), task.task_id)).status).toBe(
+      "paused",
+    );
+    await unbound.close();
   });
 
   test("resume records a routed specialist revision change in the same revision", async () => {

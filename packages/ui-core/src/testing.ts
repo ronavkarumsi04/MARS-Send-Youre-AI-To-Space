@@ -90,7 +90,7 @@ const observed = (
   payload: {
     upstream: {
       runtime: "oh-my-pi",
-      package_version: "18.14.0",
+      package_version: "18.20.0",
       session_id: "omp-session-fixture",
       entry_ids: [entry],
     },

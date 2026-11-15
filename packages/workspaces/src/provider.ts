@@ -41,6 +41,7 @@ import {
 } from "./errors";
 import { resolveSafePath, validateRelativePath } from "./paths";
 import { isValidArgv } from "./sandbox";
+import { searchWorkspaceTree } from "./search";
 import {
   acquireProviderLock,
   CHECKPOINT_ID_PATTERN,
@@ -840,6 +841,11 @@ export async function createLocalWorkspaceProvider(
           await rm(stageDir, { recursive: true, force: true });
         }
       });
+    },
+    async search(context, workspace, request) {
+      return withWorkspace(context, workspace, (_current, tree) =>
+        searchWorkspaceTree(tree, request, limits, extraIgnores),
+      );
     },
     async read(context, workspace, relativePath) {
       return withWorkspace(context, workspace, async (current) => {

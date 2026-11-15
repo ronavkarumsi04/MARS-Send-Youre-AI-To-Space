@@ -1,5 +1,7 @@
 # Oh My Pi (`@oh-my-pi/pi-coding-agent` + `@oh-my-pi/pi-tui`) — TUI, theme, keybinding and extension-point study
 
+Historical research: this report and its screenshots were captured on 18.14.0. The workspace now pins Oh My Pi to **18.20.0**; these observations have not been visually revalidated on that release.
+
 | | |
 |---|---|
 | Product | Oh My Pi (`omp`), https://github.com/can1357/oh-my-pi |

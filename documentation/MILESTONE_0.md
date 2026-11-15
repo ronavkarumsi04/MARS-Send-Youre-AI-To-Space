@@ -1,5 +1,7 @@
 # Milestone 0: source and integration baseline
 
+Dependency upgrade: current Oh My Pi runtime packages are pinned to **18.20.0**; see `SOURCE_REGISTER.md` and `sources/manifest.json` for current artifact identities. The 18.14.0 probe output below records the original milestone, not a fresh run.
+
 ## Scope and verdict
 
 The source/contract baseline and local SDK/native/journal probes are verified. This is an initial integration increment, **not completion of Foundation/Milestone 1** and not evidence that the full component set interoperates.

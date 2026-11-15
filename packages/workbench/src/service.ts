@@ -78,6 +78,7 @@ import {
   createRemoteWorkspaceProvider,
   type IsolationReport,
   type RemoteWorkspaceConfig,
+  type RemoteWorkspaceProvider,
 } from "@mars/workspaces-remote";
 import type { WorkbenchCollaboration } from "./collaboration-context";
 import type { WorkbenchConventions } from "./conventions-context";
@@ -396,7 +397,7 @@ export async function createWorkbenchService(
     await omniroute?.stop().catch(() => undefined);
     throw error;
   }
-  let workspace: LocalWorkspaceProvider | undefined;
+  let workspace: LocalWorkspaceProvider | RemoteWorkspaceProvider | undefined;
   let workspaceIsolation: IsolationReport | undefined;
   let host: Awaited<ReturnType<typeof createWorkbenchHost>> | undefined;
   let memory: DurableMemoryStore | undefined;
@@ -696,6 +697,9 @@ export async function createWorkbenchService(
         diff: provider.diff.bind(provider),
         ...(canExecute ? { runCheck: provider.runCheck.bind(provider) } : {}),
         exportPatch: provider.exportPatch.bind(provider),
+        ...("search" in provider
+          ? { search: provider.search.bind(provider) }
+          : {}),
         cwd: provider.workspacePath.bind(provider),
         async reopen(context, taskId) {
           const workspace = await provider.discover(context, taskId);

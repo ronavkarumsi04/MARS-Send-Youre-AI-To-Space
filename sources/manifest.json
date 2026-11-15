@@ -9,16 +9,16 @@
   "runtime_artifacts": [
     {
       "package": "@oh-my-pi/pi-coding-agent",
-      "version": "18.14.0",
-      "integrity": "sha512-5RBnSC8FXMAkzT9/rVdBc1LEcP7qL2HgbDc1JW0XvUZ1XhuH+kdZ3ajDQSR4GN7HfSRBTj7xw8rgaFwQxV3vEg==",
-      "release_source_revision": "31147f9d1a76608549821c3759f8487b4d66c72d",
+      "version": "18.20.0",
+      "integrity": "sha512-1T3rcHUYRN+uCUaQN8rwRkGF5MX9niB3zUqX7eSn0n7g1Q1VwPJEubTOs5nhTkB5qufSizXUbBN5Pp+dEuWymg==",
+      "release_source_revision": "c308970263ae13744ea15ab67302e3dac840e266",
       "source_equivalence": "not-attested"
     },
     {
       "package": "@oh-my-pi/pi-natives",
-      "version": "18.14.0",
-      "integrity": "sha512-sHuSIYS39QRXPofNfKGwgYflUtrHgXfS/1dx4o0gGTSutqCX2zOjXvfVRhCTffbzUpg8B4lz0iM13c++Ho7X0w==",
-      "release_source_revision": "31147f9d1a76608549821c3759f8487b4d66c72d",
+      "version": "18.20.0",
+      "integrity": "sha512-Unz7+dRNCvCoEoKF0DRyD/KL+q6xGGa7G7VUjt9/ziUpOGdozf8YEfChr5pNl9PvZ6b2qSn6wnIPmLXD0VjcJA==",
+      "release_source_revision": "c308970263ae13744ea15ab67302e3dac840e266",
       "source_equivalence": "not-attested"
     }
   ],

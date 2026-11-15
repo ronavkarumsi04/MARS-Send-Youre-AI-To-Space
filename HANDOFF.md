@@ -1,6 +1,15 @@
 # HANDOFF
 
+Dependency upgrade: all workspace `@oh-my-pi/*` packages are now pinned to **18.20.0**. Earlier 18.14.0 references below describe historical research and PR observations; see `documentation/SOURCE_REGISTER.md` for current provenance.
+
+`mars_read` accepts optional 1-based `offset` and a 1–2000-line `limit` (existing S1 pagination; continuation offsets handle bounded pages). Un-ranged files through 24 KiB retain S1’s selected plain/hashline output; larger files, including those above 128 KiB within provider `maxFileBytes`, return file counts, a bounded heuristic symbol outline and head, plus an instruction to request ranges. Session `readSummary` configures the threshold (at most 128 KiB), head and symbol count. Range pages retain S1’s UTF-8-safe 128 KiB output bound and continuation offsets; provider authorization/validation and runtime `checkTool` are unchanged. Outlines are not AST-exact, may misread strings/comments or miss declarations, and are not claimed superior to OMP. No Python/graph build or model call is added. `scripts/measure-read-summary.ts` reports reproducible bytes and real `pi-natives` O200kBase token counts (text only, not chat framing).
+
+`mars_grep` is a read-approved essential CustomTool bound by the workbench host to `LocalWorkspaceProvider.search` with authorization and pre/post hooks, never to the source checkout. Native regex search (or escaped literal mode) respects gitignore, ignored names and extra ignores; returned paths are workspace-relative and post-filtered for secrets, symlinks and realpath escapes. Hard limits: 200 matches, 5 context lines per side, 512 columns, 64 KiB result/output and 5 seconds of native search. Truncation is explicit. Default output now uses S1’s `path:LINE:hash|text` for matches and context; `GrepFormatter` remains replaceable. Read back before editing: native grep may sanitize or clip search text. Evaluation reuses the same workdir-scoped search; delegated children and read-only team-chat agents do not receive it. Offline scripted tests only; no live-model acceptance claimed.
+
+Rebased onto `51d744a` (S1 anchored reads). Large un-ranged reads outline; explicit `offset` / `limit` pages preserve S1’s hashline/plain renderer, UTF-8-safe truncation and continuation guidance. Read size remains provider-bound; the separate 1 MiB edit limit is unchanged. All coordinator allowance/capacity calls include bound grep through `launchSurface`; child routing excludes grep because child tools explicitly omit it. Offline regression tests cover the bound/unbound context budget.
+
 Running log of where the MARS project stands, what was decided, and what is next.
+Remote workspaces do not advertise `mars_grep` yet; no native local search is attempted against remote paths.
 Maintained by the active Devin session; update it in every PR that changes scope.
 Covers all three repositories:
 

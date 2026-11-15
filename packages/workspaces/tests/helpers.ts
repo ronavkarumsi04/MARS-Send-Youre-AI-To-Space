@@ -82,6 +82,7 @@ export async function makeFixture(
     runner?: SandboxRunner | false;
     approveCommand?: boolean | CommandApprover;
     limits?: Record<string, number>;
+    extraIgnores?: readonly string[];
     testHooks?: Parameters<typeof createLocalWorkspaceProvider>[0]["testHooks"];
     artifactStore?: ReturnType<typeof createInMemoryArtifactStore>;
   } = {},
@@ -207,6 +208,7 @@ export async function makeFixture(
       ...(sandbox ? { sandbox } : {}),
       ...(approveCommand ? { approveCommand } : {}),
       ...(options.limits ? { limits: options.limits } : {}),
+      ...(options.extraIgnores ? { extraIgnores: options.extraIgnores } : {}),
       ...(options.testHooks ? { testHooks: options.testHooks } : {}),
     });
     workspace = await provider.prepare(context, "task-test");

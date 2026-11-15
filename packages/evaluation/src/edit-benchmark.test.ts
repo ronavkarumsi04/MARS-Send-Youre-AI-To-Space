@@ -21,6 +21,7 @@ import {
   minimumPoweredTasks,
   POWER_DESIGN,
   parseEditBenchmarkArm,
+  parseReadResult,
   runEditBenchmark,
   runEditTrial,
   SCRIPTED_PROFILES,
@@ -190,6 +191,25 @@ test("offline end to end: scripted small model, both arms, sealed report, transc
   ).toHaveLength(20);
 }, 120_000);
 
+test("scripted reads recognize outlines and plain or anchored MARS pages", () => {
+  const outline = parseReadResult(
+    "a.ts: 100 lines, 25000 bytes. Outlined because file exceeds the 24576-byte summary threshold.\nHeuristic outline (not AST-exact):\n1-100: export class A\n\nHead (1 requested lines; bounded preview):\n1: export class A {\n\nCall mars_read with path, offset",
+  );
+  expect(outline.complete).toBe(false);
+  expect(outline.content).toBeNull();
+  expect(outline.lines.get(1)).toBe("export class A {");
+  const plain = parseReadResult(
+    "a.ts · lines 2-2 of 3\nbody\n[continue with offset=3]",
+  );
+  expect(plain.complete).toBe(false);
+  expect(plain.lines.get(2)).toBe("body");
+  const anchored = parseReadResult("a.ts · lines 1-1 of 1\n1:abc|body");
+  expect(anchored.complete).toBe(true);
+  expect(anchored.content).toBe("body\n");
+  expect(parseReadResult("").content).toBe("");
+  expect(parseReadResult("a.ts · lines 1-0 of 0\n").complete).toBe(false);
+});
+
 test("below the power minimum the run is exploratory and no verdict is computed", async () => {
   // The scripted model's static default format is hashline: the confirmatory arm.
   const fluent = await offlineRun("default-fluent", {
@@ -317,6 +337,40 @@ test("mars:hashline and mars:replace drive the real mars_edit / mars_replace too
     expect(transcript).toContain(`"toolName":"${tool}"`);
   }
 }, 180_000);
+
+test("hashline oracle pages for anchors even when outline preview text includes the edit", async () => {
+  const root = await scratch();
+  const task = suiteV2.tasks.find((task) => task.task_id === "sds-rename-2");
+  if (!task) throw new Error("Missing outline-preview regression task");
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: [task],
+    profile: SCRIPTED_PROFILES.oracle as (typeof SCRIPTED_PROFILES)[string],
+  });
+  const transcriptRoot = join(root, "tx");
+  const result = await runEditTrial({
+    arm: "mars:hashline",
+    task,
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch: model.fetch,
+    workRoot: join(root, "work"),
+    transcriptRoot,
+  });
+  expect(result.solved).toBe(true);
+  expect(result.edit_failures).toBe(0);
+  if (!result.transcript) throw new Error("Missing oracle transcript");
+  const transcript = await readFile(
+    join(transcriptRoot, result.transcript),
+    "utf8",
+  );
+  expect(transcript).toContain("Outlined because file exceeds");
+  expect(transcript).toContain('"offset":');
+}, 60_000);
 
 test("a rejected edit the model then retries counts as an edit failure, not a lost solve", async () => {
   const { run } = await offlineRun("recovering", {

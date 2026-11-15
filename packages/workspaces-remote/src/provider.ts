@@ -89,7 +89,8 @@ export interface RemoteWorkspaceProviderOptions {
   maxScanBytes?: number;
 }
 
-export interface RemoteWorkspaceProvider extends LocalWorkspaceProvider {
+export interface RemoteWorkspaceProvider
+  extends Omit<LocalWorkspaceProvider, "search"> {
   readonly serverInfo: AgentServerInfo;
   isolation(): IsolationReport;
 }

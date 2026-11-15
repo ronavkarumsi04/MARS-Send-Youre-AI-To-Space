@@ -29,6 +29,7 @@ import type {
   WorkspaceRef,
 } from "@mars/contracts";
 import {
+  EXECUTION_PACKAGE_VERSION,
   initialRequestAllowance,
   MAX_RUNTIME_INSTRUCTION_LENGTH,
   MIN_INITIAL_OUTPUT_RESERVE,
@@ -1165,6 +1166,71 @@ test("saved facts are omitted rather than exhausting a small model context", asy
   await api.close();
 });
 
+test("host optional context reserves the grep tool exactly when search is bound", async () => {
+  for (const grep of [false, true]) {
+    const f = await fixture();
+    const small = await f.smallRegistry();
+    const memory = createMemoryStore({ rootDir: join(f.root, "memory") });
+    cleanup.push(() => memory.close());
+    await memory.batch(context(), 0, [
+      {
+        operation: "add",
+        entry: {
+          entry_id: "fact",
+          scope,
+          target: "project",
+          fact: "small saved note",
+          revision: 0,
+          source_event_ids: [],
+          observed_at: "2026-01-01T00:00:00Z",
+          verified_at: null,
+          supersedes: null,
+          deleted: false,
+        },
+      },
+    ]);
+    if (grep)
+      f.workspace.search = async () => ({
+        matches: [],
+        truncated: false,
+        limitReached: false,
+      });
+    const input = task();
+    const approvals = { read: true, write: false, execute: false };
+    const instruction = `\n\nAcceptance criteria:\n${input.acceptance_criteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+    const surface = { approvals, recall: true, instruction };
+    const base = initialRequestAllowance(surface);
+    const grepBytes =
+      initialRequestAllowance({ ...surface, grep: true }) - base;
+    expect(grepBytes).toBeGreaterThan(0);
+    input.request = "r".repeat(
+      8192 - MIN_INITIAL_OUTPUT_RESERVE - base - grepBytes - 256,
+    );
+    const api = await f.makeHost(small, memory);
+    await api.create(context(), input);
+    await api.start(context(), {
+      task_id: "task",
+      expected_revision: 0,
+      approvals,
+    });
+    const session = required(f.sessions[0]);
+    const actual = required(session.instructions[0]);
+    expect(Boolean(session.options.tools.grep)).toBe(grep);
+    expect(actual.includes("small saved note")).toBe(!grep);
+    expect(
+      initialRequestAllowance({
+        approvals,
+        recall: true,
+        grep,
+        instruction: actual,
+      }) + MIN_INITIAL_OUTPUT_RESERVE,
+    ).toBeLessThanOrEqual(8192);
+    session.finish("completed");
+    await session.disposed;
+    await api.close();
+  }
+});
+
 test("read denial disables saved context and recall; index failure is a sanitized non-fatal projection event", async () => {
   const f = await fixture();
   const memory: WorkbenchMemory = {
@@ -1357,6 +1423,74 @@ test("the exact runtime character limit is accepted without truncating request o
   await session.disposed;
   expect((await api.inspect(context(), "task")).status).toBe("completed");
   await api.close();
+});
+
+test("a paused legacy-runtime task resumes with an audited current-version binding", async () => {
+  const f = await fixture();
+  const bind = f.store.bindUpstreamSession.bind(f.store);
+  f.store.bindUpstreamSession = (context, taskId, binding) =>
+    bind(context, taskId, { ...binding, package_version: "18.14.0" });
+  const api = await f.makeHost();
+  await api.create(context(), task());
+  await api.start(context(), {
+    task_id: "task",
+    expected_revision: 0,
+    approvals: { read: true, write: false, execute: false },
+  });
+  f.store.bindUpstreamSession = bind;
+  required(f.sessions[0]).finish("paused");
+  await required(f.sessions[0]).disposed;
+  await api.close();
+  const previous = required(await f.store.upstreamSession(context(), "task"));
+  if (!previous) throw new Error("Missing legacy binding");
+  expect(previous.package_version).toBe("18.14.0");
+  const replacement = await f.makeHost();
+  const paused = await replacement.inspect(context(), "task");
+  const running = await replacement.resume(context(), "task", paused.revision);
+  expect(running.status).toBe("running");
+  expect(await f.store.upstreamSession(context(), "task")).toEqual({
+    ...previous,
+    package_version: EXECUTION_PACKAGE_VERSION,
+  });
+  const session = required(f.sessions[1]);
+  expect(session.options.sessionFile).toBe(previous.session_file);
+  await session.options.onEvent?.({
+    type: "message_end",
+    journal_path: previous.session_file,
+    session_id: previous.session_id,
+    entry_id: "resumed-entry",
+  });
+  const payloads: Array<Record<string, unknown>> = [];
+  for await (const event of f.store.events(context(), "task"))
+    payloads.push(
+      JSON.parse(
+        new TextDecoder().decode(
+          await f.store.artifacts.get(context(), event.payload),
+        ),
+      ),
+    );
+  expect(
+    payloads.some(
+      (payload) =>
+        JSON.stringify(payload.upstream_package_version) ===
+        JSON.stringify({ from: "18.14.0", to: EXECUTION_PACKAGE_VERSION }),
+    ),
+  ).toBe(true);
+  expect(payloads).toContainEqual({
+    upstream: {
+      runtime: "oh-my-pi",
+      package_version: EXECUTION_PACKAGE_VERSION,
+      session_id: previous.session_id,
+      entry_ids: ["resumed-entry"],
+    },
+    kind: "message_end",
+  });
+  session.finish("completed");
+  await session.disposed;
+  expect((await replacement.inspect(context(), "task")).status).toBe(
+    "completed",
+  );
+  await replacement.close();
 });
 
 test("paused steering survives host restart, is consumed on resume, and usage counts only new tokens", async () => {
@@ -5309,6 +5443,81 @@ const conventionsHost = (
     conventions,
     canExecute,
   });
+
+test("mars_grep uses the provider inside read authorization and pre/post hooks", async () => {
+  const f = await fixture();
+  const order: string[] = [];
+  let searches = 0;
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      canExecute: true,
+      workspaceOverrides: {
+        async search(_context, workspace, request) {
+          searches += 1;
+          expect(workspace.workspace_id).toBe("workspace");
+          expect(request.path).toBe("src");
+          order.push("provider");
+          return { matches: [], truncated: false, limitReached: false };
+        },
+      },
+      conventions: {
+        hooks: {
+          async run(event, hookContext, executor) {
+            if (hookContext.tool !== "mars_grep") return [];
+            expect(hookContext.path).toBe("src");
+            order.push(event);
+            const argv = ["hook", event];
+            const result = await executor(argv, 5000);
+            expect("skipped" in result).toBe(false);
+            return [
+              {
+                event,
+                tool: hookContext.tool,
+                argv,
+                outcome: "ran",
+                exit_code: 0,
+                stdout: "",
+                stderr: "",
+                blocked: false,
+              },
+            ];
+          },
+        },
+      },
+    },
+  );
+  await api_start(api, "task", { read: true, write: false, execute: true });
+  const session = required(f.sessions[0]);
+  await required(session.options.tools.grep)({
+    pattern: "needle",
+    path: "src",
+  });
+  expect(order).toEqual(["pre-tool", "provider", "post-tool"]);
+  expect(
+    (await taskEvents(f, "task", "hook.completed"))
+      .filter((event) => event.tool === "mars_grep")
+      .map((event) => event.event),
+  ).toEqual(["pre-tool", "post-tool"]);
+  session.finish("completed");
+  await session.disposed;
+  order.length = 0;
+  await api_start(api, "denied", { read: false, write: false, execute: true });
+  const denied = required(f.sessions[1]);
+  await expect(
+    required(denied.options.tools.grep)({ pattern: "needle", path: "src" }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  expect(searches).toBe(1);
+  expect(order).toEqual([]);
+  denied.finish("completed");
+  await denied.disposed;
+  await api.close();
+});
 
 const taskEvents = async (
   f: Awaited<ReturnType<typeof fixture>>,

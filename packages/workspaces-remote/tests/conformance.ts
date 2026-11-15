@@ -12,7 +12,7 @@ import type {
  * Agent Server), so "same contract" is a test result, not a claim.
  */
 export interface ConformanceFixture {
-  provider: LocalWorkspaceProvider;
+  provider: Omit<LocalWorkspaceProvider, "search">;
   artifacts: ArtifactStore;
   /** Change a file behind the provider's back (local tree or remote host). */
   tamper(

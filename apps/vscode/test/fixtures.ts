@@ -89,7 +89,7 @@ export function makeEvent(
     parent_event_id: null,
     run_id: "run-1",
     producer: "execution",
-    versions: [{ component: "oh-my-pi", revision: "18.14.0" }],
+    versions: [{ component: "oh-my-pi", revision: "18.20.0" }],
     payload: artifactFor(`payload ${id}`, `a-${id}`).ref,
     source_event_ids: [],
     access: "private",

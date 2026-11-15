@@ -26,7 +26,7 @@
     "@mars/ui-core": "workspace:*",
     "@mars/workbench": "workspace:*",
     "@mars/workspaces-remote": "workspace:*",
-    "@oh-my-pi/pi-tui": "18.14.0",
+    "@oh-my-pi/pi-tui": "18.20.0",
     "zod": "3.25.76"
   }
 }

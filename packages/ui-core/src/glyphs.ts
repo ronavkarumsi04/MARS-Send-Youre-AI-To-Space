@@ -96,8 +96,8 @@ export function glyphs(preset: GlyphPreset): Glyphs {
   const symbols = SYMBOL_PRESETS[preset];
   return {
     preset,
-    ok: symbols["status.success"],
-    fail: symbols["status.error"],
+    ok: preset === "ascii" ? "[ok]" : symbols["status.success"],
+    fail: preset === "ascii" ? "[!!]" : symbols["status.error"],
     warning: symbols["status.warning"],
     info: symbols["status.info"],
     pending: symbols["status.pending"],
