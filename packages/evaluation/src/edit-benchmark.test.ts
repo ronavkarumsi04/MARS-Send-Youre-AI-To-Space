@@ -653,3 +653,37 @@ test("Holm adjustment matches hand-computed values", () => {
   expect(holmAdjust([0.5, 0.9, 0.6])).toEqual([1, 1, 1]);
   expect(holmAdjust([])).toEqual([]);
 });
+
+test("both arms keep the host workspace path out of every model request", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: suite.tasks,
+    profile: SCRIPTED_PROFILES.oracle as ScriptedModelProfile,
+  });
+  for (const arm of ["mars:hashline", "omp-stock"] as const) {
+    const bodies: string[] = [];
+    const result = await runEditTrial({
+      arm,
+      task: suite.tasks[0] as (typeof suite.tasks)[number],
+      repeat: 0,
+      registry,
+      env,
+      modelId,
+      seed: 1,
+      budget,
+      fetch: async (url, init) => {
+        bodies.push(String(init?.body ?? ""));
+        return model.fetch(url, init);
+      },
+      workRoot: join(root, `work-${arm}`),
+      transcriptRoot: join(root, `tx-${arm}`),
+    });
+    expect(result.solved).toBe(true);
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body).not.toContain(root);
+      expect(JSON.parse(body).max_tokens).toBe(4096);
+    }
+  }
+}, 60_000);

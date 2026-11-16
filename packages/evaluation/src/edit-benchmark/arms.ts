@@ -17,6 +17,7 @@ import {
   createModelBridge,
   MARS_EDIT_FORMATS,
   type MarsEditFormat,
+  maxOutputTokens,
   openRuntimeSession,
   type RuntimeSessionOptions,
   type RuntimeTools,
@@ -555,6 +556,7 @@ async function runOmpStock(
     },
     fetch,
     seed: input.seed,
+    workspaceRoots: [workspace, await realpath(workspace)],
     ...(input.env ? { env: input.env } : {}),
   });
   const providerId = `omp-stock-${randomUUID()}`;
@@ -586,7 +588,7 @@ async function runOmpStock(
           cacheWrite: 0,
         },
         contextWindow: model.capabilities.contextWindow,
-        maxTokens: Math.min(4096, input.budget.max_tokens),
+        maxTokens: Math.min(maxOutputTokens(model), input.budget.max_tokens),
       },
     ],
   });

@@ -167,6 +167,14 @@ in `models.json` (1 000 ms to 1 h; default 60 000 ms, always bounded by the
 task deadline), and a failed run reports a `failure_code` (`provider_timeout`,
 `deadline_exceeded`, `budget_exhausted`, `provider_error`, `no_response`) in its
 error and in the workbench `runtime.result` event.
+The per-request output cap is configurable per model with `maxOutputTokens`
+(256 to 1 000 000; default 4 096, always bounded by the task token budget and
+the context window) and applies identically to MARS arms and `omp-stock`. The
+2026-11-15 Magnitude smoke run hit the old fixed 4 096 cap on every reply. Two
+other smoke-run fixes apply to every OpenAI-compatible request: omp's
+mid-conversation date/cwd reminder is sent as a user turn, not a late `system`
+message that strict servers reject with HTTP 400, and the host workspace path is
+rewritten to `.` so models only see workspace-relative paths.
 
 ## What is verified and what is not (this increment)
 

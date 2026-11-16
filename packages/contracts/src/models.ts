@@ -58,6 +58,8 @@ export const ModelConfigSchema = z
     tags: z.array(z.string()).optional(),
     /** Per-request provider timeout; slow local models need more than the 60 s default. */
     requestTimeoutMs: z.number().int().min(1_000).max(3_600_000).optional(),
+    /** Per-request output cap; reasoning models need more than the 4096-token default. */
+    maxOutputTokens: z.number().int().min(256).max(1_000_000).optional(),
   })
   .strict();
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;

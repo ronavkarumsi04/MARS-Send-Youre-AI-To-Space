@@ -85,24 +85,50 @@ function textContent(content: Context["messages"][number]["content"]): string {
     .join("");
 }
 
-export function toChatRequest(context: Context): ChatRequest {
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+export function maxOutputTokens(model: ModelConfig): number {
+  return model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+/** Replaces host workspace roots with `.` so the model sees only workspace-relative paths. */
+function workspaceRedactor(roots: readonly string[] | undefined) {
+  const ordered = [
+    ...new Set(
+      (roots ?? []).flatMap((root) => [root, root.replace(/\\/g, "/")]),
+    ),
+  ]
+    .filter((root) => root.length > 1)
+    .sort((a, b) => b.length - a.length);
+  return (text: string) =>
+    ordered.reduce((current, root) => current.split(root).join("."), text);
+}
+
+export function toChatRequest(
+  context: Context,
+  options: { workspaceRoots?: readonly string[] } = {},
+): ChatRequest {
+  const redact = workspaceRedactor(options.workspaceRoots);
   const messages: ChatMessage[] = [];
   if (context.systemPrompt?.length)
     messages.push({
       role: "system",
-      content: context.systemPrompt.join("\n\n"),
+      content: redact(context.systemPrompt.join("\n\n")),
     });
+  // Strict OpenAI-compatible servers reject system messages after the first
+  // conversation entry, so later developer turns (omp's date/cwd reminder) go as user turns.
+  let conversationStarted = false;
   for (const message of context.messages) {
     if (message.role === "toolResult") {
       messages.push({
         role: "tool",
         tool_call_id: message.toolCallId,
-        content: textContent(message.content),
+        content: redact(textContent(message.content)),
       });
     } else if (message.role === "assistant") {
       messages.push({
         role: "assistant",
-        content: textContent(message.content),
+        content: redact(textContent(message.content)),
         tool_calls: message.content.flatMap((part) =>
           part.type === "toolCall"
             ? [{ id: part.id, name: part.name, arguments: part.arguments }]
@@ -111,10 +137,15 @@ export function toChatRequest(context: Context): ChatRequest {
       });
     } else {
       messages.push({
-        role: message.role === "developer" ? "system" : "user",
-        content: textContent(message.content),
+        role:
+          message.role === "developer" && !conversationStarted
+            ? "system"
+            : "user",
+        content: redact(textContent(message.content)),
       });
     }
+    if (messages[messages.length - 1]?.role !== "system")
+      conversationStarted = true;
   }
   return {
     messages,
@@ -153,6 +184,8 @@ export interface ModelBridgeOptions {
   onFailure?(code: ModelFailureCode): void;
   /** OpenAI-compatible sampling seed forwarded on every request (non-negative safe integer). */
   seed?: number;
+  /** Host paths of the agent workspace; rewritten to `.` in every outgoing request. */
+  workspaceRoots?: readonly string[];
 }
 
 export function createModelBridge(options: ModelBridgeOptions) {
@@ -188,14 +221,20 @@ export function createModelBridge(options: ModelBridgeOptions) {
           throw new ExecutionLimitError();
         busy = true;
         ownsReservation = true;
-        const request = toChatRequest(context);
+        const request = toChatRequest(
+          context,
+          options.workspaceRoots
+            ? { workspaceRoots: options.workspaceRoots }
+            : {},
+        );
         // Reserve conservatively before dispatch; retain reservations after ambiguous failures.
         const inputAllowance =
           Buffer.byteLength(JSON.stringify(request), "utf8") + 512;
         const remaining = budget.max_tokens - ledger.reserved_tokens;
+        const outputCap = maxOutputTokens(selected);
         const maxTokens = Math.min(
-          4096,
-          streamOptions?.maxTokens ?? 4096,
+          outputCap,
+          streamOptions?.maxTokens ?? outputCap,
           remaining - inputAllowance,
           selected.capabilities.contextWindow - inputAllowance,
         );
