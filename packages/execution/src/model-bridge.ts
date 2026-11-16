@@ -104,6 +104,23 @@ function workspaceRedactor(roots: readonly string[] | undefined) {
     ordered.reduce((current, root) => current.split(root).join("."), text);
 }
 
+function redactValue(
+  value: unknown,
+  redact: (text: string) => string,
+): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, redact));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        redactValue(item, redact),
+      ]),
+    );
+  return value;
+}
+
 export function toChatRequest(
   context: Context,
   options: { workspaceRoots?: readonly string[] } = {},
@@ -131,7 +148,16 @@ export function toChatRequest(
         content: redact(textContent(message.content)),
         tool_calls: message.content.flatMap((part) =>
           part.type === "toolCall"
-            ? [{ id: part.id, name: part.name, arguments: part.arguments }]
+            ? [
+                {
+                  id: part.id,
+                  name: part.name,
+                  arguments: redactValue(
+                    part.arguments,
+                    redact,
+                  ) as typeof part.arguments,
+                },
+              ]
             : [],
         ),
       });

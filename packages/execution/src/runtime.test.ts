@@ -2553,6 +2553,36 @@ test("bridge sends later developer reminders as user turns and hides workspace r
           content: `<system-reminder>current working directory: '${root}'</system-reminder>`,
           timestamp: 2,
         },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call",
+              name: "mars_read",
+              arguments: { path: `${root}/a.txt`, nested: [{ cwd: root }] },
+            },
+          ],
+          api: "fixture",
+          provider: "fixture",
+          model: "stub",
+          timestamp: 3,
+          stopReason: "toolUse",
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0,
+            },
+          },
+        },
       ],
     },
     { workspaceRoots: [root] },
@@ -2562,8 +2592,12 @@ test("bridge sends later developer reminders as user turns and hides workspace r
     "system",
     "user",
     "user",
+    "assistant",
   ]);
   expect(JSON.stringify(request)).not.toContain(root);
+  expect(request.messages[4]).toMatchObject({
+    tool_calls: [{ arguments: { path: "./a.txt", nested: [{ cwd: "." }] } }],
+  });
   expect(request.messages[0]?.content).toBe("Workspace: .");
   expect(request.messages[2]?.content).toBe("Edit ./a.txt");
   expect(request.messages[3]?.content).toContain(
