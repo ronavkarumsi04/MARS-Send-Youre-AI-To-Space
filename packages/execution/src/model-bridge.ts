@@ -91,7 +91,13 @@ export function maxOutputTokens(model: ModelConfig): number {
   return model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
-/** Replaces host workspace roots with `.` so the model sees only workspace-relative paths. */
+/** Model-visible stand-in for the host workspace root. */
+export const WORKSPACE_PLACEHOLDER = "/__mars_workspace__";
+
+/**
+ * Swaps host workspace roots for `WORKSPACE_PLACEHOLDER` in outgoing text and
+ * back in the model's tool-call arguments, so exact-text edits stay consistent.
+ */
 function workspaceRedactor(roots: readonly string[] | undefined) {
   const ordered = [
     ...new Set(
@@ -100,8 +106,18 @@ function workspaceRedactor(roots: readonly string[] | undefined) {
   ]
     .filter((root) => root.length > 1)
     .sort((a, b) => b.length - a.length);
-  return (text: string) =>
-    ordered.reduce((current, root) => current.split(root).join("."), text);
+  const canonical = roots?.find((root) => root.length > 1);
+  return {
+    redact: (text: string) =>
+      ordered.reduce(
+        (current, root) => current.split(root).join(WORKSPACE_PLACEHOLDER),
+        text,
+      ),
+    restore: (text: string) =>
+      canonical === undefined
+        ? text
+        : text.split(WORKSPACE_PLACEHOLDER).join(canonical),
+  };
 }
 
 function redactValue(
@@ -125,7 +141,7 @@ export function toChatRequest(
   context: Context,
   options: { workspaceRoots?: readonly string[] } = {},
 ): ChatRequest {
-  const redact = workspaceRedactor(options.workspaceRoots);
+  const { redact } = workspaceRedactor(options.workspaceRoots);
   const messages: ChatMessage[] = [];
   if (context.systemPrompt?.length)
     messages.push({
@@ -210,11 +226,12 @@ export interface ModelBridgeOptions {
   onFailure?(code: ModelFailureCode): void;
   /** OpenAI-compatible sampling seed forwarded on every request (non-negative safe integer). */
   seed?: number;
-  /** Host paths of the agent workspace; rewritten to `.` in every outgoing request. */
+  /** Host paths of the agent workspace (canonical first); the model only sees `WORKSPACE_PLACEHOLDER`. */
   workspaceRoots?: readonly string[];
 }
 
 export function createModelBridge(options: ModelBridgeOptions) {
+  const workspace = workspaceRedactor(options.workspaceRoots);
   const { selected, budget, ledger } = options;
   let busy = false;
   return (
@@ -353,7 +370,14 @@ export function createModelBridge(options: ModelBridgeOptions) {
             });
           } else if (event.type === "tool-call") {
             const index = output.content.length;
-            const toolCall = { type: "toolCall" as const, ...event.toolCall };
+            const toolCall = {
+              type: "toolCall" as const,
+              ...event.toolCall,
+              arguments: redactValue(
+                event.toolCall.arguments,
+                workspace.restore,
+              ) as typeof event.toolCall.arguments,
+            };
             output.content.push(toolCall);
             stream.push({
               type: "toolcall_start",
@@ -379,7 +403,13 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 arguments: args,
               }));
             if (
-              JSON.stringify(calls) !== JSON.stringify(event.response.toolCalls)
+              JSON.stringify(calls) !==
+              JSON.stringify(
+                event.response.toolCalls.map((call) => ({
+                  ...call,
+                  arguments: redactValue(call.arguments, workspace.restore),
+                })),
+              )
             )
               throw new Error("Provider tool response mismatch.");
             const inputTokens =

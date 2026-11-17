@@ -174,7 +174,8 @@ the context window) and applies identically to MARS arms and `omp-stock`. The
 other smoke-run fixes apply to every OpenAI-compatible request: omp's
 mid-conversation date/cwd reminder is sent as a user turn, not a late `system`
 message that strict servers reject with HTTP 400, and the host workspace path is
-rewritten to `.` so models only see workspace-relative paths.
+rewritten to the placeholder `/__mars_workspace__` (mapped back to the real
+root in the model's tool-call arguments, so exact-text edits still match).
 
 ## What is verified and what is not (this increment)
 

@@ -21,6 +21,7 @@ import {
   createModelBridge,
   selectExecutionModel,
   toChatRequest,
+  WORKSPACE_PLACEHOLDER,
 } from "./model-bridge";
 import {
   boundPatchSummary,
@@ -2596,12 +2597,23 @@ test("bridge sends later developer reminders as user turns and hides workspace r
   ]);
   expect(JSON.stringify(request)).not.toContain(root);
   expect(request.messages[4]).toMatchObject({
-    tool_calls: [{ arguments: { path: "./a.txt", nested: [{ cwd: "." }] } }],
+    tool_calls: [
+      {
+        arguments: {
+          path: `${WORKSPACE_PLACEHOLDER}/a.txt`,
+          nested: [{ cwd: WORKSPACE_PLACEHOLDER }],
+        },
+      },
+    ],
   });
-  expect(request.messages[0]?.content).toBe("Workspace: .");
-  expect(request.messages[2]?.content).toBe("Edit ./a.txt");
+  expect(request.messages[0]?.content).toBe(
+    `Workspace: ${WORKSPACE_PLACEHOLDER}`,
+  );
+  expect(request.messages[2]?.content).toBe(
+    `Edit ${WORKSPACE_PLACEHOLDER}/a.txt`,
+  );
   expect(request.messages[3]?.content).toContain(
-    "current working directory: '.'",
+    `current working directory: '${WORKSPACE_PLACEHOLDER}'`,
   );
 });
 
@@ -2642,3 +2654,54 @@ for (const [label, contextWindow, config, check] of [
       await f.cleanup();
     }
   });
+
+test("a file that names the workspace root can be read and exactly edited through the placeholder", async () => {
+  const f = await fixture(200_000);
+  const requests: Record<string, unknown>[] = [];
+  try {
+    const root = await realpath(f.cwd);
+    await writeFile(join(f.cwd, "conf.py"), `base = "${root}/data"\n`);
+    const call = (name: string, args: Record<string, unknown>) =>
+      sse(
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: `call_${requests.length}`,
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        },
+        "tool_calls",
+      );
+    const session = await f.open({
+      modelId: "fixture/free",
+      editFormat: "replace",
+      task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        if (requests.length === 1)
+          return call("mars_read", { path: "conf.py" });
+        if (requests.length === 2)
+          return call("mars_replace", {
+            path: "conf.py",
+            old: `base = "${WORKSPACE_PLACEHOLDER}/data"`,
+            new: `base = "${WORKSPACE_PLACEHOLDER}/other"`,
+          });
+        return sse({ content: "Done." });
+      },
+    });
+    await session.run(f.task.request);
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[1])).toContain(
+      `base = \\"${WORKSPACE_PLACEHOLDER}/data\\"`,
+    );
+    expect(JSON.stringify(requests)).not.toContain(root);
+    expect(await readFile(join(f.cwd, "conf.py"), "utf8")).toBe(
+      `base = "${root}/other"\n`,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

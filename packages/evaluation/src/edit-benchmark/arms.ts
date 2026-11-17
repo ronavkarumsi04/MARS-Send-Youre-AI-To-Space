@@ -556,7 +556,7 @@ async function runOmpStock(
     },
     fetch,
     seed: input.seed,
-    workspaceRoots: [workspace, await realpath(workspace)],
+    workspaceRoots: [await realpath(workspace), workspace],
     ...(input.env ? { env: input.env } : {}),
   });
   const providerId = `omp-stock-${randomUUID()}`;

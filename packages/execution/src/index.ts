@@ -23,6 +23,7 @@ export {
   maxOutputTokens,
   type SharedBudget,
   selectExecutionModel,
+  WORKSPACE_PLACEHOLDER,
 } from "./model-bridge";
 export {
   type ReadSummaryOptions,

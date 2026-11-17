@@ -1025,7 +1025,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     onFailure: (code) => {
       modelFailure = code;
     },
-    workspaceRoots: [options.cwd, cwd],
+    workspaceRoots: [cwd, options.cwd],
     ...(options.env ? { env: options.env } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
