@@ -16,11 +16,14 @@ export * from "./edit-format";
 export {
   type BudgetLedger,
   createModelBridge,
+  DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   ExecutionLimitError,
   type ModelFailureCode,
+  maxOutputTokens,
   type SharedBudget,
   selectExecutionModel,
+  WORKSPACE_PLACEHOLDER,
 } from "./model-bridge";
 export {
   type ReadSummaryOptions,

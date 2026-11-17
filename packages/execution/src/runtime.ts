@@ -44,6 +44,7 @@ import {
   createModelBridge,
   ExecutionLimitError,
   type ModelFailureCode,
+  maxOutputTokens,
   type SharedBudget,
   selectExecutionModel,
   toChatRequest,
@@ -1024,6 +1025,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     onFailure: (code) => {
       modelFailure = code;
     },
+    workspaceRoots: [cwd, options.cwd],
     ...(options.env ? { env: options.env } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
@@ -1051,7 +1053,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
           cacheWrite: 0,
         },
         contextWindow: selected.capabilities.contextWindow,
-        maxTokens: Math.min(4096, task.budget.max_tokens),
+        maxTokens: Math.min(maxOutputTokens(selected), task.budget.max_tokens),
       },
     ],
   });

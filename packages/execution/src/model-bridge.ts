@@ -85,36 +85,109 @@ function textContent(content: Context["messages"][number]["content"]): string {
     .join("");
 }
 
-export function toChatRequest(context: Context): ChatRequest {
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+export function maxOutputTokens(model: ModelConfig): number {
+  return model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+/** Model-visible stand-in for the host workspace root. */
+export const WORKSPACE_PLACEHOLDER = "/__mars_workspace__";
+
+/**
+ * Swaps host workspace roots for `WORKSPACE_PLACEHOLDER` in outgoing text and
+ * back in the model's tool-call arguments, so exact-text edits stay consistent.
+ */
+function workspaceRedactor(roots: readonly string[] | undefined) {
+  const ordered = [
+    ...new Set(
+      (roots ?? []).flatMap((root) => [root, root.replace(/\\/g, "/")]),
+    ),
+  ]
+    .filter((root) => root.length > 1)
+    .sort((a, b) => b.length - a.length);
+  const canonical = roots?.find((root) => root.length > 1);
+  return {
+    redact: (text: string) =>
+      ordered.reduce(
+        (current, root) => current.split(root).join(WORKSPACE_PLACEHOLDER),
+        text,
+      ),
+    restore: (text: string) =>
+      canonical === undefined
+        ? text
+        : text.split(WORKSPACE_PLACEHOLDER).join(canonical),
+  };
+}
+
+function redactValue(
+  value: unknown,
+  redact: (text: string) => string,
+): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, redact));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        redactValue(item, redact),
+      ]),
+    );
+  return value;
+}
+
+export function toChatRequest(
+  context: Context,
+  options: { workspaceRoots?: readonly string[] } = {},
+): ChatRequest {
+  const { redact } = workspaceRedactor(options.workspaceRoots);
   const messages: ChatMessage[] = [];
   if (context.systemPrompt?.length)
     messages.push({
       role: "system",
-      content: context.systemPrompt.join("\n\n"),
+      content: redact(context.systemPrompt.join("\n\n")),
     });
+  // Strict OpenAI-compatible servers reject system messages after the first
+  // conversation entry, so later developer turns (omp's date/cwd reminder) go as user turns.
+  let conversationStarted = false;
   for (const message of context.messages) {
     if (message.role === "toolResult") {
       messages.push({
         role: "tool",
         tool_call_id: message.toolCallId,
-        content: textContent(message.content),
+        content: redact(textContent(message.content)),
       });
     } else if (message.role === "assistant") {
       messages.push({
         role: "assistant",
-        content: textContent(message.content),
+        content: redact(textContent(message.content)),
         tool_calls: message.content.flatMap((part) =>
           part.type === "toolCall"
-            ? [{ id: part.id, name: part.name, arguments: part.arguments }]
+            ? [
+                {
+                  id: part.id,
+                  name: part.name,
+                  arguments: redactValue(
+                    part.arguments,
+                    redact,
+                  ) as typeof part.arguments,
+                },
+              ]
             : [],
         ),
       });
     } else {
       messages.push({
-        role: message.role === "developer" ? "system" : "user",
-        content: textContent(message.content),
+        role:
+          message.role === "developer" && !conversationStarted
+            ? "system"
+            : "user",
+        content: redact(textContent(message.content)),
       });
     }
+    if (messages[messages.length - 1]?.role !== "system")
+      conversationStarted = true;
   }
   return {
     messages,
@@ -153,9 +226,12 @@ export interface ModelBridgeOptions {
   onFailure?(code: ModelFailureCode): void;
   /** OpenAI-compatible sampling seed forwarded on every request (non-negative safe integer). */
   seed?: number;
+  /** Host paths of the agent workspace (canonical first); the model only sees `WORKSPACE_PLACEHOLDER`. */
+  workspaceRoots?: readonly string[];
 }
 
 export function createModelBridge(options: ModelBridgeOptions) {
+  const workspace = workspaceRedactor(options.workspaceRoots);
   const { selected, budget, ledger } = options;
   let busy = false;
   return (
@@ -188,14 +264,20 @@ export function createModelBridge(options: ModelBridgeOptions) {
           throw new ExecutionLimitError();
         busy = true;
         ownsReservation = true;
-        const request = toChatRequest(context);
+        const request = toChatRequest(
+          context,
+          options.workspaceRoots
+            ? { workspaceRoots: options.workspaceRoots }
+            : {},
+        );
         // Reserve conservatively before dispatch; retain reservations after ambiguous failures.
         const inputAllowance =
           Buffer.byteLength(JSON.stringify(request), "utf8") + 512;
         const remaining = budget.max_tokens - ledger.reserved_tokens;
+        const outputCap = maxOutputTokens(selected);
         const maxTokens = Math.min(
-          4096,
-          streamOptions?.maxTokens ?? 4096,
+          outputCap,
+          streamOptions?.maxTokens ?? outputCap,
           remaining - inputAllowance,
           selected.capabilities.contextWindow - inputAllowance,
         );
@@ -288,7 +370,14 @@ export function createModelBridge(options: ModelBridgeOptions) {
             });
           } else if (event.type === "tool-call") {
             const index = output.content.length;
-            const toolCall = { type: "toolCall" as const, ...event.toolCall };
+            const toolCall = {
+              type: "toolCall" as const,
+              ...event.toolCall,
+              arguments: redactValue(
+                event.toolCall.arguments,
+                workspace.restore,
+              ) as typeof event.toolCall.arguments,
+            };
             output.content.push(toolCall);
             stream.push({
               type: "toolcall_start",
@@ -314,7 +403,13 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 arguments: args,
               }));
             if (
-              JSON.stringify(calls) !== JSON.stringify(event.response.toolCalls)
+              JSON.stringify(calls) !==
+              JSON.stringify(
+                event.response.toolCalls.map((call) => ({
+                  ...call,
+                  arguments: redactValue(call.arguments, workspace.restore),
+                })),
+              )
             )
               throw new Error("Provider tool response mismatch.");
             const inputTokens =

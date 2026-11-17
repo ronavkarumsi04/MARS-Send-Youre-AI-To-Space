@@ -1,6 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelConfig, Task } from "@mars/contracts";
@@ -14,6 +21,7 @@ import {
   createModelBridge,
   selectExecutionModel,
   toChatRequest,
+  WORKSPACE_PLACEHOLDER,
 } from "./model-bridge";
 import {
   boundPatchSummary,
@@ -2532,3 +2540,168 @@ test("a failed run reports a distinct failure_code", async () => {
     await f.cleanup();
   }
 }, 30000);
+
+test("bridge sends later developer reminders as user turns and hides workspace roots", () => {
+  const root = "/host/private/work/abc/workspace";
+  const request = toChatRequest(
+    {
+      systemPrompt: [`Workspace: ${root}`],
+      messages: [
+        { role: "developer", content: "Lead control", timestamp: 0 },
+        { role: "user", content: `Edit ${root}/a.txt`, timestamp: 1 },
+        {
+          role: "developer",
+          content: `<system-reminder>current working directory: '${root}'</system-reminder>`,
+          timestamp: 2,
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call",
+              name: "mars_read",
+              arguments: { path: `${root}/a.txt`, nested: [{ cwd: root }] },
+            },
+          ],
+          api: "fixture",
+          provider: "fixture",
+          model: "stub",
+          timestamp: 3,
+          stopReason: "toolUse",
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0,
+            },
+          },
+        },
+      ],
+    },
+    { workspaceRoots: [root] },
+  );
+  expect(request.messages.map((message) => message.role)).toEqual([
+    "system",
+    "system",
+    "user",
+    "user",
+    "assistant",
+  ]);
+  expect(JSON.stringify(request)).not.toContain(root);
+  expect(request.messages[4]).toMatchObject({
+    tool_calls: [
+      {
+        arguments: {
+          path: `${WORKSPACE_PLACEHOLDER}/a.txt`,
+          nested: [{ cwd: WORKSPACE_PLACEHOLDER }],
+        },
+      },
+    ],
+  });
+  expect(request.messages[0]?.content).toBe(
+    `Workspace: ${WORKSPACE_PLACEHOLDER}`,
+  );
+  expect(request.messages[2]?.content).toBe(
+    `Edit ${WORKSPACE_PLACEHOLDER}/a.txt`,
+  );
+  expect(request.messages[3]?.content).toContain(
+    `current working directory: '${WORKSPACE_PLACEHOLDER}'`,
+  );
+});
+
+for (const [label, contextWindow, config, check] of [
+  ["defaults to 4096", 200_000, {}, (n: number) => n === 4096],
+  [
+    "honours maxOutputTokens",
+    200_000,
+    { maxOutputTokens: 8192 },
+    (n: number) => n === 8192,
+  ],
+  [
+    "caps maxOutputTokens by the context window",
+    32_000,
+    { maxOutputTokens: 100_000 },
+    (n: number) => n > 4096 && n < 32_000,
+  ],
+] as const)
+  test(`runtime output cap ${label} and never shows the host workspace path`, async () => {
+    const f = await fixture(contextWindow, config);
+    const requests: Record<string, unknown>[] = [];
+    try {
+      const session = await f.open({
+        modelId: "fixture/free",
+        task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
+        fetch: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return sse({ content: "Done." });
+        },
+      });
+      await session.run(f.task.request);
+      expect(requests.length).toBeGreaterThan(0);
+      expect(check(Number(requests[0]?.max_tokens))).toBe(true);
+      const wire = JSON.stringify(requests);
+      expect(wire).not.toContain(f.root);
+      expect(wire).not.toContain(await realpath(f.root));
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+test("a file that names the workspace root can be read and exactly edited through the placeholder", async () => {
+  const f = await fixture(200_000);
+  const requests: Record<string, unknown>[] = [];
+  try {
+    const root = await realpath(f.cwd);
+    await writeFile(join(f.cwd, "conf.py"), `base = "${root}/data"\n`);
+    const call = (name: string, args: Record<string, unknown>) =>
+      sse(
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: `call_${requests.length}`,
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        },
+        "tool_calls",
+      );
+    const session = await f.open({
+      modelId: "fixture/free",
+      editFormat: "replace",
+      task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        if (requests.length === 1)
+          return call("mars_read", { path: "conf.py" });
+        if (requests.length === 2)
+          return call("mars_replace", {
+            path: "conf.py",
+            old: `base = "${WORKSPACE_PLACEHOLDER}/data"`,
+            new: `base = "${WORKSPACE_PLACEHOLDER}/other"`,
+          });
+        return sse({ content: "Done." });
+      },
+    });
+    await session.run(f.task.request);
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[1])).toContain(
+      `base = \\"${WORKSPACE_PLACEHOLDER}/data\\"`,
+    );
+    expect(JSON.stringify(requests)).not.toContain(root);
+    expect(await readFile(join(f.cwd, "conf.py"), "utf8")).toBe(
+      `base = "${root}/other"\n`,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
