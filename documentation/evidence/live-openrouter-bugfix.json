@@ -1,0 +1,105 @@
+{
+  "label": "live-openrouter-verified-bugfix",
+  "recorded_at": "2026-11-20T01:35:17.122Z",
+  "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "resolved_models": [
+    "nvidia/nemotron-3-ultra-550b-a55b:free"
+  ],
+  "provider": "openrouter (free tier, $0.00)",
+  "docker_image": "oven/bun@sha256:5148f6742ac31fac28e6eab391ab1f11f6dfc0c8512c7a3679b374ec470f5982",
+  "network_policy": "docker --network=none",
+  "task_id": "388c5e68-e619-4788-ac46-8b829702cf5e",
+  "task_status": "completed",
+  "model_requests": 9,
+  "http_statuses": [
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "duration_ms": 41352,
+  "source_untouched": true,
+  "source_csv_sha256": "ecd98f359a5cd54c5ea4e2d2abd132429cfe9c08b6999fdf4eb04a4dc45cfc30",
+  "baseline_docker_exit_code": 1,
+  "baseline_docker_output": "bun test v1.1.38 (bf2f153f)\n\ntests/csv.test.ts:\n(pass) parseCsv (RFC-4180) > parses basic rows and CRLF line endings [1.00ms]\n(pass) parseCsv (RFC-4180) > preserves commas inside quoted fields\n15 |       [\"Patel, Tanay\", \"Newark, NJ\"],\n16 |     ]);\n17 |   });\n18 | \n19 |   test(\"unescapes doubled quotes inside quoted fields\", () => {\n20 |     expect(parseCsv('id,quote\\n1,\"He said \"\"hello\"\" loudly\"\\n')).toEqual([\n                                                                      ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"id\",\n      \"quote\"\n    ],\n    [\n      \"1\",\n+     \"He said hello loudly\"\n-     \"He said \\\"hello\\\" loudly\"\n    ]\n  ]\n\n- Expected  - 1\n+ Received  + 1\n\n      at /workspace/tests/csv.test.ts:20:66\n(fail) parseCsv (RFC-4180) > unescapes doubled quotes inside quoted fields\n22 |       [\"1\", 'He said \"hello\" loudly'],\n23 |     ]);\n24 |   });\n25 | \n26 |   test(\"keeps embedded newlines inside quoted fields on the same row\", () => {\n27 |     expect(parseCsv('id,note\\n1,\"line one\\nline two\"\\n2,\"ok\"\\n')).toEqual([\n                                                                       ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"id\",\n      \"note\"\n    ],\n    [\n      \"1\",\n+     \"line one\"\n+   ],\n+   [\n+     \"line two\"\n-     \"line one\\nline two\"\n    ],\n    [\n      \"2\",\n      \"ok\"\n    ]\n  ]\n\n- Expected  - 1\n+ Received  + 4\n\n      at /workspace/tests/csv.test.ts:27:67\n(fail) parseCsv (RFC-4180) > keeps embedded newlines inside quoted fields on the same row\n30 |       [\"2\", \"ok\"],\n31 |     ]);\n32 |   });\n33 | \n34 |   test(\"preserves trailing and consecutive empty fields\", () => {\n35 |     expect(parseCsv(\"a,b,c\\n1,,\\n,2,\\n\")).toEqual([\n                                               ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"a\",\n      \"b\",\n      \"c\"\n    ],\n    [\n      \"1\",\n-     \"\",\n      \"\"\n    ],\n    [\n      \"\",\n+     \"2\"\n-     \"2\",\n-     \"\"\n    ]\n  ]\n\n- Expected  - 3\n+ Received  + 1\n\n      at /workspace/tests/csv.test.ts:35:43\n(fail) parseCsv (RFC-4180) > preserves trailing and consecutive empty fields\n(pass) parseCsv (RFC-4180) > handles empty input\n\n 3 pass\n 3 fail\n 6 expect() calls\nRan 6 tests across 1 files. [14.00ms]",
+  "verification_state": "verified",
+  "patch_sha256": "0c8e1ff0012e91345a90ded0751bb3af594d136cc2b4afa41394cd5f767c78dd",
+  "candidate": {
+    "workspace_id": "ws_6fa4ab57d8f943cba6d8e967c8847066",
+    "provider": "mars-local-workspace",
+    "revision": "6.2f1e3a52157a1210"
+  },
+  "verification_record": {
+    "schema_version": 1,
+    "operation": "verification.verdict",
+    "run_id": "01a1f697-578a-73cf-937f-d1d84c9b0c77",
+    "task_id": "388c5e68-e619-4788-ac46-8b829702cf5e",
+    "task_revision": 1,
+    "candidate": {
+      "workspace_id": "ws_6fa4ab57d8f943cba6d8e967c8847066",
+      "provider": "mars-local-workspace",
+      "revision": "6.2f1e3a52157a1210"
+    },
+    "verdict": "passed",
+    "verified": true,
+    "checks": [
+      {
+        "kind": "host_test",
+        "path": "csv-suite",
+        "check_id": "csv-suite",
+        "exit_code": 0,
+        "output_sha256": "5e18c3f6821dac8d3574d547fe01e65ce663db0023a3ef63bf49e932f9db1580",
+        "expected_sha256": "31279bffa0f53afa19817d5af3b596aa393f1658a0aeca974b9f2cf0ccbbcb32",
+        "observed_sha256": "5e18c3f6821dac8d3574d547fe01e65ce663db0023a3ef63bf49e932f9db1580",
+        "status": "passed",
+        "reason": null,
+        "duration_ms": 187
+      }
+    ],
+    "reasons": [],
+    "diagnostics": [],
+    "duration_ms": 193,
+    "recorded_at": "2026-11-20T01:35:16.912Z",
+    "patch_sha256": "0c8e1ff0012e91345a90ded0751bb3af594d136cc2b4afa41394cd5f767c78dd",
+    "check_manifest_sha256": "e72aec915dd89537e6769867c864208a2f01ae0085fa0cb209707a17e685fa7c"
+  },
+  "verify_records": [],
+  "diff": {
+    "files": [
+      {
+        "path": "src/csv.ts",
+        "status": "modified",
+        "patch": "diff --git a/src/csv.ts b/src/csv.ts\n--- a/src/csv.ts\n+++ b/src/csv.ts\n@@ -3,31 +3,68 @@\n  */\n export function parseCsv(input: string): string[][] {\n   if (input.length === 0) return [];\n-  const normalized = input.replace(/\\r\\n/g, \"\\n\");\n-  const lines = normalized.split(\"\\n\");\n-  if (lines.length > 0 && lines[lines.length - 1] === \"\") {\n-    lines.pop();\n-  }\n+\n   const rows: string[][] = [];\n-  for (const line of lines) {\n-    const fields: string[] = [];\n-    let current = \"\";\n-    let inQuotes = false;\n-    for (let i = 0; i < line.length; i++) {\n-      const ch = line[i];\n-      if (ch === '\"') {\n-        inQuotes = !inQuotes;\n-      } else if (ch === \",\" && !inQuotes) {\n-        fields.push(current);\n-        current = \"\";\n-      } else {\n-        current += ch;\n+  const fields: string[] = [];\n+  let current = \"\";\n+  let inQuotes = false;\n+  let i = 0;\n+  let justEndedRow = false;\n+\n+  while (i < input.length) {\n+    const ch = input[i];\n+\n+    if (ch === '\"') {\n+      if (inQuotes && i + 1 < input.length && input[i + 1] === '\"') {\n+        // Escaped quote: \"\" -> \"\n+        current += '\"';\n+        i += 2;\n+        continue;\n       }\n+      // Toggle quote state\n+      inQuotes = !inQuotes;\n+      i++;\n+      continue;\n     }\n-    if (current.length > 0) {\n+\n+    if (ch === \",\" && !inQuotes) {\n+      // Field separator\n       fields.push(current);\n+      current = \"\";\n+      i++;\n+      justEndedRow = false;\n+      continue;\n     }\n-    rows.push(fields);\n+\n+    if ((ch === \"\\n\" || ch === \"\\r\") && !inQuotes) {\n+      // Row separator (handle both \\n and \\r\\n)\n+      fields.push(current);\n+      rows.push([...fields]); // Copy fields array\n+      fields.length = 0; // Clear array for reuse\n+      current = \"\";\n+      justEndedRow = true;\n+\n+      // Skip \\r in \\r\\n\n+      if (ch === \"\\r\" && i + 1 < input.length && input[i + 1] === \"\\n\") {\n+        i += 2;\n+      } else {\n+        i++;\n+      }\n+      continue;\n+    }\n+\n+    // Regular character\n+    current += ch;\n+    i++;\n+    justEndedRow = false;\n   }\n+\n+  // Handle last field/row if input doesn't end with newline\n+  // Don't add extra row if we just ended a row (trailing newline)\n+  if (!justEndedRow && (current.length > 0 || fields.length > 0)) {\n+    fields.push(current);\n+    rows.push([...fields]);\n+  }\n+\n   return rows;\n-}\n+}\n\\ No newline at end of file\n"
+      }
+    ],
+    "digest": "81704c691d7d0a46cd8cb9f595d9eeadf9d27717be0627dee7bce5b9d74be795"
+  },
+  "export": {
+    "candidate": {
+      "workspace_id": "ws_6fa4ab57d8f943cba6d8e967c8847066",
+      "provider": "mars-local-workspace",
+      "revision": "6.2f1e3a52157a1210"
+    },
+    "patch_sha256": "0c8e1ff0012e91345a90ded0751bb3af594d136cc2b4afa41394cd5f767c78dd",
+    "artifact": {
+      "artifact_id": "art_12bf6e0053a701c5dcd82681d14016b3eba5d0baaea43d230d09ad15960e513d",
+      "sha256": "0c8e1ff0012e91345a90ded0751bb3af594d136cc2b4afa41394cd5f767c78dd",
+      "media_type": "text/x-diff",
+      "byte_length": 2362
+    },
+    "files": 1,
+    "verification": "verified",
+    "verified": true,
+    "verdict_run_id": "01a1f697-578a-73cf-937f-d1d84c9b0c77",
+    "round_trip": {
+      "status": "passed",
+      "reason": null
+    },
+    "unsupported": []
+  }
+}
