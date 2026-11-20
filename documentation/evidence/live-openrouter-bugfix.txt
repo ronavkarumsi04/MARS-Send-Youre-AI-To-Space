@@ -1,0 +1,226 @@
+MARS Live Verified Bug-Fix Evidence (2026-11-20)
+Model: nvidia/nemotron-3-ultra-550b-a55b:free via OpenRouter (openrouter (free tier, $0.00))
+Sandbox: Docker (oven/bun@sha256:5148f6742ac31fac28e6eab391ab1f11f6dfc0c8512c7a3679b374ec470f5982, docker --network=none, protected host test overlay)
+Task ID: 388c5e68-e619-4788-ac46-8b829702cf5e
+
+$ docker run --rm --network=none ... bun test tests/csv.test.ts  # baseline before agent
+exit_code=1
+bun test v1.1.38 (bf2f153f)
+
+tests/csv.test.ts:
+(pass) parseCsv (RFC-4180) > parses basic rows and CRLF line endings [1.00ms]
+(pass) parseCsv (RFC-4180) > preserves commas inside quoted fields
+15 |       ["Patel, Tanay", "Newark, NJ"],
+16 |     ]);
+17 |   });
+18 | 
+19 |   test("unescapes doubled quotes inside quoted fields", () => {
+20 |     expect(parseCsv('id,quote\n1,"He said ""hello"" loudly"\n')).toEqual([
+                                                                      ^
+error: expect(received).toEqual(expected)
+
+  [
+    [
+      "id",
+      "quote"
+    ],
+    [
+      "1",
++     "He said hello loudly"
+-     "He said \"hello\" loudly"
+    ]
+  ]
+
+- Expected  - 1
++ Received  + 1
+
+      at /workspace/tests/csv.test.ts:20:66
+(fail) parseCsv (RFC-4180) > unescapes doubled quotes inside quoted fields
+22 |       ["1", 'He said "hello" loudly'],
+23 |     ]);
+24 |   });
+25 | 
+26 |   test("keeps embedded newlines inside quoted fields on the same row", () => {
+27 |     expect(parseCsv('id,note\n1,"line one\nline two"\n2,"ok"\n')).toEqual([
+                                                                       ^
+error: expect(received).toEqual(expected)
+
+  [
+    [
+      "id",
+      "note"
+    ],
+    [
+      "1",
++     "line one"
++   ],
++   [
++     "line two"
+-     "line one\nline two"
+    ],
+    [
+      "2",
+      "ok"
+    ]
+  ]
+
+- Expected  - 1
++ Received  + 4
+
+      at /workspace/tests/csv.test.ts:27:67
+(fail) parseCsv (RFC-4180) > keeps embedded newlines inside quoted fields on the same row
+30 |       ["2", "ok"],
+31 |     ]);
+32 |   });
+33 | 
+34 |   test("preserves trailing and consecutive empty fields", () => {
+35 |     expect(parseCsv("a,b,c\n1,,\n,2,\n")).toEqual([
+                                               ^
+error: expect(received).toEqual(expected)
+
+  [
+    [
+      "a",
+      "b",
+      "c"
+    ],
+    [
+      "1",
+-     "",
+      ""
+    ],
+    [
+      "",
++     "2"
+-     "2",
+-     ""
+    ]
+  ]
+
+- Expected  - 3
++ Received  + 1
+
+      at /workspace/tests/csv.test.ts:35:43
+(fail) parseCsv (RFC-4180) > preserves trailing and consecutive empty fields
+(pass) parseCsv (RFC-4180) > handles empty input
+
+ 3 pass
+ 3 fail
+ 6 expect() calls
+Ran 6 tests across 1 files. [14.00ms]
+
+$ OPENROUTER_API_KEY=[redacted] bun scripts/live-verified-bugfix.ts --model nvidia/nemotron-3-ultra-550b-a55b:free
+task_status=completed
+model_requests=9 (http_statuses=[200, 200, 200, 200, 200, 200, 200, 200, 200])
+duration_ms=41352
+source_checkout_untouched=true
+
+Host Verification (independent Docker run against exact candidate revision)
+verification_state=verified
+verified=true
+workspace_revision=6.2f1e3a52157a1210
+patch_sha256=0c8e1ff0012e91345a90ded0751bb3af594d136cc2b4afa41394cd5f767c78dd
+check_manifest_sha256=e72aec915dd89537e6769867c864208a2f01ae0085fa0cb209707a17e685fa7c
+export_verified=true (round_trip=passed, artifact_id=art_12bf6e0053a701c5dcd82681d14016b3eba5d0baaea43d230d09ad15960e513d, bytes=2362)
+changed_files=src/csv.ts
+
+Exported Patch (exact verified bytes)
+diff --git a/src/csv.ts b/src/csv.ts
+--- a/src/csv.ts
++++ b/src/csv.ts
+@@ -3,31 +3,68 @@
+  */
+ export function parseCsv(input: string): string[][] {
+   if (input.length === 0) return [];
+-  const normalized = input.replace(/\r\n/g, "\n");
+-  const lines = normalized.split("\n");
+-  if (lines.length > 0 && lines[lines.length - 1] === "") {
+-    lines.pop();
+-  }
++
+   const rows: string[][] = [];
+-  for (const line of lines) {
+-    const fields: string[] = [];
+-    let current = "";
+-    let inQuotes = false;
+-    for (let i = 0; i < line.length; i++) {
+-      const ch = line[i];
+-      if (ch === '"') {
+-        inQuotes = !inQuotes;
+-      } else if (ch === "," && !inQuotes) {
+-        fields.push(current);
+-        current = "";
+-      } else {
+-        current += ch;
++  const fields: string[] = [];
++  let current = "";
++  let inQuotes = false;
++  let i = 0;
++  let justEndedRow = false;
++
++  while (i < input.length) {
++    const ch = input[i];
++
++    if (ch === '"') {
++      if (inQuotes && i + 1 < input.length && input[i + 1] === '"') {
++        // Escaped quote: "" -> "
++        current += '"';
++        i += 2;
++        continue;
+       }
++      // Toggle quote state
++      inQuotes = !inQuotes;
++      i++;
++      continue;
+     }
+-    if (current.length > 0) {
++
++    if (ch === "," && !inQuotes) {
++      // Field separator
+       fields.push(current);
++      current = "";
++      i++;
++      justEndedRow = false;
++      continue;
+     }
+-    rows.push(fields);
++
++    if ((ch === "\n" || ch === "\r") && !inQuotes) {
++      // Row separator (handle both \n and \r\n)
++      fields.push(current);
++      rows.push([...fields]); // Copy fields array
++      fields.length = 0; // Clear array for reuse
++      current = "";
++      justEndedRow = true;
++
++      // Skip \r in \r\n
++      if (ch === "\r" && i + 1 < input.length && input[i + 1] === "\n") {
++        i += 2;
++      } else {
++        i++;
++      }
++      continue;
++    }
++
++    // Regular character
++    current += ch;
++    i++;
++    justEndedRow = false;
+   }
++
++  // Handle last field/row if input doesn't end with newline
++  // Don't add extra row if we just ended a row (trailing newline)
++  if (!justEndedRow && (current.length > 0 || fields.length > 0)) {
++    fields.push(current);
++    rows.push([...fields]);
++  }
++
+   return rows;
+-}
++}
+\ No newline at end of file
+
+Honest Limits
+- Single self-contained TypeScript RFC-4180 CSV bug-fix fixture (6 unit tests, 3 distinct bugs) run on OpenRouter free tier ($0.00).
+- Proves end-to-end live-model editing, workspace isolation, no-network Docker host verification with protected test overlay, and exact patch export.
+- Does not prove general benchmark superiority over other agents; see mars bench edit-formats for matched multi-repo evaluation.
