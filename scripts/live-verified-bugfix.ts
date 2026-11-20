@@ -26,13 +26,19 @@ const DEFAULT_IMAGE =
 const { values } = parseArgs({
   args: process.argv.slice(2),
   options: {
-    model: { type: "string", default: "google/gemma-4-31b-it:free" },
+    model: {
+      type: "string",
+      default: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    },
     image: { type: "string", default: DEFAULT_IMAGE },
     "out-json": { type: "string" },
     "out-txt": { type: "string" },
   },
   strict: true,
 });
+
+const modelId = values.model ?? "nvidia/nemotron-3-ultra-550b-a55b:free";
+const dockerImage = values.image ?? DEFAULT_IMAGE;
 
 const BUGGY_CSV = `/**
  * Parse RFC-4180 CSV text into rows of string fields.
@@ -148,7 +154,7 @@ try {
 
   await writeFile(
     join(source, "package.json"),
-    JSON.stringify({ name: "csv-fixture", private: true }, null, 2) + "\n",
+    `${JSON.stringify({ name: "csv-fixture", private: true }, null, 2)}\n`,
   );
   await writeFile(join(source, "src", "csv.ts"), BUGGY_CSV);
   await writeFile(join(source, "tests", "csv.test.ts"), PROTECTED_TEST);
@@ -163,7 +169,9 @@ try {
             id: "csv-suite",
             label: "RFC-4180 CSV parser unit tests (protected)",
             argv: ["bun", "test", "tests/csv.test.ts"],
-            protected_files: [{ path: "tests/csv.test.ts", source: "csv.test.ts" }],
+            protected_files: [
+              { path: "tests/csv.test.ts", source: "csv.test.ts" },
+            ],
             timeout_ms: 60_000,
           },
         ],
@@ -185,7 +193,7 @@ try {
       `${source}:/workspace:ro`,
       "-w",
       "/workspace",
-      values.image!,
+      dockerImage,
       "bun",
       "test",
       "tests/csv.test.ts",
@@ -254,7 +262,7 @@ try {
     scope,
     registry,
     port: 0,
-    image: values.image!,
+    image: dockerImage,
     checksFile: join(checksDir, "checks.json"),
     runtimeFactory: (runtime) =>
       openRuntimeSession({
@@ -317,7 +325,7 @@ try {
     const created = await client.create(task);
     await client.start(created.task_id, {
       expectedRevision: 0,
-      modelId: values.model!,
+      modelId,
       approvals: { read: true, write: true, execute: true },
       requiredChecks: [{ kind: "host_test", check_id: "csv-suite" }],
     });
@@ -344,10 +352,10 @@ try {
     const receipt = {
       label: "live-openrouter-verified-bugfix",
       recorded_at: new Date().toISOString(),
-      model_id: values.model!,
+      model_id: modelId,
       resolved_models: resolvedModels,
       provider: "openrouter (free tier, $0.00)",
-      docker_image: values.image!,
+      docker_image: dockerImage,
       network_policy: "docker --network=none",
       task_id: created.task_id,
       task_status: settled.status,
@@ -383,7 +391,8 @@ try {
         ? [
             `task_detail=${JSON.stringify({
               summary: (settled as Record<string, unknown>).summary,
-              failure_reason: (settled as Record<string, unknown>).failure_reason,
+              failure_reason: (settled as Record<string, unknown>)
+                .failure_reason,
               stop_reason: (settled as Record<string, unknown>).stop_reason,
             })}`,
           ]
@@ -401,8 +410,11 @@ try {
       `changed_files=${diff.files.map((f) => f.path).join(", ") || "(none)"}`,
       "",
       "Exported Patch (exact verified bytes)",
-      diff.files.map((f) => f.patch).filter(Boolean).join("\n").trim() ||
-        "(no patch exported)",
+      diff.files
+        .map((f) => f.patch)
+        .filter(Boolean)
+        .join("\n")
+        .trim() || "(no patch exported)",
       "",
       "Honest Limits",
       "- Single self-contained TypeScript RFC-4180 CSV bug-fix fixture (6 unit tests, 3 distinct bugs) run on OpenRouter free tier ($0.00).",
@@ -412,7 +424,10 @@ try {
     ].join("\n");
 
     if (values["out-json"]) {
-      await writeFile(values["out-json"], JSON.stringify(receipt, null, 2) + "\n");
+      await writeFile(
+        values["out-json"],
+        `${JSON.stringify(receipt, null, 2)}\n`,
+      );
     }
     if (values["out-txt"]) {
       await writeFile(values["out-txt"], textReport);
