@@ -205,13 +205,18 @@ try {
     new TextDecoder().decode(baselineProc.stdout) +
     new TextDecoder().decode(baselineProc.stderr);
 
+  if (modelId !== "openrouter/free" && !modelId.endsWith(":free")) {
+    throw new Error(
+      `Refusing non-free OpenRouter model "${modelId}" on $0.00 free-tier harness; pass "openrouter/free" or a ":free" model ID.`,
+    );
+  }
+
   if (
-    values.model &&
     ![
       "openrouter/free",
       "google/gemma-4-31b-it:free",
       "nvidia/nemotron-3.5-super-vl:free",
-    ].includes(values.model)
+    ].includes(modelId)
   ) {
     await mkdir(join(marsHome, ".mars"), { recursive: true });
     await writeFile(
@@ -228,14 +233,14 @@ try {
         ],
         models: [
           {
-            id: values.model,
+            id: modelId,
             providerId: "openrouter",
-            model: values.model,
+            model: modelId,
             capabilities: { tools: true, vision: false, contextWindow: 128000 },
             pricing: { free: true },
           },
         ],
-        routes: { default: [values.model] },
+        routes: { default: [modelId] },
       }),
     );
   }
@@ -243,7 +248,7 @@ try {
   const registry = await loadModelRegistry({
     cwd: source,
     home: marsHome,
-    env: process.env,
+    env: { ...process.env, MARS_HOME: join(marsHome, ".mars") },
   });
 
   const scope = {
@@ -413,8 +418,7 @@ try {
       diff.files
         .map((f) => f.patch)
         .filter(Boolean)
-        .join("\n")
-        .trim() || "(no patch exported)",
+        .join("") || "(no patch exported)",
       "",
       "Honest Limits",
       "- Single self-contained TypeScript RFC-4180 CSV bug-fix fixture (6 unit tests, 3 distinct bugs) run on OpenRouter free tier ($0.00).",
@@ -434,7 +438,8 @@ try {
     }
 
     console.log(textReport);
-    process.exitCode = verification.state === "verified" ? 0 : 1;
+    process.exitCode =
+      verification.state === "verified" && exported?.verified === true ? 0 : 1;
   } finally {
     await service.close();
   }
