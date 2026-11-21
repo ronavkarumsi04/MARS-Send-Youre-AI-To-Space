@@ -284,6 +284,7 @@ export interface TeamServeOptions {
   githubAllowedIds: number[] | null;
   repos: { repo_id: string; dir: string }[];
   remoteRepos: { repo_id: string; url: string }[];
+  remoteAuthHost: string | null;
   repoAccess: Map<string, string[]>;
   enable: boolean;
   agentModel: string | null;
@@ -308,6 +309,7 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
       "github-allowed-ids": { type: "string" },
       repo: { type: "string", multiple: true },
       "remote-repo": { type: "string", multiple: true },
+      "remote-auth-host": { type: "string" },
       "repo-access": { type: "string", multiple: true },
       "agent-model": { type: "string" },
       enable: { type: "boolean" },
@@ -410,6 +412,7 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
     githubAllowedIds,
     repos,
     remoteRepos,
+    remoteAuthHost: values["remote-auth-host"]?.trim().toLowerCase() || null,
     repoAccess,
     enable: values.enable === true,
     agentModel,
@@ -449,8 +452,42 @@ async function runServe(
       allowLocalFileUrl: process.env.MARS_TEAM_ALLOW_FILE_REMOTE === "1",
     });
     registry.ensureCommit = mirror.ensureCommit;
-    const authHeader = process.env.MARS_TEAM_GIT_AUTH_HEADER;
+    const globalAuthHeader = process.env.MARS_TEAM_GIT_AUTH_HEADER;
+    const httpsHosts = new Set<string>();
     for (const remote of options.remoteRepos) {
+      try {
+        const parsed = new URL(remote.url);
+        if (parsed.protocol === "https:")
+          httpsHosts.add(parsed.hostname.toLowerCase());
+      } catch {
+        // invalid URLs are rejected by mirror.registerRemote
+      }
+    }
+    if (globalAuthHeader && httpsHosts.size > 1 && !options.remoteAuthHost) {
+      throw new TeamUsageError(
+        "MARS_TEAM_GIT_AUTH_HEADER cannot be shared across multiple HTTPS remote hosts; set --remote-auth-host or per-repo MARS_TEAM_GIT_AUTH_HEADER_<REPO_ID>.",
+      );
+    }
+    for (const remote of options.remoteRepos) {
+      const repoEnvKey = `MARS_TEAM_GIT_AUTH_HEADER_${remote.repo_id
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "_")}`;
+      const perRepoHeader = process.env[repoEnvKey];
+      let remoteHost: string | null = null;
+      try {
+        const parsed = new URL(remote.url);
+        if (parsed.protocol === "https:")
+          remoteHost = parsed.hostname.toLowerCase();
+      } catch {
+        // invalid URLs are rejected by mirror.registerRemote
+      }
+      const scopedGlobalHeader =
+        globalAuthHeader &&
+        remoteHost !== null &&
+        (!options.remoteAuthHost || options.remoteAuthHost === remoteHost)
+          ? globalAuthHeader
+          : undefined;
+      const authHeader = perRepoHeader ?? scopedGlobalHeader;
       await mirror.registerRemote({
         repo_id: remote.repo_id,
         url: remote.url,

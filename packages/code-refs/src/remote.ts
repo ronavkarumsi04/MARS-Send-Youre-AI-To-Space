@@ -101,6 +101,7 @@ function validateRemoteUrl(
 
 function remoteGitConfigArgs(
   scheme: "https" | "file",
+  url: string,
   authHeader: string | undefined,
 ): string[] {
   const configs = [
@@ -117,7 +118,8 @@ function remoteGitConfigArgs(
   if (authHeader && scheme === "https") {
     if (/[\r\n\0]/.test(authHeader))
       throw new RepoRegistrationFailed("invalid_registration");
-    configs.push(`http.extraHeader=Authorization: ${authHeader}`);
+    const origin = new URL(url).origin;
+    configs.push(`http.${origin}/.extraHeader=Authorization: ${authHeader}`);
   }
   return [
     "--no-replace-objects",
@@ -180,7 +182,11 @@ export function createRemoteRepoMirror(
     entry: RemoteEntry,
     commitSha: string,
   ): Promise<boolean> => {
-    const baseFlags = remoteGitConfigArgs(entry.scheme, entry.authHeader);
+    const baseFlags = remoteGitConfigArgs(
+      entry.scheme,
+      entry.url,
+      entry.authHeader,
+    );
     // Try direct SHA fetch first (supported by GitHub and modern git servers).
     const direct = await runRemoteGit({
       args: [
@@ -232,7 +238,11 @@ export function createRemoteRepoMirror(
         .digest("hex")
         .slice(0, 16);
       const mirrorDir = join(canonicalCacheDir, `${repo_id}-${urlHash}.git`);
-      const baseFlags = remoteGitConfigArgs(validated.scheme, auth_header);
+      const baseFlags = remoteGitConfigArgs(
+        validated.scheme,
+        validated.url,
+        auth_header,
+      );
       if (!existsSync(mirrorDir)) {
         const cloned = await runRemoteGit({
           args: [
