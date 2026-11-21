@@ -218,6 +218,8 @@ export interface TeamStore {
     team_id: string;
     user_id: string;
   }): "active" | "removed" | null;
+  /** Returns the stored role for a team member, or null if never provisioned. */
+  teamMemberRole(input: { team_id: string; user_id: string }): TeamRole | null;
   describe(actor: TeamActor): TeamDescription;
   createDm(
     actor: TeamActor,

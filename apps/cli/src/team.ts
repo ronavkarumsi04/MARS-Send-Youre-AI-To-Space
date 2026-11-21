@@ -150,6 +150,7 @@ async function ensureDevTokens(
   state: string,
   team: string,
   userIds: string[],
+  storedRole?: (userId: string) => "admin" | "member" | null,
 ): Promise<DevTokensFile> {
   const existing = await readDevTokens(state);
   if (existing && existing.team_id !== team)
@@ -160,13 +161,21 @@ async function ensureDevTokens(
   const revoked = existing?.revoked ?? [];
   const users = userIds
     .filter((user_id) => !revoked.includes(user_id))
-    .map((user_id, index) => ({
-      user_id,
-      token: known.get(user_id)?.token ?? newToken(),
-      role:
-        known.get(user_id)?.role ??
-        (!existing && index === 0 ? ("admin" as const) : ("member" as const)),
-    }));
+    .map((user_id, index) => {
+      const persisted = storedRole?.(user_id) ?? null;
+      const fileRole = known.get(user_id)?.role ?? null;
+      const role: "admin" | "member" =
+        persisted === "admin" ||
+        fileRole === "admin" ||
+        (!existing && index === 0)
+          ? "admin"
+          : "member";
+      return {
+        user_id,
+        token: known.get(user_id)?.token ?? newToken(),
+        role,
+      };
+    });
   const next: DevTokensFile = {
     schema_version: 1,
     team_id: team,
@@ -566,6 +575,8 @@ async function runServe(
       options.state,
       options.team,
       options.devUsers,
+      (userId) =>
+        opened.teamMemberRole({ team_id: options.team, user_id: userId }),
     );
     devTokensFile = join(options.state, DEV_TOKENS_FILE);
     activeDevUsers = tokens.users.length;

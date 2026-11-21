@@ -17,6 +17,7 @@ export function teamOperations(
   | "removeTeamMember"
   | "activeTeamIds"
   | "teamMemberState"
+  | "teamMemberRole"
   | "describe"
 > {
   const {
@@ -143,6 +144,18 @@ export function teamOperations(
         const row = memberRow(parsed.data.team_id, parsed.data.user_id);
         if (!row) return null;
         return row.state === "active" ? "active" : "removed";
+      });
+    },
+    teamMemberRole(input) {
+      const parsed = z
+        .object({ team_id: idSchema, user_id: idSchema })
+        .strict()
+        .safeParse(input);
+      if (!parsed.success) return null;
+      return read(() => {
+        const row = memberRow(parsed.data.team_id, parsed.data.user_id);
+        if (!row) return null;
+        return row.role === "admin" ? "admin" : "member";
       });
     },
     describe(actor) {
