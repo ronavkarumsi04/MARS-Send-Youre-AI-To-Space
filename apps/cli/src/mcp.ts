@@ -47,6 +47,8 @@ function parsePermissionFlag(raw: string): Permission {
   return parsed.data;
 }
 
+const CLI_CREDENTIAL_REF_RE = /^[a-z0-9][a-z0-9_]*$/;
+
 function parseCredentialFlag(raw: string): CredentialBinding {
   const at = raw.indexOf("@");
   if (at <= 0 || at === raw.length - 1) {
@@ -55,6 +57,11 @@ function parseCredentialFlag(raw: string): CredentialBinding {
     );
   }
   const ref_id = raw.slice(0, at);
+  if (!CLI_CREDENTIAL_REF_RE.test(ref_id)) {
+    throw new CliUsageError(
+      `Invalid credential ref "${ref_id}". CLI credential refs must use lowercase letters, digits, and underscores only (matching /^[a-z0-9][a-z0-9_]*$/) so they map 1-to-1 to MARS_MCP_CREDENTIAL_<UPPER>.`,
+    );
+  }
   const allowed_origin = normalizeOrigin(raw.slice(at + 1));
   return { ref_id, allowed_origin };
 }
@@ -73,10 +80,10 @@ function parsePositiveInt(
 
 function resolveCliCredentialFromEnv(refId: string): string | undefined {
   // Strict injective lookup: only lowercase alphanumeric + underscore refs
-  // (matching SlugSchema without punctuation) map 1-to-1 to
-  // MARS_MCP_CREDENTIAL_<UPPER>, preventing case or punctuation aliases
-  // (e.g. api-token vs api_token vs api.token) from sharing a secret across origins.
-  if (!/^[a-z0-9][a-z0-9_]*$/.test(refId)) {
+  // map 1-to-1 to MARS_MCP_CREDENTIAL_<UPPER>, preventing case or punctuation
+  // aliases (e.g. api-token vs api_token vs api.token) from sharing a secret
+  // across origins.
+  if (!CLI_CREDENTIAL_REF_RE.test(refId)) {
     return undefined;
   }
   const prefixed = process.env[`MARS_MCP_CREDENTIAL_${refId.toUpperCase()}`];
@@ -497,6 +504,15 @@ async function handleTest(
   const requestedPermissions = values.permission
     ? values.permission.map(parsePermissionFlag)
     : undefined;
+
+  if (
+    values["credential-ref"] !== undefined &&
+    !CLI_CREDENTIAL_REF_RE.test(values["credential-ref"])
+  ) {
+    throw new CliUsageError(
+      `Invalid --credential-ref "${values["credential-ref"]}". CLI credential refs must use lowercase letters, digits, and underscores only (matching /^[a-z0-9][a-z0-9_]*$/) so they map 1-to-1 to MARS_MCP_CREDENTIAL_<UPPER>.`,
+    );
+  }
 
   const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);

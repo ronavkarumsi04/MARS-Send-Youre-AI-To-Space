@@ -390,27 +390,39 @@ describe("mars mcp CLI flow", () => {
       expect(result.content[0]?.text).toBe("authed");
       expect(authHeaders).toEqual(["Bearer cli-secret-xyz"]);
 
-      // A separately approved reference differing only by case/punctuation must
-      // NOT alias MARS_MCP_CREDENTIAL_API_TOKEN across origins.
-      const aliasReviewJson = await execMcpCli([
-        "review",
-        "cred-alias",
-        "--url",
-        url,
-        "--credential",
-        `api-token@${origin}`,
-        ...common,
-        "--json",
-      ]);
-      const { review: aliasReview } = JSON.parse(aliasReviewJson) as {
-        review: { review_id: string };
-      };
-      await execMcpCli(["approve", aliasReview.review_id, ...common]);
+      // Credential refs with punctuation (hyphens/periods) must be rejected at
+      // review time so they cannot be approved without a 1-to-1 env mapping or
+      // alias MARS_MCP_CREDENTIAL_API_TOKEN across origins.
+      await expect(
+        execMcpCli([
+          "review",
+          "cred-alias",
+          "--url",
+          url,
+          "--credential",
+          `api-token@${origin}`,
+          ...common,
+          "--json",
+        ]),
+      ).rejects.toThrow(/Invalid credential ref/i);
+
+      await expect(
+        execMcpCli([
+          "review",
+          "cred-dot",
+          "--url",
+          url,
+          "--credential",
+          `api.token@${origin}`,
+          ...common,
+          "--json",
+        ]),
+      ).rejects.toThrow(/Invalid credential ref/i);
 
       await expect(
         execMcpCli([
           "test",
-          "cred-alias",
+          "cred-demo",
           "--tool",
           "whoami",
           "--credential-ref",
@@ -419,7 +431,7 @@ describe("mars mcp CLI flow", () => {
           origin,
           ...common,
         ]),
-      ).rejects.toThrow(/credential_denied/i);
+      ).rejects.toThrow(/Invalid --credential-ref/i);
     } finally {
       delete process.env.MARS_MCP_CREDENTIAL_API_TOKEN;
     }
