@@ -16,6 +16,7 @@
  * - Optional auth headers are passed only via `-c http.extraHeader=...` per
  *   command and are never written into `.git/config` or error messages.
  */
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -226,7 +227,11 @@ export function createRemoteRepoMirror(
       if (remotes.has(repo_id) || options.registry.has(repo_id))
         throw new RepoRegistrationFailed("repo_id_taken");
 
-      const mirrorDir = join(canonicalCacheDir, `${repo_id}.git`);
+      const urlHash = createHash("sha256")
+        .update(validated.url)
+        .digest("hex")
+        .slice(0, 16);
+      const mirrorDir = join(canonicalCacheDir, `${repo_id}-${urlHash}.git`);
       const baseFlags = remoteGitConfigArgs(validated.scheme, auth_header);
       if (!existsSync(mirrorDir)) {
         const cloned = await runRemoteGit({

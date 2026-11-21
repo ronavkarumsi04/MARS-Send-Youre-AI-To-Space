@@ -165,4 +165,69 @@ describe("remote Git repository acquisition and pinned-commit resolution", () =>
       }),
     ).rejects.toThrow(/invalid_registration/);
   });
+
+  test("isolates cached mirrors when a repo_id is re-registered with a different URL", async () => {
+    const root = tempDir();
+    const cacheDir = join(root, "cache");
+    const repoA = join(root, "a.git");
+    const workA = join(root, "work-a");
+    const repoB = join(root, "b.git");
+    const workB = join(root, "work-b");
+
+    runGit(root, ["init", "--bare", repoA]);
+    runGit(root, ["clone", repoA, workA]);
+    writeFileSync(join(workA, "secret.ts"), "export const secret = 1;\n");
+    runGit(workA, ["add", "."]);
+    runGit(workA, ["commit", "-m", "a"]);
+    const commitA = runGit(workA, ["rev-parse", "HEAD"]);
+    runGit(workA, ["push", "origin", "HEAD"]);
+
+    runGit(root, ["init", "--bare", repoB]);
+    runGit(root, ["clone", repoB, workB]);
+    writeFileSync(join(workB, "public.ts"), "export const pub = 2;\n");
+    runGit(workB, ["add", "."]);
+    runGit(workB, ["commit", "-m", "b"]);
+    const commitB = runGit(workB, ["rev-parse", "HEAD"]);
+    runGit(workB, ["push", "origin", "HEAD"]);
+
+    // First run registers repo_shared -> repoA
+    const reg1 = createRepoRegistry();
+    const mirror1 = createRemoteRepoMirror({
+      cacheDir,
+      registry: reg1,
+      allowLocalFileUrl: true,
+    });
+    await mirror1.registerRemote({
+      repo_id: "repo_shared",
+      label: "Shared",
+      url: `file://${repoA}`,
+    });
+
+    // Restart registers repo_shared -> repoB; commitA from repoA must not resolve
+    const reg2 = createRepoRegistry();
+    const mirror2 = createRemoteRepoMirror({
+      cacheDir,
+      registry: reg2,
+      allowLocalFileUrl: true,
+    });
+    await mirror2.registerRemote({
+      repo_id: "repo_shared",
+      label: "Shared",
+      url: `file://${repoB}`,
+    });
+
+    const leaked = await resolveReference(reg2, {
+      repo_id: "repo_shared",
+      commit_sha: commitA,
+      path: "secret.ts",
+    });
+    expect(leaked.state).not.toBe("ok");
+
+    const ok = await resolveReference(reg2, {
+      repo_id: "repo_shared",
+      commit_sha: commitB,
+      path: "public.ts",
+    });
+    expect(ok.state).toBe("ok");
+  });
 });
