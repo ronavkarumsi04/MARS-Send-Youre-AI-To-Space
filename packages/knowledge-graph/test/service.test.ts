@@ -15,12 +15,32 @@ import {
 
 const FAKE = join(import.meta.dir, "fake-graphify.ts");
 
-test.each(["absolute", "relative", "equals"])(
-  "Graphify respects a custom --out directory (%s)",
-  async (kind) => {
+test.each([
+  ["absolute", ["--out", "$OUT"]],
+  ["relative", ["--out", "../custom-output"]],
+  ["equals", ["--out=$OUT"]],
+  ["output alias", ["--output", "$OUT"]],
+  ["output equals alias", ["--output=$OUT"]],
+  ["last split alias wins", ["--out", "$IGNORED", "--output", "$OUT"]],
+  ["last equals wins", ["--output=$IGNORED", "--out=$OUT"]],
+  ["last repeated flag wins", ["--out", "$IGNORED", "--out", "$OUT"]],
+  ["last equals alias wins", ["--out=$IGNORED", "--output=$OUT"]],
+  [
+    "no short flags or abbreviations",
+    ["--out", "$OUT", "-o", "$IGNORED", "--ou=$IGNORED"],
+  ],
+  [
+    "consumed values are not flags",
+    ["--out", "$OUT", "--exclude", "--output=$IGNORED"],
+  ],
+  ["missing trailing value is ignored", ["--out", "$OUT", "--output"]],
+  ["empty equals means cwd", ["--output="]],
+] as const)(
+  "Graphify respects extraction output parsing (%s)",
+  async (kind, flags) => {
     const f = await fixture({ graph: { nodes: [], links: [] } });
     const custom = join(f.root, "custom-output");
-    const out = kind === "relative" ? "../custom-output" : custom;
+    const out = kind === "empty equals means cwd" ? f.workspace : custom;
     const runner = createGraphifyRunner({
       command: [process.execPath, FAKE],
       maxOutputBytes: 4096,
@@ -31,7 +51,11 @@ test.each(["absolute", "relative", "equals"])(
         "extract",
         f.workspace,
         "--code-only",
-        ...(kind === "equals" ? [`--out=${out}`] : ["--out", out]),
+        ...flags.map((flag) =>
+          flag
+            .replaceAll("$OUT", out)
+            .replaceAll("$IGNORED", join(f.root, "ignored-output")),
+        ),
       ],
       cwd: f.workspace,
       dataRoot: f.dataRoot,
@@ -40,10 +64,11 @@ test.each(["absolute", "relative", "equals"])(
     expect(result.exit_code).toBe(0);
     expect(
       JSON.parse(
-        await readFile(join(custom, "graphify-out", "graph.json"), "utf8"),
+        await readFile(join(out, "graphify-out", "graph.json"), "utf8"),
       ),
     ).toEqual({ nodes: [], links: [] });
     expect(await readdir(f.dataRoot).catch(() => [])).not.toContain("out");
+    expect(await readdir(f.root)).not.toContain("ignored-output");
   },
 );
 

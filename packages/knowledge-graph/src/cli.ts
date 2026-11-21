@@ -117,6 +117,37 @@ async function readCapped(
   };
 }
 
+function extractionOutput(args: readonly string[]): string | undefined {
+  if (args[0] !== "extract") return undefined;
+  let out: string | undefined;
+  // graphifyy 0.9.101 uses a manual scanner, not argparse abbreviation rules.
+  const valueFlags = new Set([
+    "--backend",
+    "--model",
+    "--mode",
+    "--as",
+    "--max-workers",
+    "--token-budget",
+    "--max-concurrency",
+    "--api-timeout",
+    "--resolution",
+    "--exclude-hubs",
+    "--exclude",
+    "--postgres",
+  ]);
+  for (let i = args[1]?.startsWith("-") ? 1 : 2; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if ((arg === "--out" || arg === "--output") && i + 1 < args.length) {
+      out = args[++i];
+    } else if (arg.startsWith("--out=") || arg.startsWith("--output=")) {
+      out = arg.slice(arg.indexOf("=") + 1);
+    } else if (valueFlags.has(arg) && i + 1 < args.length) {
+      i++;
+    }
+  }
+  return out;
+}
+
 export function createGraphifyRunner(
   options: GraphifyRunnerOptions,
 ): GraphifyRunner {
@@ -125,11 +156,7 @@ export function createGraphifyRunner(
   return {
     async run(invocation) {
       const started = Date.now();
-      const outIndex = invocation.args.indexOf("--out");
-      const requestedOut =
-        outIndex >= 0
-          ? invocation.args[outIndex + 1]
-          : invocation.args.find((arg) => arg.startsWith("--out="))?.slice(6);
+      const requestedOut = extractionOutput(invocation.args);
       let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
         child = Bun.spawn([executable, ...prefix, ...invocation.args], {
@@ -140,7 +167,7 @@ export function createGraphifyRunner(
           env: sandboxEnvironment({
             ...options,
             dataRoot: invocation.dataRoot,
-            ...(requestedOut
+            ...(requestedOut !== undefined
               ? { outRoot: resolve(invocation.cwd, requestedOut) }
               : {}),
           }),

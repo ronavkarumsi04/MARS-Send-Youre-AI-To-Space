@@ -32,7 +32,7 @@ Observed result:
 
 ## 2. Live OpenRouter `:free` Verification & Daily Quota Accounting
 
-Live runs were executed with `MARS_LIVE_E2E=1`, `MARS_LIVE_MODEL=openrouter/free` (guarded by `assertFreeOpenRouterModel` to refuse any non-free model), and `OPENAI_API_KEY` bound via environment only.
+To reproduce live verification, use `MARS_LIVE_E2E=1`, `MARS_LIVE_MODEL=openrouter/free` (guarded by `assertFreeOpenRouterModel` to refuse any non-free model), and `OPENROUTER_API_KEY` bound via environment only. `OPENROUTER_API_KEY` is required; other providers' keys (including `OPENAI_API_KEY`) are never used as a fallback. The live test skips when the OpenRouter key is missing.
 
 ### What Ran Live Before Account Daily Quota Exhaustion
 - Earlier live runs against `openrouter/free` returned `HTTP 200` (observed resolved free models included `nvidia/nemotron-3.5-super-vl:free`, `liquid/lfm-3-1.7b:free`, and `recursive/flint-v1.0:free`), created a Hermes memory proposal via `ReviewRunner` + `createRegistryReviewGateway`, passed invisible-Unicode threat scanning, accepted into `DurableMemoryStore` at revision `1`, appeared in follow-up frozen memory context (`formatSnapshot`), and exported via `mars vault export` into **19 Obsidian-compatible Markdown notes**:
@@ -48,7 +48,7 @@ Live runs were executed with `MARS_LIVE_E2E=1`, `MARS_LIVE_MODEL=openrouter/free
 
 To verify every downstream step end-to-end without exceeding the `$0.00` free-tier daily quota, `packages/memory-vault/test/live-memory-graph-vault.test.ts` shares a single `runMemoryGraphVaultE2E` runner across:
 1. **Deterministic review gateway mode** (runs whenever `MARS_GRAPHIFY_BIN` is set — exercises real `graphifyy==0.9.101`, real `ReviewRunner`, real `DurableMemoryStore`, real `SkillStore`, and real `mars vault export|status|import`).
-2. **Live OpenRouter `:free` mode** (runs when `MARS_LIVE_E2E=1`, `MARS_GRAPHIFY_BIN`, and `OPENAI_API_KEY` are set).
+2. **Live OpenRouter `:free` mode** (runs when `MARS_LIVE_E2E=1`, `MARS_GRAPHIFY_BIN`, and `OPENROUTER_API_KEY` are set; other providers' keys are never used).
 
 ### Executed Receipt (Deterministic Review Gateway + Real `graphifyy==0.9.101`)
 
