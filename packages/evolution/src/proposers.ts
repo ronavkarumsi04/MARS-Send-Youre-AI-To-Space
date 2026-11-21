@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResponse } from "@mars/contracts";
-import { fail } from "./errors";
+import { EvolutionError, fail } from "./errors";
 import {
   type AgentManifest,
   type MutationProposal,
@@ -115,6 +115,7 @@ export interface ModelProposerClient {
   complete(
     request: ChatRequest,
     selection?: { model?: string; route?: string },
+    signal?: AbortSignal,
   ): Promise<
     Pick<ChatResponse, "content"> & {
       model?: string;
@@ -296,6 +297,12 @@ export function createModelProposer(
   const model =
     options.model ?? (options.route ? undefined : DEFAULT_FREE_PROPOSER_MODEL);
   if (!allowPaid) {
+    if (options.route !== undefined) {
+      fail(
+        "invalid_input",
+        `model proposer refuses named route "${options.route}" unless allowPaid is true; named routes can select paid models`,
+      );
+    }
     if (model !== undefined && !isFreeOpenRouterModel(model)) {
       fail(
         "invalid_input",
@@ -322,7 +329,7 @@ export function createModelProposer(
       if (model !== undefined) selection.model = model;
       if (options.route !== undefined) selection.route = options.route;
 
-      const response = await options.client.complete(
+      const completePromise = options.client.complete(
         {
           messages: [
             { role: "system", content: system },
@@ -332,8 +339,45 @@ export function createModelProposer(
           temperature,
         },
         selection,
+        signal,
+      );
+      const response = await new Promise<Awaited<typeof completePromise>>(
+        (resolvePromise, rejectPromise) => {
+          if (signal.aborted) {
+            rejectPromise(
+              new EvolutionError("deadline_exceeded", "proposal aborted"),
+            );
+            return;
+          }
+          const onAbort = () => {
+            rejectPromise(
+              new EvolutionError("deadline_exceeded", "proposal aborted"),
+            );
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          completePromise.then(
+            (value) => {
+              signal.removeEventListener("abort", onAbort);
+              resolvePromise(value);
+            },
+            (error) => {
+              signal.removeEventListener("abort", onAbort);
+              rejectPromise(error);
+            },
+          );
+        },
       );
       if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
+      if (
+        !allowPaid &&
+        response.model !== undefined &&
+        !isFreeOpenRouterModel(response.model)
+      ) {
+        fail(
+          "invalid_input",
+          `model proposer received paid model "${response.model}" while allowPaid is false`,
+        );
+      }
 
       const parsed = extractProposalJson(response.content);
       const proposal = MutationProposalSchema.parse(parsed);
@@ -380,8 +424,13 @@ export function createOpenRouterProposerClient(
   const timeoutMs = options.timeoutMs ?? 60_000;
   const doFetch = options.fetch ?? fetch;
   return {
-    async complete(request, selection) {
+    async complete(request, selection, signal) {
+      if (signal?.aborted) fail("deadline_exceeded", "proposal aborted");
       const model = selection?.model ?? DEFAULT_FREE_PROPOSER_MODEL;
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const combinedSignal = signal
+        ? AbortSignal.any([timeoutSignal, signal])
+        : timeoutSignal;
       const response = await doFetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
@@ -403,7 +452,7 @@ export function createOpenRouterProposerClient(
             ? { temperature: request.temperature }
             : {}),
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: combinedSignal,
       });
       if (!response.ok) {
         const body = bounded(scrubSecrets(await response.text()), 400);

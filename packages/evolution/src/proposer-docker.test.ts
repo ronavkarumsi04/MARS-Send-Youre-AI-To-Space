@@ -70,6 +70,16 @@ describe("model proposer unit tests", () => {
       createModelProposer({ client: noopClient, model: "openai/gpt-4o" }),
     ).toThrow(/refuses paid model/);
     expect(() =>
+      createModelProposer({ client: noopClient, route: "reasoning" }),
+    ).toThrow(/refuses named route/);
+    expect(() =>
+      createModelProposer({
+        client: noopClient,
+        route: "reasoning",
+        allowPaid: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
       createModelProposer({
         client: noopClient,
         model: "openai/gpt-4o",
@@ -78,6 +88,77 @@ describe("model proposer unit tests", () => {
     ).not.toThrow();
     const defaultProposer = createModelProposer({ client: noopClient });
     expect(defaultProposer.id).toBe(`model:${DEFAULT_FREE_PROPOSER_MODEL}`);
+  });
+
+  test("rejects paid response models and cancels in-flight proposals on abort", async () => {
+    await withTempDir(async (dir) => {
+      const baseContext = {
+        run_id: "r1",
+        generation: 1,
+        child_index: 0,
+        parent: {
+          candidate_id: "c0",
+          manifest: {
+            schema: "mars.agent-manifest/v1" as const,
+            model: {
+              id: "openrouter/free",
+              provider: "openrouter",
+              revision: "1",
+            },
+            prompts: { system_prompt: "base" },
+            skills: { store_revision: "1" },
+            tools: [],
+            retrieval: {
+              repo_map_tokens: 0,
+              memory_top_k: 0,
+              context_window_tokens: 8192,
+              research: false,
+            },
+            harness: {
+              base: { ref: "base", tree_sha256: "a".repeat(64) },
+              patches: [],
+              tree_sha256: "a".repeat(64),
+            },
+          },
+          selection_score: 0.25,
+          per_task: [{ task_id: "sel-1", mean: 0 }],
+        },
+        entry: { kind: "task" as const, task_id: "sel-1" },
+        harness_dir: dir,
+        seed: "seed-1",
+      };
+
+      const paidReplyProposer = createModelProposer({
+        client: {
+          async complete() {
+            return {
+              content: '{"hypothesis":"sneaky paid"}',
+              model: "openai/gpt-4o",
+            };
+          },
+        },
+      });
+      await expect(
+        paidReplyProposer.propose(baseContext, new AbortController().signal),
+      ).rejects.toThrow(/received paid model/);
+
+      let receivedSignal: AbortSignal | undefined;
+      const slowProposer = createModelProposer({
+        client: {
+          async complete(_req, _sel, signal) {
+            receivedSignal = signal;
+            return await new Promise(() => {
+              // intentionally never resolves
+            });
+          },
+        },
+      });
+      const controller = new AbortController();
+      const pending = slowProposer.propose(baseContext, controller.signal);
+      setTimeout(() => controller.abort(), 20);
+      await expect(pending).rejects.toThrow(/proposal aborted/);
+      expect(receivedSignal?.aborted).toBe(true);
+    });
   });
 
   test("extractProposalJson handles raw JSON, fenced JSON, and prose-wrapped JSON", () => {
