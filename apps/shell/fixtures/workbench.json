@@ -227,6 +227,7 @@
           "revision": "fixture-r5"
         },
         "state": "verified",
+        "patch_sha256": "8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47",
         "record": {
           "schema_version": 1,
           "operation": "verification.verdict",
@@ -294,10 +295,10 @@
           {
             "path": "README.md",
             "status": "modified",
-            "patch": "--- a/README.md\n+++ b/README.md\n-old sample\n+new sample"
+            "patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old sample\n+new sample"
           }
         ],
-        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "digest": "8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47"
       },
       "evidence": {
         "task_revision": 5,
@@ -306,7 +307,7 @@
           "provider": "fixture",
           "revision": "fixture-r5"
         },
-        "diff_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "diff_sha256": "8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47",
         "verify_records": [
           {
             "event_id": "fixture-evidence-verified",
@@ -316,7 +317,7 @@
             "recorded_at": "2026-03-01T12:01:00.000Z",
             "workspace_id": "fixture-workspace",
             "workspace_revision": "fixture-r5",
-            "diff_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "diff_sha256": "8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47",
             "stale": false
           }
         ]
@@ -347,7 +348,10 @@
           "source_event_ids": [],
           "access": "project"
         }
-      ]
+      ],
+      "baseline": {
+        "README.md": "old sample\n"
+      }
     },
     "fixture-completed-unverified": {
       "model_tier": null,
