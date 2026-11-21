@@ -78,17 +78,19 @@ const SMOKE_FINAL_TASKS: readonly SmokeTaskSpec[] = [
   },
 ];
 
-function createLiveSmokeEvaluator(): CandidateEvaluator {
+function createLiveSmokeEvaluator(
+  sandbox: ReturnType<typeof createEvolutionDockerSandbox>,
+): CandidateEvaluator {
   const allTasks = new Map(
     [...SMOKE_SELECTION_TASKS, ...SMOKE_FINAL_TASKS].map((t) => [t.id, t]),
   );
-  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v1"]);
+  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v2"]);
+  const decoder = new TextDecoder("utf-8", { fatal: false });
   return {
     digest,
     simulated: false,
-    async evaluate(request) {
+    async evaluate(request, signal) {
       const started = Date.now();
-      const bundlePath = join(request.bundle_dir, "solver.mjs");
       const per_task: {
         task_id: string;
         rewards: (number | null)[];
@@ -99,26 +101,57 @@ function createLiveSmokeEvaluator(): CandidateEvaluator {
         const spec = allTasks.get(taskId);
         const rewards: (number | null)[] = [];
         for (let r = 0; r < request.repeats; r += 1) {
+          if (signal.aborted) {
+            throw new EvolutionError(
+              "deadline_exceeded",
+              "live smoke evaluation cancelled",
+            );
+          }
           if (!spec) {
             rewards.push(0);
             continue;
           }
-          const proc = Bun.spawn(
-            [
-              process.execPath,
+          const remainingMs = request.deadline_ms - (Date.now() - started);
+          if (remainingMs <= 0) {
+            throw new EvolutionError(
+              "deadline_exceeded",
+              "live smoke evaluation deadline exceeded",
+            );
+          }
+          const result = await sandbox.run({
+            workspaceDir: request.bundle_dir,
+            argv: [
+              "bun",
               "-e",
-              `import { solve } from ${JSON.stringify(bundlePath)}; console.log(JSON.stringify(solve(${JSON.stringify(spec.id)}, ${JSON.stringify(spec.input)})));`,
+              `import { solve } from "/workspace/solver.mjs"; console.log(JSON.stringify(solve(${JSON.stringify(spec.id)}, ${JSON.stringify(spec.input)})));`,
             ],
-            { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
-          );
-          const [stdout, stderr, exitCode] = await Promise.all([
-            new Response(proc.stdout).text(),
-            new Response(proc.stderr).text(),
-            proc.exited,
-          ]);
-          if (exitCode !== 0) {
+            timeoutMs: Math.min(10_000, Math.max(1_000, remainingMs)),
+            maxOutputBytes: 64 * 1024,
+            signal,
+            runId: request.run_id,
+            labels: {
+              phase: "live-smoke-eval",
+              subject: request.subject_id,
+            },
+          });
+          if (result.cancelled || signal.aborted) {
+            throw new EvolutionError(
+              "deadline_exceeded",
+              "live smoke evaluation cancelled",
+            );
+          }
+          if (result.timedOut) {
             rewards.push(0);
-            notes.push(`task ${taskId} exited ${exitCode}: ${stderr.trim()}`);
+            notes.push(`task ${taskId} timed out in sandbox`);
+            continue;
+          }
+          const stdout = decoder.decode(result.stdout);
+          const stderr = decoder.decode(result.stderr);
+          if (result.exitCode !== 0) {
+            rewards.push(0);
+            notes.push(
+              `task ${taskId} exited ${result.exitCode}: ${stderr.trim()}`,
+            );
             continue;
           }
           let actual: unknown;
@@ -244,17 +277,18 @@ async function runLiveSmoke(options: {
   const baseDir = join(options.state, "base");
   await seedLiveSmokeBase(baseDir);
 
+  const sandbox = createEvolutionDockerSandbox({ image: options.image });
   const open = () =>
     EvolutionService.open({
       storeDir: join(options.state, "store"),
       workDir: join(options.state, "work"),
-      evaluator: createLiveSmokeEvaluator(),
+      evaluator: createLiveSmokeEvaluator(sandbox),
       proposer: createModelProposer({
         client: instrumentedClient,
         model: options.model,
         allowPaid: false,
       }),
-      sandbox: createEvolutionDockerSandbox({ image: options.image }),
+      sandbox,
     });
 
   const service = await open();
