@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runTeam, TeamUsageError } from "./team";
 
 const entrypoint = join(import.meta.dir, "main.ts");
@@ -90,6 +92,75 @@ const rpc = (
       params,
     }),
   });
+
+test("colliding Git credential keys only reject two HTTPS remotes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-cli-team-credentials-"));
+  const state = join(root, "state");
+  const httpsUrl = "https://forge.example/first.git";
+  const hash = createHash("sha256").update(httpsUrl).digest("hex").slice(0, 16);
+  const cached = join(state, "repos", `test-repo-${hash}.git`);
+  const local = join(root, "local.git");
+  const env = {
+    PATH: process.env.PATH ?? "",
+    HOME: root,
+    MARS_TEAM_ALLOW_FILE_REMOTE: "1",
+    MARS_TEAM_GIT_AUTH_HEADER_TEST_REPO: "Bearer fixture-only",
+  };
+  const args = [
+    "--state",
+    state,
+    "--port",
+    "0",
+    "--auth-provider",
+    "none",
+    "--remote-repo",
+    `test-repo=${httpsUrl}`,
+    "--remote-repo",
+  ];
+  let served: Served | undefined;
+  try {
+    await mkdir(join(state, "repos"), { recursive: true });
+    for (const dir of [cached, local]) {
+      const init = Bun.spawnSync(["git", "init", "--bare", dir], { env });
+      expect(init.exitCode).toBe(0);
+    }
+    const refused = Bun.spawn(
+      [
+        process.execPath,
+        entrypoint,
+        "team",
+        "serve",
+        ...args,
+        "test_repo=https://forge.example/second.git",
+      ],
+      { env, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+    );
+    const [code, error] = await Promise.all([
+      refused.exited,
+      new Response(refused.stderr).text(),
+    ]);
+    expect(code).not.toBe(0);
+    expect(error).toContain(
+      "Ambiguous per-repo credential MARS_TEAM_GIT_AUTH_HEADER_TEST_REPO",
+    );
+    expect(error).toContain("(test-repo, test_repo)");
+
+    served = await spawnServe(
+      [...args, `test_repo=${pathToFileURL(local).href}`],
+      env,
+    );
+    expect(served.report.remote_repos).toBe(2);
+    served.child.kill("SIGTERM");
+    expect(await served.child.exited).toBe(143);
+    await served.drained;
+  } finally {
+    if (served && served.child.exitCode === null) {
+      served.child.kill("SIGKILL");
+      await served.child.exited;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("mars team serve: dev users, private files, flag default off, enable/disable/stats/export/import/revoke round trip, clean SIGTERM", async () => {
   const root = await mkdtemp(join(tmpdir(), "mars-cli-team-"));
