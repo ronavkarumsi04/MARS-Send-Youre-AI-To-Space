@@ -30,6 +30,7 @@ const SCENARIOS: { name: string; width: number; height: number }[] = [
   { name: "group", width: 1400, height: 900 },
   { name: "picker", width: 1400, height: 900 },
   { name: "chips", width: 1400, height: 900 },
+  { name: "attachment-only", width: 1400, height: 900 },
   { name: "panel", width: 1400, height: 900 },
   { name: "linus", width: 1400, height: 900 },
   { name: "pending", width: 1400, height: 900 },

@@ -193,8 +193,7 @@ export function mentionCandidates(
 }
 
 const USER_MENTION_RE = /(?:^|[\s(])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/g;
-const MARS_INVOCATION_RE =
-  /(?:^|\s)@mars(?!\.+[a-z0-9_-])(?=$|[\s,.;:!?])[\s,.;:!?]*/i;
+const MARS_INVOCATION_RE = /(?:^|\s)@mars(?=$|[\s,.;:!?])/gi;
 
 /** Extract distinct teammate `@handles` from a message body (excluding `@MARS`). */
 export function extractUserMentions(text: string): string[] {
@@ -211,13 +210,36 @@ export function extractUserMentions(text: string): string[] {
  * Detect a standalone `@MARS` invocation, with an empty prompt for context-only
  * requests, or return `null` for ordinary messages.
  */
-export function parseMarsInvocation(text: string): { prompt: string } | null {
-  const match = MARS_INVOCATION_RE.exec(text);
-  if (!match) return null;
-  const before = text.slice(0, match.index).trim();
-  const after = text.slice(match.index + match[0].length).trim();
-  const prompt = [before, after].filter(Boolean).join(" ");
-  return { prompt };
+export function parseMarsInvocation(
+  text: string,
+  options: {
+    teammates?: readonly { handle: string }[] | undefined;
+    leadingOnly?: boolean;
+  } = {},
+): { prompt: string } | null {
+  for (const match of text.matchAll(MARS_INVOCATION_RE)) {
+    const before = text.slice(0, match.index).trim();
+    if (options.leadingOnly && before) return null;
+    const tail = text.slice(match.index + match[0].length);
+    if (tail.startsWith(".")) {
+      const suffix = /^[a-z0-9._-]+/i.exec(tail)?.[0] ?? "";
+      const handle = `mars${suffix.toLowerCase()}`;
+      const withoutTrailingPeriods = handle.replace(/\.+$/, "");
+      if (
+        options.teammates?.some((user) => {
+          const known = user.handle.toLowerCase();
+          return (
+            known !== "mars" &&
+            (known === handle || known === withoutTrailingPeriods)
+          );
+        })
+      )
+        continue;
+    }
+    const after = tail.replace(/^[\s,.;:!?]+/, "").trimEnd();
+    return { prompt: [before, after].filter(Boolean).join(" ") };
+  }
+  return null;
 }
 
 /** Chip text: repo · path · short SHA · range. */

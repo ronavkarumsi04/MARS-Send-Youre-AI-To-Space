@@ -327,6 +327,7 @@ describe("@MARS invocations", () => {
     [" \t@mArS:summarize this", "summarize this"],
     ["@mars? What changed?", "What changed?"],
     ["@MARS. Summarize the changes.", "Summarize the changes."],
+    ["@MARS.Summarize the changes.", "Summarize the changes."],
     ["Please @MARS summarize this", "Please summarize this"],
     ["\n @mArS? ", ""],
     ["@MARS", ""],
@@ -339,9 +340,47 @@ describe("@MARS invocations", () => {
     "Email dev@mars.example for details",
     "@MARSHALL, can you summarize?",
     "@MARS_TEAM can you summarize?",
-    "@mars.ops can you summarize?",
   ])("treats %j as an ordinary message", (text) => {
     expect(parseMarsInvocation(text)).toBeNull();
+  });
+
+  test("a complete picker-inserted dotted teammate takes precedence over an agent invocation", () => {
+    const teammate = {
+      user_id: "mars.ops",
+      handle: "mars.ops",
+      display_name: "Ops",
+    };
+    const mentionEnv = {
+      ...env,
+      index: { repos: [], users: [teammate], agent_available: true },
+    };
+    const query = "@mars.ops";
+    const draft = reduceComposer(
+      reduceComposer(
+        EMPTY_COMPOSER,
+        { type: "input", text: query, caret: query.length },
+        mentionEnv,
+      ),
+      { type: "pickerSelect" },
+      mentionEnv,
+    );
+    expect(draft.text).toBe("@mars.ops ");
+    const options = { teammates: [teammate] };
+    expect(
+      parseMarsInvocation(`${draft.text}review this?`, options),
+    ).toBeNull();
+    expect(parseMarsInvocation("@MARS.OPS, review this?", options)).toBeNull();
+    expect(parseMarsInvocation("@MARS.Summarize this", options)).toEqual({
+      prompt: "Summarize this",
+    });
+  });
+
+  test("only leading invocations are reserved when the agent is disabled", () => {
+    const options = { leadingOnly: true };
+    expect(parseMarsInvocation("Is @MARS enabled here?", options)).toBeNull();
+    expect(parseMarsInvocation(" \t@mArS: summarize this", options)).toEqual({
+      prompt: "summarize this",
+    });
   });
 });
 

@@ -40,7 +40,12 @@ interface Participant {
 }
 
 export interface FakeTeamOptions {
-  capabilities?: { stream: boolean; reactions: boolean; search: boolean };
+  capabilities?: {
+    stream: boolean;
+    reactions: boolean;
+    search: boolean;
+    agent?: boolean;
+  };
   /** Advertised and enforced `limits.page_limit` (default 200). */
   pageLimit?: number;
 }
@@ -67,11 +72,7 @@ export class FakeTeamServer {
       line_end: number | null;
     }
   >();
-  readonly capabilities: {
-    stream: boolean;
-    reactions: boolean;
-    search: boolean;
-  };
+  readonly capabilities: NonNullable<FakeTeamOptions["capabilities"]>;
   readonly pageLimit: number;
   /** When true, `messages.send` commits but the acknowledgement is lost (transport error). */
   dropNextAck = false;

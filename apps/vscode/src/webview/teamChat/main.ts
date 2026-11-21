@@ -267,7 +267,7 @@ function newClientMessageId(): string {
 function send(): void {
   const selected = state?.selected;
   if (!selected || confirmedDraftId) return;
-  const requireText = state?.label === "SERVICE";
+  const requireText = true;
   const problem = composerProblem(composer, requireText);
   if (problem === "too_long") {
     composerError = `Message is ${composer.text.trim().length} characters; the limit is ${MAX_MESSAGE_CHARS}. Shorten it or split it.`;
@@ -281,9 +281,13 @@ function send(): void {
     requireText,
   );
   if (!input) return;
-  const invocation = parseMarsInvocation(input.body);
+  const agentEnabled = Boolean(state?.capabilities.agent);
+  const invocation = parseMarsInvocation(input.body, {
+    teammates: state?.mention_index.users,
+    leadingOnly: !agentEnabled,
+  });
   if (invocation) {
-    if (!state?.capabilities.agent) {
+    if (!agentEnabled) {
       composerError = "@MARS is not enabled on this team service.";
       renderComposerParts();
       return;
@@ -1214,7 +1218,7 @@ function renderComposerParts(): void {
   const status = nextPickerStatus(announcedPicker, announcement);
   if (status !== null) pickerStatus.textContent = status;
   announcedPicker = announcement;
-  const problem = composerProblem(composer, state?.label === "SERVICE");
+  const problem = composerProblem(composer, true);
   const error =
     problem === "text_required"
       ? "Add a message to send with your code references."

@@ -836,7 +836,13 @@ export class TeamChatController {
     input: SendMessageInput,
     confirmedAgentDraft = false,
   ): Promise<{ sequence: number; duplicate: boolean } | null> {
-    if (!confirmedAgentDraft && parseMarsInvocation(input.body)) {
+    if (
+      !confirmedAgentDraft &&
+      parseMarsInvocation(input.body, {
+        teammates: this.service.mentionIndex(this.viewer).users,
+        leadingOnly: !this.service.capabilities.agent,
+      })
+    ) {
       this.notice = {
         kind: "error",
         text: "Preview and confirm your @MARS question before sending.",

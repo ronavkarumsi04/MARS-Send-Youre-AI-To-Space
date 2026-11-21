@@ -895,9 +895,6 @@ export class RpcTeamService implements TeamService {
 
   mentionIndex(): MentionIndex {
     const repos: MentionRepo[] = [];
-    if (!this.serverCapabilities.references && !this.serverCapabilities.agent) {
-      return { repos };
-    }
     if (this.serverCapabilities.references) {
       const dirs = this.openWorkspaceDirs();
       void this.refreshWorkspaceGit(dirs);

@@ -89,6 +89,24 @@ async function run(): Promise<void> {
       await selectPicker();
       await click(key("reply-msg_dm_4"));
       return;
+    case "attachment-only": {
+      await typeInComposer("@style.css:14-23");
+      await selectPicker();
+      await waitFor(".chip.draft");
+      await pressEnter();
+      const alert = await waitFor(".composer-error:not([hidden])");
+      const send = await waitFor<HTMLButtonElement>(key("send"));
+      if (
+        !send.disabled ||
+        !document.querySelector(".chip.draft") ||
+        !alert.textContent?.includes("Add a message")
+      ) {
+        throw new Error(
+          "harness: attachment-only draft should remain editable",
+        );
+      }
+      return;
+    }
     case "panel":
     case "narrow":
       await click(key("conv-conv_group_release"));

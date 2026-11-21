@@ -391,42 +391,68 @@ describe("RpcTeamService through the controller", () => {
     controller.dispose();
   });
 
-  test("unconfirmed @MARS invocations cannot be sent through ordinary chat", async () => {
-    const { controller, server, group, last } = setup();
-    await controller.handleMessage({ type: "ready" });
-    const before = server.messages.length;
-    for (const [index, body] of [
-      "@MARS, can you summarize the selected transport details?",
-      " \t@mArS: summarize",
-      "@mars? What changed?",
-      "@MARS. Summarize this",
-    ].entries()) {
-      const clientMessageId = `unconfirmed_${index}`;
+  test.each([false, true])(
+    "unconfirmed @MARS invocations cannot be sent through ordinary chat (agent enabled: %s)",
+    async (agent) => {
+      const { controller, server, group, last } = setup({
+        capabilities: { stream: false, reactions: false, search: false, agent },
+      });
+      server.join(group, "mars.ops");
+      await controller.handleMessage({ type: "ready" });
+      expect(last().mention_index.users?.map((user) => user.handle)).toContain(
+        "mars.ops",
+      );
+      const before = server.messages.length;
+      for (const [index, body] of [
+        "@MARS, can you summarize the selected transport details?",
+        " \t@mArS: summarize",
+        "@mars? What changed?",
+        "@MARS. Summarize this",
+        "@MARS.Summarize this",
+      ].entries()) {
+        const clientMessageId = `unconfirmed_${index}`;
+        await controller.handleMessage({
+          type: "send",
+          conversationId: group,
+          clientMessageId,
+          body,
+          replyTo: null,
+          references: [],
+        });
+        expect(last().notice?.text).toContain("Preview and confirm");
+        expect(last().pending).toEqual([]);
+        await controller.handleMessage({ type: "retrySend", clientMessageId });
+        expect(server.messages).toHaveLength(before);
+      }
+      const body = "@MARSHALL and @mars.ops, please email dev@mars.example.";
       await controller.handleMessage({
         type: "send",
         conversationId: group,
-        clientMessageId,
+        clientMessageId: "ordinary",
         body,
         replyTo: null,
         references: [],
       });
-      expect(last().notice?.text).toContain("Preview and confirm");
-      expect(last().pending).toEqual([]);
-      await controller.handleMessage({ type: "retrySend", clientMessageId });
-      expect(server.messages).toHaveLength(before);
-    }
-    const body = "@MARSHALL and @mars.ops, please email dev@mars.example.";
-    await controller.handleMessage({
-      type: "send",
-      conversationId: group,
-      clientMessageId: "ordinary",
-      body,
-      replyTo: null,
-      references: [],
-    });
-    expect(server.messages).toHaveLength(before + 1);
-    expect(server.messages.at(-1)?.body).toBe(body);
-  });
+      expect(server.messages).toHaveLength(before + 1);
+      expect(server.messages.at(-1)?.body).toBe(body);
+      const literal = "Is @MARS enabled here?";
+      await controller.handleMessage({
+        type: "send",
+        conversationId: group,
+        clientMessageId: "literal",
+        body: literal,
+        replyTo: null,
+        references: [],
+      });
+      if (agent) {
+        expect(last().notice?.text).toContain("Preview and confirm");
+        expect(server.messages).toHaveLength(before + 1);
+      } else {
+        expect(server.messages).toHaveLength(before + 2);
+        expect(server.messages.at(-1)?.body).toBe(literal);
+      }
+    },
+  );
 
   test("@MARS preview and cancel do not post the question or create references", async () => {
     const { controller, service, group, last } = setup();
@@ -564,7 +590,7 @@ describe("RpcTeamService through the controller", () => {
     expect(selected?.conversation.unread_count).toBe(2);
     expect(selected?.conversation.first_unread_sequence).toBe(1);
     expect(selected?.divider_sequence).toBe(1);
-    expect(state.mention_index).toEqual({ repos: [] });
+    expect(state.mention_index.repos).toEqual([]);
   });
 
   test("the team token never appears in any emitted view state", async () => {
