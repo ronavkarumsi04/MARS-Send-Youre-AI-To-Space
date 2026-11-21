@@ -1,10 +1,17 @@
 import type { TeamDeliveryEvent } from "@mars/contracts";
 import {
+  type AgentPreviewView,
+  type AgentRequestView,
   type ConversationSummary,
+  type EvidenceSharePreviewView,
+  type EvidenceShareView,
   FIXTURE_USERS,
   FixtureTeamService,
   type MessageView,
+  type PathSearchMatch,
   type SendMessageInput,
+  type TaskLinkDraftView,
+  type TaskLinkView,
   type TeamErrorCode,
   type TeamResult,
   type TeamService,
@@ -112,6 +119,13 @@ export class TeamChatController {
   private readonly pending: PendingSend[] = [];
   private readonly pendingInputs = new Map<string, SendMessageInput>();
   private panel: TeamChatViewState["panel"] = null;
+  private pathSearch: PathSearchMatch[] = [];
+  private agentPreviewState: AgentPreviewView | null = null;
+  private agentRequestState: AgentRequestView | null = null;
+  private taskLinkDraftState: TaskLinkDraftView | null = null;
+  private taskLinkState: TaskLinkView | null = null;
+  private sharePreviewState: EvidenceSharePreviewView | null = null;
+  private shareResultState: EvidenceShareView | null = null;
   private notice: TeamChatNotice | null = null;
   private search: TeamChatViewState["search"] = null;
   private announcement: TeamChatAnnouncement | null = null;
@@ -262,6 +276,13 @@ export class TeamChatController {
       this.conversations = [];
       this.selected = null;
       this.panel = null;
+      this.pathSearch = [];
+      this.agentPreviewState = null;
+      this.agentRequestState = null;
+      this.taskLinkDraftState = null;
+      this.taskLinkState = null;
+      this.sharePreviewState = null;
+      this.shareResultState = null;
       this.notice = null;
       this.search = null;
       this.announcement = null;
@@ -344,6 +365,88 @@ export class TeamChatController {
         return this.emit();
       case "fixtureSwitchViewer":
         await this.switchViewer(message.userId);
+        return this.emit();
+      case "searchPaths":
+        await this.runSearchPaths(
+          message.repoId,
+          message.commitSha,
+          message.query,
+          message.limit,
+        );
+        return this.emit();
+      case "agentPreview":
+        await this.runAgentPreview(
+          message.conversationId,
+          message.messageIds,
+          message.referenceIds,
+        );
+        return this.emit();
+      case "agentRequest":
+        await this.runAgentRequest(
+          message.conversationId,
+          message.messageIds,
+          message.referenceIds,
+          message.idempotencyKey,
+          message.previewSha256,
+        );
+        return this.emit();
+      case "agentCancel":
+        await this.runAgentCancel(message.requestId);
+        return this.emit();
+      case "agentInspect":
+        await this.runAgentInspect(message.requestId);
+        return this.emit();
+      case "clearAgent":
+        this.agentPreviewState = null;
+        this.agentRequestState = null;
+        return this.emit();
+      case "taskLinkDraft":
+        await this.runTaskLinkDraft(
+          message.conversationId,
+          message.messageIds,
+          message.referenceIds,
+        );
+        return this.emit();
+      case "taskLinkConfirm":
+        await this.runTaskLinkConfirm(message.linkId, message.workbench, {
+          ...(message.target.repo_id !== undefined
+            ? { repo_id: message.target.repo_id }
+            : {}),
+          ...(message.target.base_revision !== undefined
+            ? { base_revision: message.target.base_revision }
+            : {}),
+        });
+        return this.emit();
+      case "taskLinkCreated":
+        await this.runTaskLinkCreated(message.linkId, message.taskRevision);
+        return this.emit();
+      case "taskLinkInspect":
+        await this.runTaskLinkInspect(message.linkId);
+        return this.emit();
+      case "clearTaskLink":
+        this.taskLinkDraftState = null;
+        this.taskLinkState = null;
+        return this.emit();
+      case "sharePreview":
+        await this.runSharePreview(
+          message.linkId,
+          message.evidence,
+          message.runStatus,
+          message.selection,
+        );
+        return this.emit();
+      case "shareCreate":
+        await this.runShareCreate(
+          message.linkId,
+          message.evidence,
+          message.runStatus,
+          message.selection,
+          message.previewSha256,
+        );
+        return this.emit();
+      case "clearShare":
+        this.sharePreviewState = null;
+        this.shareResultState = null;
         return this.emit();
     }
   }
@@ -826,6 +929,247 @@ export class TeamChatController {
     };
   }
 
+  private async runSearchPaths(
+    repoId: string,
+    commitSha: string,
+    query: string,
+    limit?: number,
+  ): Promise<void> {
+    if (!this.service.searchPaths) {
+      this.pathSearch = [];
+      return;
+    }
+    const result = await this.service.searchPaths(this.viewer, {
+      repo_id: repoId,
+      commit_sha: commitSha,
+      query,
+      ...(limit !== undefined ? { limit } : {}),
+    });
+    if (!result.ok) {
+      this.pathSearch = [];
+      return;
+    }
+    this.pathSearch = result.value;
+  }
+
+  private async runAgentPreview(
+    conversationId: string,
+    messageIds: string[],
+    referenceIds: string[],
+  ): Promise<void> {
+    if (!this.service.agentPreview) {
+      this.notice = {
+        kind: "error",
+        text: "@MARS is not enabled on this team service.",
+      };
+      return;
+    }
+    const result = await this.service.agentPreview(this.viewer, {
+      conversation_id: conversationId,
+      message_ids: messageIds,
+      reference_ids: referenceIds,
+    });
+    if (!result.ok) {
+      this.failed(result.code, conversationId);
+      return;
+    }
+    this.notice = null;
+    this.agentPreviewState = result.value;
+  }
+
+  private async runAgentRequest(
+    conversationId: string,
+    messageIds: string[],
+    referenceIds: string[],
+    idempotencyKey: string,
+    previewSha256: string,
+  ): Promise<void> {
+    if (!this.service.agentRequest) {
+      this.notice = {
+        kind: "error",
+        text: "@MARS is not enabled on this team service.",
+      };
+      return;
+    }
+    const result = await this.service.agentRequest(this.viewer, {
+      conversation_id: conversationId,
+      message_ids: messageIds,
+      reference_ids: referenceIds,
+      idempotency_key: idempotencyKey,
+      preview_sha256: previewSha256,
+    });
+    if (!result.ok) {
+      this.failed(result.code, conversationId);
+      return;
+    }
+    this.notice = null;
+    this.agentPreviewState = null;
+    this.agentRequestState = result.value;
+  }
+
+  private async runAgentCancel(requestId: string): Promise<void> {
+    if (!this.service.agentCancel) return;
+    const result = await this.service.agentCancel(this.viewer, requestId);
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.agentRequestState = result.value;
+  }
+
+  private async runAgentInspect(requestId: string): Promise<void> {
+    if (!this.service.agentInspect) return;
+    const result = await this.service.agentInspect(this.viewer, requestId);
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.agentRequestState = result.value;
+  }
+
+  private async runTaskLinkDraft(
+    conversationId: string,
+    messageIds: string[],
+    referenceIds: string[],
+  ): Promise<void> {
+    if (!this.service.taskLinkDraft) {
+      this.notice = {
+        kind: "error",
+        text: "Task links are not supported by this team service.",
+      };
+      return;
+    }
+    const result = await this.service.taskLinkDraft(this.viewer, {
+      conversation_id: conversationId,
+      message_ids: messageIds,
+      reference_ids: referenceIds,
+    });
+    if (!result.ok) {
+      this.failed(result.code, conversationId);
+      return;
+    }
+    this.notice = null;
+    this.taskLinkDraftState = result.value;
+  }
+
+  private async runTaskLinkConfirm(
+    linkId: string,
+    workbench: {
+      scope: Record<string, unknown>;
+      task_id: string;
+      request_id: string;
+    },
+    target: { repo_id?: string; base_revision?: string },
+  ): Promise<void> {
+    if (!this.service.taskLinkConfirm) return;
+    const result = await this.service.taskLinkConfirm(this.viewer, {
+      link_id: linkId,
+      workbench,
+      target,
+    });
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.notice = null;
+    this.taskLinkState = { view: "requester", link: result.value };
+  }
+
+  private async runTaskLinkCreated(
+    linkId: string,
+    taskRevision: number,
+  ): Promise<void> {
+    if (!this.service.taskLinkCreated) return;
+    const result = await this.service.taskLinkCreated(this.viewer, {
+      link_id: linkId,
+      task_revision: taskRevision,
+    });
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.notice = null;
+    this.taskLinkState = { view: "requester", link: result.value };
+  }
+
+  private async runTaskLinkInspect(linkId: string): Promise<void> {
+    if (!this.service.taskLinkInspect) return;
+    const result = await this.service.taskLinkInspect(this.viewer, linkId);
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.taskLinkState = result.value;
+  }
+
+  private async runSharePreview(
+    linkId: string,
+    evidence: Record<string, unknown>,
+    runStatus: string,
+    selection: {
+      summary: string;
+      include_diff_digest: boolean;
+      verify_event_ids: string[];
+    },
+  ): Promise<void> {
+    if (!this.service.sharePreview) {
+      this.notice = {
+        kind: "error",
+        text: "Evidence sharing is not supported by this team service.",
+      };
+      return;
+    }
+    const result = await this.service.sharePreview(this.viewer, {
+      link_id: linkId,
+      evidence,
+      run_status: runStatus,
+      selection,
+    });
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.notice = null;
+    this.sharePreviewState = result.value;
+  }
+
+  private async runShareCreate(
+    linkId: string,
+    evidence: Record<string, unknown>,
+    runStatus: string,
+    selection: {
+      summary: string;
+      include_diff_digest: boolean;
+      verify_event_ids: string[];
+    },
+    previewSha256: string,
+  ): Promise<void> {
+    if (!this.service.shareCreate) {
+      this.notice = {
+        kind: "error",
+        text: "Evidence sharing is not supported by this team service.",
+      };
+      return;
+    }
+    const result = await this.service.shareCreate(this.viewer, {
+      link_id: linkId,
+      evidence,
+      run_status: runStatus,
+      selection,
+      preview_sha256: previewSha256,
+    });
+    if (!result.ok) {
+      this.failed(result.code);
+      return;
+    }
+    this.notice = null;
+    this.sharePreviewState = null;
+    this.shareResultState = result.value;
+    if (this.selected) {
+      await this.select(this.selected.conversation.conversation_id);
+    }
+  }
+
   private async switchViewer(userId: string): Promise<void> {
     if (this.service.label !== "FIXTURE") return;
     if (!this.service.users().some((u) => u.user_id === userId)) return;
@@ -874,6 +1218,13 @@ export class TeamChatController {
       pending: this.pending.map((p) => ({ ...p })),
       panel: this.panel,
       mention_index: this.service.mentionIndex(this.viewer),
+      path_search: this.pathSearch,
+      agent_preview: this.agentPreviewState,
+      agent_request: this.agentRequestState,
+      task_link_draft: this.taskLinkDraftState,
+      task_link: this.taskLinkState,
+      share_preview: this.sharePreviewState,
+      share_result: this.shareResultState,
       notice: this.notice,
       search: this.search,
       announcement: this.announcement,

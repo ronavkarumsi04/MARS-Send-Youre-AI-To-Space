@@ -211,6 +211,8 @@ export interface TeamStore {
     role: TeamRole;
   }): TeamMembership;
   removeTeamMember(input: { team_id: string; user_id: string }): TeamMembership;
+  /** Host-side lookup of active team ids for a user (used by token/GitHub authenticators). */
+  activeTeamIds(user_id: string): string[];
   describe(actor: TeamActor): TeamDescription;
   createDm(
     actor: TeamActor,

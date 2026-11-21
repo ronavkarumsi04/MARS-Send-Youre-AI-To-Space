@@ -39,19 +39,16 @@ describe("mention candidates", () => {
       "file",
       "file",
     ]);
-    expect(candidates.map((c) => c.repo_id)).toEqual([
-      R.platform,
-      R.platform,
-      R.site,
-      R.site,
-    ]);
+    expect(
+      candidates.map((c) => (c.kind === "file" ? c.repo_id : null)),
+    ).toEqual([R.platform, R.platform, R.site, R.site]);
   });
 
   test("a path query matches files across both repos and a symbol query matches symbols", () => {
     const files = mentionCandidates(index, "src/", null);
-    expect(new Set(files.map((c) => c.repo_id))).toEqual(
-      new Set([R.platform, R.site]),
-    );
+    expect(
+      new Set(files.map((c) => ("repo_id" in c ? c.repo_id : null))),
+    ).toEqual(new Set([R.platform, R.site]));
     const symbols = mentionCandidates(index, "banner", R.site);
     expect(symbols.map((c) => `${c.kind}:${c.label}`)).toEqual([
       "symbol:bannerHeight",
@@ -59,7 +56,11 @@ describe("mention candidates", () => {
       "symbol:.banner",
       "symbol:.banner .verdict",
     ]);
-    expect(symbols[1]?.reference).toMatchObject({
+    const second = symbols[1];
+    if (!second || !("reference" in second)) {
+      throw new Error("expected code candidate");
+    }
+    expect(second.reference).toMatchObject({
       kind: "symbol",
       path: "src/style.css",
       line_start: 5,
@@ -82,7 +83,7 @@ describe("mention candidates", () => {
 
   test("chip labels show repo, path, short SHA and range", () => {
     const [range] = mentionCandidates(index, "style.css:14-23", null);
-    if (!range) throw new Error("no candidate");
+    if (!range || !("reference" in range)) throw new Error("no candidate");
     expect(chipLabel(range.reference, range.repo_name)).toBe(
       "mars-site (fixture) · src/style.css:14-23 @ a1b2c3d",
     );

@@ -1,14 +1,20 @@
 import type { ReferenceChip } from "@mars/contracts";
 import {
+  type AgentPreviewView,
+  type AgentRequestView,
   type ConversationPage,
   type ConversationSummary,
   decodeCursor,
+  type EvidenceSharePreviewView,
+  type EvidenceShareView,
   encodeCursor,
   excerpt,
   fail,
   MAX_SEARCH_HITS,
   type MentionIndex,
+  type MentionRepo,
   type MessageView,
+  type PathSearchMatch,
   type ReactionEmoji,
   type ReactionView,
   type ReferencePreview,
@@ -17,6 +23,9 @@ import {
   type SendMessageInput,
   type SendResult,
   succeed,
+  type TaskLinkDraftView,
+  type TaskLinkRecordView,
+  type TaskLinkView,
   type TeamCapabilities,
   type TeamErrorCode,
   type TeamResult,
@@ -92,6 +101,11 @@ export class RpcTeamService implements TeamService {
   private readonly messages = new Map<string, Map<number, ServiceMessage>>();
   /** Reaction summaries by message id (from history items or `reactions.set`). */
   private readonly reactions = new Map<string, ReactionSummary[]>();
+  /** Repositories the viewer may read (from `repos.list`), keyed by `repo_id`. */
+  private readonly repos = new Map<
+    string,
+    { repo_id: string; label: string; revision: number }
+  >();
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
 
@@ -124,6 +138,7 @@ export class RpcTeamService implements TeamService {
     this.views.clear();
     this.messages.clear();
     this.reactions.clear();
+    this.repos.clear();
     this.client.forget();
   }
 
@@ -153,6 +168,10 @@ export class RpcTeamService implements TeamService {
       reactions: described.capabilities.reactions,
       search: described.capabilities.search,
       realtime: true,
+      ...(described.capabilities.references ? { references: true } : {}),
+      ...(described.capabilities.agent ? { agent: true } : {}),
+      ...(described.capabilities.links ? { links: true } : {}),
+      ...(described.capabilities.shares ? { shares: true } : {}),
     };
     return described.user_id;
   }
@@ -377,6 +396,21 @@ export class RpcTeamService implements TeamService {
     return this.guard(null, async () => {
       const me = await this.identity();
       const views = await this.client.listConversations();
+      if (this.serverCapabilities.references) {
+        try {
+          const repoList = await this.client.listRepos();
+          this.repos.clear();
+          for (const repo of repoList) {
+            this.repos.set(repo.repo_id, {
+              repo_id: repo.repo_id,
+              label: repo.label,
+              revision: repo.revision,
+            });
+          }
+        } catch {
+          // Repo listing is best-effort for mention autocomplete.
+        }
+      }
       const seen = new Set<string>();
       for (const view of views) {
         seen.add(view.conversation.conversation_id);
@@ -536,18 +570,28 @@ export class RpcTeamService implements TeamService {
   ): Promise<TeamResult<SendResult>> {
     if (input.body.trim().length === 0)
       return Promise.resolve(fail("empty_message"));
-    if (input.references.length > 0)
-      return Promise.resolve(fail("reference_not_attachable"));
     return this.guard(input.conversation_id, async () => {
       await this.identity();
       const known = this.cachedSorted(input.conversation_id).find(
         (m) => m.client_message_id === input.client_message_id,
       );
+      const referenceIds: string[] = [];
+      for (const ref of input.references) {
+        const created = await this.client.createReference({
+          repo_id: ref.repo_id,
+          commit_sha: ref.commit_sha,
+          path: ref.path,
+          ...(ref.line_start !== null ? { line_start: ref.line_start } : {}),
+          ...(ref.line_end !== null ? { line_end: ref.line_end } : {}),
+        });
+        referenceIds.push(created.reference_id);
+      }
       const message = await this.client.send({
         conversation_id: input.conversation_id,
         client_message_id: input.client_message_id,
         body: input.body,
         ...(input.reply_to ? { reply_to: input.reply_to } : {}),
+        ...(referenceIds.length > 0 ? { reference_ids: referenceIds } : {}),
       });
       this.remember(message);
       return {
@@ -618,8 +662,49 @@ export class RpcTeamService implements TeamService {
     _viewer: string,
     _messageId: string,
     referenceId: string,
-  ): TeamResult<ReferencePreview> {
-    return succeed({ state: "restricted", reference_id: referenceId });
+  ): Promise<TeamResult<ReferencePreview>> {
+    if (!this.serverCapabilities.references) {
+      return Promise.resolve(
+        succeed({ state: "restricted", reference_id: referenceId }),
+      );
+    }
+    return this.guard(null, async (): Promise<ReferencePreview> => {
+      await this.identity();
+      const preview = await this.client.resolveReference(referenceId);
+      if (preview.state === "restricted") {
+        return { state: "restricted", reference_id: referenceId };
+      }
+      if (preview.state !== "ok") {
+        return { state: "unavailable", reference_id: referenceId };
+      }
+      const repoLabel =
+        this.repos.get(preview.repo_id)?.label ?? preview.repo_id;
+      const startLine = preview.line_start ?? 1;
+      const rawLines = preview.text.length > 0 ? preview.text.split("\n") : [];
+      const lines = rawLines.map((text, idx) => ({
+        number: startLine + idx,
+        text,
+      }));
+      const highlight =
+        preview.line_start !== null && preview.line_end !== null
+          ? {
+              start: preview.line_start,
+              end: preview.line_end,
+            }
+          : null;
+      return {
+        state: "ok",
+        reference_id: preview.reference_id,
+        kind: preview.line_start === null ? "file" : "range",
+        repo_name: repoLabel,
+        path: preview.path,
+        commit_sha: preview.commit_sha,
+        short_sha: preview.commit_sha.slice(0, 7),
+        symbol: null,
+        lines,
+        highlight,
+      };
+    });
   }
 
   searchMessages(
@@ -672,7 +757,180 @@ export class RpcTeamService implements TeamService {
   }
 
   mentionIndex(): MentionIndex {
-    return { repos: [] };
+    const repos: MentionRepo[] = [];
+    if (!this.serverCapabilities.references && !this.serverCapabilities.agent) {
+      return { repos };
+    }
+    return {
+      repos,
+      users: this.users(),
+      agent_available: Boolean(this.serverCapabilities.agent),
+    };
+  }
+
+  searchPaths(
+    _viewer: string,
+    input: {
+      repo_id: string;
+      commit_sha: string;
+      query: string;
+      limit?: number;
+    },
+  ): Promise<TeamResult<PathSearchMatch[]>> {
+    if (!this.serverCapabilities.references)
+      return Promise.resolve(succeed([]));
+    return this.guard(null, async () => {
+      await this.identity();
+      const result = await this.client.searchPaths(input);
+      if (result.state !== "ok") return [];
+      return result.matches.map((m) => ({
+        repo_id: input.repo_id,
+        commit_sha: input.commit_sha,
+        path: m.path,
+        rank: m.rank,
+      }));
+    });
+  }
+
+  agentPreview(
+    _viewer: string,
+    input: {
+      conversation_id: string;
+      message_ids: string[];
+      reference_ids: string[];
+    },
+  ): Promise<TeamResult<AgentPreviewView>> {
+    return this.guard(input.conversation_id, async () => {
+      await this.identity();
+      return await this.client.agentPreview(input);
+    });
+  }
+
+  agentRequest(
+    _viewer: string,
+    input: {
+      conversation_id: string;
+      message_ids: string[];
+      reference_ids: string[];
+      idempotency_key: string;
+      preview_sha256: string;
+    },
+  ): Promise<TeamResult<AgentRequestView>> {
+    return this.guard(input.conversation_id, async () => {
+      await this.identity();
+      return await this.client.agentRequest(input);
+    });
+  }
+
+  agentCancel(
+    _viewer: string,
+    requestId: string,
+  ): Promise<TeamResult<AgentRequestView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.agentCancel(requestId);
+    });
+  }
+
+  agentInspect(
+    _viewer: string,
+    requestId: string,
+  ): Promise<TeamResult<AgentRequestView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.agentInspect(requestId);
+    });
+  }
+
+  taskLinkDraft(
+    _viewer: string,
+    input: {
+      conversation_id: string;
+      message_ids: string[];
+      reference_ids: string[];
+    },
+  ): Promise<TeamResult<TaskLinkDraftView>> {
+    return this.guard(input.conversation_id, async () => {
+      await this.identity();
+      return await this.client.taskLinkDraft(input);
+    });
+  }
+
+  taskLinkConfirm(
+    _viewer: string,
+    input: {
+      link_id: string;
+      workbench: {
+        scope: Record<string, unknown>;
+        task_id: string;
+        request_id: string;
+      };
+      target: { repo_id?: string; base_revision?: string };
+    },
+  ): Promise<TeamResult<TaskLinkRecordView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.taskLinkConfirm(input);
+    });
+  }
+
+  taskLinkCreated(
+    _viewer: string,
+    input: { link_id: string; task_revision: number },
+  ): Promise<TeamResult<TaskLinkRecordView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.taskLinkCreated(input);
+    });
+  }
+
+  taskLinkInspect(
+    _viewer: string,
+    linkId: string,
+  ): Promise<TeamResult<TaskLinkView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.taskLinkInspect(linkId);
+    });
+  }
+
+  sharePreview(
+    _viewer: string,
+    input: {
+      link_id: string;
+      evidence: Record<string, unknown>;
+      run_status: string;
+      selection: {
+        summary: string;
+        include_diff_digest: boolean;
+        verify_event_ids: string[];
+      };
+    },
+  ): Promise<TeamResult<EvidenceSharePreviewView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.sharePreview(input);
+    });
+  }
+
+  shareCreate(
+    _viewer: string,
+    input: {
+      link_id: string;
+      evidence: Record<string, unknown>;
+      run_status: string;
+      selection: {
+        summary: string;
+        include_diff_digest: boolean;
+        verify_event_ids: string[];
+      };
+      preview_sha256: string;
+    },
+  ): Promise<TeamResult<EvidenceShareView>> {
+    return this.guard(null, async () => {
+      await this.identity();
+      return await this.client.shareCreate(input);
+    });
   }
 }
 

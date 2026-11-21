@@ -15,6 +15,7 @@ export function teamOperations(
   | "metricsSnapshot"
   | "setTeamMember"
   | "removeTeamMember"
+  | "activeTeamIds"
   | "describe"
 > {
   const {
@@ -118,6 +119,18 @@ export function teamOperations(
         if (!row) throw new TeamError("corrupt_record", "Member row missing");
         return membership(row);
       });
+    },
+    activeTeamIds(user_id) {
+      const parsed = idSchema.safeParse(user_id);
+      if (!parsed.success) return [];
+      return read(() =>
+        db
+          .query<{ team_id: string }, [string]>(
+            "SELECT team_id FROM members WHERE user_id = ? AND state = 'active' ORDER BY team_id ASC",
+          )
+          .all(parsed.data)
+          .map((row) => row.team_id),
+      );
     },
     describe(actor) {
       return read(() => {
