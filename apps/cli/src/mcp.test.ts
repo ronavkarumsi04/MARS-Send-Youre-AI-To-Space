@@ -308,7 +308,7 @@ describe("mars mcp CLI flow", () => {
     ).rejects.toThrow(/--allow-stdio-probe/);
 
     // 2. Credential-backed HTTP server resolves credential from MARS_MCP_CREDENTIAL_<REF>
-    let seenAuth: string | null = null;
+    const authHeaders: Array<string | null> = [];
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -338,7 +338,7 @@ describe("mars mcp CLI flow", () => {
           });
         }
         if (body.method === "tools/call") {
-          seenAuth = req.headers.get("authorization");
+          authHeaders.push(req.headers.get("authorization"));
           return Response.json({
             jsonrpc: "2.0",
             id: body.id,
@@ -388,7 +388,7 @@ describe("mars mcp CLI flow", () => {
         result: { content: Array<{ text?: string }> };
       };
       expect(result.content[0]?.text).toBe("authed");
-      expect(seenAuth).toBe("Bearer cli-secret-xyz");
+      expect(authHeaders).toEqual(["Bearer cli-secret-xyz"]);
     } finally {
       delete process.env.MARS_MCP_CREDENTIAL_API_TOKEN;
     }

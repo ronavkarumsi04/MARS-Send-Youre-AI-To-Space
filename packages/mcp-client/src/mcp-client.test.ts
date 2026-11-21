@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RequestContext } from "@mars/contracts";
@@ -831,7 +831,9 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
                   },
                 });
                 controller.enqueue(
-                  new TextEncoder().encode(`event: message\ndata: ${payload}\n\n`),
+                  new TextEncoder().encode(
+                    `event: message\ndata: ${payload}\n\n`,
+                  ),
                 );
               },
             });

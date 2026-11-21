@@ -138,7 +138,11 @@ export class FileMcpRegistry implements McpServerRegistry {
             continue;
           }
           if (Date.now() >= deadline) {
-            throw new IntegrationTrustError("store_locked");
+            throw new IntegrationTrustError("revision_conflict", {
+              cause: new Error(
+                `Timed out waiting for registry lock ${this.lockPath}`,
+              ),
+            });
           }
           await new Promise((r) => setTimeout(r, 15));
         }

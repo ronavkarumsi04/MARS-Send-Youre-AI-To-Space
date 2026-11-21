@@ -143,10 +143,12 @@ export class McpEvidenceProbe implements EvidenceProbe {
   private readonly registry: McpServerRegistry;
   private readonly clock: () => Date;
   private readonly probeTimeoutMs: number;
-  private readonly getTrustedBaseline?: (
-    ctx: RequestContext,
-    identity: Identity,
-  ) => Promise<TrustedStdioBaseline | undefined>;
+  private readonly getTrustedBaseline:
+    | ((
+        ctx: RequestContext,
+        identity: Identity,
+      ) => Promise<TrustedStdioBaseline | undefined>)
+    | undefined;
   private readonly allowUnapprovedStdioProbe: boolean;
 
   constructor(options: McpEvidenceProbeOptions) {
@@ -265,12 +267,11 @@ export class McpEvidenceProbe implements EvidenceProbe {
         };
       }
     } else if (!allowUnapproved) {
-      throw new IntegrationTrustError(
-        "evidence_unavailable",
-        new Error(
+      throw new IntegrationTrustError("evidence_unavailable", {
+        cause: new Error(
           `Refusing to spawn unapproved stdio MCP server "${server.id}" before approval; pass allowUnapprovedStdioProbe (or --allow-stdio-probe) to explicitly authorize live discovery.`,
         ),
-      );
+      });
     }
 
     const descriptor = await probeMcpServerDescriptor(
