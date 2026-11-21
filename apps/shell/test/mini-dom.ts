@@ -15,6 +15,9 @@ export class MiniElement implements ShellElement {
   value = "";
   checked = false;
   disabled = false;
+  selectionStart: number | null = null;
+  selectionEnd: number | null = null;
+  selectionDirection: "forward" | "backward" | "none" | null = null;
   private readonly listeners = new Map<
     string,
     ((event: { target?: unknown; preventDefault?: () => void }) => void)[]
@@ -74,6 +77,16 @@ export class MiniElement implements ShellElement {
       this.children.length,
       ...(nodes as (MiniElement | MiniText)[]),
     );
+  }
+
+  setSelectionRange(
+    start: number,
+    end: number,
+    direction?: "forward" | "backward" | "none",
+  ): void {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+    this.selectionDirection = direction ?? "none";
   }
 
   addEventListener(

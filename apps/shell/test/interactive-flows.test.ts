@@ -877,16 +877,26 @@ describe("interactive renderer controller flows", () => {
         consent.checked = true;
         consent.dispatch("change");
       }
-      // Editing paid model ID clears consent again
+      // Editing paid model ID clears consent again and preserves caret position
       const paidModelInputAgain = findByAttr(
         doc.root,
         "data-control",
         "composer-paid-model-id",
       );
       if (paidModelInputAgain) {
+        paidModelInputAgain.focus();
         paidModelInputAgain.value = "anthropic/claude-opus-4-5";
+        paidModelInputAgain.setSelectionRange(10, 10, "forward");
         paidModelInputAgain.dispatch("input");
       }
+      const paidModelInputAfter = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-paid-model-id",
+      );
+      expect(doc.activeElement).toBe(paidModelInputAfter ?? null);
+      expect(paidModelInputAfter?.selectionStart).toBe(10);
+      expect(paidModelInputAfter?.selectionEnd).toBe(10);
       expect(
         findByAttr(doc.root, "data-action", "create-task")?.attributes.has(
           "disabled",
@@ -930,6 +940,23 @@ describe("interactive renderer controller flows", () => {
       }> = [];
       const paginatedTeam: TeamChatBridgeApi = {
         ...baseTeam,
+        "team.setReaction": async (params) => {
+          if (params.message_id === "msg-older-1") {
+            return {
+              ok: true,
+              value: {
+                reactions: [
+                  {
+                    emoji: params.emoji,
+                    count: params.on ? 1 : 0,
+                    mine: params.on,
+                  },
+                ],
+              },
+            };
+          }
+          return baseTeam["team.setReaction"](params);
+        },
         "team.open": async (params) => {
           openCalls.push({
             conversation_id: params.conversation_id,
@@ -995,6 +1022,52 @@ describe("interactive renderer controller flows", () => {
         ),
       );
       expect(openCalls.some((c) => c.before === "cursor-page-1")).toBe(true);
+      expect(
+        findByAttr(doc.root, "data-action", "team-load-older"),
+      ).toBeUndefined();
+
+      // Reacting to an older loaded message preserves loaded history and updates the reaction in place
+      const olderReactionBtn = findAll(
+        doc.root,
+        (el) =>
+          el.tagName === "BUTTON" &&
+          el.attributes.get("data-reaction") === "👍",
+      )[0];
+      expect(olderReactionBtn).toBeDefined();
+      olderReactionBtn?.click();
+      await waitFor(() => {
+        const btn = findAll(
+          doc.root,
+          (el) =>
+            el.tagName === "BUTTON" &&
+            el.attributes.get("data-reaction") === "👍",
+        )[0];
+        return btn?.attributes.get("aria-pressed") === "true";
+      });
+      expect(doc.root.textContent).toContain(
+        "Older history message from cursor-page-1",
+      );
+
+      // Sending a message after loading older history preserves loaded older messages and older_cursor
+      const sendComposer = findByAttr(
+        doc.root,
+        "data-focus-key",
+        "team-composer",
+      );
+      if (sendComposer) {
+        sendComposer.value = "Follow-up after loading history";
+        sendComposer.dispatch("input");
+      }
+      findAll(
+        doc.root,
+        (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
+      )[0]?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes("Follow-up after loading history"),
+      );
+      expect(doc.root.textContent).toContain(
+        "Older history message from cursor-page-1",
+      );
       expect(
         findByAttr(doc.root, "data-action", "team-load-older"),
       ).toBeUndefined();
