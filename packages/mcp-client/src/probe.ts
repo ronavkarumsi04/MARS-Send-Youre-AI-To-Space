@@ -260,10 +260,11 @@ export class McpEvidenceProbe implements EvidenceProbe {
       if (!matched) {
         const primary = baselines[0];
         if (!primary) {
-          throw new IntegrationTrustError(
-            "verification_failed",
-            "Missing trusted baseline for stdio drift comparison",
-          );
+          throw new IntegrationTrustError("source_unreadable", {
+            cause: new Error(
+              "Missing trusted baseline for stdio drift comparison",
+            ),
+          });
         }
         const driftedContentSha = sha256(
           canonicalJSON({
