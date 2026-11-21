@@ -207,6 +207,7 @@ function maybeRequestPathSearch(): void {
   const pickerState = composer.picker;
   if (!pickerState) {
     lastPathSearchKey = null;
+    lastPathSearchDigest = "";
     return;
   }
   if (!state?.capabilities.references) return;
@@ -217,6 +218,7 @@ function maybeRequestPathSearch(): void {
   const key = currentPathSearchKey(repos, pathQuery);
   if (key === lastPathSearchKey) return;
   lastPathSearchKey = key;
+  lastPathSearchDigest = "";
   for (const repo of repos) {
     post({
       type: "searchPaths",
