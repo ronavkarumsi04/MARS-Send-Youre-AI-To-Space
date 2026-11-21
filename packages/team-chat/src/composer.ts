@@ -242,13 +242,19 @@ export function mentionOptionId(
   return `mention-${index}-${(hash >>> 0).toString(36)}`;
 }
 
-export type ComposerProblem = "empty" | "too_long";
+export type ComposerProblem = "empty" | "text_required" | "too_long";
 
 /** Why the draft cannot be sent as-is, or null. Checked before the draft is cleared. */
-export function composerProblem(state: ComposerState): ComposerProblem | null {
+export function composerProblem(
+  state: ComposerState,
+  requireText = false,
+): ComposerProblem | null {
   const body = state.text.trim();
   if (body.length > MAX_MESSAGE_CHARS) return "too_long";
-  if (body.length === 0 && state.chips.length === 0) return "empty";
+  if (body.length === 0) {
+    if (state.chips.length === 0) return "empty";
+    if (requireText) return "text_required";
+  }
   return null;
 }
 
@@ -257,8 +263,9 @@ export function buildSend(
   state: ComposerState,
   conversationId: string,
   clientMessageId: string,
+  requireText = false,
 ): SendMessageInput | null {
-  if (composerProblem(state) !== null) return null;
+  if (composerProblem(state, requireText) !== null) return null;
   const body = state.text.trim();
   return {
     conversation_id: conversationId,

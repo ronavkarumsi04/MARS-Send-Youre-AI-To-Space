@@ -268,7 +268,8 @@ function newClientMessageId(): string {
 function send(): void {
   const selected = state?.selected;
   if (!selected || confirmedDraftId) return;
-  const problem = composerProblem(composer);
+  const requireText = state?.label === "SERVICE";
+  const problem = composerProblem(composer, requireText);
   if (problem === "too_long") {
     composerError = `Message is ${composer.text.trim().length} characters; the limit is ${MAX_MESSAGE_CHARS}. Shorten it or split it.`;
     renderComposerParts();
@@ -278,6 +279,7 @@ function send(): void {
     composer,
     selected.conversation.conversation_id,
     newClientMessageId(),
+    requireText,
   );
   if (!input) return;
   if (state?.capabilities.agent && AGENT_MENTION.test(input.body)) {
@@ -1208,10 +1210,15 @@ function renderComposerParts(): void {
   const status = nextPickerStatus(announcedPicker, announcement);
   if (status !== null) pickerStatus.textContent = status;
   announcedPicker = announcement;
-  composerAlert.textContent = composerError ?? "";
-  composerAlert.hidden = composerError === null;
+  const problem = composerProblem(composer, state?.label === "SERVICE");
+  const error =
+    problem === "text_required"
+      ? "Add a message to send with your code references."
+      : composerError;
+  composerAlert.textContent = error ?? "";
+  composerAlert.hidden = error === null;
   sendButton.disabled =
-    !state?.selected || composerProblem(composer) === "empty";
+    !state?.selected || problem === "empty" || problem === "text_required";
 }
 
 // ---------------------------------------------------------------- code pane

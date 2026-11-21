@@ -288,6 +288,26 @@ describe("picker status updates", () => {
 });
 
 describe("composer problems", () => {
+  test("a text-required send preserves attached chips until there is accompanying text", () => {
+    const draft = reduceComposer(
+      type(EMPTY_COMPOSER, "@how.ts"),
+      { type: "pickerSelect" },
+      env,
+    );
+    expect(draft.chips).toHaveLength(1);
+    const requireText = true;
+    for (const state of [draft, type(draft, "   ")]) {
+      expect(composerProblem(state, requireText)).toBe("text_required");
+      expect(buildSend(state, "conv", "cm", requireText)).toBeNull();
+    }
+    const withText = type(draft, "See this file");
+    expect(composerProblem(withText, requireText)).toBeNull();
+    expect(buildSend(withText, "conv", "cm", requireText)).toMatchObject({
+      body: "See this file",
+      references: [draft.chips[0]?.reference],
+    });
+  });
+
   test("an overlength body is reported and never built into a send", () => {
     const long = type(EMPTY_COMPOSER, "x".repeat(4001));
     expect(composerProblem(long)).toBe("too_long");
