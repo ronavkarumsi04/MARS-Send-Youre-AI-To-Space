@@ -243,10 +243,13 @@ export function createController(
 
   const openTeamConversation = async (conversationId: string) => {
     if (!teamChat) return;
+    const switchedConversation =
+      teamState.activeConversationId !== conversationId;
     const loadingState: TeamChatViewState = {
       ...teamState,
       activeConversationId: conversationId,
       loading: true,
+      ...(switchedConversation ? { draft: "" } : {}),
     };
     delete loadingState.searchHits;
     delete loadingState.error;
@@ -479,6 +482,7 @@ export function createController(
       viewer: res.value.viewer,
       users: res.value.users,
       conversations: res.value.conversations,
+      draft: "",
       resolvedRefs: {},
     };
     delete nextTeamState.searchHits;
