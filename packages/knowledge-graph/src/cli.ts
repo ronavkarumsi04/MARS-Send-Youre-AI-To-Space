@@ -6,7 +6,7 @@
  * an external runtime: nothing here owns a session, a model or a tool loop.
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export interface GraphifyInvocation {
   args: string[];
@@ -52,6 +52,7 @@ const INHERITED_ENV = [
 export function sandboxEnvironment(
   options: Pick<GraphifyRunnerOptions, "env" | "processEnv"> & {
     dataRoot: string;
+    outRoot?: string;
   },
 ): Record<string, string> {
   const source = options.processEnv ?? process.env;
@@ -63,10 +64,11 @@ export function sandboxEnvironment(
   env.HOME = options.dataRoot;
   env.XDG_CACHE_HOME = options.dataRoot;
   env.XDG_CONFIG_HOME = options.dataRoot;
-  /* graphify resolves its output directory as Path(out_root) / GRAPHIFY_OUT.
-   * When GRAPHIFY_OUT is absolute, pathlib drops out_root and writes directly
-   * into GRAPHIFY_OUT, so pin it to the exact out/graphify-out directory. */
-  env.GRAPHIFY_OUT = join(options.dataRoot, "out", "graphify-out");
+  /* Graphify joins --out with GRAPHIFY_OUT; an absolute value must include --out. */
+  env.GRAPHIFY_OUT = join(
+    options.outRoot ?? join(options.dataRoot, "out"),
+    "graphify-out",
+  );
   env.PYTHONIOENCODING = "utf-8";
   env.PYTHONUNBUFFERED = "1";
   env.PYTHONDONTWRITEBYTECODE = "1";
@@ -123,6 +125,11 @@ export function createGraphifyRunner(
   return {
     async run(invocation) {
       const started = Date.now();
+      const outIndex = invocation.args.indexOf("--out");
+      const requestedOut =
+        outIndex >= 0
+          ? invocation.args[outIndex + 1]
+          : invocation.args.find((arg) => arg.startsWith("--out="))?.slice(6);
       let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
         child = Bun.spawn([executable, ...prefix, ...invocation.args], {
@@ -133,6 +140,9 @@ export function createGraphifyRunner(
           env: sandboxEnvironment({
             ...options,
             dataRoot: invocation.dataRoot,
+            ...(requestedOut
+              ? { outRoot: resolve(invocation.cwd, requestedOut) }
+              : {}),
           }),
         });
       } catch (error) {

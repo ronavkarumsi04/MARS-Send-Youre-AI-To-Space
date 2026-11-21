@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDerivedArtifactStore } from "@mars/context";
 import {
+  createGraphifyRunner,
   createKnowledgeGraphService,
   type GraphBinding,
   type GraphBuildRecord,
@@ -13,6 +14,38 @@ import {
 } from "../src";
 
 const FAKE = join(import.meta.dir, "fake-graphify.ts");
+
+test.each(["absolute", "relative", "equals"])(
+  "Graphify respects a custom --out directory (%s)",
+  async (kind) => {
+    const f = await fixture({ graph: { nodes: [], links: [] } });
+    const custom = join(f.root, "custom-output");
+    const out = kind === "relative" ? "../custom-output" : custom;
+    const runner = createGraphifyRunner({
+      command: [process.execPath, FAKE],
+      maxOutputBytes: 4096,
+      env: { FAKE_GRAPHIFY_SCENARIO: join(f.root, "scenario.json") },
+    });
+    const result = await runner.run({
+      args: [
+        "extract",
+        f.workspace,
+        "--code-only",
+        ...(kind === "equals" ? [`--out=${out}`] : ["--out", out]),
+      ],
+      cwd: f.workspace,
+      dataRoot: f.dataRoot,
+      timeoutMs: 2000,
+    });
+    expect(result.exit_code).toBe(0);
+    expect(
+      JSON.parse(
+        await readFile(join(custom, "graphify-out", "graph.json"), "utf8"),
+      ),
+    ).toEqual({ nodes: [], links: [] });
+    expect(await readdir(f.dataRoot).catch(() => [])).not.toContain("out");
+  },
+);
 
 async function fixture(scenario: Record<string, unknown>) {
   const root = await mkdtemp(join(tmpdir(), "mars-kg-"));
@@ -490,6 +523,47 @@ describe("knowledge graph service", () => {
     });
     expect(outcome.status).toBe("refused");
     expect(await f.calls()).toEqual([]);
+  });
+
+  test.each([
+    ["straße", "strasse"],
+    ["İstanbul", "i_stanbul"],
+    ["ﬁles", "files"],
+    ["Ὀδυσσεύς", "ὀδυσσεύσ"],
+  ])("redacts Graphify casefolded host paths for %s", (host, folded) => {
+    const root = `/private/${host}/workspace`;
+    const dataRoot = `/private/${host}/state`;
+    const artifact = normalizeGraph({
+      raw: {
+        nodes: [
+          { id: "safe", source_file: `${root}/src/a.ts` },
+          { id: `private_${folded}_external_helper` },
+          { id: "raw", label: `${root}/secret` },
+          {
+            id: `private_${folded}_workspace_secret`,
+            source_file: `${root}/secret.ts`,
+          },
+          { id: `private_${folded}_state_secret` },
+        ],
+        links: [
+          { source: "safe", target: `private_${folded}_external_helper` },
+        ],
+      },
+      analysis: {},
+      root,
+      dataRoot,
+      workspace: { workspace_id: "ws", revision: "rev" },
+      graphifyVersion: "0.9.101",
+      builtAt: "2026-11-21T00:00:00.000Z",
+      files: 1,
+      complete: true,
+    });
+    expect(artifact.nodes.map((node) => node.id)).toEqual(["safe"]);
+    expect(artifact.edges).toEqual([]);
+    expect(artifact.stats.dropped_nodes).toBe(4);
+    expect(JSON.stringify(artifact)).not.toContain(root);
+    expect(JSON.stringify(artifact)).not.toContain(dataRoot);
+    expect(JSON.stringify(artifact)).not.toContain(`private_${folded}`);
   });
 
   test("redacts Unicode host-path slugs without dropping workspace files containing ancestor slugs", () => {

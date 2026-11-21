@@ -45,9 +45,10 @@ import {
 
 const LIVE_ENABLED = process.env.MARS_LIVE_E2E === "1";
 const GRAPHIFY_BIN = process.env.MARS_GRAPHIFY_BIN?.trim();
-const OPENROUTER_KEY = (
-  process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY
-)?.trim();
+function openRouterCredential(env: Record<string, string | undefined>) {
+  return env.OPENROUTER_API_KEY?.trim() || undefined;
+}
+const OPENROUTER_KEY = openRouterCredential(process.env);
 const REQUESTED_MODEL = (
   process.env.MARS_LIVE_MODEL ?? "openrouter/free"
 ).trim();
@@ -60,6 +61,16 @@ function assertFreeOpenRouterModel(modelId: string): void {
       `Refusing non-free OpenRouter model "${modelId}" on $0.00 budget; use "openrouter/free" or a ":free" model ID.`,
     );
   }
+}
+
+function hasMemoryProposal(result: {
+  status: string;
+  proposals: { store: string }[];
+}): boolean {
+  return (
+    result.status === "completed" &&
+    result.proposals.some((proposal) => proposal.store === "memory")
+  );
 }
 
 async function loadIsolatedFreeOpenRouterRegistry(options: {
@@ -652,15 +663,12 @@ async function runMemoryGraphVaultE2E(options: {
       } finally {
         runner.stop();
       }
-      if (
-        reviewResult.status === "completed" &&
-        reviewResult.proposals.length > 0
-      ) {
+      if (hasMemoryProposal(reviewResult)) {
         break;
       }
     }
 
-    if (reviewResult.status !== "completed") {
+    if (!hasMemoryProposal(reviewResult)) {
       throw new Error(
         `Live review failed: ${JSON.stringify({ reviewResult, httpStatuses, resolvedModels })}`,
       );
@@ -850,6 +858,26 @@ async function runMemoryGraphVaultE2E(options: {
     for (const p of importedProposals) {
       expect(p.expected_revision).toBe(1);
     }
+    const importedOperations = importedProposals.flatMap((p) => p.operations);
+    const exportedFactId = parseNote(originalNote).frontmatter?.entry_id;
+    expect(exportedFactId).toBeDefined();
+    expect(importedOperations).toContainEqual(
+      expect.objectContaining({
+        operation: "patch",
+        entry_id: exportedFactId,
+        fact: parseNote(editedNote).body,
+      }),
+    );
+    expect(importedOperations).toContainEqual(
+      expect.objectContaining({
+        operation: "add",
+        entry: expect.objectContaining({
+          fact: expect.stringContaining(
+            "Always run mars vault status before importing edited Obsidian notes.",
+          ),
+        }),
+      }),
+    );
 
     // Reject the vault-imported proposals via supported API so we can cleanly test revert of the accepted live proposal.
     for (const p of importedProposals) {
@@ -954,6 +982,56 @@ async function runMemoryGraphVaultE2E(options: {
 }
 
 describe("live E2E helper guards", () => {
+  test("only a completed memory proposal stops review retries", () => {
+    expect(
+      hasMemoryProposal({
+        status: "completed",
+        proposals: [{ store: "memory" }],
+      }),
+    ).toBe(true);
+    expect(
+      hasMemoryProposal({
+        status: "completed",
+        proposals: [{ store: "skills" }, { store: "memory" }],
+      }),
+    ).toBe(true);
+    expect(
+      hasMemoryProposal({
+        status: "completed",
+        proposals: [{ store: "skills" }],
+      }),
+    ).toBe(false);
+    expect(hasMemoryProposal({ status: "completed", proposals: [] })).toBe(
+      false,
+    );
+    expect(
+      hasMemoryProposal({
+        status: "rejected",
+        proposals: [{ store: "memory" }],
+      }),
+    ).toBe(false);
+    expect(hasMemoryProposal({ status: "rate-limited", proposals: [] })).toBe(
+      false,
+    );
+  });
+  test("never uses another provider's key for OpenRouter", () => {
+    expect(
+      openRouterCredential({ OPENAI_API_KEY: "openai-only" }),
+    ).toBeUndefined();
+    expect(
+      openRouterCredential({
+        OPENROUTER_API_KEY: "  ",
+        OPENAI_API_KEY: "openai-only",
+      }),
+    ).toBeUndefined();
+    expect(openRouterCredential({})).toBeUndefined();
+    expect(
+      openRouterCredential({
+        OPENROUTER_API_KEY: " router-key ",
+        OPENAI_API_KEY: "openai-only",
+      }),
+    ).toBe("router-key");
+  });
   test("resolves arbitrary :free OpenRouter models not in built-in presets while rejecting paid models and project overrides", async () => {
     const base = await mkdtemp(join(tmpdir(), "mars-live-registry-"));
     dirs.push(base);
@@ -1086,7 +1164,7 @@ describe.skipIf(!GRAPHIFY_BIN)(
 );
 
 describe.skipIf(!LIVE_ENABLED || !GRAPHIFY_BIN || !OPENROUTER_KEY)(
-  "live E2E: Hermes memory + real graphifyy==0.9.101 + Obsidian vault round-trip ($0.00 OpenRouter :free)",
+  "live E2E: Hermes memory + real graphifyy==0.9.101 + Obsidian vault round-trip ($0.00 OpenRouter :free; requires OPENROUTER_API_KEY)",
   () => {
     test("end-to-end live verification across graph, live-model memory proposals, vault export/import/status, frozen context, and revert", async () => {
       await runMemoryGraphVaultE2E({

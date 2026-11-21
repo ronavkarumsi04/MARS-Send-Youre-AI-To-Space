@@ -6,6 +6,7 @@ import { EVENT_OPERATIONS } from "@mars/contracts";
 import { canonicalJson } from "@mars/contracts/canonical";
 import type { RuntimeKnowledgeGraph } from "@mars/execution";
 import { z } from "zod";
+import { casefold } from "./casefold";
 import { createGraphifyRunner, type GraphifyRunner } from "./cli";
 import {
   communities,
@@ -161,7 +162,7 @@ function workspaceRelative(
 function slugifyHostPath(path: string): string {
   let cur = path;
   for (let i = 0; i < 6; i++) {
-    const next = cur.toLowerCase().normalize("NFKC");
+    const next = casefold(cur).normalize("NFKC");
     if (next === cur) break;
     cur = next;
   }
