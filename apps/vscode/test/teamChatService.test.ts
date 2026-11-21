@@ -391,6 +391,43 @@ describe("RpcTeamService through the controller", () => {
     controller.dispose();
   });
 
+  test("unconfirmed @MARS invocations cannot be sent through ordinary chat", async () => {
+    const { controller, server, group, last } = setup();
+    await controller.handleMessage({ type: "ready" });
+    const before = server.messages.length;
+    for (const [index, body] of [
+      "@MARS, can you summarize the selected transport details?",
+      " \t@mArS: summarize",
+      "@mars? What changed?",
+      "@MARS.Summarize this",
+    ].entries()) {
+      const clientMessageId = `unconfirmed_${index}`;
+      await controller.handleMessage({
+        type: "send",
+        conversationId: group,
+        clientMessageId,
+        body,
+        replyTo: null,
+        references: [],
+      });
+      expect(last().notice?.text).toContain("Preview and confirm");
+      expect(last().pending).toEqual([]);
+      await controller.handleMessage({ type: "retrySend", clientMessageId });
+      expect(server.messages).toHaveLength(before);
+    }
+    const body = "@MARSHALL, please email dev@mars.example.";
+    await controller.handleMessage({
+      type: "send",
+      conversationId: group,
+      clientMessageId: "ordinary",
+      body,
+      replyTo: null,
+      references: [],
+    });
+    expect(server.messages).toHaveLength(before + 1);
+    expect(server.messages.at(-1)?.body).toBe(body);
+  });
+
   test("@MARS preview and cancel do not post the question or create references", async () => {
     const { controller, service, group, last } = setup();
     await controller.handleMessage({ type: "ready" });
@@ -444,7 +481,7 @@ describe("RpcTeamService through the controller", () => {
     };
     const draft: AgentDraft = {
       clientMessageId: "draft",
-      body: "@MARS Private question",
+      body: "@MARS, can you summarize the selected transport details?",
       replyTo: prior,
       references: [
         {

@@ -12,7 +12,7 @@ import {
   reduceComposer,
 } from "./composer";
 import { FIXTURE_REPOS as R, SITE_SHA, FIXTURE_USERS as U } from "./fixture";
-import { chipLabel, mentionCandidates } from "./mentions";
+import { chipLabel, mentionCandidates, parseMarsInvocation } from "./mentions";
 import { FixtureTeamService } from "./service";
 
 const index = new FixtureTeamService().mentionIndex(U.ada);
@@ -315,6 +315,31 @@ describe("composer problems", () => {
     expect(composerProblem(type(EMPTY_COMPOSER, "x".repeat(4000)))).toBeNull();
     expect(composerProblem(EMPTY_COMPOSER)).toBe("empty");
     expect(composerProblem(type(EMPTY_COMPOSER, "   "))).toBe("empty");
+  });
+});
+
+describe("@MARS invocations", () => {
+  test.each([
+    [
+      "@MARS, can you summarize the selected transport details?",
+      "can you summarize the selected transport details?",
+    ],
+    [" \t@mArS:summarize this", "summarize this"],
+    ["@mars? What changed?", "What changed?"],
+    ["@MARS.Summarize the changes.", "Summarize the changes."],
+    ["Please @MARS summarize this", "Please summarize this"],
+    ["\n @mArS? ", ""],
+    ["@MARS", ""],
+  ])("extracts the prompt from %j", (text, prompt) => {
+    expect(parseMarsInvocation(text)).toEqual({ prompt });
+  });
+
+  test.each([
+    "Email dev@mars.example for details",
+    "@MARSHALL, can you summarize?",
+    "@MARS_TEAM can you summarize?",
+  ])("treats %j as an ordinary message", (text) => {
+    expect(parseMarsInvocation(text)).toBeNull();
   });
 });
 

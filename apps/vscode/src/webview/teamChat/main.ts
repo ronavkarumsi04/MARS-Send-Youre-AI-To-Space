@@ -13,6 +13,7 @@ import {
   type MessageView,
   mentionOptionId,
   nextPickerStatus,
+  parseMarsInvocation,
   pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
@@ -252,8 +253,6 @@ function updateComposer(action: Parameters<typeof reduceComposer>[1]): void {
   renderComposerParts();
 }
 
-const AGENT_MENTION = /(?:^|\s)@MARS(?:\s|$)/;
-
 const clientIdPrefix = (() => {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
@@ -282,7 +281,13 @@ function send(): void {
     requireText,
   );
   if (!input) return;
-  if (state?.capabilities.agent && AGENT_MENTION.test(input.body)) {
+  const invocation = parseMarsInvocation(input.body);
+  if (invocation) {
+    if (!state?.capabilities.agent) {
+      composerError = "@MARS is not enabled on this team service.";
+      renderComposerParts();
+      return;
+    }
     const contextMessages = composer.reply_to
       ? selected.messages.filter(
           (m) => m.message_id === composer.reply_to?.message_id,
@@ -295,8 +300,7 @@ function send(): void {
           ? [composer.reply_to.message_id]
           : [];
     const hasQuestionOrRefs =
-      input.body.replace(/@MARS/g, "").trim().length > 0 ||
-      input.references.length > 0;
+      invocation.prompt.length > 0 || input.references.length > 0;
     if (!hasQuestionOrRefs && messageIds.length === 0) {
       composerError =
         "Send a message in this conversation before asking @MARS.";

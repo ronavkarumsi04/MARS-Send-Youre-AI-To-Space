@@ -10,6 +10,7 @@ import {
   MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
   type PathSearchMatch,
+  parseMarsInvocation,
   type SendMessageInput,
   type TaskLinkDraftView,
   type TaskLinkView,
@@ -350,7 +351,7 @@ export class TeamChatController {
         );
         if (!input || item?.status === "conflict") return;
         const followup = this.pendingAgentRequests.get(message.clientMessageId);
-        const sent = await this.send(input);
+        const sent = await this.send(input, followup !== undefined);
         if (sent && followup) {
           await this.requestForSentDraft(sent.sequence, followup);
           this.emit();
@@ -833,7 +834,16 @@ export class TeamChatController {
 
   private async send(
     input: SendMessageInput,
+    confirmedAgentDraft = false,
   ): Promise<{ sequence: number; duplicate: boolean } | null> {
+    if (!confirmedAgentDraft && parseMarsInvocation(input.body)) {
+      this.notice = {
+        kind: "error",
+        text: "Preview and confirm your @MARS question before sending.",
+      };
+      this.emit();
+      return null;
+    }
     const existing = this.pending.find(
       (p) => p.client_message_id === input.client_message_id,
     );
@@ -1167,13 +1177,16 @@ export class TeamChatController {
       referenceIds,
       idempotencyKey,
     };
-    const sent = await this.send({
-      conversation_id: conversationId,
-      client_message_id: clientMessageId,
-      body: draft.body,
-      reply_to: draft.replyTo,
-      references: draft.references,
-    });
+    const sent = await this.send(
+      {
+        conversation_id: conversationId,
+        client_message_id: clientMessageId,
+        body: draft.body,
+        reply_to: draft.replyTo,
+        references: draft.references,
+      },
+      true,
+    );
     if (sent) await this.requestForSentDraft(sent.sequence, followup);
     else if (this.pendingInputs.has(clientMessageId))
       this.pendingAgentRequests.set(clientMessageId, followup);

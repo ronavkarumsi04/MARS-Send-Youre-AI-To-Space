@@ -193,7 +193,7 @@ export function mentionCandidates(
 }
 
 const USER_MENTION_RE = /(?:^|[\s(])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/g;
-const MARS_INVOCATION_RE = /^\s*@mars(?:\s+([\s\S]+))?$/i;
+const MARS_INVOCATION_RE = /(?:^|\s)@mars(?=$|[\s,.;:!?])[\s,.;:!?]*/i;
 
 /** Extract distinct teammate `@handles` from a message body (excluding `@MARS`). */
 export function extractUserMentions(text: string): string[] {
@@ -207,14 +207,15 @@ export function extractUserMentions(text: string): string[] {
 }
 
 /**
- * Detect an explicit `@MARS <prompt>` composer invocation. Returns the trimmed
- * prompt when the draft invokes `@MARS`, or `null` for ordinary messages.
+ * Detect a standalone `@MARS` invocation, with an empty prompt for context-only
+ * requests, or return `null` for ordinary messages.
  */
 export function parseMarsInvocation(text: string): { prompt: string } | null {
   const match = MARS_INVOCATION_RE.exec(text);
   if (!match) return null;
-  const prompt = (match[1] ?? "").trim();
-  if (prompt.length === 0) return null;
+  const before = text.slice(0, match.index).trim();
+  const after = text.slice(match.index + match[0].length).trim();
+  const prompt = [before, after].filter(Boolean).join(" ");
   return { prompt };
 }
 
