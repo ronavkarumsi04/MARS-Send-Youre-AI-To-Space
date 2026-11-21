@@ -59,6 +59,7 @@ export interface McpEvidenceProbeOptions {
 
 export interface ObserveServerOptions {
   allowUnapprovedStdioProbe?: boolean;
+  signal?: AbortSignal;
   authorization?: Pick<
     AuthorizedArtifact,
     "permissions" | "credential_bindings"
@@ -68,11 +69,14 @@ export interface ObserveServerOptions {
 async function hashFileOrSpec(
   filePath: string | undefined,
   fallbackSpec: unknown,
+  signal?: AbortSignal,
 ): Promise<string> {
+  signal?.throwIfAborted();
   if (filePath) {
     const abs = resolve(filePath);
     const hasher = new Bun.CryptoHasher("sha256");
-    for await (const chunk of createReadStream(abs)) hasher.update(chunk);
+    for await (const chunk of createReadStream(abs, { signal }))
+      hasher.update(chunk);
     return hasher.digest("hex");
   }
   return sha256(canonicalJSON(fallbackSpec));
@@ -105,11 +109,15 @@ function buildConfigHash(
   );
 }
 
-async function readStdioArtifact(config: StdioTransportConfig) {
+async function readStdioArtifact(
+  config: StdioTransportConfig,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   const executable = resolveStdioExecutable(config);
-  const executableSha = await hashFileOrSpec(executable, null);
+  const executableSha = await hashFileOrSpec(executable, null, signal);
   const entrypointSha = config.entrypoint
-    ? await hashFileOrSpec(config.entrypoint, null)
+    ? await hashFileOrSpec(config.entrypoint, null, signal)
     : null;
   return {
     executable,
@@ -120,28 +128,37 @@ async function readStdioArtifact(config: StdioTransportConfig) {
 export async function verifyMcpConfig(
   server: McpServerConfig,
   expected: SourceEvidence,
+  signal?: AbortSignal,
 ) {
   const artifact =
     server.transport.type === "stdio"
-      ? await readStdioArtifact(server.transport)
+      ? await readStdioArtifact(server.transport, signal)
       : undefined;
   if (buildConfigHash(server, artifact?.sha) !== expected.config_sha256) {
     throw new IntegrationTrustError("drift");
   }
   if (
     server.transport.type === "stdio" &&
-    (await stdioDependencyHash(server.transport)) !== expected.dependency_sha256
+    (await stdioDependencyHash(server.transport, signal)) !==
+      expected.dependency_sha256
   ) {
     throw new IntegrationTrustError("drift");
   }
   return artifact?.executable;
 }
 
-function stdioDependencyHash(config: StdioTransportConfig) {
-  return hashFileOrSpec(config.dependency_manifest, {
-    command: config.command,
-    args: config.args,
-  });
+function stdioDependencyHash(
+  config: StdioTransportConfig,
+  signal?: AbortSignal,
+) {
+  return hashFileOrSpec(
+    config.dependency_manifest,
+    {
+      command: config.command,
+      args: config.args,
+    },
+    signal,
+  );
 }
 
 function buildToolEvidence(descriptor: McpServerDescriptor) {
@@ -197,11 +214,14 @@ export async function probeMcpServerDescriptor(
   server: McpServerConfig,
   timeoutMs = 5_000,
   extraHeaders?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<McpServerDescriptor> {
+  signal?.throwIfAborted();
   const transport = createMcpTransport(server.transport);
   try {
     return await transport.initialize({
       timeoutMs,
+      ...(signal ? { signal } : {}),
       ...(extraHeaders ? { extraHeaders } : {}),
     });
   } finally {
@@ -245,6 +265,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
     ctx: RequestContext,
     identity: Identity,
     authorization?: ObserveServerOptions["authorization"],
+    signal?: AbortSignal,
   ): Promise<SourceEvidence> {
     if (
       this.registryScope !== undefined &&
@@ -259,11 +280,10 @@ export class McpEvidenceProbe implements EvidenceProbe {
     if (!server) {
       throw new IntegrationTrustError("evidence_unavailable");
     }
-    return this.observeServer(
-      ctx,
-      server,
-      authorization ? { authorization } : undefined,
-    );
+    return this.observeServer(ctx, server, {
+      ...(authorization ? { authorization } : {}),
+      ...(signal ? { signal } : {}),
+    });
   }
 
   async observeServer(
@@ -271,6 +291,8 @@ export class McpEvidenceProbe implements EvidenceProbe {
     server: McpServerConfig,
     options?: ObserveServerOptions,
   ): Promise<SourceEvidence> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     if (
       this.registryScope !== undefined &&
       this.registryScope !== scopeKey(ctx.scope)
@@ -293,6 +315,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
         server,
         this.probeTimeoutMs,
         authentication?.headers,
+        signal,
       );
       const tools = buildToolEvidence(descriptor);
       const descriptorSha = buildDescriptorHash(descriptor);
@@ -326,9 +349,12 @@ export class McpEvidenceProbe implements EvidenceProbe {
     const stdio: StdioTransportConfig = server.transport;
     // Hash static local artifacts BEFORE spawning the stdio process so
     // tampered or unapproved executables are never launched before trust checks.
-    const { executable, sha: artifactSha } = await readStdioArtifact(stdio);
+    const { executable, sha: artifactSha } = await readStdioArtifact(
+      stdio,
+      signal,
+    );
     const configSha = buildConfigHash(server, artifactSha);
-    const dependencySha = await stdioDependencyHash(stdio);
+    const dependencySha = await stdioDependencyHash(stdio, signal);
 
     const allowUnapproved =
       options?.allowUnapprovedStdioProbe ?? this.allowUnapprovedStdioProbe;
@@ -388,6 +414,8 @@ export class McpEvidenceProbe implements EvidenceProbe {
     const descriptor = await probeMcpServerDescriptor(
       { ...server, transport: { ...stdio, command: executable } },
       this.probeTimeoutMs,
+      undefined,
+      signal,
     );
     const tools = buildToolEvidence(descriptor);
     const descriptorSha = buildDescriptorHash(descriptor);

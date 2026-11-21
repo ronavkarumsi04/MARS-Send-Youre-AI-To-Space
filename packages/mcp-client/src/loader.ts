@@ -142,7 +142,7 @@ export function createTrustedMcpLoader(
     authentication?: McpAuthentication,
   ): Promise<ActiveConnection> {
     signal.throwIfAborted();
-    const executable = await verifyMcpConfig(server, artifact.evidence);
+    const executable = await verifyMcpConfig(server, artifact.evidence, signal);
     signal.throwIfAborted();
     let current = connections.get(server.id);
     if (
@@ -318,6 +318,7 @@ export function createTrustedMcpLoader(
               ...(authentication ? { credential_ref: authentication.ref } : {}),
             });
           },
+          signal,
         );
       } catch (error) {
         if (
@@ -465,6 +466,7 @@ export function createTrustedMcpLoader(
               active.inFlight.delete(abortController);
             }
           },
+          signal,
         );
       } catch (error) {
         if (

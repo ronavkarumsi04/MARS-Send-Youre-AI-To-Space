@@ -574,8 +574,41 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
         required: ["limit"],
       },
       requiredOnly: { $ref: "#/$defs/Filter", required: ["term"] },
+      delivery: {
+        $ref: "#/$defs/Address",
+        properties: { fallback: { $ref: "#/$defs/Address" } },
+      },
+      ...Object.fromEntries(
+        Array.from({ length: 11 }, (_, i) => [`flag${i}`, { type: "boolean" }]),
+      ),
+      config: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          retries: { type: "integer" },
+          label: { type: "string" },
+          timeoutSeconds: { type: "number" },
+          routes: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                source: { type: "string" },
+                destination: { type: "string" },
+                protocol: { type: "string" },
+              },
+              required: ["source", "destination", "protocol"],
+            },
+          },
+        },
+      },
     },
     $defs: {
+      Address: {
+        type: "object",
+        properties: { postalCode: { type: "string" } },
+        required: ["postalCode"],
+      },
       Tree: {
         type: "object",
         properties: Object.fromEntries(
@@ -744,6 +777,31 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
         requiredOnly: {
           properties: { term: { type: "string" } },
           required: expect.arrayContaining(["exact", "term"]),
+        },
+        delivery: {
+          required: ["postalCode"],
+          properties: {
+            postalCode: { type: "string" },
+            fallback: {
+              required: ["postalCode"],
+              properties: { postalCode: { type: "string" } },
+            },
+          },
+        },
+        config: {
+          properties: {
+            enabled: { type: "boolean" },
+            routes: {
+              items: {
+                properties: {
+                  source: { type: "string" },
+                  destination: { type: "string" },
+                  protocol: { type: "string" },
+                },
+                required: ["source", "destination", "protocol"],
+              },
+            },
+          },
         },
       },
       required: expect.arrayContaining(["query", "filter"]),

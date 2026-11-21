@@ -3,6 +3,7 @@ export function startStatefulMcpServer(
   inputSchema: Record<string, unknown> = { type: "object" },
   onCall?: () => void,
   beforeInitializeResponse?: () => Promise<void>,
+  onDelete?: () => void,
 ) {
   const sessions = new Map<string, string | null>();
   const deleted: Array<{ id: string; identity: string | null }> = [];
@@ -12,6 +13,7 @@ export function startStatefulMcpServer(
   let nextId = 0;
   let invalidSessionRequests = 0;
   let redirectRequests = 0;
+  let initializedNotifications = 0;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -56,6 +58,7 @@ export function startStatefulMcpServer(
       if (request.method === "DELETE") {
         sessions.delete(id);
         deleted.push({ id, identity });
+        onDelete?.();
         return new Response(null, {
           status: 307,
           headers: { Location: "/redirect" },
@@ -63,6 +66,7 @@ export function startStatefulMcpServer(
       }
       switch (rpc?.method) {
         case "notifications/initialized":
+          initializedNotifications++;
           return new Response(null, { status: 202 });
         case "tools/list":
           return result({
@@ -95,6 +99,9 @@ export function startStatefulMcpServer(
     },
     get redirectRequests() {
       return redirectRequests;
+    },
+    get initializedNotifications() {
+      return initializedNotifications;
     },
   };
 }

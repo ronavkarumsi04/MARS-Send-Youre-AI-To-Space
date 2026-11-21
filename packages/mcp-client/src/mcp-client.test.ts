@@ -1620,6 +1620,7 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
   it("cleans up an HTTP session allocated before cancelled initialization returns headers", async () => {
     const allocated = Promise.withResolvers<void>();
     const sendHeaders = Promise.withResolvers<void>();
+    const deleted = Promise.withResolvers<void>();
     const fixture = startStatefulMcpServer(
       undefined,
       undefined,
@@ -1628,6 +1629,7 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
         allocated.resolve();
         await sendHeaders.promise;
       },
+      deleted.resolve,
     );
     activeServers.push(fixture.server);
     const transport = new StreamableHttpMcpTransport({
@@ -1646,13 +1648,66 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     const id = [...fixture.sessions.keys()][0];
     if (!id) throw new Error("Missing allocated session");
     controller.abort();
-    sendHeaders.resolve();
-    await expect(initialization).rejects.toThrow(
-      "MCP Streamable HTTP request aborted",
-    );
+    try {
+      await expect(initialization).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(fixture.sessions.has(id)).toBe(true);
+    } finally {
+      sendHeaders.resolve();
+    }
+    await deleted.promise;
     expect(fixture.sessions.size).toBe(0);
     expect(fixture.deleted).toEqual([{ id, identity: "Bearer primary" }]);
     expect(fixture.redirectRequests).toBe(0);
+  });
+
+  it("cancels admission without completing the evidence probe handshake", async () => {
+    const allocated = Promise.withResolvers<void>();
+    const sendHeaders = Promise.withResolvers<void>();
+    const deleted = Promise.withResolvers<void>();
+    let pauseProbe = false;
+    const fixture = startStatefulMcpServer(
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        if (!pauseProbe) return;
+        allocated.resolve();
+        await sendHeaders.promise;
+      },
+      () => {
+        if (pauseProbe) deleted.resolve();
+      },
+    );
+    activeServers.push(fixture.server);
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const origin = fixture.server.url.origin;
+    const config = makeConfig({
+      id: "cancelled-probe",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      credential_bindings: [],
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+      ],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const initialNotifications = fixture.initializedNotifications;
+    pauseProbe = true;
+    const admission = cp.loader.admitServer(ctx, config.id);
+    await allocated.promise;
+    try {
+      await cp.loader.closeAll();
+      await expect(admission).rejects.toMatchObject({ name: "AbortError" });
+      expect(fixture.sessions.size).toBe(1);
+    } finally {
+      sendHeaders.resolve();
+    }
+    await deleted.promise;
+    expect(fixture.initializedNotifications).toBe(initialNotifications);
+    expect(fixture.sessions.size).toBe(0);
   });
 
   it("reinitializes only the expired HTTP authentication context without replaying the tool call", async () => {

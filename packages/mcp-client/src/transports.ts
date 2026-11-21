@@ -770,6 +770,8 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     if (this.initialized) {
       throw new Error("MCP Streamable HTTP transport already initialized");
     }
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     this.initialized = true;
     this.sessionHeaders = { ...options?.extraHeaders };
     const deadlineMs =
@@ -786,9 +788,23 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       remainingOptions(options, deadlineMs),
     );
     this.initializeRequest = pending;
-    const raw = await pending.finally(() => {
+    let onAbort: (() => void) | undefined;
+    let raw: unknown;
+    try {
+      raw = signal
+        ? await Promise.race([
+            pending,
+            new Promise<never>((_, reject) => {
+              onAbort = () => reject(signal.reason);
+              signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ])
+        : await pending;
+    } finally {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) void this.close();
       this.initializeRequest = undefined;
-    });
+    }
     const init = parseInitializeResult(raw);
     await this.postJsonRpc(
       {
@@ -829,8 +845,17 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
     this.closed = true;
-    await this.initializeRequest?.catch(() => {});
+    const pending = this.initializeRequest;
+    if (pending) {
+      void pending.catch(() => {}).then(() => this.deleteSession());
+      return;
+    }
+    await this.deleteSession();
+  }
+
+  private async deleteSession(): Promise<void> {
     const sid = this.sessionId;
     this.sessionId = null;
     const headers = new Headers(this.sessionHeaders);

@@ -80,10 +80,10 @@ Server registrations are isolated by scope. If upgrading from a build with a sha
 mars mcp list [--state-dir <dir>] [--owner <id>] [--project <id>] [--json]
 
 # Register + live-probe an MCP server and open a pending trust review
-mars mcp review <server-id> (--command <cmd> [--arg <arg>]... | --url <url>) \
+mars mcp review <server-id> (--command <cmd> --allow-stdio-probe [--arg <arg>]... | --url <url>) \
   [--permission <cap>:<res>]... [--credential <ref>@<origin>]... [--json]
 
-# Approve a pending review using the host-held HMAC key (remote endpoints capped <= 7d)
+# Approve a pending review using the host-held HMAC key (remote default: 24h; hard cap: 7d)
 mars mcp approve <review-id> [--ttl-ms <ms>] [--approved-by <name>] [--json]
 
 # Test admission or invoke a tool through gate.admit / gate.invoke
@@ -93,6 +93,8 @@ mars mcp test <server-id> [--tool <name>] [--input <json>] \
 # Revoke an active grant immediately
 mars mcp revoke <grant-id> [--approved-by <name>] [--json]
 ```
+
+An explicit review permission list replaces the defaults. For HTTP tools, include `--permission network.connect:<origin>` along with the permitted tools. If using a credential, include its `credential.use:<ref>` permission in any explicit permission list.
 
 Model output, tool output, project configs, and downloaded skills never have access to the host approval key or `admin` methods and cannot self-approve.
 

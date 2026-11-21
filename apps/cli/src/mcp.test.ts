@@ -40,6 +40,12 @@ async function execMcpCli(args: string[]): Promise<string> {
 }
 
 describe("mars mcp CLI flow", () => {
+  it("explains which explicit permissions HTTP tools and credentials need", async () => {
+    await expect(execMcpCli(["--help"])).rejects.toThrow(
+      /Explicit review permissions replace the defaults.*--permission network\.connect:<origin>\.\s+If using a credential.*--permission credential\.use:<ref>/,
+    );
+  });
+
   it("runs list, review, approve, test, and revoke end-to-end against a real stdio MCP server", async () => {
     const stateDir = await makeStateDir();
     const common = [
@@ -409,6 +415,27 @@ describe("mars mcp CLI flow", () => {
         "Bearer cli-secret-xyz",
         "Bearer cli-secret-xyz",
       ]);
+      const explicitPermissions = [
+        "test",
+        "cred-demo",
+        "--tool",
+        "whoami",
+        "--permission",
+        "tool.invoke:whoami",
+        "--permission",
+        `network.connect:${origin}`,
+        ...common,
+      ];
+      await expect(execMcpCli(explicitPermissions)).rejects.toMatchObject({
+        code: "credential_denied",
+      });
+      expect(authHeaders).toHaveLength(2);
+      await execMcpCli([
+        ...explicitPermissions,
+        "--permission",
+        "credential.use:api_token",
+      ]);
+      expect(authHeaders).toHaveLength(3);
 
       // Credential refs with punctuation (hyphens/periods) must be rejected at
       // review time so they cannot be approved without a 1-to-1 env mapping or

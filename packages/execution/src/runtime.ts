@@ -1499,30 +1499,36 @@ function mcpToolParameters(
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
-  const project = (
-    values: unknown[],
-    depth: number,
-    budget: number,
-    ancestors: ReadonlySet<unknown>,
-  ): Record<string, unknown> => {
+  type Constraint = { value: unknown; path: ReadonlySet<unknown> };
+  type Projection = {
+    constraints: Constraint[];
+    depth: number;
+    result: Record<string, unknown>;
+  };
+  const root = {};
+  const queue: Projection[] = [
+    {
+      constraints: [{ value: schema, path: new Set() }],
+      depth: 0,
+      result: root,
+    },
+  ];
+  for (const { constraints, depth, result } of queue) {
     const nodes = new Set<Record<string, unknown>>();
-    const references = new Set(ancestors);
-    for (const value of values) {
-      let node = asRecord(value);
-      while (node && !nodes.has(node) && nodes.size < 8) {
-        nodes.add(node);
-        const target = asRecord(resolveLocalRef(node.$ref));
-        if (!target || references.has(target)) break;
-        references.add(target);
-        node = target;
-      }
-    }
-
-    const properties = new Map<string, unknown[]>();
+    const properties = new Map<string, Constraint[]>();
     const required = new Set<string>();
-    const items: unknown[] = [];
+    const items: Constraint[] = [];
     const declaredTypes = new Set<string>();
-    for (const node of nodes) {
+    const pending = [...constraints];
+    for (const { value, path } of pending) {
+      const node = asRecord(value);
+      if (!node || path.has(node) || (!nodes.has(node) && nodes.size >= 8))
+        continue;
+      nodes.add(node);
+      const nextPath = new Set(path).add(node);
+      const target = resolveLocalRef(node.$ref);
+      if (target !== undefined && pending.length < 64)
+        pending.push({ value: target, path: nextPath });
       if (typeof node.type === "string" && types.has(node.type))
         declaredTypes.add(node.type);
       for (const [key, child] of Object.entries(
@@ -1534,48 +1540,42 @@ function mcpToolParameters(
         )
           continue;
         const constraints = properties.get(key);
-        if (constraints) constraints.push(child);
-        else properties.set(key, [child]);
+        const constraint = { value: child, path: nextPath };
+        if (constraints) constraints.push(constraint);
+        else properties.set(key, [constraint]);
       }
       if (Array.isArray(node.required)) {
         for (const key of node.required.slice(0, 64)) {
           if (typeof key === "string") required.add(key);
         }
       }
-      if (asRecord(node.items)) items.push(node.items);
+      if (asRecord(node.items))
+        items.push({ value: node.items, path: nextPath });
     }
 
-    const result: Record<string, unknown> = {};
     if (declaredTypes.has("integer")) declaredTypes.delete("number");
     if (declaredTypes.size === 1) result.type = [...declaredTypes][0];
     else if (declaredTypes.size > 1)
       result.allOf = [...declaredTypes].map((type) => ({ type }));
-    const childBudget = depth < 8 ? budget - 1 : 0;
-    const hasItems = items.length > 0 && childBudget > 0;
-    const selected = [...properties].slice(
-      0,
-      Math.min(64, childBudget - Number(hasItems)),
-    );
-    const childCount = selected.length + Number(hasItems);
-    if (!childCount) return result;
-    const perChild = Math.floor(childBudget / childCount);
+    if (depth >= 8 || queue.length >= 256) continue;
+    const enqueue = (constraints: Constraint[]) => {
+      const child = {};
+      queue.push({ constraints, depth: depth + 1, result: child });
+      return child;
+    };
+    if (items.length) result.items = enqueue(items);
+    const selected = [...properties].slice(0, Math.min(64, 256 - queue.length));
     if (selected.length) {
       result.properties = Object.fromEntries(
-        selected.map(([key, children]) => [
-          key,
-          project(children, depth + 1, perChild, references),
-        ]),
+        selected.map(([key, children]) => [key, enqueue(children)]),
       );
       const names = selected
         .map(([key]) => key)
         .filter((key) => required.has(key));
       if (names.length) result.required = names;
     }
-    if (hasItems)
-      result.items = project(items, depth + 1, perChild, references);
-    return result;
-  };
-  return { ...project([schema], 0, 256, new Set()), type: "object" };
+  }
+  return { ...root, type: "object" };
 }
 
 const toolResult = (text: string) => ({

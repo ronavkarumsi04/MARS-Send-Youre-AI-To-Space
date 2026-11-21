@@ -23,6 +23,8 @@ const MCP_USAGE = [
   "  mars mcp approve <review-id> [--ttl-ms <ms>] [--approved-by <name>] [--json]",
   "  mars mcp revoke <grant-id> [--approved-by <name>] [--json]",
   "  mars mcp test <server-id> [--tool <name>] [--input <json>] [--permission <cap>:<res>]... [--credential-ref <ref>] [--target-origin <origin>] [--json]",
+  "  Explicit review permissions replace the defaults; for HTTP tools, include --permission network.connect:<origin>.",
+  "  If using a credential with explicit permissions, include --permission credential.use:<ref>.",
 ].join("\n");
 
 export interface RunMcpOptions {
