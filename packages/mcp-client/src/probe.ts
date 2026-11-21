@@ -244,7 +244,8 @@ export class McpEvidenceProbe implements EvidenceProbe {
           : [rawBaseline]
         : [];
 
-      if (baselines.length === 0) {
+      const primary = baselines[0];
+      if (!primary) {
         throw new IntegrationTrustError("evidence_unavailable", {
           cause: new Error(
             `Refusing to spawn unapproved stdio MCP server "${server.id}" before approval; pass allowUnapprovedStdioProbe (or --allow-stdio-probe) to explicitly authorize live discovery.`,
@@ -258,14 +259,6 @@ export class McpEvidenceProbe implements EvidenceProbe {
           dependencySha === b.evidence.dependency_sha256,
       );
       if (!matched) {
-        const primary = baselines[0];
-        if (!primary) {
-          throw new IntegrationTrustError("source_unreadable", {
-            cause: new Error(
-              "Missing trusted baseline for stdio drift comparison",
-            ),
-          });
-        }
         const driftedContentSha = sha256(
           canonicalJSON({
             artifact_sha256: entrypointSha ?? configSha,
