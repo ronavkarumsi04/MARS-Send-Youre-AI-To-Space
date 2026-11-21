@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { ReferenceChip } from "@mars/contracts";
 import {
   type AgentPreviewView,
@@ -106,6 +107,10 @@ export class RpcTeamService implements TeamService {
     string,
     { repo_id: string; label: string; revision: number }
   >();
+  /** Most recently observed pinned commit SHA per `repo_id`. */
+  private readonly repoCommits = new Map<string, string>();
+  /** Cached local workspace git HEAD SHA (null = checked and unavailable). */
+  private cachedHeadSha: string | null | undefined = undefined;
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
 
@@ -139,6 +144,7 @@ export class RpcTeamService implements TeamService {
     this.messages.clear();
     this.reactions.clear();
     this.repos.clear();
+    this.repoCommits.clear();
     this.client.forget();
   }
 
@@ -584,6 +590,7 @@ export class RpcTeamService implements TeamService {
           ...(ref.line_start !== null ? { line_start: ref.line_start } : {}),
           ...(ref.line_end !== null ? { line_end: ref.line_end } : {}),
         });
+        this.repoCommits.set(ref.repo_id, ref.commit_sha);
         referenceIds.push(created.reference_id);
       }
       const message = await this.client.send({
@@ -679,6 +686,7 @@ export class RpcTeamService implements TeamService {
       }
       const repoLabel =
         this.repos.get(preview.repo_id)?.label ?? preview.repo_id;
+      this.repoCommits.set(preview.repo_id, preview.commit_sha);
       const startLine = preview.line_start ?? 1;
       const rawLines = preview.text.length > 0 ? preview.text.split("\n") : [];
       const lines = rawLines.map((text, idx) => ({
@@ -756,10 +764,39 @@ export class RpcTeamService implements TeamService {
     });
   }
 
+  private workspaceHeadSha(): string | null {
+    if (this.cachedHeadSha !== undefined) return this.cachedHeadSha;
+    try {
+      const out = execFileSync("git", ["rev-parse", "HEAD"], {
+        encoding: "utf8",
+        timeout: 1000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      this.cachedHeadSha = /^[0-9a-f]{40}$/.test(out) ? out : null;
+    } catch {
+      this.cachedHeadSha = null;
+    }
+    return this.cachedHeadSha;
+  }
+
   mentionIndex(): MentionIndex {
     const repos: MentionRepo[] = [];
     if (!this.serverCapabilities.references && !this.serverCapabilities.agent) {
       return { repos };
+    }
+    if (this.serverCapabilities.references) {
+      const fallbackSha = this.workspaceHeadSha();
+      for (const repo of this.repos.values()) {
+        const commitSha = this.repoCommits.get(repo.repo_id) ?? fallbackSha;
+        if (commitSha) {
+          repos.push({
+            repo_id: repo.repo_id,
+            name: repo.label,
+            commit_sha: commitSha,
+            files: [],
+          });
+        }
+      }
     }
     return {
       repos,

@@ -297,3 +297,42 @@ describe("composer problems", () => {
     expect(composerProblem(type(EMPTY_COMPOSER, "   "))).toBe("empty");
   });
 });
+
+describe("dynamic remote path search mentions", () => {
+  test("supports remote search results with unknown line_count for both file and range mentions", () => {
+    const dynamicEnv = {
+      index: {
+        repos: [
+          {
+            repo_id: "repo_live",
+            name: "mars",
+            commit_sha: "abcdef1234567890abcdef1234567890abcdef12",
+            files: [{ path: "src/auth.ts", line_count: 0, symbols: [] }],
+          },
+        ],
+      },
+      activeRepoId: "repo_live",
+      maxChips: 5,
+    };
+    const fileCandidates = mentionCandidates(
+      dynamicEnv.index,
+      "src/auth",
+      "repo_live",
+    );
+    expect(fileCandidates).toHaveLength(1);
+    expect(fileCandidates[0]?.kind).toBe("file");
+    expect(fileCandidates[0]?.detail).toBe("mars @ abcdef1");
+
+    const rangeCandidates = mentionCandidates(
+      dynamicEnv.index,
+      "src/auth.ts:10-25",
+      "repo_live",
+    );
+    expect(rangeCandidates).toHaveLength(1);
+    expect(rangeCandidates[0]?.kind).toBe("range");
+    if (rangeCandidates[0]?.kind === "range") {
+      expect(rangeCandidates[0].reference.line_start).toBe(10);
+      expect(rangeCandidates[0].reference.line_end).toBe(25);
+    }
+  });
+});

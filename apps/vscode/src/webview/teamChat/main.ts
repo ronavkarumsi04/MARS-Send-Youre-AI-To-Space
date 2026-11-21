@@ -151,20 +151,72 @@ textarea.addEventListener("keydown", (event) => {
   }
 });
 
+let lastPathSearchKey: string | null = null;
+let lastPathSearchDigest = "";
+
 function env(): ComposerEnvironment {
+  const base = state?.mention_index ?? { repos: [] };
+  const matches = state?.path_search ?? [];
+  const repos =
+    matches.length === 0
+      ? base.repos
+      : base.repos.map((repo) => {
+          const matching = matches.filter(
+            (m) =>
+              m.repo_id === repo.repo_id && m.commit_sha === repo.commit_sha,
+          );
+          if (matching.length === 0) return repo;
+          const seen = new Set(repo.files.map((f) => f.path));
+          const extra = matching
+            .filter((m) => !seen.has(m.path))
+            .map((m) => ({
+              path: m.path,
+              line_count: 0,
+              symbols: [] as { name: string; line: number }[],
+            }));
+          return extra.length === 0
+            ? repo
+            : { ...repo, files: [...repo.files, ...extra] };
+        });
   return {
-    index: state?.mention_index ?? { repos: [] },
-    activeRepoId: state?.mention_index.repos[0]?.repo_id ?? null,
+    index: { ...base, repos },
+    activeRepoId: repos[0]?.repo_id ?? null,
     maxChips: MAX_REFERENCES_PER_MESSAGE,
   };
+}
+
+function maybeRequestPathSearch(): void {
+  const pickerState = composer.picker;
+  if (!pickerState) {
+    lastPathSearchKey = null;
+    return;
+  }
+  if (!state?.capabilities.references) return;
+  const activeRepo = state.mention_index.repos[0];
+  if (!activeRepo) return;
+  const pathQuery = pickerState.query.trim().split(":")[0] ?? "";
+  if (!pathQuery) return;
+  const key = `${activeRepo.repo_id}:${activeRepo.commit_sha}:${pathQuery}`;
+  if (key === lastPathSearchKey) return;
+  lastPathSearchKey = key;
+  post({
+    type: "searchPaths",
+    repoId: activeRepo.repo_id,
+    commitSha: activeRepo.commit_sha,
+    query: pathQuery,
+    limit: 20,
+  });
 }
 
 function updateComposer(action: Parameters<typeof reduceComposer>[1]): void {
   const next = reduceComposer(composer, action, env());
   if (next === composer) return;
   composer = next;
+  maybeRequestPathSearch();
   renderComposerParts();
 }
+
+const AGENT_MENTION = /(?:^|\s)@MARS(?:\s|$)/;
 
 const clientIdPrefix = (() => {
   const bytes = new Uint8Array(8);
@@ -192,6 +244,41 @@ function send(): void {
     newClientMessageId(),
   );
   if (!input) return;
+  if (state?.capabilities.agent && AGENT_MENTION.test(input.body)) {
+    const contextMessages = composer.reply_to
+      ? selected.messages.filter(
+          (m) => m.message_id === composer.reply_to?.message_id,
+        )
+      : selected.messages.slice(-10);
+    const messageIds =
+      contextMessages.length > 0
+        ? contextMessages.map((m) => m.message_id)
+        : composer.reply_to
+          ? [composer.reply_to.message_id]
+          : [];
+    if (messageIds.length === 0) {
+      composerError =
+        "Send a message in this conversation before asking @MARS.";
+      renderComposerParts();
+      return;
+    }
+    const referenceIds = Array.from(
+      new Set(
+        contextMessages.flatMap((m) =>
+          m.references.map((ref) => ref.reference_id),
+        ),
+      ),
+    );
+    composerError = null;
+    post({
+      type: "agentPreview",
+      conversationId: selected.conversation.conversation_id,
+      messageIds,
+      referenceIds,
+    });
+    renderComposerParts();
+    return;
+  }
   vscode.postMessage({
     type: "send",
     conversationId: input.conversation_id,
@@ -753,6 +840,7 @@ function renderThread(
 // ---------------------------------------------------------------- composer
 
 const composerRoot = h("div", { class: "composer" });
+const agentBar = h("div", { class: "reply-bar agent-bar" });
 const replyBar = h("div", { class: "reply-bar" });
 const chipBar = h("div", { class: "chip-bar", label: "Attached references" });
 const picker = h("ul", {
@@ -777,6 +865,7 @@ const hint = h(
   "Enter to send · Shift+Enter for a newline · @ to reference a file, symbol or path:start-end",
 );
 composerRoot.append(
+  agentBar,
   replyBar,
   chipBar,
   h("div", { class: "composer-input" }, picker, textarea, sendButton),
@@ -786,6 +875,88 @@ composerRoot.append(
 );
 
 function renderComposerParts(): void {
+  agentBar.replaceChildren();
+  const selectedConversationId =
+    state?.selected?.conversation.conversation_id ?? null;
+  const preview =
+    state?.agent_preview &&
+    state.agent_preview.conversation_id === selectedConversationId
+      ? state.agent_preview
+      : null;
+  const request =
+    state?.agent_request &&
+    state.agent_request.conversation_id === selectedConversationId
+      ? state.agent_request
+      : null;
+  if (preview) {
+    const previewMessageIds = preview.items
+      .filter(
+        (item): item is typeof item & { message_id: string } =>
+          item.kind === "message" && typeof item.message_id === "string",
+      )
+      .map((item) => item.message_id);
+    const previewReferenceIds = preview.items
+      .filter(
+        (item): item is typeof item & { reference_id: string } =>
+          item.kind === "reference" && typeof item.reference_id === "string",
+      )
+      .map((item) => item.reference_id);
+    const totalBytes = preview.items.reduce((sum, item) => sum + item.bytes, 0);
+    const restricted =
+      preview.restricted_reference_ids.length > 0
+        ? ` · ${preview.restricted_reference_ids.length} restricted ref(s) omitted`
+        : "";
+    const confirm = button("Confirm @MARS", "agent-confirm", () => {
+      post({
+        type: "agentRequest",
+        conversationId: preview.conversation_id,
+        messageIds: previewMessageIds,
+        referenceIds: previewReferenceIds,
+        idempotencyKey: `agent_${preview.preview_sha256.slice(0, 16)}_${newClientMessageId()}`,
+        previewSha256: preview.preview_sha256,
+      });
+      composer = EMPTY_COMPOSER;
+      composerError = null;
+      textarea.value = "";
+      stickToBottom = true;
+      renderComposerParts();
+    });
+    const cancel = button(
+      "Cancel",
+      "agent-cancel-preview",
+      () => {
+        post({ type: "clearAgent" });
+        textarea.focus();
+      },
+      { secondary: true },
+    );
+    agentBar.append(
+      h(
+        "span",
+        { class: "small" },
+        `@MARS preview: ${previewMessageIds.length} message(s), ${previewReferenceIds.length} ref(s), ${totalBytes}B (${preview.model.model_id})${restricted}`,
+      ),
+      confirm,
+      cancel,
+    );
+  } else if (request) {
+    const active = request.status === "pending" || request.status === "running";
+    const action = active
+      ? button(
+          "Cancel @MARS",
+          "agent-cancel-request",
+          () => post({ type: "agentCancel", requestId: request.request_id }),
+          { secondary: true },
+        )
+      : button("Dismiss", "agent-dismiss", () => post({ type: "clearAgent" }), {
+          secondary: true,
+        });
+    agentBar.append(
+      h("span", { class: "small" }, `@MARS request: ${request.status}`),
+      action,
+    );
+  }
+  agentBar.hidden = !preview && !request;
   replyBar.replaceChildren();
   if (composer.reply_to) {
     const clear = button(
@@ -989,6 +1160,7 @@ function render(): void {
   if (selectedId !== composerConversation) {
     composerConversation = selectedId;
     composer = EMPTY_COMPOSER;
+    lastPathSearchKey = null;
     textarea.value = "";
     anchorOlder = null;
     stickToBottom = true;
@@ -1088,6 +1260,17 @@ window.addEventListener(
     const message = event.data;
     if (message?.type === "state") {
       state = message.state;
+      const digest = JSON.stringify(state.path_search ?? []);
+      if (digest !== lastPathSearchDigest) {
+        lastPathSearchDigest = digest;
+        if (composer.picker) {
+          composer = reduceComposer(
+            composer,
+            { type: "input", text: composer.text, caret: composer.caret },
+            env(),
+          );
+        }
+      }
       render();
     } else if (message?.type === "focusComposer") {
       textarea.focus();

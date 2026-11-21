@@ -105,7 +105,11 @@ export function mentionCandidates(
         path.includes(pathQuery) ||
         base.includes(pathQuery);
       if (fileMatches && start !== null && end !== null) {
-        if (start >= 1 && end >= start && end <= file.line_count)
+        if (
+          start >= 1 &&
+          end >= start &&
+          (file.line_count <= 0 || end <= file.line_count)
+        )
           files.push({
             key: `${repo.repo_id}:${file.path}:${start}-${end}`,
             kind: "range",
@@ -132,7 +136,10 @@ export function mentionCandidates(
           repo_id: repo.repo_id,
           repo_name: repo.name,
           label: file.path,
-          detail: `${repo.name} @ ${repo.commit_sha.slice(0, 7)} · ${file.line_count} lines`,
+          detail:
+            file.line_count > 0
+              ? `${repo.name} @ ${repo.commit_sha.slice(0, 7)} · ${file.line_count} lines`
+              : `${repo.name} @ ${repo.commit_sha.slice(0, 7)}`,
           reference: {
             kind: "file",
             repo_id: repo.repo_id,
