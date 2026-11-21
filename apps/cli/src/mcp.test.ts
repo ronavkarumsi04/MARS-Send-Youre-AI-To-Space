@@ -360,7 +360,7 @@ describe("mars mcp CLI flow", () => {
       "--url",
       url,
       "--credential",
-      `api-token@${origin}`,
+      `api_token@${origin}`,
       ...common,
       "--json",
     ]);
@@ -378,7 +378,7 @@ describe("mars mcp CLI flow", () => {
         "--tool",
         "whoami",
         "--credential-ref",
-        "api-token",
+        "api_token",
         "--target-origin",
         origin,
         ...common,
@@ -389,6 +389,37 @@ describe("mars mcp CLI flow", () => {
       };
       expect(result.content[0]?.text).toBe("authed");
       expect(authHeaders).toEqual(["Bearer cli-secret-xyz"]);
+
+      // A separately approved reference differing only by case/punctuation must
+      // NOT alias MARS_MCP_CREDENTIAL_API_TOKEN across origins.
+      const aliasReviewJson = await execMcpCli([
+        "review",
+        "cred-alias",
+        "--url",
+        url,
+        "--credential",
+        `api-token@${origin}`,
+        ...common,
+        "--json",
+      ]);
+      const { review: aliasReview } = JSON.parse(aliasReviewJson) as {
+        review: { review_id: string };
+      };
+      await execMcpCli(["approve", aliasReview.review_id, ...common]);
+
+      await expect(
+        execMcpCli([
+          "test",
+          "cred-alias",
+          "--tool",
+          "whoami",
+          "--credential-ref",
+          "api-token",
+          "--target-origin",
+          origin,
+          ...common,
+        ]),
+      ).rejects.toThrow(/credential_denied/i);
     } finally {
       delete process.env.MARS_MCP_CREDENTIAL_API_TOKEN;
     }

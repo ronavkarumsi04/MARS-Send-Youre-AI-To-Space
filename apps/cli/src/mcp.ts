@@ -72,16 +72,16 @@ function parsePositiveInt(
 }
 
 function resolveCliCredentialFromEnv(refId: string): string | undefined {
-  const normalized = refId.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
-  const prefixed = process.env[`MARS_MCP_CREDENTIAL_${normalized}`];
+  // Strict injective lookup: only lowercase alphanumeric + underscore refs
+  // (matching SlugSchema without punctuation) map 1-to-1 to
+  // MARS_MCP_CREDENTIAL_<UPPER>, preventing case or punctuation aliases
+  // (e.g. api-token vs api_token vs api.token) from sharing a secret across origins.
+  if (!/^[a-z0-9][a-z0-9_]*$/.test(refId)) {
+    return undefined;
+  }
+  const prefixed = process.env[`MARS_MCP_CREDENTIAL_${refId.toUpperCase()}`];
   if (prefixed !== undefined && prefixed.length > 0) {
     return prefixed;
-  }
-  if (/^[A-Z][A-Z0-9_]*$/.test(refId)) {
-    const direct = process.env[refId];
-    if (direct !== undefined && direct.length > 0) {
-      return direct;
-    }
   }
   return undefined;
 }
