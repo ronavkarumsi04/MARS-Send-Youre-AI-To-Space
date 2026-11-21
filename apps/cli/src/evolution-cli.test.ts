@@ -429,20 +429,32 @@ test("fresh smoke runs with different proposer models can share a state director
 });
 
 test("a named smoke run resumes in its legacy scope and requires its original model", async () => {
-  const fixture = await createFixture(() => ({ hypothesis: "unused" }));
+  const fixture = await createFixture(({ generation }) => ({
+    hypothesis: `Refine the prompt in generation ${generation}`,
+    prompts: { system: `Updated prompt ${generation}` },
+  }));
   roots.push(fixture.root);
   const service = await fixture.open();
   try {
-    const args = ["live-smoke", "--state", fixture.root, "--run", "legacy"];
+    const args = [
+      "live-smoke",
+      "--state",
+      fixture.root,
+      "--run",
+      "legacy",
+      "--generations",
+      "2",
+    ];
     const modelArgs = ["--model", "example/legacy:free"];
     const results: boolean[] = [];
     const smoke: NonNullable<Parameters<typeof runEvolution>[1]> = async ({
       scopeKey,
       model,
       runId,
+      generations,
     }) => {
       const result = await service.startRun({
-        config: runConfig({ run_id: runId }),
+        config: runConfig({ run_id: runId, generations }),
         scope_key: scopeKey,
         base_dir: fixture.baseDir,
         base_ref: "base",
@@ -458,12 +470,30 @@ test("a named smoke run resumes in its legacy scope and requires its original mo
         },
       });
       results.push(result.created);
+      const execution = await service.run(
+        runId,
+        result.created ? { maxGenerations: 1 } : undefined,
+      );
+      expect(execution).toEqual({
+        status: result.created ? "running" : "completed",
+        generations_completed: result.created ? 1 : generations,
+      });
       return result;
     };
     await runEvolution([...args, ...modelArgs, "--scope", "live-smoke"], smoke);
+    expect(service.status("legacy").status).toBe("running");
+    expect(fixture.contexts.map(({ generation }) => generation)).toEqual([1]);
     await runEvolution([...args, ...modelArgs], smoke);
     expect(results).toEqual([true, false]);
     expect(service.status("legacy").scope_key).toBe("live-smoke");
+    expect(service.status("legacy").status).toBe("completed");
+    expect(fixture.contexts.map(({ generation }) => generation)).toEqual([
+      1, 2,
+    ]);
+    expect(await service.verify("legacy")).toMatchObject({
+      ok: true,
+      problems: [],
+    });
     await expect(
       runEvolution([...args, ...modelArgs, "--scope", "wrong"], smoke),
     ).rejects.toThrow("exists with a different config");
