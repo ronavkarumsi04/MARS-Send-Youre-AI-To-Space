@@ -161,22 +161,27 @@ function env(): ComposerEnvironment {
     matches.length === 0
       ? base.repos
       : base.repos.map((repo) => {
-          const matching = matches.filter(
-            (m) =>
-              m.repo_id === repo.repo_id && m.commit_sha === repo.commit_sha,
-          );
-          if (matching.length === 0) return repo;
-          const seen = new Set(repo.files.map((f) => f.path));
-          const extra = matching
+          const byRepo = matches.filter((m) => m.repo_id === repo.repo_id);
+          if (byRepo.length === 0) return repo;
+          const exact = byRepo.filter((m) => m.commit_sha === repo.commit_sha);
+          const matching = exact.length > 0 ? exact : byRepo;
+          const commitSha = matching[0]?.commit_sha ?? repo.commit_sha;
+          const forCommit = matching.filter((m) => m.commit_sha === commitSha);
+          const baseFiles = commitSha === repo.commit_sha ? repo.files : [];
+          const seen = new Set(baseFiles.map((f) => f.path));
+          const extra = forCommit
             .filter((m) => !seen.has(m.path))
             .map((m) => ({
               path: m.path,
               line_count: 0,
               symbols: [] as { name: string; line: number }[],
             }));
-          return extra.length === 0
-            ? repo
-            : { ...repo, files: [...repo.files, ...extra] };
+          if (extra.length === 0 && commitSha === repo.commit_sha) return repo;
+          return {
+            ...repo,
+            commit_sha: commitSha,
+            files: [...baseFiles, ...extra],
+          };
         });
   return {
     index: { ...base, repos },

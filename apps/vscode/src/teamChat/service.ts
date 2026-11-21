@@ -111,7 +111,10 @@ export class RpcTeamService implements TeamService {
   /** Most recently observed pinned commit SHA per `repo_id`. */
   private readonly repoCommits = new Map<string, string>();
   /** Cached git HEAD SHA per workspace directory (null = checked and unavailable). */
-  private readonly cachedDirHeads = new Map<string, string | null>();
+  private readonly cachedDirHeads = new Map<
+    string,
+    { sha: string | null; at: number }
+  >();
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
   private readonly workspaceRoots: readonly string[] | undefined;
@@ -804,8 +807,9 @@ export class RpcTeamService implements TeamService {
   }
 
   private gitHeadIn(dir: string): string | null {
+    const now = Date.now();
     const cached = this.cachedDirHeads.get(dir);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && now - cached.at < 2_000) return cached.sha;
     try {
       const out = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: dir,
@@ -814,10 +818,10 @@ export class RpcTeamService implements TeamService {
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
       const sha = /^[0-9a-f]{40}$/.test(out) ? out : null;
-      this.cachedDirHeads.set(dir, sha);
+      this.cachedDirHeads.set(dir, { sha, at: now });
       return sha;
     } catch {
-      this.cachedDirHeads.set(dir, null);
+      this.cachedDirHeads.set(dir, { sha: null, at: now });
       return null;
     }
   }
@@ -850,13 +854,19 @@ export class RpcTeamService implements TeamService {
         .map((v) => v.trim().toLowerCase())
         .filter((v) => v.length > 0),
     );
-    const matchedByDir = dirs.find((dir) =>
-      candidates.has(basename(dir).trim().toLowerCase()),
+    const matchedByDir = dirs.find(
+      (dir) =>
+        candidates.has(basename(dir).trim().toLowerCase()) &&
+        this.gitHeadIn(dir) !== null,
     );
     if (matchedByDir) return matchedByDir;
     const matchedByRemote = dirs.find((dir) => {
       const remoteName = this.gitRemoteNameIn(dir);
-      return remoteName !== null && candidates.has(remoteName);
+      return (
+        remoteName !== null &&
+        candidates.has(remoteName) &&
+        this.gitHeadIn(dir) !== null
+      );
     });
     return matchedByRemote ?? null;
   }
