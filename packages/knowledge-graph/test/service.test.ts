@@ -109,6 +109,17 @@ function rawGraph(root: string) {
       node("src/a.ts::helper", "helper", "src/a.ts", 0),
       node("src/b.py::parse", "parse", join(root, "src/b.py"), 1),
       node("leak", "leak", "/etc/passwd", 1),
+      {
+        id: `${root
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")}_sibling_helper`,
+        label: "slugified_host_path_leak",
+        _callable: false,
+        _origin: "ast",
+        community: 1,
+        file_type: "code",
+      },
     ],
     links: [
       {
@@ -173,7 +184,7 @@ describe("knowledge graph service", () => {
       nodes: 3,
       edges: 2,
       communities: 2,
-      dropped_nodes: 1,
+      dropped_nodes: 2,
       dropped_edges: 1,
     });
     expect(first.artifact.edges.map((e) => e.confidence)).toEqual([
@@ -219,7 +230,9 @@ describe("knowledge graph service", () => {
     expect(extract.args[4]?.startsWith(f.dataRoot)).toBe(true);
     expect(extract.cwd).toBe(f.workspace);
     expect(extract.env.HOME?.startsWith(f.dataRoot)).toBe(true);
-    expect(extract.env.GRAPHIFY_OUT?.startsWith(f.dataRoot)).toBe(true);
+    expect(extract.env.GRAPHIFY_OUT).toBe(
+      join(extract.args[4] ?? "", "graphify-out"),
+    );
     expect(extract.env.HTTPS_PROXY).toBe("http://127.0.0.1:9");
     expect(extract.env.OPENAI_API_KEY).toBeUndefined();
     expect(extract.env.SECRET_TOKEN).toBeUndefined();

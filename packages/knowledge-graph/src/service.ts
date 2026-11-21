@@ -158,12 +158,39 @@ function workspaceRelative(
   return rel.split(sep).join("/");
 }
 
+function slugifyHostPath(path: string): string {
+  return path
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function hostPathNeedles(root: string, dataRoot: string): string[] {
+  const needles = new Set<string>();
+  for (const base of [root, dataRoot]) {
+    if (!base) continue;
+    needles.add(base);
+    const parts = base.split(/[\\/]+/).filter(Boolean);
+    // Include slugified root, dataRoot, and non-trivial (>= 2 segment) ancestors
+    // because graphify slugifies absolute external-import paths into node IDs.
+    for (let len = 2; len <= parts.length; len++) {
+      const slug = slugifyHostPath(parts.slice(0, len).join("/"));
+      if (slug.length >= 10) needles.add(slug);
+    }
+  }
+  return [...needles];
+}
+
 function containsHostPath(
   root: string,
   dataRoot: string,
   text: string,
 ): boolean {
-  return text.includes(root) || text.includes(dataRoot);
+  const lower = text.toLowerCase();
+  for (const needle of hostPathNeedles(root, dataRoot)) {
+    if (text.includes(needle) || lower.includes(needle)) return true;
+  }
+  return false;
 }
 
 /**
