@@ -206,12 +206,17 @@ export async function createHostMcpControlPlane(
         decision: params.decision,
         expires_at: params.expires_at,
       };
-      return signApproval(
-        signingKey,
-        challenge,
-        params.approver_id ?? defaultOwner,
-        randomUUID(),
+      const matchingApprover = approvers.find(
+        (a) =>
+          a.owner_id === params.scope.owner_id &&
+          a.project_ids.includes(params.scope.project_id),
       );
+      const approverId =
+        params.approver_id ??
+        matchingApprover?.approver_id ??
+        approvers[0]?.approver_id ??
+        defaultOwner;
+      return signApproval(signingKey, challenge, approverId, randomUUID());
     },
     readState() {
       return store.load();
