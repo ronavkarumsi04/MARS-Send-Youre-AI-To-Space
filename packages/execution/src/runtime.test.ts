@@ -561,6 +561,79 @@ test("a text-only model completes a task with MCP configured and no tools", asyn
   }
 });
 
+async function registerRuntimeMcp(
+  f: Awaited<ReturnType<typeof fixture>>,
+  origin: string,
+) {
+  const { owner_id, project_id } = f.task.scope;
+  const context: RequestContext = {
+    schema_version: 1,
+    scope: f.task.scope,
+    request_id: f.task.task_id,
+  };
+  const cp = await createHostMcpControlPlane({
+    stateDir: join(f.root, "mcp"),
+    workspaceRoots: [f.cwd],
+    scope: f.task.scope,
+    approvers: [{ approver_id: owner_id, owner_id, project_ids: [project_id] }],
+    credentialResolver: {
+      async resolve(request) {
+        expect(request.target_origin).toBe(origin);
+        expect(request.ref_id).toBe("runtime_token");
+        return "runtime-test-token";
+      },
+    },
+  });
+  const config: McpServerConfig = {
+    schema_version: 1,
+    id: "runtime-demo",
+    transport: { type: "streamable-http", url: `${origin}/mcp` },
+    registered_at: new Date().toISOString(),
+    permissions: [
+      { capability: "network.connect", resource: origin },
+      { capability: "tool.invoke", resource: "ping" },
+      { capability: "credential.use", resource: "runtime_token" },
+    ],
+    credential_bindings: [{ ref_id: "runtime_token", allowed_origin: origin }],
+  };
+  await cp.registry.upsert(config);
+  const mcp = async () => ({
+    loader: cp.loader,
+    async listServerIds() {
+      return (await cp.registry.list()).map(({ id }) => id);
+    },
+  });
+  return { cp, context, config, mcp };
+}
+
+async function approveRuntimeMcp(
+  {
+    admin,
+    probe,
+    signHostProof,
+  }: Awaited<ReturnType<typeof createHostMcpControlPlane>>,
+  context: RequestContext,
+  config: McpServerConfig,
+) {
+  const review = await admin.submitCandidate(context, {
+    evidence: await probe.observeServer(context, config),
+    permissions: config.permissions,
+    credential_bindings: config.credential_bindings,
+  });
+  return admin.approve(context, {
+    review_id: review.review_id,
+    expected_revision: review.revision,
+    proof: signHostProof({
+      review_id: review.review_id,
+      review_revision: review.revision,
+      binding_sha256: review.binding_sha256,
+      scope: review.scope,
+      expires_at: review.expires_at,
+      decision: "approve",
+    }),
+  });
+}
+
 test("normal runtime registers only scope-approved MCP tools and checks revocation before each model call", async () => {
   const f = await fixture();
   const http = startStatefulMcpServer(["ping", "unapproved"], {
@@ -658,48 +731,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
   });
   const origin = http.server.url.origin;
   try {
-    const { owner_id, project_id } = f.task.scope;
-    const context: RequestContext = {
-      schema_version: 1,
-      scope: f.task.scope,
-      request_id: f.task.task_id,
-    };
-    const cp = await createHostMcpControlPlane({
-      stateDir: join(f.root, "mcp"),
-      workspaceRoots: [f.cwd],
-      scope: f.task.scope,
-      approvers: [
-        { approver_id: owner_id, owner_id, project_ids: [project_id] },
-      ],
-      credentialResolver: {
-        async resolve(request) {
-          expect(request.target_origin).toBe(origin);
-          expect(request.ref_id).toBe("runtime_token");
-          return "runtime-test-token";
-        },
-      },
-    });
-    const config: McpServerConfig = {
-      schema_version: 1,
-      id: "runtime-demo",
-      transport: { type: "streamable-http", url: `${origin}/mcp` },
-      registered_at: new Date().toISOString(),
-      permissions: [
-        { capability: "network.connect", resource: origin },
-        { capability: "tool.invoke", resource: "ping" },
-        { capability: "credential.use", resource: "runtime_token" },
-      ],
-      credential_bindings: [
-        { ref_id: "runtime_token", allowed_origin: origin },
-      ],
-    };
-    await cp.registry.upsert(config);
-    const mcp = async () => ({
-      loader: cp.loader,
-      async listServerIds() {
-        return (await cp.registry.list()).map(({ id }) => id);
-      },
-    });
+    const { cp, context, config, mcp } = await registerRuntimeMcp(f, origin);
     const denied = await f.open({ mcp });
     expect(denied.toolNames.some((name) => name.startsWith("mars_mcp_"))).toBe(
       false,
@@ -707,23 +739,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     expect(http.deleted).toHaveLength(0);
     await denied.dispose();
 
-    const review = await cp.admin.submitCandidate(context, {
-      evidence: await cp.probe.observeServer(context, config),
-      permissions: config.permissions,
-      credential_bindings: config.credential_bindings,
-    });
-    const grant = await cp.admin.approve(context, {
-      review_id: review.review_id,
-      expected_revision: review.revision,
-      proof: cp.signHostProof({
-        review_id: review.review_id,
-        review_revision: review.revision,
-        binding_sha256: review.binding_sha256,
-        scope: review.scope,
-        expires_at: review.expires_at,
-        decision: "approve",
-      }),
-    });
+    const grant = await approveRuntimeMcp(cp, context, config);
     let modelCalls = 0;
     let modelSchema: unknown;
     const session = await f.open({
@@ -861,6 +877,157 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     await f.cleanup();
     http.server.stop(true);
   }
+}, 30000);
+
+async function modelFacingMcpSchema(schema: Record<string, unknown>) {
+  const f = await fixture();
+  const http = startStatefulMcpServer(["ping"], schema);
+  try {
+    const { cp, context, config, mcp } = await registerRuntimeMcp(
+      f,
+      http.server.url.origin,
+    );
+    await approveRuntimeMcp(cp, context, config);
+    let modelSchema: unknown;
+    const session = await f.open({
+      task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
+      mcp,
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ function: { name: string; parameters: unknown } }>;
+        };
+        modelSchema = body.tools.find(({ function: tool }) =>
+          tool.name.startsWith("mars_mcp_ping_"),
+        )?.function.parameters;
+        return sse({ content: "Done." });
+      },
+    });
+    expect((await session.run("Describe the tool.")).status).toBe("completed");
+    return modelSchema as SchemaNode;
+  } finally {
+    await f.cleanup();
+    http.server.stop(true);
+  }
+}
+type SchemaNode = {
+  type?: string;
+  required?: string[];
+  properties?: Record<string, SchemaNode>;
+};
+
+test("a deep optional MCP argument leaves later top-level arguments visible to the model", async () => {
+  const modelSchema = await modelFacingMcpSchema({
+    type: "object",
+    properties: {
+      defaults: { $ref: "#/$defs/Defaults" },
+      routes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { destination: { type: "string" } },
+          required: ["destination"],
+        },
+      },
+    },
+    $defs: {
+      Defaults: {
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 5 }, (_, group) => [
+            `group${group}`,
+            {
+              type: "object",
+              properties: {
+                settings: {
+                  type: "object",
+                  properties: Object.fromEntries(
+                    Array.from({ length: 50 }, (_, field) => [
+                      `field${field}`,
+                      { type: "string" },
+                    ]),
+                  ),
+                  required: Array.from(
+                    { length: 50 },
+                    (_, field) => `field${field}`,
+                  ),
+                },
+              },
+              required: ["settings"],
+            },
+          ]),
+        ),
+        required: Array.from({ length: 5 }, (_, group) => `group${group}`),
+      },
+    },
+  });
+  const settings = (group: number) =>
+    modelSchema.properties?.defaults?.properties?.[`group${group}`]?.properties
+      ?.settings;
+  expect(modelSchema).toMatchObject({
+    properties: {
+      defaults: {
+        type: "object",
+        required: ["group0", "group1", "group2", "group3", "group4"],
+      },
+      routes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { destination: { type: "string" } },
+          required: ["destination"],
+        },
+      },
+    },
+  });
+  for (let group = 0; group < 5; group++)
+    expect(settings(group)?.type).toBe("object");
+  expect(settings(0)?.required).toHaveLength(50);
+  // Past the node bound the last group is truncated, and `required` lists
+  // only fields the model can see.
+  const last = settings(4)?.required ?? [];
+  expect(last).toEqual(Object.keys(settings(4)?.properties ?? {}));
+  expect(last.length).toBeGreaterThan(0);
+  expect(last.length).toBeLessThan(50);
+}, 30000);
+
+test("deep required MCP descendants leave optional top-level arguments visible to the model", async () => {
+  const chain = (depth: number): Record<string, unknown> =>
+    depth === 0
+      ? { type: "string" }
+      : {
+          type: "object",
+          properties: { next: chain(depth - 1) },
+          required: ["next"],
+        };
+  const steps = Array.from({ length: 60 }, (_, step) => `step${step}`);
+  const options = Array.from({ length: 63 }, (_, option) => `option${option}`);
+  const modelSchema = await modelFacingMcpSchema({
+    type: "object",
+    properties: {
+      config: {
+        type: "object",
+        properties: Object.fromEntries(steps.map((step) => [step, chain(6)])),
+        required: steps,
+      },
+      ...Object.fromEntries(
+        options.map((option) => [option, { type: "string" }]),
+      ),
+    },
+    required: ["config"],
+  });
+  expect(Object.keys(modelSchema.properties ?? {})).toEqual(
+    expect.arrayContaining(["config", ...options]),
+  );
+  for (const option of options)
+    expect(modelSchema.properties?.[option]).toEqual({ type: "string" });
+  expect(modelSchema.required).toContain("config");
+  const config = modelSchema.properties?.config;
+  expect(config?.required).toEqual(steps);
+  expect(config?.properties?.step59).toMatchObject({
+    type: "object",
+    properties: { next: { type: "object" } },
+    required: ["next"],
+  });
 }, 30000);
 
 test("bridge preserves tool call identities and tool results without inventing another agent loop", () => {

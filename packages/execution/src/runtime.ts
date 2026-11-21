@@ -1500,27 +1500,37 @@ function mcpToolParameters(
       ? (value as Record<string, unknown>)
       : undefined;
   type Constraint = { value: unknown; path: ReadonlySet<unknown> };
+  // Lower `share` projects first. A node's share is split among its children,
+  // required fields and array items ahead of optional ones, so one wide
+  // argument cannot take every slot. `floor` is the share of the node's
+  // optional siblings; descendants never go below it, so a deep argument
+  // cannot hide its siblings or its ancestors' siblings.
   type Projection = {
     constraints: Constraint[];
     depth: number;
+    share: number;
+    floor: number;
+    structural: boolean;
     attach: (result: Record<string, unknown>) => void;
   };
   const maxNodes = 256;
   let root: Record<string, unknown> = {};
-  const structural: Projection[] = [
+  const queue: Projection[] = [
     {
       constraints: [{ value: schema, path: new Set() }],
       depth: 0,
+      share: 1,
+      floor: 1,
+      structural: true,
       attach: (result) => {
         root = result;
       },
     },
   ];
-  const optional: Projection[] = [];
   for (let remaining = maxNodes; remaining > 0; remaining--) {
-    const next = structural.shift() ?? optional.shift();
+    const next = queue.shift();
     if (!next) break;
-    const { constraints, depth, attach } = next;
+    const { constraints, depth, share, floor, attach } = next;
     const result: Record<string, unknown> = {};
     attach(result);
     const nodes = new Set<Record<string, unknown>>();
@@ -1567,28 +1577,40 @@ function mcpToolParameters(
     else if (declaredTypes.size > 1)
       result.allOf = [...declaredTypes].map((type) => ({ type }));
     if (depth >= 8 || remaining === 1) continue;
-    const enqueue = (
-      queue: Projection[],
-      constraints: Constraint[],
-      attach: Projection["attach"],
-    ) => {
-      if (queue.length < remaining - 1)
-        queue.push({ constraints, depth: depth + 1, attach });
-    };
-    if (items.length)
-      enqueue(structural, items, (item) => {
-        result.items = item;
-      });
-    const projectedProperties: Record<string, unknown> = {};
-    const projectedRequired: string[] = [];
     const entries = [...properties];
     const selected = [
       ...entries.filter(([key]) => required.has(key)),
       ...entries.filter(([key]) => !required.has(key)),
     ].slice(0, 64);
+    const structuralCount =
+      (items.length ? 1 : 0) +
+      selected.filter(([key]) => required.has(key)).length;
+    const optionalCount = selected.length + (items.length ? 1 : 0);
+    const enqueue = (
+      structural: boolean,
+      constraints: Constraint[],
+      attach: Projection["attach"],
+    ) =>
+      queue.push({
+        constraints,
+        depth: depth + 1,
+        share: Math.max(
+          floor,
+          share * (structural ? structuralCount : optionalCount),
+        ),
+        floor: Math.max(floor, share * optionalCount),
+        structural,
+        attach,
+      });
+    if (items.length)
+      enqueue(true, items, (item) => {
+        result.items = item;
+      });
+    const projectedProperties: Record<string, unknown> = {};
+    const projectedRequired: string[] = [];
     for (const [key, children] of selected) {
       const isRequired = required.has(key);
-      enqueue(isRequired ? structural : optional, children, (child) => {
+      enqueue(isRequired, children, (child) => {
         result.properties = projectedProperties;
         projectedProperties[key] = child;
         if (isRequired) {
@@ -1597,6 +1619,13 @@ function mcpToolParameters(
         }
       });
     }
+    queue.sort(
+      (a, b) =>
+        a.share - b.share ||
+        a.depth - b.depth ||
+        Number(b.structural) - Number(a.structural),
+    );
+    queue.length = Math.min(queue.length, remaining - 1);
   }
   return { ...root, type: "object" };
 }
