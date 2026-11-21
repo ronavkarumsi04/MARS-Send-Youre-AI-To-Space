@@ -672,10 +672,11 @@ export function createController(
     const verification = state.verification;
     const diff = state.diff;
     if (!task || !verification || !diff) return;
+    const expectedPatchSha = verification.patch_sha256 ?? null;
     if (
       verification.state !== "verified" ||
       !verification.candidate?.revision ||
-      !diff.digest
+      !expectedPatchSha
     ) {
       patchExport = {
         busy: false,
@@ -691,12 +692,20 @@ export function createController(
         bridge["tasks.export"]({
           task_id: task.task_id,
           expected_revision: verification.candidate.revision,
-          expected_patch_sha256: diff.digest,
+          expected_patch_sha256: expectedPatchSha,
         }),
       );
+      if (!exported.verified) {
+        patchExport = {
+          busy: false,
+          error: "Exported patch was not confirmed as host-verified.",
+        };
+        render();
+        return;
+      }
       if (
-        exported.patch_sha256 !== diff.digest ||
-        exported.artifact.sha256 !== diff.digest
+        exported.patch_sha256 !== expectedPatchSha ||
+        exported.artifact.sha256 !== expectedPatchSha
       ) {
         patchExport = {
           busy: false,
@@ -705,34 +714,39 @@ export function createController(
         render();
         return;
       }
-      let patchText: string | undefined;
-      let verifiedSha256 = true;
       const fetched = await bridge["tasks.artifact"]({
         task_id: task.task_id,
         artifact: exported.artifact,
       });
-      if (fetched.ok) {
-        verifiedSha256 = await verifyArtifact(
-          exported.artifact,
-          fetched.result,
-          globalThis.crypto.subtle,
-        );
-        if (!verifiedSha256) {
-          patchExport = {
-            busy: false,
-            error: "Exported patch artifact failed SHA-256 verification.",
-          };
-          render();
-          return;
-        }
-        patchText = decodeBase64Utf8(fetched.result.data_base64);
+      if (!fetched.ok) {
+        patchExport = {
+          busy: false,
+          error:
+            "Failed to fetch exported patch artifact for SHA-256 verification.",
+        };
+        render();
+        return;
       }
+      const verifiedSha256 = await verifyArtifact(
+        exported.artifact,
+        fetched.result,
+        globalThis.crypto.subtle,
+      );
+      if (!verifiedSha256) {
+        patchExport = {
+          busy: false,
+          error: "Exported patch artifact failed SHA-256 verification.",
+        };
+        render();
+        return;
+      }
+      const patchText = decodeBase64Utf8(fetched.result.data_base64);
       const nextExport: ExportViewState = {
         busy: false,
         result: exported,
         verifiedSha256,
+        patchText,
       };
-      if (patchText !== undefined) nextExport.patchText = patchText;
       patchExport = nextExport;
       render();
     } catch (error) {

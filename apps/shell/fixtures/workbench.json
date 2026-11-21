@@ -227,6 +227,7 @@
           "revision": "fixture-r5"
         },
         "state": "verified",
+        "patch_sha256": "1f9f57ffd522a9d42118168a9d4145567132e292b64d77cf933e543fe70adbf7",
         "record": {
           "schema_version": 1,
           "operation": "verification.verdict",

@@ -338,16 +338,9 @@ export function createFixtureOperations(
         throw new WorkbenchError("conflict");
       const bytes = canonicalPatchBytes(detail.diff);
       const computedSha = sha256Hex(bytes);
-      const expectedSha = detail.diff.digest;
-      if (
-        params.expected_patch_sha256 !== expectedSha &&
-        params.expected_patch_sha256 !== computedSha
-      )
+      if (params.expected_patch_sha256 !== computedSha)
         throw new WorkbenchError("conflict");
-      const patchSha =
-        params.expected_patch_sha256 === computedSha
-          ? computedSha
-          : (expectedSha ?? computedSha);
+      const patchSha = computedSha;
       const artifactId = `export-patch-${task.task_id}-${candidate.revision}`;
       const artifactRef: ArtifactRef = {
         artifact_id: artifactId,

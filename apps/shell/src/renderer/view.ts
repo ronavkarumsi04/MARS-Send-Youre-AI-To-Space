@@ -832,7 +832,7 @@ function changesSection(doc: ShellDocument, state: ShellState): ShellElement {
   const canExport =
     verification?.state === "verified" &&
     Boolean(verification.candidate?.revision) &&
-    Boolean(diff?.digest) &&
+    Boolean(verification.patch_sha256) &&
     (diff?.files.length ?? 0) > 0;
 
   let exportBox: ShellElement | null = null;
@@ -861,7 +861,7 @@ function changesSection(doc: ShellDocument, state: ShellState): ShellElement {
             doc,
             "p",
             { class: "muted" },
-            `Revision ${verification?.candidate?.revision} · sha256 ${diff?.digest}`,
+            `Revision ${verification?.candidate?.revision} · sha256 ${verification?.patch_sha256}`,
           )
         : h(
             doc,
