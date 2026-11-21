@@ -59,6 +59,38 @@ The provider runs commands non-root, without network, with read-only container r
 
 `tasks.evidence` returns Watch verify records only. Pass `include_host_verification: true` to also receive `host_verification` (the `tasks.verification` view), so Watch assurance and host required-check verdicts arrive in one response but stay separate fields; older hosts reject the parameter.
 
+### Repeat the live CSV bug-fix smoke
+
+On a non-root Linux account with Docker access, install the repo's pinned Bun
+and dependencies. Pull the pinned image before preflight; Docker commands
+inside the smoke run with no network and never pull an image.
+
+```sh
+docker pull oven/bun@sha256:5148f6742ac31fac28e6eab391ab1f11f6dfc0c8512c7a3679b374ec470f5982
+bun scripts/live-verified-bugfix.ts --preflight
+```
+
+Preflight succeeds only when the intentionally buggy CSV fixture produces
+three passing and three failing tests. It makes no provider requests. For the
+live smoke, set `OPENROUTER_API_KEY` in your shell from your
+[OpenRouter API keys](https://openrouter.ai/settings/keys), not on the command
+line or in a tracked file. Then run:
+
+```sh
+bun scripts/live-verified-bugfix.ts --out-json /tmp/mars-live-csv.json
+```
+
+The smoke uses only a synthetic fixture, a free tool-capable model, and a
+zero-dollar task budget. If the default model is unavailable, pass
+`--model google/gemma-4-31b-it:free` or `--model openrouter/free`. A passing
+report requires a successful provider response, a completed task, an unchanged
+source CSV, a candidate editing only that CSV, and a host-verified patch
+export that matches the recorded digest. `completed` alone is not a pass.
+
+The [November 20 OpenRouter receipt](evidence/live-openrouter-bugfix.txt)
+records the first verified run through the typed workbench client. It does not
+cover starting the task and exporting the patch from an actual VS Code window.
+
 ## Recovery and privacy
 
 Start/resume require exact revisions and saved task/workspace/model/approval identity. Resume reopens the same workspace and original private SDK journal; missing or corrupt state fails closed, never recreating from source. Checkpoints and artifacts are task-owned. Restore is refused while a task is running. Keep state intact for recovery, including unresolved restore backup/journal directories.
