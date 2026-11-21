@@ -464,12 +464,21 @@ export function createController(
       render();
       return;
     }
+    if (composer.submitting) return;
+    const snapshot = {
+      startNow: composer.startNow,
+      modelChoice: composer.modelChoice,
+      paidModelConsent: composer.paidModelConsent,
+      paidModelId: composer.paidModelId.trim(),
+      approvals: { ...composer.approvals },
+      criteria: composer.criteria,
+    };
     const nextComposer: ComposerState = { ...composer, submitting: true };
     delete nextComposer.error;
     composer = nextComposer;
     render();
 
-    const parsedCriteria = composer.criteria
+    const parsedCriteria = snapshot.criteria
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
@@ -495,34 +504,14 @@ export function createController(
       artifacts: [],
     };
 
+    let created: Task;
     try {
-      const created = await value(
+      created = await value(
         bridge["tasks.create"]({
           task: newTask,
           launch_key: `shell-launch-${taskId}`,
         }),
       );
-      selectedId = created.task_id;
-      if (composer.startNow) {
-        const approvals: ApprovalsState = {
-          read: composer.approvals.read,
-          write: composer.approvals.write,
-          execute: described.capabilities.execute && composer.approvals.execute,
-        };
-        const startParams: Parameters<ShellBridge["tasks.start"]>[0] = {
-          task_id: created.task_id,
-          expected_revision: created.revision,
-          approvals,
-        };
-        if (composer.modelChoice === "paid") {
-          startParams.model_id = composer.paidModelId;
-        }
-        await value(bridge["tasks.start"](startParams));
-      }
-      composer = createInitialComposer();
-      patchExport = { busy: false };
-      launch = createInitialLaunch();
-      await load();
     } catch (error) {
       composer = {
         ...composer,
@@ -531,7 +520,57 @@ export function createController(
           error instanceof Error ? error.message : "Failed to create task.",
       };
       render();
+      return;
     }
+
+    selectedId = created.task_id;
+    composer = createInitialComposer();
+    patchExport = { busy: false };
+    launch = createInitialLaunch();
+
+    if (snapshot.startNow) {
+      if (snapshot.modelChoice === "paid" && !snapshot.paidModelConsent) {
+        launch = {
+          ...launch,
+          approvals: { ...snapshot.approvals },
+          modelChoice: "paid",
+          paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
+          paidModelConsent: false,
+          actionError: "Paid-model consent is required before starting.",
+        };
+        await load();
+        return;
+      }
+      const approvals: ApprovalsState = {
+        read: snapshot.approvals.read,
+        write: snapshot.approvals.write,
+        execute: described.capabilities.execute && snapshot.approvals.execute,
+      };
+      const startParams: Parameters<ShellBridge["tasks.start"]>[0] = {
+        task_id: created.task_id,
+        expected_revision: created.revision,
+        approvals,
+      };
+      if (snapshot.modelChoice === "paid") {
+        startParams.model_id = snapshot.paidModelId;
+      }
+      try {
+        await value(bridge["tasks.start"](startParams));
+      } catch (error) {
+        launch = {
+          ...launch,
+          approvals: { ...snapshot.approvals },
+          modelChoice: snapshot.modelChoice,
+          paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
+          paidModelConsent: snapshot.paidModelConsent,
+          actionError:
+            error instanceof Error
+              ? `Task created, but failed to start: ${error.message}`
+              : "Task created, but failed to start.",
+        };
+      }
+    }
+    await load();
   };
 
   const handleStartTask = async () => {

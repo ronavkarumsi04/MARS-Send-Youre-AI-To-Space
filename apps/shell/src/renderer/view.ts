@@ -585,6 +585,7 @@ function promptComposer(
     "select",
     {
       class: "model-select",
+      disabled: composer.submitting,
       "aria-label": "Composer model",
       "data-control": "composer-model",
     },
@@ -602,6 +603,7 @@ function promptComposer(
     ),
   );
   modelSelect.value = composer.modelChoice;
+  modelSelect.disabled = composer.submitting;
   modelSelect.addEventListener("change", (event) => {
     const value = (event.target as { value?: string } | undefined)?.value;
     state.onComposerChange?.({
@@ -620,6 +622,7 @@ function promptComposer(
         checkboxField(doc, {
           label: `I consent to paid model usage (${composer.paidModelId})`,
           checked: composer.paidModelConsent,
+          disabled: composer.submitting,
           dataKey: "composer-paid-consent",
           onChange: (checked) =>
             state.onComposerChange?.({ paidModelConsent: checked }),
