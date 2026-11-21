@@ -51,7 +51,7 @@ describe.skipIf(!GRAPHIFY_BIN)("real graphifyy==0.9.101 integration", () => {
     async (kind, flags) => {
       const base = await mkdtemp(join(tmpdir(), "mars-real-output-"));
       dirs.push(base);
-      await Promise.all(
+      const results = await Promise.allSettled(
         ["runner", "baseline"].map(async (mode) => {
           const root = join(base, mode);
           const workspace = join(root, "workspace");
@@ -103,12 +103,16 @@ describe.skipIf(!GRAPHIFY_BIN)("real graphifyy==0.9.101 integration", () => {
               stderr: "pipe",
               signal: AbortSignal.timeout(30_000),
             });
-            const [code, stdout, stderr] = await Promise.all([
-              child.exited,
-              new Response(child.stdout).text(),
-              new Response(child.stderr).text(),
-            ]);
-            expect(code, stdout + stderr).toBe(0);
+            try {
+              const [code, stdout, stderr] = await Promise.all([
+                child.exited,
+                new Response(child.stdout).text(),
+                new Response(child.stderr).text(),
+              ]);
+              expect(code, stdout + stderr).toBe(0);
+            } finally {
+              await child.exited;
+            }
           }
           const graph = JSON.parse(await readFile(expectedGraph, "utf8")) as {
             nodes: unknown[];
@@ -122,6 +126,8 @@ describe.skipIf(!GRAPHIFY_BIN)("real graphifyy==0.9.101 integration", () => {
           ]);
         }),
       );
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
     },
     60_000,
   );
