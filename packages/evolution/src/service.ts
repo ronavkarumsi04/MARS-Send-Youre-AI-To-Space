@@ -408,6 +408,15 @@ export class EvolutionService {
         existing.scope_key !== input.scope_key
       )
         fail("conflict", `run ${config.run_id} exists with a different config`);
+      const initial = this.store.getCandidate(config.run_id, "initial");
+      if (!initial)
+        fail("corrupt_record", `run ${config.run_id} has no initial manifest`);
+      const model = this.manifestOf(initial).model.id;
+      if (model !== input.model.id)
+        fail(
+          "conflict",
+          `run ${config.run_id} uses model ${model}, not ${input.model.id}`,
+        );
       return { run_id: config.run_id, created: false };
     }
     const base = await snapshotDirectory(input.base_dir);

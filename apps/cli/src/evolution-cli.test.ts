@@ -342,3 +342,51 @@ test("fresh smoke runs with different proposer models can share a state director
     service.close();
   }
 });
+
+test("a named smoke run resumes in its legacy scope and requires its original model", async () => {
+  const fixture = await createFixture(() => ({ hypothesis: "unused" }));
+  roots.push(fixture.root);
+  const service = await fixture.open();
+  try {
+    const args = ["live-smoke", "--state", fixture.root, "--run", "legacy"];
+    const modelArgs = ["--model", "example/legacy:free"];
+    const results: boolean[] = [];
+    const smoke: NonNullable<Parameters<typeof runEvolution>[1]> = async ({
+      scopeKey,
+      model,
+      runId,
+    }) => {
+      const result = await service.startRun({
+        config: runConfig({ run_id: runId }),
+        scope_key: scopeKey,
+        base_dir: fixture.baseDir,
+        base_ref: "base",
+        model: { id: model, provider: "openrouter", revision: "free-tier" },
+        prompts: { system: "baseline" },
+        skills: { store_revision: "1" },
+        tools: [],
+        retrieval: {
+          repo_map_tokens: 0,
+          memory_top_k: 0,
+          context_window_tokens: 8192,
+          research: false,
+        },
+      });
+      results.push(result.created);
+      return result;
+    };
+    await runEvolution([...args, ...modelArgs, "--scope", "live-smoke"], smoke);
+    await runEvolution([...args, ...modelArgs], smoke);
+    expect(results).toEqual([true, false]);
+    expect(service.status("legacy").scope_key).toBe("live-smoke");
+    await expect(
+      runEvolution([...args, ...modelArgs, "--scope", "wrong"], smoke),
+    ).rejects.toThrow("exists with a different config");
+    await expect(
+      runEvolution([...args, "--model", "example/other:free"], smoke),
+    ).rejects.toThrow("uses model example/legacy:free, not example/other:free");
+    expect(results).toEqual([true, false]);
+  } finally {
+    service.close();
+  }
+});

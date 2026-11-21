@@ -160,7 +160,7 @@ set and comparing `task_solving` blocks; this has **not** been done.
 
 ```
 mars evolution demo --state DIR                 # offline FAKE run (model_requests: 0)
-mars evolution live-smoke --state DIR [--run ID] [--model ID] [--image REF] [--generations N] [--children N]
+mars evolution live-smoke --state DIR [--run ID] [--scope KEY] [--model ID] [--image REF] [--generations N] [--children N]
 mars evolution status|lineage|metrics|verify --state DIR --run ID
 mars evolution champion|history --state DIR --scope KEY
 mars evolution rollback --state DIR --scope KEY --to SEQ --expect-version N
@@ -168,9 +168,17 @@ mars evolution rollback --state DIR --scope KEY --to SEQ --expect-version N
 
 Each live-smoke invocation starts a fresh run by default and prints its
 `run_id` to stderr before starting. Stdout is reserved for the JSON summary.
-Default champion scopes are separated by proposer model. Pass `--run ID` with
-the original `--model` and, if supplied, `--scope` to resume that exact run;
-resuming does not repeat completed generations, even if their proposals were
+Default champion scopes are separated by proposer model on new runs. For an
+existing run, `--run ID` reuses its stored scope unless `--scope` is supplied;
+an explicit scope must match. To resume, use the original model, generation
+count, and child count, for example:
+
+```sh
+mars evolution live-smoke --state DIR --run ID --model MODEL --generations N --children N
+```
+
+If the original run used a custom `--image REF`, pass that same image when
+resuming. Completed generations are not repeated, even if their proposals were
 rate-limited. Opt-in Harbor acceptance requires a separate `OPENROUTER_API_KEY`
 for proposing; `MARS_EVAL_API_KEY` is used only by the Harbor evaluator.
 

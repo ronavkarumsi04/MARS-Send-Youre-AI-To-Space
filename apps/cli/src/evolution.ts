@@ -527,12 +527,25 @@ export async function runEvolution(
       );
     }
     const model = values.model ?? DEFAULT_FREE_PROPOSER_MODEL;
+    const runId = values.run ?? `live-smoke-${randomUUID()}`;
+    let savedScope: string | undefined;
+    if (values.run !== undefined && values.scope === undefined) {
+      const service = await openStore(state);
+      try {
+        savedScope = service.status(runId).scope_key;
+      } catch (error) {
+        if (!(error instanceof EvolutionError && error.code === "not_found"))
+          throw error;
+      } finally {
+        service.close();
+      }
+    }
     const scopeKey =
       values.scope ??
+      savedScope ??
       (model === DEFAULT_FREE_PROPOSER_MODEL
         ? "live-smoke"
         : `live-smoke-${digestOf(model).slice(0, 16)}`);
-    const runId = values.run ?? `live-smoke-${randomUUID()}`;
     if (values.run === undefined)
       console.error(`Starting live-smoke run ${runId} (scope ${scopeKey})`);
     const summary = await smoke({
