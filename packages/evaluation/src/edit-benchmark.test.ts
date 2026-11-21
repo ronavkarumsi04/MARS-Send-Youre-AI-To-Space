@@ -787,3 +787,37 @@ test("daily quota 429 with far-future x-ratelimit-reset fails fast without retry
   expect(result.failure).toBe("provider_error");
   expect(totalCalls).toBe(1);
 }, 60_000);
+
+test("Retry-After above 30s is not clamped below the provider cooldown", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const trialBudget = { ...budget, max_duration_ms: 45_000 };
+  for (const [label, header] of [
+    ["numeric", "60"],
+    ["http-date", new Date(Date.now() + 60_000).toUTCString()],
+  ] as const) {
+    let totalCalls = 0;
+    const result = await runEditTrial({
+      arm: "mars:apply_patch",
+      task: suite.tasks[0] as (typeof suite.tasks)[number],
+      repeat: 0,
+      registry,
+      env,
+      modelId,
+      seed: 1,
+      budget: trialBudget,
+      fetch: async () => {
+        totalCalls += 1;
+        return new Response("Too Many Requests", {
+          status: 429,
+          headers: { "retry-after": header },
+        });
+      },
+      workRoot: join(root, `work-ra-${label}`),
+      transcriptRoot: join(root, `tx-ra-${label}`),
+    });
+    expect(result.solved).toBe(false);
+    expect(result.failure).toBe("provider_error");
+    expect(totalCalls).toBe(1);
+  }
+}, 60_000);

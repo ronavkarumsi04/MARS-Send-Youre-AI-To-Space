@@ -320,7 +320,7 @@ const MAX_TRANSIENT_RETRIES = 4;
 const BASE_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 
-function retryDelayMs(response: Response, attempt: number): number | null {
+function retryDelayMs(response: Response, attempt: number): number {
   const remaining = response.headers.get("x-ratelimit-remaining")?.trim();
   const reset = response.headers.get("x-ratelimit-reset")?.trim();
   if (remaining === "0" && reset) {
@@ -328,7 +328,6 @@ function retryDelayMs(response: Response, attempt: number): number | null {
     if (Number.isFinite(parsed)) {
       const resetMs = parsed > 1e12 ? parsed : parsed * 1_000;
       const waitMs = resetMs - Date.now();
-      if (waitMs > MAX_RETRY_MS) return null;
       if (waitMs >= 0) return Math.round(waitMs);
     }
   }
@@ -336,11 +335,11 @@ function retryDelayMs(response: Response, attempt: number): number | null {
   if (header) {
     const seconds = Number(header);
     if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(MAX_RETRY_MS, Math.max(0, Math.round(seconds * 1_000)));
+      return Math.max(0, Math.round(seconds * 1_000));
     }
     const when = Date.parse(header);
     if (Number.isFinite(when)) {
-      return Math.min(MAX_RETRY_MS, Math.max(0, when - Date.now()));
+      return Math.max(0, when - Date.now());
     }
   }
   return Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** attempt);
@@ -387,8 +386,7 @@ export async function runEditTrial(input: TrialInput): Promise<TrialResult> {
       const remaining =
         input.budget.max_duration_ms - (Date.now() - started) - 1_000;
       const delay = retryDelayMs(response, attempt);
-      if (delay === null || remaining <= 0 || delay > remaining)
-        return response;
+      if (remaining <= 0 || delay > remaining) return response;
       await response.body?.cancel().catch(() => undefined);
       await sleepAbortable(delay, init?.signal);
       if (init?.signal?.aborted) return response;
