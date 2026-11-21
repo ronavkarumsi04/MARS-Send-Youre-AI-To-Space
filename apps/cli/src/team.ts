@@ -666,24 +666,36 @@ async function runServe(
               ),
           }),
     });
-    agentWorker.start();
   }
-  const server = serveTeam({
-    store: opened,
-    authenticator,
-    port: options.port,
-    repos: registry,
-    agentReferences: port,
-    ...(options.quiet
-      ? {}
-      : { log: (entry) => out(JSON.stringify({ log: "team", ...entry })) }),
-  });
+  let server: ReturnType<typeof serveTeam>;
+  try {
+    server = serveTeam({
+      store: opened,
+      authenticator,
+      port: options.port,
+      repos: registry,
+      agentReferences: port,
+      ...(options.quiet
+        ? {}
+        : { log: (entry) => out(JSON.stringify({ log: "team", ...entry })) }),
+    });
+  } catch (error) {
+    opened.close();
+    throw error;
+  }
   const url = `http://127.0.0.1:${server.port}`;
   const connectionFile = join(options.state, CONNECTION_FILE);
-  await writePrivate(
-    connectionFile,
-    JSON.stringify({ schema_version: 1, url, team_id: options.team }),
-  );
+  try {
+    await writePrivate(
+      connectionFile,
+      JSON.stringify({ schema_version: 1, url, team_id: options.team }),
+    );
+  } catch (error) {
+    await server.stop(true);
+    opened.close();
+    throw error;
+  }
+  if (agentWorker) agentWorker.start();
   await new Promise<void>((resolve, reject) => {
     registerRuntimeCleanup("mars-team", async () => {
       try {
