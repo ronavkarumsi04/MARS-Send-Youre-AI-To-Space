@@ -24,9 +24,9 @@ export function unexpectedResponseShape(providerId: string): ProviderError {
   );
 }
 
-/** A token count is reported only when it is an integer; otherwise it is unknown. */
+/** A token count is reported only when it is a non-negative integer. */
 export function tokenCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value)
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? value
     : undefined;
 }
