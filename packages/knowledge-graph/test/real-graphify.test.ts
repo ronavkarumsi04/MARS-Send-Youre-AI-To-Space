@@ -91,6 +91,8 @@ describe.skipIf(!GRAPHIFY_BIN)("real graphifyy==0.9.101 integration", () => {
       limit: 3,
     });
     expect(paths).toContain("mars_graph_query · paths");
+    expect(paths).not.toContain("(no path within the hop limit)");
+    expect(paths).toMatch(/^- DurableMemoryStore → .+ → scanThreat\(\)/m);
 
     // Stale revision fencing: advancing revision must refuse stale answers.
     revision = "rev-2";

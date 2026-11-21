@@ -201,7 +201,7 @@ function containsHostPath(
   dataRoot: string,
   id: string,
   label: string,
-  hasWorkspaceSourceFile: boolean,
+  slugs: readonly string[],
 ): boolean {
   if (
     (root && (id.includes(root) || label.includes(root))) ||
@@ -211,7 +211,7 @@ function containsHostPath(
   }
   const normalizedId = slugifyHostPath(id);
   const normalizedLabel = slugifyHostPath(label);
-  for (const slug of hostPathSlugs(root, dataRoot, !hasWorkspaceSourceFile)) {
+  for (const slug of slugs) {
     if (
       slugMatchesPrefix(normalizedId, slug) ||
       slugMatchesPrefix(normalizedLabel, slug)
@@ -240,6 +240,8 @@ export function normalizeGraph(input: {
 }): KnowledgeGraphArtifact {
   const raw = rawGraphSchema.parse(input.raw);
   const analysis = rawAnalysisSchema.safeParse(input.analysis ?? {});
+  const rootSlugs = hostPathSlugs(input.root, input.dataRoot, false);
+  const ancestorSlugs = hostPathSlugs(input.root, input.dataRoot, true);
   const nodes: GraphNode[] = [];
   let droppedNodes = 0;
   const seen = new Set<string>();
@@ -257,7 +259,7 @@ export function normalizeGraph(input: {
         input.dataRoot,
         id,
         label,
-        sourceFile !== null,
+        sourceFile !== null ? rootSlugs : ancestorSlugs,
       ) ||
       (sourceFile === null && node.source_file) ||
       nodes.length >= GRAPH_LIMITS.max_nodes
@@ -344,7 +346,7 @@ export function normalizeGraph(input: {
         id,
         label:
           label &&
-          !containsHostPath(input.root, input.dataRoot, "", label, true)
+          !containsHostPath(input.root, input.dataRoot, "", label, rootSlugs)
             ? label.slice(0, GRAPH_LIMITS.max_label_length)
             : null,
         cohesion:

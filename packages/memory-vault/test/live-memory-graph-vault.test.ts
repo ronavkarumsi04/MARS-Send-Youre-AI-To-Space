@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -9,16 +10,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { RequestContext } from "@mars/contracts";
-import {
-  createMemoryStore,
-  formatSnapshot,
-  MemoryStoreError,
-  scanThreat,
-} from "@mars/memory";
+import type { RequestContext, WorkspaceRef } from "@mars/contracts";
+import { createMemoryStore, MemoryStoreError, scanThreat } from "@mars/memory";
 import { SkillStore } from "@mars/skills";
 import { runVault } from "../../../apps/cli/src/vault";
 import { createDerivedArtifactStore } from "../../context/src/index";
+import type {
+  RuntimeOutcome,
+  RuntimeSessionOptions,
+} from "../../execution/src/index";
 import { createKnowledgeGraphService } from "../../knowledge-graph/src/index";
 import { loadModelRegistry } from "../../providers/src/index";
 import {
@@ -26,6 +26,11 @@ import {
   type ReviewModelGateway,
   ReviewRunner,
 } from "../../review/src/index";
+import { createTaskStore } from "../../tasks/src/index";
+import {
+  createWorkbenchHost,
+  type WorkspaceHost,
+} from "../../workbench/src/index";
 import {
   type ExportReport,
   type ImportReport,
@@ -176,6 +181,8 @@ async function runMemoryGraphVaultE2E(options: {
     limit: 3,
   });
   expect(pathsText).toContain("mars_graph_query · paths");
+  expect(pathsText).not.toContain("(no path within the hop limit)");
+  expect(pathsText).toMatch(/^- DurableMemoryStore → .+ → scanThreat\(\)/m);
 
   // Write the derived graph artifact JSON for `mars vault export --graph`
   const graphArtifactPath = join(base, "graph-artifact.json");
@@ -198,6 +205,205 @@ async function runMemoryGraphVaultE2E(options: {
     hostPrivateRoots: [base, stateDir, memoryRoot, skillsRoot],
   });
   const skills = new SkillStore(skillsRoot);
+  const hostRoot = join(base, "host");
+  await mkdir(hostRoot, { recursive: true, mode: 0o700 });
+  await chmod(hostRoot, 0o700);
+  await mkdir(join(hostRoot, ".mars"), { recursive: true });
+  await writeFile(
+    join(hostRoot, ".mars", "models.json"),
+    JSON.stringify({
+      version: 1,
+      providers: [
+        {
+          id: "fixture",
+          kind: "openai-compatible",
+          baseUrl: "https://fixture.invalid/v1",
+          apiKeyEnv: "FIXTURE_KEY",
+        },
+      ],
+      models: [
+        {
+          id: "fixture/free",
+          providerId: "fixture",
+          model: "fixture",
+          capabilities: { tools: true, vision: false, contextWindow: 32768 },
+          pricing: { free: true },
+        },
+      ],
+      routes: { default: ["fixture/free"] },
+    }),
+    "utf8",
+  );
+  const taskStore = await createTaskStore({
+    rootDir: join(hostRoot, "tasks"),
+    workspaceRoots: [],
+  });
+  const hostRegistry = await loadModelRegistry({
+    cwd: hostRoot,
+    home: hostRoot,
+    trustProjectConfig: false,
+    env: { FIXTURE_KEY: "test-key" },
+  });
+  const stubArtifact = await taskStore.artifacts.put(
+    ctx,
+    new TextEncoder().encode("ok"),
+    "text/plain",
+  );
+  const wsRef: WorkspaceRef = {
+    provider: "test",
+    workspace_id: workspaceId,
+    revision: "rev-followup",
+  };
+  const workspaceStub: WorkspaceHost = {
+    async prepare() {
+      return { ...wsRef };
+    },
+    async reopen() {
+      return { ...wsRef };
+    },
+    async cwd() {
+      return sourceDir;
+    },
+    async read() {
+      return stubArtifact;
+    },
+    async write() {},
+    async remove() {},
+    async execute() {
+      return {
+        exit_code: 0,
+        stdout: stubArtifact,
+        stderr: stubArtifact,
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      };
+    },
+    async stop() {},
+    async collect() {
+      return [];
+    },
+    async checkpoint() {
+      return { checkpoint_id: "cp", workspace: wsRef, artifact: stubArtifact };
+    },
+    async restore() {
+      return wsRef;
+    },
+    async diff() {
+      return { files: [] };
+    },
+  };
+  const launchedSessions: Array<{
+    options: RuntimeSessionOptions;
+    instructions: string[];
+    finish(status: RuntimeOutcome["status"]): void;
+    disposed: Promise<void>;
+  }> = [];
+  const host = await createWorkbenchHost({
+    scope: ctx.scope,
+    workspaceLabel: "live-e2e",
+    stateRoot: hostRoot,
+    store: taskStore,
+    workspace: workspaceStub,
+    registry: hostRegistry,
+    canExecute: false,
+    memory,
+    memoryProposals: memory,
+    async runtimeFactory(runtimeOptions) {
+      let resolveOutcome!: (value: RuntimeOutcome) => void;
+      const outcome = new Promise<RuntimeOutcome>((res) => {
+        resolveOutcome = res;
+      });
+      let resolveDisposed!: () => void;
+      const disposed = new Promise<void>((res) => {
+        resolveDisposed = res;
+      });
+      const instructions: string[] = [];
+      const finish = (status: RuntimeOutcome["status"]) =>
+        resolveOutcome({
+          status,
+          content: "done",
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            reserved_usd: 0,
+            reserved_tokens: 0,
+            deadline: Date.now() + 1000,
+          },
+        });
+      launchedSessions.push({
+        options: runtimeOptions,
+        instructions,
+        finish,
+        disposed,
+      });
+      return {
+        sessionId: `session-${launchedSessions.length}`,
+        toolNames: [],
+        journalSnapshot: () => ({
+          session_id: `session-${launchedSessions.length}`,
+          entries: [],
+        }),
+        modelId: runtimeOptions.modelId ?? "fixture/free",
+        editFormat: {
+          format: "replace",
+          requested: "replace",
+          source: "default",
+        },
+        journalPath:
+          runtimeOptions.sessionFile ??
+          join(runtimeOptions.stateDir, "session.jsonl"),
+        run(instruction: string) {
+          instructions.push(instruction);
+          return outcome;
+        },
+        async steer() {},
+        async cancel() {
+          finish("cancelled");
+        },
+        async dispose() {
+          resolveDisposed();
+        },
+      };
+    },
+  });
+  const launchFollowUpTask = async (taskId: string) => {
+    const idx = launchedSessions.length;
+    await host.create(ctx, {
+      schema_version: 1,
+      task_id: taskId,
+      session_id: `session-${taskId}`,
+      scope: ctx.scope,
+      revision: 0,
+      request: "Continue verification using frozen memory context.",
+      acceptance_criteria: ["Frozen memory context is attached at launch"],
+      budget: {
+        max_tokens: 64_000,
+        max_usd: 0,
+        max_duration_ms: 1000,
+        max_depth: 1,
+        max_concurrency: 1,
+      },
+      status: "pending",
+      specialist_revision: null,
+      artifacts: [],
+    });
+    await host.start(ctx, {
+      task_id: taskId,
+      expected_revision: 0,
+      approvals: { read: true, write: false, execute: false },
+    });
+    const session = launchedSessions[idx];
+    if (!session) throw new Error(`Expected runtime session for ${taskId}`);
+    const launchDoc = JSON.parse(
+      await readFile(join(session.options.stateDir, "launch.json"), "utf8"),
+    ) as { memory?: { revision: number; text: string } };
+    session.finish("completed");
+    await session.disposed;
+    return {
+      instruction: session.instructions[0] ?? "",
+      frozen: launchDoc.memory,
+    };
+  };
 
   try {
     // Seed one skill so `mars vault export` exports memory + skills + code graph.
@@ -258,15 +464,35 @@ async function runMemoryGraphVaultE2E(options: {
     const resolvedModels: string[] = [];
     let gateway: ReviewModelGateway;
     if (options.mode === "live") {
-      // Configure OpenRouter :free provider via built-in ModelProviderRegistry ($0.00 only).
+      // Configure OpenRouter :free provider via built-in ModelProviderRegistry ($0.00 only),
+      // isolated from any local ~/.mars or project models.json overrides.
       const registry = await loadModelRegistry({
         cwd: sourceDir,
+        home: base,
+        trustProjectConfig: false,
         env: { OPENROUTER_API_KEY: OPENROUTER_KEY },
       });
+      const resolvedModel = registry.getModel(REQUESTED_MODEL);
+      if (
+        !resolvedModel ||
+        resolvedModel.providerId !== "openrouter" ||
+        resolvedModel.pricing?.free !== true
+      ) {
+        throw new Error(
+          `Refusing non-free or overridden model "${REQUESTED_MODEL}" on $0.00 budget.`,
+        );
+      }
+      assertFreeOpenRouterModel(resolvedModel.model);
       const trackedFetch = async (
         input: string,
         init?: RequestInit,
       ): Promise<Response> => {
+        if (typeof init?.body === "string") {
+          const reqBody = JSON.parse(init.body) as { model?: unknown };
+          if (typeof reqBody.model === "string") {
+            assertFreeOpenRouterModel(reqBody.model);
+          }
+        }
         const res = await fetch(input, init);
         httpStatuses.push(res.status);
         const cloned = res.clone();
@@ -351,7 +577,7 @@ async function runMemoryGraphVaultE2E(options: {
         model: gateway,
         logRoot: join(base, "review-logs"),
         idleMs: 60_000,
-        timeoutMs: 60_000,
+        timeoutMs: 25_000,
       });
       try {
         reviewResult = await runner.reviewNow({
@@ -416,8 +642,12 @@ async function runMemoryGraphVaultE2E(options: {
     // ---------------------------------------------------------------------
     const frozenAfterAccept = await memory.snapshot(ctx);
     expect(frozenAfterAccept.revision).toBe(1);
-    const frozenPromptAfterAccept = formatSnapshot(frozenAfterAccept);
-    expect(frozenPromptAfterAccept).toContain(liveLesson);
+    const followUpAfterAccept = await launchFollowUpTask(
+      "followup-after-accept",
+    );
+    expect(followUpAfterAccept.frozen?.revision).toBe(1);
+    expect(followUpAfterAccept.frozen?.text).toContain(liveLesson);
+    expect(followUpAfterAccept.instruction).toContain(liveLesson);
 
     // ---------------------------------------------------------------------
     // 3. Obsidian-compatible vault export -> validate YAML & wikilinks -> edit/add -> import -> status
@@ -580,8 +810,14 @@ async function runMemoryGraphVaultE2E(options: {
     const frozenAfterRevert = await memory.snapshot(ctx);
     expect(frozenAfterRevert.revision).toBeGreaterThan(1);
     expect(frozenAfterRevert.entries).toHaveLength(0);
-    const frozenPromptAfterRevert = formatSnapshot(frozenAfterRevert);
-    expect(frozenPromptAfterRevert).not.toContain(liveLesson);
+    const followUpAfterRevert = await launchFollowUpTask(
+      "followup-after-revert",
+    );
+    expect(followUpAfterRevert.frozen?.revision).toBe(
+      frozenAfterRevert.revision,
+    );
+    expect(followUpAfterRevert.frozen?.text ?? "").not.toContain(liveLesson);
+    expect(followUpAfterRevert.instruction).not.toContain(liveLesson);
 
     if (options.evidenceOut) {
       const receipt = {
@@ -611,10 +847,11 @@ async function runMemoryGraphVaultE2E(options: {
           live_lesson: liveLesson,
           accepted_revision: acceptedProposal.applied_revision,
           present_in_followup_frozen_context:
-            frozenPromptAfterAccept.includes(liveLesson),
+            followUpAfterAccept.instruction.includes(liveLesson),
           reverted_status: reverted.status,
           revision_after_revert: frozenAfterRevert.revision,
-          present_after_revert: frozenPromptAfterRevert.includes(liveLesson),
+          present_after_revert:
+            followUpAfterRevert.instruction.includes(liveLesson),
         },
         obsidian_vault: {
           exported_files: exportedMdFiles.length,
@@ -638,6 +875,7 @@ async function runMemoryGraphVaultE2E(options: {
       );
     }
   } finally {
+    await taskStore.close();
     await memory.close();
   }
 }
@@ -664,6 +902,6 @@ describe.skipIf(!LIVE_ENABLED || !GRAPHIFY_BIN || !OPENROUTER_KEY)(
         graphifyBin: GRAPHIFY_BIN as string,
         evidenceOut: EVIDENCE_OUT,
       });
-    }, 120_000);
+    }, 180_000);
   },
 );
