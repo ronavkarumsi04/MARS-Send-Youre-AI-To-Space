@@ -73,7 +73,7 @@ There is no `agent.publish` RPC. Answers are stored through the host-only
 workbench process. A client can never publish an answer.
 
 End-to-end wiring includes:
-- `mars team serve` supports verified HS256 tokens (`--auth-secret`, `--auth-issuer`, `--auth-audience`), GitHub OAuth (`--github-auth`, `--github-api-url`, `--github-allow-login`), composite auth with local-dev fallback, remote Git mirrors (`--remote-repo`, `--remote-cache-dir`, `--allow-file-remote`), repository access provisioning (`--repo-access`), and the `@mars/team-agent` worker (`--agent`, `--agent-poll-ms`).
+- `mars team serve` supports verified HS256 tokens (`--auth-provider token`, `--auth-secret-env`, `--auth-issuer`, `--auth-audience`), GitHub OAuth (`--auth-provider github`, `--github-api-url`, `--github-allowed-ids` mapped to immutable `gh_<id>` identities), composite auth with local-dev fallback (`--dev-users`), remote Git mirrors (`--remote-repo`, `--remote-auth-host`), repository access provisioning (`--repo-access`), and the `@mars/team-agent` worker (`--agent-model`).
 - `apps/vscode/src/teamChat` wires `repos.list`, `references.*`, `agent.*`, `tasks.link_*`, and `shares.*` RPCs into the extension host service, controller, and webview command protocol so teammates can `@` mention each other, quote pinned code ranges, invoke `@MARS`, link tasks, and share verified evidence cards bound to `preview_sha256`.
 
 ## Code references (PR 4, service half)

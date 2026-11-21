@@ -259,14 +259,17 @@ export interface GitHubAuthenticatorOptions {
    */
   readonly resolveTeams: (
     profile: GitHubUserProfile,
+    userId: string,
   ) => readonly string[] | Promise<readonly string[]>;
   /**
    * Maps a verified GitHub profile to a MARS `user_id` (default: lowercase
-   * GitHub login).
+   * GitHub login; use `(p) => \`gh_${p.id}\`` for reassignment-safe numeric IDs).
    */
   readonly mapUserId?: (profile: GitHubUserProfile) => string;
   /** Optional allowlist of GitHub logins (case-insensitive). */
   readonly allowedLogins?: readonly string[];
+  /** Optional allowlist of immutable numeric GitHub account IDs. */
+  readonly allowedIds?: readonly number[];
   /** HTTP request timeout in milliseconds (default 5000). */
   readonly timeoutMs?: number;
   /** Positive-cache TTL in milliseconds keyed by token SHA-256 (default 60000; 0 disables). */
@@ -317,6 +320,7 @@ export function createGitHubAuthenticator(
   const allowed = options.allowedLogins
     ? new Set(options.allowedLogins.map((l) => l.toLowerCase()))
     : null;
+  const allowedIdSet = options.allowedIds ? new Set(options.allowedIds) : null;
 
   const cache = new Map<
     string,
@@ -381,10 +385,12 @@ export function createGitHubAuthenticator(
         id: record.id,
         login: record.login,
       });
+      if (allowedIdSet && !allowedIdSet.has(profile.id)) return null;
       if (allowed && !allowed.has(profile.login.toLowerCase())) return null;
 
-      const teams = await options.resolveTeams(profile);
-      const user = freezeUser(mapUserId(profile), teams);
+      const userId = mapUserId(profile);
+      const teams = await options.resolveTeams(profile, userId);
+      const user = freezeUser(userId, teams);
       if (!user) return null;
 
       if (cacheTtlMs > 0) {

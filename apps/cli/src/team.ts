@@ -42,7 +42,7 @@ import { CliUsageError } from "./cli-errors";
  */
 
 export const TEAM_USAGE = [
-  "Usage: mars team serve --state DIR [--port 7332] [--team ID] (--dev-users a,b,c | --auth-provider token|github|none) [--members a,b,c] [--auth-secret-env VAR] [--auth-issuer ISS] [--auth-audience AUD] [--github-api-url URL] [--github-allowed-logins a,b] [--repo ID=DIR]... [--remote-repo ID=URL]... [--repo-access ID=user,user]... [--agent-model ID] [--enable] [--quiet]",
+  "Usage: mars team serve --state DIR [--port 7332] [--team ID] (--dev-users a,b,c | --auth-provider token|github|none) [--members a,b,c] [--auth-secret-env VAR] [--auth-issuer ISS] [--auth-audience AUD] [--github-api-url URL] [--github-allowed-ids 101,102] [--repo ID=DIR]... [--remote-repo ID=URL]... [--remote-auth-host HOST] [--repo-access ID=user,user]... [--agent-model ID] [--enable] [--quiet]",
   "       mars team enable|disable --state DIR",
   "       mars team stats --state DIR",
   "       mars team export --state DIR --out FILE [--force]",
@@ -281,7 +281,7 @@ export interface TeamServeOptions {
   authIssuer: string | null;
   authAudience: string | null;
   githubApiUrl: string | null;
-  githubAllowedLogins: string[] | null;
+  githubAllowedIds: number[] | null;
   repos: { repo_id: string; dir: string }[];
   remoteRepos: { repo_id: string; url: string }[];
   repoAccess: Map<string, string[]>;
@@ -305,7 +305,7 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
       "auth-issuer": { type: "string" },
       "auth-audience": { type: "string" },
       "github-api-url": { type: "string" },
-      "github-allowed-logins": { type: "string" },
+      "github-allowed-ids": { type: "string" },
       repo: { type: "string", multiple: true },
       "remote-repo": { type: "string", multiple: true },
       "repo-access": { type: "string", multiple: true },
@@ -349,10 +349,29 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
     values["dev-users"] === undefined ? null : parseUsers(values["dev-users"]);
   const members =
     values.members === undefined ? [] : parseUsers(values.members);
-  const githubAllowedLogins =
-    values["github-allowed-logins"] === undefined
+  const githubAllowedIds =
+    values["github-allowed-ids"] === undefined
       ? null
-      : parseUsers(values["github-allowed-logins"]);
+      : values["github-allowed-ids"]
+          .split(",")
+          .map((raw) => raw.trim())
+          .filter(Boolean)
+          .map((raw) => {
+            if (!/^[1-9][0-9]*$/.test(raw))
+              throw new TeamUsageError(
+                "--github-allowed-ids expects comma-separated positive GitHub numeric account IDs.",
+              );
+            const id = Number(raw);
+            if (!Number.isSafeInteger(id) || id <= 0)
+              throw new TeamUsageError(
+                "--github-allowed-ids expects comma-separated positive GitHub numeric account IDs.",
+              );
+            return id;
+          });
+  if (githubAllowedIds !== null && githubAllowedIds.length === 0)
+    throw new TeamUsageError(
+      "--github-allowed-ids must list at least one GitHub numeric account ID.",
+    );
   const repos = parseRepos(values.repo);
   const remoteRepos = parseRemoteRepos(values["remote-repo"]);
   const allRepoIds = new Set([
@@ -364,7 +383,7 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
   const knownUsers = new Set([
     ...(devUsers ?? []),
     ...members,
-    ...(githubAllowedLogins ?? []),
+    ...(githubAllowedIds?.map((id) => `gh_${id}`) ?? []),
   ]);
   const repoAccess = parseRepoAccess(
     values["repo-access"],
@@ -388,7 +407,7 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
     authIssuer: values["auth-issuer"] ?? null,
     authAudience: values["auth-audience"] ?? null,
     githubApiUrl: values["github-api-url"] ?? null,
-    githubAllowedLogins,
+    githubAllowedIds,
     repos,
     remoteRepos,
     repoAccess,
@@ -495,18 +514,21 @@ async function runServe(
       }),
     );
   } else if (options.authProvider === "github") {
-    if (options.githubAllowedLogins) {
-      for (const [index, login] of options.githubAllowedLogins.entries())
-        if (!provisionedUsers.has(login))
-          ensureMember(login, provisionedUsers.size === 0 && index === 0);
+    if (options.githubAllowedIds) {
+      for (const [index, ghId] of options.githubAllowedIds.entries()) {
+        const userId = `gh_${ghId}`;
+        if (!provisionedUsers.has(userId))
+          ensureMember(userId, provisionedUsers.size === 0 && index === 0);
+      }
     }
     authenticators.push(
       createGitHubAuthenticator({
         ...(options.githubApiUrl ? { apiBaseUrl: options.githubApiUrl } : {}),
-        ...(options.githubAllowedLogins
-          ? { allowedLogins: options.githubAllowedLogins }
+        ...(options.githubAllowedIds
+          ? { allowedIds: options.githubAllowedIds }
           : {}),
-        resolveTeams: (profile) => opened.activeTeamIds(profile.login),
+        mapUserId: (profile) => `gh_${profile.id}`,
+        resolveTeams: (_profile, userId) => opened.activeTeamIds(userId),
       }),
     );
   }
