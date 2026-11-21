@@ -192,20 +192,22 @@ function maybeRequestPathSearch(): void {
     return;
   }
   if (!state?.capabilities.references) return;
-  const activeRepo = state.mention_index.repos[0];
-  if (!activeRepo) return;
+  const repos = state.mention_index.repos;
+  if (repos.length === 0) return;
   const pathQuery = pickerState.query.trim().split(":")[0] ?? "";
   if (!pathQuery) return;
-  const key = `${activeRepo.repo_id}:${activeRepo.commit_sha}:${pathQuery}`;
+  const key = `${repos.map((r) => `${r.repo_id}@${r.commit_sha}`).join(",")}:${pathQuery}`;
   if (key === lastPathSearchKey) return;
   lastPathSearchKey = key;
-  post({
-    type: "searchPaths",
-    repoId: activeRepo.repo_id,
-    commitSha: activeRepo.commit_sha,
-    query: pathQuery,
-    limit: 20,
-  });
+  for (const repo of repos) {
+    post({
+      type: "searchPaths",
+      repoId: repo.repo_id,
+      commitSha: repo.commit_sha,
+      query: pathQuery,
+      limit: 20,
+    });
+  }
 }
 
 function updateComposer(action: Parameters<typeof reduceComposer>[1]): void {

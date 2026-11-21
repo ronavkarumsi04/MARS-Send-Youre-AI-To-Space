@@ -120,6 +120,8 @@ export class TeamChatController {
   private readonly pendingInputs = new Map<string, SendMessageInput>();
   private panel: TeamChatViewState["panel"] = null;
   private pathSearch: PathSearchMatch[] = [];
+  private pathSearchQuery: string | null = null;
+  private readonly pathSearchByRepo = new Map<string, PathSearchMatch[]>();
   private agentPreviewState: AgentPreviewView | null = null;
   private agentRequestState: AgentRequestView | null = null;
   private taskLinkDraftState: TaskLinkDraftView | null = null;
@@ -277,6 +279,8 @@ export class TeamChatController {
       this.selected = null;
       this.panel = null;
       this.pathSearch = [];
+      this.pathSearchQuery = null;
+      this.pathSearchByRepo.clear();
       this.agentPreviewState = null;
       this.agentRequestState = null;
       this.taskLinkDraftState = null;
@@ -937,7 +941,13 @@ export class TeamChatController {
   ): Promise<void> {
     if (!this.service.searchPaths) {
       this.pathSearch = [];
+      this.pathSearchQuery = null;
+      this.pathSearchByRepo.clear();
       return;
+    }
+    if (this.pathSearchQuery !== query) {
+      this.pathSearchQuery = query;
+      this.pathSearchByRepo.clear();
     }
     const result = await this.service.searchPaths(this.viewer, {
       repo_id: repoId,
@@ -946,10 +956,11 @@ export class TeamChatController {
       ...(limit !== undefined ? { limit } : {}),
     });
     if (!result.ok) {
-      this.pathSearch = [];
-      return;
+      this.pathSearchByRepo.delete(repoId);
+    } else {
+      this.pathSearchByRepo.set(repoId, result.value);
     }
-    this.pathSearch = result.value;
+    this.pathSearch = Array.from(this.pathSearchByRepo.values()).flat();
   }
 
   private async runAgentPreview(
