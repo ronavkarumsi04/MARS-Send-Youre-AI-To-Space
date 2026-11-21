@@ -245,7 +245,6 @@ async function handleReview(
 
   const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
-  await cp.registry.upsert(config);
   const evidence = await cp.probe.observeServer(ctx, config, {
     allowUnapprovedStdioProbe: Boolean(values["allow-stdio-probe"]),
   });
@@ -280,6 +279,11 @@ async function handleReview(
     evidence,
     permissions: effectivePermissions,
     credential_bindings: credentialBindings,
+  });
+
+  await cp.registry.upsert({
+    ...config,
+    permissions: effectivePermissions,
   });
 
   if (values.json) {
