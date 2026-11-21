@@ -259,6 +259,14 @@ export function createTrustedMcpLoader(
                 },
               ]
             : []),
+          ...(request.credential_ref
+            ? [
+                {
+                  capability: "credential.use" as const,
+                  resource: request.credential_ref,
+                },
+              ]
+            : []),
         ];
       const callerCapabilities: Permission[] =
         request.caller_capabilities ?? requestedPermissions;

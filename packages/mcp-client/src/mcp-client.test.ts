@@ -723,4 +723,245 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("refuses to spawn unapproved stdio server and skips spawning when approved artifact drifts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mars-mcp-nospawn-"));
+    tempDirs.push(dir);
+    const markerPath = join(dir, "spawned.marker");
+    const scriptPath = join(dir, "server.ts");
+    await writeFile(
+      scriptPath,
+      `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(markerPath)}, "ran");
+`,
+      "utf8",
+    );
+
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    await cp.registry.upsert(
+      makeConfig({
+        id: "unapproved-stdio",
+        transport: {
+          type: "stdio",
+          command: BUN_BIN,
+          args: ["run", scriptPath],
+          entrypoint: scriptPath,
+          env_allowlist: [],
+        },
+        permissions: [{ capability: "tool.invoke", resource: "echo" }],
+        credential_bindings: [],
+      }),
+    );
+
+    await expect(
+      cp.probe.observe(ctx, {
+        kind: "mcp",
+        integration_id: "unapproved-stdio",
+      }),
+    ).rejects.toMatchObject({ code: "evidence_unavailable" });
+
+    // Confirm the unapproved script was never spawned
+    let markerExists = true;
+    try {
+      await readFile(markerPath, "utf8");
+    } catch {
+      markerExists = false;
+    }
+    expect(markerExists).toBe(false);
+  });
+
+  it("paginates tools/list, sorts mixed-case tool names by code unit, resolves open SSE streams without EOF, and enforces abort during body reads", async () => {
+    const srv = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        if (new URL(req.url).pathname !== "/mcp") {
+          return new Response("Not found", { status: 404 });
+        }
+        const body = (await req.json()) as {
+          id?: number;
+          method: string;
+          params?: { cursor?: string; name?: string };
+        };
+        if (body.method === "initialize") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: "paged-sse", version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        if (body.method === "tools/list") {
+          if (!body.params?.cursor) {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: {
+                tools: [{ name: "alpha", inputSchema: { type: "object" } }],
+                nextCursor: "page-2",
+              },
+            });
+          }
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              tools: [{ name: "Zeta", inputSchema: { type: "object" } }],
+            },
+          });
+        }
+        if (body.method === "tools/call") {
+          const toolName = body.params?.name;
+          if (toolName === "Zeta") {
+            // Open SSE stream that sends the matching event and NEVER closes
+            const stream = new ReadableStream({
+              start(controller) {
+                const payload = JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: body.id,
+                  result: {
+                    content: [{ type: "text", text: "sse-before-eof" }],
+                  },
+                });
+                controller.enqueue(
+                  new TextEncoder().encode(`event: message\ndata: ${payload}\n\n`),
+                );
+              },
+            });
+            return new Response(stream, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            });
+          }
+          // Open SSE stream that sends headers immediately and then stalls forever
+          const stalled = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
+            },
+          });
+          return new Response(stalled, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+      },
+    });
+    activeServers.push(srv);
+
+    const origin = `http://127.0.0.1:${srv.port}`;
+    const url = `${origin}/mcp`;
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+
+    await registerReviewApprove(
+      cp,
+      ctx,
+      makeConfig({
+        id: "paged-sse-http",
+        transport: { type: "streamable-http", url },
+        permissions: [
+          { capability: "network.connect", resource: origin },
+          { capability: "tool.invoke", resource: "Zeta" },
+          { capability: "tool.invoke", resource: "alpha" },
+        ],
+        credential_bindings: [],
+      }),
+    );
+
+    // 1. Both paginated tools ("Zeta" and "alpha") were discovered and ordered by code-unit
+    const admitted = await cp.loader.admitServer(ctx, "paged-sse-http");
+    expect(admitted.descriptor.tools.map((t) => t.name)).toEqual([
+      "Zeta",
+      "alpha",
+    ]);
+
+    // 2. Open SSE stream resolves immediately on matching response without waiting for EOF
+    const res = await cp.loader.invokeTool(ctx, {
+      server_id: "paged-sse-http",
+      tool: "Zeta",
+      input: {},
+      requested_permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "Zeta" },
+      ],
+      timeout_ms: 2_000,
+    });
+    expect(res.content[0]?.text).toBe("sse-before-eof");
+
+    // 3. Stalled body read after headers honors timeout / abort
+    const started = Date.now();
+    await expect(
+      cp.loader.invokeTool(ctx, {
+        server_id: "paged-sse-http",
+        tool: "alpha",
+        input: {},
+        requested_permissions: [
+          { capability: "network.connect", resource: origin },
+          { capability: "tool.invoke", resource: "alpha" },
+        ],
+        timeout_ms: 250,
+      }),
+    ).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it("serializes concurrent FileMcpRegistry upserts and matches custom owner in default host proof signing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mars-mcp-conc-"));
+    tempDirs.push(dir);
+    const cp = await createHostMcpControlPlane({
+      stateDir: dir,
+      approvers: [
+        {
+          approver_id: "custom-owner",
+          owner_id: "custom-owner",
+          project_ids: ["custom-proj"],
+        },
+      ],
+    });
+    activeControlPlanes.push(cp);
+
+    await Promise.all(
+      Array.from({ length: 8 }, (_, idx) =>
+        cp.registry.upsert(
+          makeConfig({
+            id: `srv-${idx}`,
+            transport: {
+              type: "streamable-http",
+              url: `https://example-${idx}.test/mcp`,
+            },
+            permissions: [
+              {
+                capability: "network.connect",
+                resource: `https://example-${idx}.test`,
+              },
+            ],
+            credential_bindings: [],
+          }),
+        ),
+      ),
+    );
+    const list = await cp.registry.list();
+    expect(list.map((s) => s.id).sort()).toEqual(
+      Array.from({ length: 8 }, (_, idx) => `srv-${idx}`),
+    );
+
+    // Default signHostProof without explicit approver_id selects custom-owner
+    const proof = cp.signHostProof({
+      review_id: "rev-1",
+      review_revision: 1,
+      binding_sha256: "a".repeat(64),
+      scope: { owner_id: "custom-owner", project_id: "custom-proj" },
+      decision: "approve",
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(proof.approver_id).toBe("custom-owner");
+  });
 });
