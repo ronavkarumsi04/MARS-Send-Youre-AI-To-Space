@@ -1,0 +1,3283 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21T19:15:00.000Z",
+  "budget_policy": "strict_zero_usd_openrouter_free_tier_only",
+  "total_spend_usd": 0,
+  "model_id": "nvidia/nemotron-3.5-super-vl:free",
+  "provider_id": "openrouter",
+  "rate_limit_observed": {
+    "http_status": 429,
+    "limit_source": "openrouter_free_tier_daily",
+    "x_ratelimit_limit": 50,
+    "x_ratelimit_remaining": 0,
+    "x_ratelimit_reset_ms": 1795305600000,
+    "note": "OpenRouter free-tier accounts without purchased credits are capped at 50 free model requests per day across all :free models. Quota was exhausted during the v2 stratified run after 5 completed real-model trials (plus the 3-trial v1 smoke run and initial model availability probes)."
+  },
+  "live_runs": {
+    "v1_smoke": {
+      "report_sha256": "0b53a764db03ad8755c6d45de4eb60c285588392a6fc106fab88a97175634273",
+      "report": {
+        "generated_at": "2026-11-21T18:42:51.248Z",
+        "simulated": false,
+        "repository": "MARS-Send-Youre-AI-To-Space",
+        "harness": {
+          "mars_execution": "18.20.0",
+          "omp_stock_tools": [
+            "read",
+            "edit",
+            "write",
+            "grep"
+          ]
+        },
+        "model": {
+          "id": "nvidia/nemotron-3.5-super-vl:free",
+          "provider_id": "openrouter",
+          "free": true,
+          "input_per_mtok_usd": null,
+          "output_per_mtok_usd": null
+        },
+        "seed": {
+          "job": "9f6ef36790e1c6dacfebb95b311f1bb56b4ba6fecd93b430583ede1d9136911f",
+          "serving": 3808783544
+        },
+        "suite": {
+          "suite_id": "mars-edit-heldout-v1",
+          "revision": "1",
+          "sha256": "c60e5fe8a99b7fbe3417c12be757800ffd0a57546c047453478542a1a7360382",
+          "tasks": 1,
+          "heldout_split_id": "mars-edit-heldout-v1",
+          "heldout_split_sha256": "2c17ae800646841a9fb3434d6a63d4d6001704cbe0d5f21815337ea3d933191b",
+          "lineages_checked": 0,
+          "provenance": {
+            "origin": "authored",
+            "created": "2026-11-14",
+            "statement": "Written for this benchmark in this repository; not copied from public benchmarks, MARS datasets or training lineages. Registered as held-out split mars-edit-heldout-v1."
+          }
+        },
+        "repeats": 1,
+        "budget_per_task": {
+          "max_tokens": 1000000,
+          "max_usd": 0,
+          "max_duration_ms": 300000
+        },
+        "budget_total": {
+          "max_usd": 0,
+          "max_tokens": null
+        },
+        "preregistered_bar": {
+          "id": "mars-vs-omp-stock/v2",
+          "alpha": 0.05,
+          "statement": "MARS's default edit format for that model beats omp-stock on host-verified solve rate for small models with p < 0.05 on the paired exact sign test over tasks, and its cost per verified solve is not worse (USD when either arm is priced, else total tokens)."
+        },
+        "arms": [
+          {
+            "arm": "mars:hashline",
+            "edit_modes": [
+              "hashline"
+            ],
+            "trials": 1,
+            "verified_solves": 1,
+            "solve_rate": 1,
+            "solve_rate_wilson95": {
+              "lower": 0.20654329147389294,
+              "upper": 1
+            },
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "edit_failure_rate": 0.5,
+            "turns_mean": 5,
+            "input_tokens": 8010,
+            "output_tokens": 1012,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 9022,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "wall_ms_total": 8176,
+            "wall_ms_mean": 8176,
+            "network_refusals": 0,
+            "path_refusals": 0
+          },
+          {
+            "arm": "mars:apply_patch",
+            "edit_modes": [
+              "apply_patch"
+            ],
+            "trials": 1,
+            "verified_solves": 1,
+            "solve_rate": 1,
+            "solve_rate_wilson95": {
+              "lower": 0.20654329147389294,
+              "upper": 1
+            },
+            "edit_calls": 1,
+            "edit_failures": 0,
+            "edit_failure_rate": 0,
+            "turns_mean": 4,
+            "input_tokens": 5504,
+            "output_tokens": 351,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 5855,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "wall_ms_total": 3500,
+            "wall_ms_mean": 3500,
+            "network_refusals": 0,
+            "path_refusals": 0
+          },
+          {
+            "arm": "omp-stock",
+            "edit_modes": [
+              "hashline"
+            ],
+            "trials": 1,
+            "verified_solves": 1,
+            "solve_rate": 1,
+            "solve_rate_wilson95": {
+              "lower": 0.20654329147389294,
+              "upper": 1
+            },
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "edit_failure_rate": 0.5,
+            "turns_mean": 4,
+            "input_tokens": 15185,
+            "output_tokens": 311,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 15496,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": null,
+              "high": null
+            },
+            "wall_ms_total": 3345,
+            "wall_ms_mean": 3345,
+            "network_refusals": 0,
+            "path_refusals": 0
+          }
+        ],
+        "paired": {
+          "candidate": "mars:hashline",
+          "baseline": "omp-stock",
+          "unit": "task",
+          "tasks": 1,
+          "both_solved": 1,
+          "neither_solved": 0,
+          "candidate_only": [],
+          "baseline_only": [],
+          "sign_test": {
+            "n": 0,
+            "wins": 0,
+            "losses": 0,
+            "p_two_sided": 1
+          }
+        },
+        "secondary": {
+          "label": "secondary (exploratory, not adjusted for multiple comparisons)",
+          "adjustment": "holm",
+          "best_arm": "mars:apply_patch",
+          "comparisons": [
+            {
+              "arm": "mars:hashline",
+              "confirmatory": true,
+              "paired": {
+                "candidate": "mars:hashline",
+                "baseline": "omp-stock",
+                "unit": "task",
+                "tasks": 1,
+                "both_solved": 1,
+                "neither_solved": 0,
+                "candidate_only": [],
+                "baseline_only": [],
+                "sign_test": {
+                  "n": 0,
+                  "wins": 0,
+                  "losses": 0,
+                  "p_two_sided": 1
+                }
+              },
+              "p_raw": 1,
+              "p_holm": 1
+            },
+            {
+              "arm": "mars:apply_patch",
+              "confirmatory": false,
+              "paired": {
+                "candidate": "mars:apply_patch",
+                "baseline": "omp-stock",
+                "unit": "task",
+                "tasks": 1,
+                "both_solved": 1,
+                "neither_solved": 0,
+                "candidate_only": [],
+                "baseline_only": [],
+                "sign_test": {
+                  "n": 0,
+                  "wins": 0,
+                  "losses": 0,
+                  "p_two_sided": 1
+                }
+              },
+              "p_raw": 1,
+              "p_holm": 1
+            }
+          ]
+        },
+        "verdict": {
+          "confirmatory_arm": "mars:hashline",
+          "confirmatory_reason": "static_default",
+          "exploratory": true,
+          "suite_tasks": 1,
+          "min_powered_tasks": 129,
+          "bar_id": "mars-vs-omp-stock/v2",
+          "candidate": "mars:hashline",
+          "solve_rate_better": false,
+          "significant": false,
+          "cost_basis": "tokens",
+          "cost_not_worse": true,
+          "met": false,
+          "summary": "Exploratory: the suite has 1 task(s), below the power-analysis minimum of 129, so the pre-registered verdict is not computed (mars:hashline vs omp-stock: 0 vs 0 discordant tasks, p = 1.00)."
+        },
+        "trials": [
+          {
+            "arm": "mars:hashline",
+            "task_id": "makefile-race-flag",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 4112219299,
+            "solved": true,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "turns": 5,
+            "input_tokens": 8010,
+            "output_tokens": 1012,
+            "cost_usd": 0,
+            "wall_ms": 8176,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "makefile-race-flag",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 4112219299,
+            "solved": true,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 1,
+            "edit_failures": 0,
+            "turns": 4,
+            "input_tokens": 5504,
+            "output_tokens": 351,
+            "cost_usd": 0,
+            "wall_ms": 3500,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "makefile-race-flag",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 4112219299,
+            "solved": true,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "turns": 4,
+            "input_tokens": 15185,
+            "output_tokens": 311,
+            "cost_usd": 0,
+            "wall_ms": 3345,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          }
+        ],
+        "limitations": [
+          "Every arm ran the same 1 task(s), 1 repeat(s), model nvidia/nemotron-3.5-super-vl:free, forwarded seed per (task, repeat) and per-task budget.",
+          "omp-stock runs Oh My Pi's own built-in tools (read, edit, write, grep) with its default, model-resolved edit mode in a throwaway copy; MARS arms use only mars_* tools. Neither arm may run commands, and process-wide fetch is disabled during trials except the injected model transport.",
+          "Verification is host-side: the throwaway workspace must equal the expected tree byte for byte.",
+          "Paired analysis counts a task as solved when a strict majority of its repeats solved.",
+          "Only the confirmatory arm (mars:hashline, the model's static default format) decides the pre-registered bar; other MARS-vs-omp-stock comparisons are secondary (exploratory, not adjusted for multiple comparisons) and shown with Holm-adjusted p-values.",
+          "Seeds are forwarded to OpenAI-compatible endpoints; providers apply them best effort."
+        ],
+        "schema": "mars.edit-benchmark-report/v1",
+        "report_sha256": "0b53a764db03ad8755c6d45de4eb60c285588392a6fc106fab88a97175634273"
+      }
+    },
+    "v2_stratified_32": {
+      "report_sha256": "7d42f8930d4d548704e6c1d867784a22ab79d97ecd71b95023a3e65a5000d7fa",
+      "report": {
+        "generated_at": "2026-11-21T19:11:50.447Z",
+        "simulated": false,
+        "repository": "MARS-Send-Youre-AI-To-Space",
+        "harness": {
+          "mars_execution": "18.20.0",
+          "omp_stock_tools": [
+            "read",
+            "edit",
+            "write",
+            "grep"
+          ]
+        },
+        "model": {
+          "id": "nvidia/nemotron-3.5-super-vl:free",
+          "provider_id": "openrouter",
+          "free": true,
+          "input_per_mtok_usd": null,
+          "output_per_mtok_usd": null
+        },
+        "seed": {
+          "job": "347f33e2227739300f5853fe064a11fbd1200b6c8846c7a4c3a07b76007c3e9b",
+          "serving": 2265257368
+        },
+        "suite": {
+          "suite_id": "mars-edit-heldout-v2",
+          "revision": "2",
+          "sha256": "5a46ef8cc3b6d1dffec3ef5db4bd21fd5c09d2f3bac1822b6364d6928303774a",
+          "tasks": 32,
+          "heldout_split_id": "mars-edit-heldout-v2",
+          "heldout_split_sha256": "f6adca380c1781822efee71de345948659952b98fc793d39ebb3983e320e1562",
+          "lineages_checked": 0,
+          "provenance": {
+            "origin": "derived",
+            "created": "2026-11-14",
+            "author": "build-edit-bench-v2.ts (MARS S3 follow-up)",
+            "statement": "Each task is one unmodified file from a pinned commit of a permissively licensed public repository (see sources and licenses/) plus one fully specified mechanical edit generated deterministically by packages/evaluation/scripts/build-edit-bench-v2.ts. Instructions and expected trees are new; registered as held-out split mars-edit-heldout-v2."
+          }
+        },
+        "repeats": 1,
+        "budget_per_task": {
+          "max_tokens": 1000000,
+          "max_usd": 0,
+          "max_duration_ms": 120000
+        },
+        "budget_total": {
+          "max_usd": 0,
+          "max_tokens": null
+        },
+        "preregistered_bar": {
+          "id": "mars-vs-omp-stock/v2",
+          "alpha": 0.05,
+          "statement": "MARS's default edit format for that model beats omp-stock on host-verified solve rate for small models with p < 0.05 on the paired exact sign test over tasks, and its cost per verified solve is not worse (USD when either arm is priced, else total tokens)."
+        },
+        "arms": [
+          {
+            "arm": "mars:hashline",
+            "edit_modes": [
+              "hashline"
+            ],
+            "trials": 32,
+            "verified_solves": 1,
+            "solve_rate": 0.03125,
+            "solve_rate_wilson95": {
+              "lower": 0.005537717362550956,
+              "upper": 0.15744607800372734
+            },
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "edit_failure_rate": 0.5,
+            "turns_mean": 1.15625,
+            "input_tokens": 21595,
+            "output_tokens": 4758,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 0,
+              "high": 0
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 26353,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 9594,
+              "high": 59871
+            },
+            "wall_ms_total": 497089,
+            "wall_ms_mean": 15534.03125,
+            "network_refusals": 0,
+            "path_refusals": 0
+          },
+          {
+            "arm": "mars:apply_patch",
+            "edit_modes": [
+              "apply_patch"
+            ],
+            "trials": 32,
+            "verified_solves": 1,
+            "solve_rate": 0.03125,
+            "solve_rate_wilson95": {
+              "lower": 0.005537717362550956,
+              "upper": 0.15744607800372734
+            },
+            "edit_calls": 4,
+            "edit_failures": 4,
+            "edit_failure_rate": 1,
+            "turns_mean": 1.375,
+            "input_tokens": 38102,
+            "output_tokens": 9608,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 0,
+              "high": 0
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 47710,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 36608,
+              "high": 69914
+            },
+            "wall_ms_total": 549637,
+            "wall_ms_mean": 17176.15625,
+            "network_refusals": 0,
+            "path_refusals": 0
+          },
+          {
+            "arm": "omp-stock",
+            "edit_modes": [
+              "hashline"
+            ],
+            "trials": 32,
+            "verified_solves": 1,
+            "solve_rate": 0.03125,
+            "solve_rate_wilson95": {
+              "lower": 0.005537717362550956,
+              "upper": 0.15744607800372734
+            },
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "edit_failure_rate": 0.5,
+            "turns_mean": 1.1875,
+            "input_tokens": 36486,
+            "output_tokens": 1117,
+            "cost_usd": 0,
+            "cost_per_verified_solve_usd": {
+              "estimate": 0,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 0,
+              "high": 0
+            },
+            "tokens_per_verified_solve": {
+              "estimate": 37603,
+              "confidence": 0.95,
+              "samples": 2000,
+              "method": "task-bootstrap-percentile",
+              "low": 37603,
+              "high": 37603
+            },
+            "wall_ms_total": 485383,
+            "wall_ms_mean": 15168.21875,
+            "network_refusals": 0,
+            "path_refusals": 0
+          }
+        ],
+        "paired": {
+          "candidate": "mars:hashline",
+          "baseline": "omp-stock",
+          "unit": "task",
+          "tasks": 32,
+          "both_solved": 0,
+          "neither_solved": 30,
+          "candidate_only": [
+            "click-indent-1"
+          ],
+          "baseline_only": [
+            "click-rename-1"
+          ],
+          "sign_test": {
+            "n": 2,
+            "wins": 1,
+            "losses": 1,
+            "p_two_sided": 1
+          }
+        },
+        "secondary": {
+          "label": "secondary (exploratory, not adjusted for multiple comparisons)",
+          "adjustment": "holm",
+          "best_arm": "mars:apply_patch",
+          "comparisons": [
+            {
+              "arm": "mars:hashline",
+              "confirmatory": true,
+              "paired": {
+                "candidate": "mars:hashline",
+                "baseline": "omp-stock",
+                "unit": "task",
+                "tasks": 32,
+                "both_solved": 0,
+                "neither_solved": 30,
+                "candidate_only": [
+                  "click-indent-1"
+                ],
+                "baseline_only": [
+                  "click-rename-1"
+                ],
+                "sign_test": {
+                  "n": 2,
+                  "wins": 1,
+                  "losses": 1,
+                  "p_two_sided": 1
+                }
+              },
+              "p_raw": 1,
+              "p_holm": 1
+            },
+            {
+              "arm": "mars:apply_patch",
+              "confirmatory": false,
+              "paired": {
+                "candidate": "mars:apply_patch",
+                "baseline": "omp-stock",
+                "unit": "task",
+                "tasks": 32,
+                "both_solved": 0,
+                "neither_solved": 30,
+                "candidate_only": [
+                  "click-indent-1"
+                ],
+                "baseline_only": [
+                  "click-rename-1"
+                ],
+                "sign_test": {
+                  "n": 2,
+                  "wins": 1,
+                  "losses": 1,
+                  "p_two_sided": 1
+                }
+              },
+              "p_raw": 1,
+              "p_holm": 1
+            }
+          ]
+        },
+        "verdict": {
+          "confirmatory_arm": "mars:hashline",
+          "confirmatory_reason": "static_default",
+          "exploratory": true,
+          "suite_tasks": 32,
+          "min_powered_tasks": 129,
+          "bar_id": "mars-vs-omp-stock/v2",
+          "candidate": "mars:hashline",
+          "solve_rate_better": false,
+          "significant": false,
+          "cost_basis": "tokens",
+          "cost_not_worse": true,
+          "met": false,
+          "summary": "Exploratory: the suite has 32 task(s), below the power-analysis minimum of 129, so the pre-registered verdict is not computed (mars:hashline vs omp-stock: 1 vs 1 discordant tasks, p = 1.00)."
+        },
+        "trials": [
+          {
+            "arm": "mars:hashline",
+            "task_id": "click-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 4162863886,
+            "solved": false,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 2,
+            "input_tokens": 12561,
+            "output_tokens": 4198,
+            "cost_usd": 0,
+            "wall_ms": 28956,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/utils.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "click-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 4162863886,
+            "solved": false,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 2,
+            "input_tokens": 7822,
+            "output_tokens": 3280,
+            "cost_usd": 0,
+            "wall_ms": 22949,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/utils.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "click-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 4162863886,
+            "solved": true,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "turns": 7,
+            "input_tokens": 36486,
+            "output_tokens": 1117,
+            "cost_usd": 0,
+            "wall_ms": 8388,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "click-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2669199290,
+            "solved": true,
+            "status": "completed",
+            "failure": null,
+            "edit_calls": 2,
+            "edit_failures": 1,
+            "turns": 5,
+            "input_tokens": 9034,
+            "output_tokens": 560,
+            "cost_usd": 0,
+            "wall_ms": 5746,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "click-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2669199290,
+            "solved": true,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 4,
+            "edit_failures": 4,
+            "turns": 12,
+            "input_tokens": 30280,
+            "output_tokens": 6328,
+            "cost_usd": 0,
+            "wall_ms": 64553,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": []
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "click-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2669199290,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15336,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/_winconsole.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "click-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3695496094,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15605,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "click-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3695496094,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15340,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "click-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3695496094,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15272,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "click-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2246429839,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15276,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "click-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2246429839,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15293,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "click-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2246429839,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15319,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/click/shell_completion.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "cobra-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1385743525,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15362,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "bash_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "cobra-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1385743525,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15766,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "bash_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "cobra-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1385743525,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 16385,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "bash_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "cobra-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2239939861,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15314,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "shell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "cobra-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2239939861,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15336,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "shell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "cobra-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2239939861,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15266,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "shell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "cobra-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3263762651,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15308,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "command.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "cobra-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3263762651,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15306,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "command.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "cobra-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3263762651,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15322,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "command.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "cobra-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2602435795,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 16136,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "powershell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "cobra-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2602435795,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15483,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "powershell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "cobra-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2602435795,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15291,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "powershell_completions.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "express-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 2214011062,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15306,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "express-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 2214011062,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15303,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "express-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 2214011062,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15433,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "express-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1120695903,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15312,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "express-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1120695903,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15284,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "express-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1120695903,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15340,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/utils.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "express-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 2675303924,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15283,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "express-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 2675303924,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15331,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "express-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 2675303924,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15347,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "express-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 3296772936,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15312,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "express-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 3296772936,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15279,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "express-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 3296772936,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15321,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lib/request.js"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "ky-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 3005420623,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15366,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/type-guards.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "ky-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 3005420623,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15270,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/type-guards.ts"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "ky-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 3005420623,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15280,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/type-guards.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "ky-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1684645447,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15287,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/body.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "ky-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1684645447,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15274,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/body.ts"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "ky-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1684645447,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15305,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/utils/body.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "ky-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3363605614,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15333,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/core/Ky.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "ky-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3363605614,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15335,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/core/Ky.ts"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "ky-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3363605614,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15325,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/core/Ky.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "ky-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 586085710,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15327,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/types/hooks.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "ky-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 586085710,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15417,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/types/hooks.ts"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "ky-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 586085710,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15373,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "source/types/hooks.ts"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "requests-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1571003108,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15321,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/utils.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "requests-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1571003108,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15288,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/utils.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "requests-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1571003108,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15330,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/utils.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "requests-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 516516332,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15301,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/structures.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "requests-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 516516332,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15326,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/structures.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "requests-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 516516332,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15690,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/structures.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "requests-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3414780680,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15309,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/models.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "requests-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3414780680,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15344,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/models.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "requests-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3414780680,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15524,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/models.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "requests-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2523507169,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 16805,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/__init__.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "requests-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2523507169,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15334,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/__init__.py"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "requests-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2523507169,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15422,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/requests/__init__.py"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "sds-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1743837572,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15384,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.h"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "sds-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1743837572,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15306,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.h"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "sds-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 1743837572,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15330,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.h"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "sds-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1814243575,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15335,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "sds-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1814243575,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15334,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "sds-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 1814243575,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15307,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "sds-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 1210301974,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15368,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "sds-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 1210301974,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15305,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "sds-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 1210301974,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15357,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "sds-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 153943750,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15406,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "sds-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 153943750,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15378,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "sds-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 153943750,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15417,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "sds.c"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "toml-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 405255468,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15341,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "error.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "toml-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 405255468,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15335,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "error.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "toml-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 405255468,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15333,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "error.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "toml-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2975565670,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15270,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lex.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "toml-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2975565670,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15318,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lex.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "toml-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 2975565670,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15321,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "lex.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "toml-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3207681054,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15311,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "encode.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "toml-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3207681054,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15314,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "encode.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "toml-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 3207681054,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15342,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "encode.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "toml-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 4135045214,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15311,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "internal/tag/add.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "toml-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 4135045214,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15251,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "internal/tag/add.go"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "toml-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 4135045214,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15318,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "internal/tag/add.go"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "walkdir-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 561464222,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15310,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "walkdir-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 561464222,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15284,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "walkdir-rename-1",
+            "category": "multi_site",
+            "repeat": 0,
+            "seed": 561464222,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15312,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "walkdir-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 931005557,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15403,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "walkdir-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 931005557,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15907,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "walkdir-indent-1",
+            "category": "whitespace_sensitive",
+            "repeat": 0,
+            "seed": 931005557,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15417,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "walkdir-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 901194556,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15393,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/lib.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "walkdir-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 901194556,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 16040,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/lib.rs"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "walkdir-large-1",
+            "category": "large_file",
+            "repeat": 0,
+            "seed": 901194556,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15334,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/lib.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:hashline",
+            "task_id": "walkdir-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2874961248,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15292,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "mars:apply_patch",
+            "task_id": "walkdir-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2874961248,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 16054,
+            "edit_mode": "apply_patch",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          },
+          {
+            "arm": "omp-stock",
+            "task_id": "walkdir-repeat-1",
+            "category": "repeated_lines",
+            "repeat": 0,
+            "seed": 2874961248,
+            "solved": false,
+            "status": "failed",
+            "failure": "provider_error",
+            "edit_calls": 0,
+            "edit_failures": 0,
+            "turns": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0,
+            "wall_ms": 15326,
+            "edit_mode": "hashline",
+            "network_refusals": 0,
+            "path_refusals": 0,
+            "verification": {
+              "missing": [],
+              "unexpected": [],
+              "mismatched": [
+                "src/dent.rs"
+              ]
+            }
+          }
+        ],
+        "limitations": [
+          "Every arm ran the same 32 task(s), 1 repeat(s), model nvidia/nemotron-3.5-super-vl:free, forwarded seed per (task, repeat) and per-task budget.",
+          "omp-stock runs Oh My Pi's own built-in tools (read, edit, write, grep) with its default, model-resolved edit mode in a throwaway copy; MARS arms use only mars_* tools. Neither arm may run commands, and process-wide fetch is disabled during trials except the injected model transport.",
+          "Verification is host-side: the throwaway workspace must equal the expected tree byte for byte.",
+          "Paired analysis counts a task as solved when a strict majority of its repeats solved.",
+          "Only the confirmatory arm (mars:hashline, the model's static default format) decides the pre-registered bar; other MARS-vs-omp-stock comparisons are secondary (exploratory, not adjusted for multiple comparisons) and shown with Holm-adjusted p-values.",
+          "Seeds are forwarded to OpenAI-compatible endpoints; providers apply them best effort."
+        ],
+        "schema": "mars.edit-benchmark-report/v1",
+        "report_sha256": "7d42f8930d4d548704e6c1d867784a22ab79d97ecd71b95023a3e65a5000d7fa"
+      }
+    }
+  },
+  "offline_over_50kib_validation": {
+    "simulated": true,
+    "note": "Scripted oracle validation of all 6 v2 tasks with files >50 KiB after fixing Oh My Pi middle-elision.",
+    "report_sha256": "e57daa1e5bc793b311966d6874fd2cff21a70886121a19f61d2a805c74068a74",
+    "suite_sha256": "fe4c9720493850801526bdbea0a6ff6c2b148fa5c2042966128ad2e12d895cbd",
+    "tasks": 6,
+    "arms": [
+      {
+        "arm": "mars:hashline",
+        "trials": 6,
+        "verified_solves": 6,
+        "solve_rate": 1,
+        "edit_calls": 6,
+        "edit_failures": 0,
+        "turns_mean": 4
+      },
+      {
+        "arm": "mars:replace",
+        "trials": 6,
+        "verified_solves": 6,
+        "solve_rate": 1,
+        "edit_calls": 6,
+        "edit_failures": 0,
+        "turns_mean": 4
+      },
+      {
+        "arm": "mars:apply_patch",
+        "trials": 6,
+        "verified_solves": 6,
+        "solve_rate": 1,
+        "edit_calls": 6,
+        "edit_failures": 0,
+        "turns_mean": 4
+      },
+      {
+        "arm": "omp-stock",
+        "trials": 6,
+        "verified_solves": 6,
+        "solve_rate": 1,
+        "edit_calls": 6,
+        "edit_failures": 0,
+        "turns_mean": 3.8333333333333335
+      }
+    ]
+  }
+}
