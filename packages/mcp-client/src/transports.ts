@@ -426,34 +426,94 @@ export class StdioMcpTransport implements McpTransportConnection {
   }
 }
 
-function parseSseJsonRpcResponse(
-  body: string,
+function parseSseEventBlock(
+  block: string,
   expectedId: number,
-): JsonRpcResponse {
-  const events = body.split(/\r?\n\r?\n/);
-  for (const block of events) {
-    const dataLines: string[] = [];
-    for (const line of block.split(/\r?\n/)) {
-      if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-    if (dataLines.length === 0) continue;
-    const joined = dataLines.join("\n").trim();
-    if (!joined) continue;
-    let parsed: JsonRpcResponse;
-    try {
-      parsed = JSON.parse(joined) as JsonRpcResponse;
-    } catch {
-      continue;
-    }
-    if (parsed.id === expectedId) {
-      return parsed;
+): JsonRpcResponse | undefined {
+  const dataLines: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
     }
   }
-  throw new Error(
-    `MCP Streamable HTTP SSE stream did not contain response for id=${expectedId}`,
-  );
+  if (dataLines.length === 0) return undefined;
+  const joined = dataLines.join("\n").trim();
+  if (!joined) return undefined;
+  let parsed: JsonRpcResponse;
+  try {
+    parsed = JSON.parse(joined) as JsonRpcResponse;
+  } catch {
+    return undefined;
+  }
+  return parsed.id === expectedId ? parsed : undefined;
+}
+
+async function readSseJsonRpcResponse(
+  response: Response,
+  expectedId: number,
+  signal: AbortSignal,
+): Promise<JsonRpcResponse> {
+  if (!response.body) {
+    const text = await response.text();
+    for (const block of text.split(/\r?\n\r?\n/)) {
+      const match = parseSseEventBlock(block, expectedId);
+      if (match) return match;
+    }
+    throw new Error(
+      `MCP Streamable HTTP SSE stream did not contain response for id=${expectedId}`,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const onAbort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  if (signal.aborted) {
+    await reader.cancel().catch(() => {});
+    throw new Error("MCP Streamable HTTP request aborted");
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    while (true) {
+      if (signal.aborted) {
+        throw new Error("MCP Streamable HTTP request aborted");
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const separatorMatch = /\r?\n\r?\n/;
+      let matchIdx = buffer.search(separatorMatch);
+      while (matchIdx !== -1) {
+        const sep = buffer.slice(matchIdx).match(separatorMatch)?.[0] ?? "\n\n";
+        const block = buffer.slice(0, matchIdx);
+        buffer = buffer.slice(matchIdx + sep.length);
+        const found = parseSseEventBlock(block, expectedId);
+        if (found) {
+          await reader.cancel().catch(() => {});
+          return found;
+        }
+        matchIdx = buffer.search(separatorMatch);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim().length > 0) {
+      const found = parseSseEventBlock(buffer, expectedId);
+      if (found) return found;
+    }
+    if (signal.aborted) {
+      throw new Error("MCP Streamable HTTP request aborted");
+    }
+    throw new Error(
+      `MCP Streamable HTTP SSE stream did not contain response for id=${expectedId}`,
+    );
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
 }
 
 export class StreamableHttpMcpTransport implements McpTransportConnection {
@@ -470,10 +530,11 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     this.origin = new URL(config.url).origin;
   }
 
-  private async postJsonRpc(
+  private async withPostJsonRpc<T>(
     payload: JsonRpcRequest | JsonRpcNotification,
-    options?: McpRequestOptions,
-  ): Promise<Response> {
+    options: McpRequestOptions | undefined,
+    handleResponse: (response: Response, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     if (this.closed) {
       throw new Error("MCP Streamable HTTP transport is closed");
     }
@@ -514,6 +575,7 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       });
 
       if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => {});
         throw new Error(
           `MCP Streamable HTTP rejected redirect (status=${response.status})`,
         );
@@ -524,11 +586,20 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
         this.sessionId = nextSessionId;
       }
 
-      return response;
+      return await handleResponse(response, controller.signal);
     } finally {
       clearTimeout(timer);
       options?.signal?.removeEventListener("abort", onExternalAbort);
     }
+  }
+
+  private async postJsonRpc(
+    payload: JsonRpcRequest | JsonRpcNotification,
+    options?: McpRequestOptions,
+  ): Promise<void> {
+    await this.withPostJsonRpc(payload, options, async (response) => {
+      await response.body?.cancel().catch(() => {});
+    });
   }
 
   private async sendRequest(
@@ -537,7 +608,7 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     options?: McpRequestOptions,
   ): Promise<unknown> {
     const id = this.nextId++;
-    const response = await this.postJsonRpc(
+    const msg = await this.withPostJsonRpc(
       {
         jsonrpc: "2.0",
         id,
@@ -545,29 +616,63 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
         ...(params ? { params } : {}),
       },
       options,
+      async (response, signal) => {
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => "");
+          throw new Error(
+            `MCP Streamable HTTP error ${response.status}: ${errBody.slice(0, 200)}`,
+          );
+        }
+
+        const contentType = (
+          response.headers.get("content-type") ?? ""
+        ).toLowerCase();
+        if (contentType.includes("text/event-stream")) {
+          return await readSseJsonRpcResponse(response, id, signal);
+        }
+        if (contentType.includes("application/json")) {
+          const readJson = async () => {
+            if (!response.body) {
+              return (await response.json()) as JsonRpcResponse;
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let text = "";
+            const onAbort = () => {
+              void reader.cancel().catch(() => {});
+            };
+            if (signal.aborted) {
+              await reader.cancel().catch(() => {});
+              throw new Error("MCP Streamable HTTP request aborted");
+            }
+            signal.addEventListener("abort", onAbort, { once: true });
+            try {
+              while (true) {
+                if (signal.aborted) {
+                  throw new Error("MCP Streamable HTTP request aborted");
+                }
+                const { value, done } = await reader.read();
+                if (done) break;
+                text += decoder.decode(value, { stream: true });
+              }
+              text += decoder.decode();
+              if (signal.aborted) {
+                throw new Error("MCP Streamable HTTP request aborted");
+              }
+              return JSON.parse(text) as JsonRpcResponse;
+            } finally {
+              signal.removeEventListener("abort", onAbort);
+              reader.releaseLock();
+            }
+          };
+          return await readJson();
+        }
+        await response.body?.cancel().catch(() => {});
+        throw new Error(
+          `MCP Streamable HTTP unsupported Content-Type: ${contentType || "none"}`,
+        );
+      },
     );
-
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => "");
-      throw new Error(
-        `MCP Streamable HTTP error ${response.status}: ${errBody.slice(0, 200)}`,
-      );
-    }
-
-    const contentType = (
-      response.headers.get("content-type") ?? ""
-    ).toLowerCase();
-    let msg: JsonRpcResponse;
-    if (contentType.includes("text/event-stream")) {
-      const text = await response.text();
-      msg = parseSseJsonRpcResponse(text, id);
-    } else if (contentType.includes("application/json")) {
-      msg = (await response.json()) as JsonRpcResponse;
-    } else {
-      throw new Error(
-        `MCP Streamable HTTP unsupported Content-Type: ${contentType || "none"}`,
-      );
-    }
 
     if (msg.error) {
       throw new Error(
