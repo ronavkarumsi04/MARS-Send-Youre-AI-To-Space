@@ -1579,6 +1579,44 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     expect(fixture.calls).toHaveLength(4);
   });
 
+  it("does not open a session when teardown overtakes admission", async () => {
+    const fixture = startStatefulMcpServer();
+    activeServers.push(fixture.server);
+    const origin = fixture.server.url.origin;
+    const resolverEntered = Promise.withResolvers<void>();
+    const resumeResolver = Promise.withResolvers<void>();
+    const cp = await createControlPlane({
+      credentialResolver: {
+        async resolve({ grant_id }) {
+          if (grant_id !== "probe") {
+            resolverEntered.resolve();
+            await resumeResolver.promise;
+          }
+          return "primary";
+        },
+      },
+    });
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "cancelled-admission",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+        { capability: "credential.use", resource: "primary" },
+      ],
+      credential_bindings: [{ ref_id: "primary", allowed_origin: origin }],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const pending = cp.loader.admitServer(ctx, config.id);
+    await resolverEntered.promise;
+    await cp.loader.closeAll();
+    resumeResolver.resolve();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.deleted).toHaveLength(3);
+  });
+
   it("reinitializes only the expired HTTP authentication context without replaying the tool call", async () => {
     const fixture = startStatefulMcpServer();
     activeServers.push(fixture.server);

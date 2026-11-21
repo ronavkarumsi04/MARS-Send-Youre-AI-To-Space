@@ -84,6 +84,7 @@ export interface TrustedMcpLoader {
     ctx: RequestContext,
     serverId: string,
     action?: "load" | "install" | "enable",
+    signal?: AbortSignal,
   ): Promise<AdmittedMcpServer>;
   invokeTool(
     ctx: RequestContext,
@@ -105,6 +106,7 @@ export function createTrustedMcpLoader(
   const revocationPollMs = options.revocationPollMs ?? 50;
   const defaultTimeoutMs = options.defaultTimeoutMs ?? 10_000;
   const authenticationKey = randomBytes(32);
+  let lifecycle = new AbortController();
   const connections = new Map<
     string,
     {
@@ -136,9 +138,12 @@ export function createTrustedMcpLoader(
     server: McpServerConfig,
     artifact: AuthorizedArtifact,
     timeoutMs: number,
+    signal: AbortSignal,
     authentication?: McpAuthentication,
   ): Promise<ActiveConnection> {
+    signal.throwIfAborted();
     const executable = await verifyMcpConfig(server, artifact.evidence);
+    signal.throwIfAborted();
     let current = connections.get(server.id);
     if (
       current &&
@@ -168,6 +173,7 @@ export function createTrustedMcpLoader(
       existing = contexts.get(key)
     ) {
       const active = await existing;
+      signal.throwIfAborted();
       if (
         !(active.transport instanceof StdioMcpTransport) ||
         active.transport.isRunning
@@ -178,6 +184,7 @@ export function createTrustedMcpLoader(
         throw new McpConnectionLostError("MCP connection was closed");
       }
     }
+    signal.throwIfAborted();
     const transport = createMcpTransport(
       server.transport.type === "stdio" && executable
         ? { ...server.transport, command: executable }
@@ -187,8 +194,10 @@ export function createTrustedMcpLoader(
       try {
         const descriptor = await transport.initialize({
           timeoutMs,
+          signal,
           ...(authentication ? { extraHeaders: authentication.headers } : {}),
         });
+        signal.throwIfAborted();
         if (
           transport.transportType === "streamable-http"
             ? buildDescriptorHash(descriptor) !==
@@ -264,7 +273,11 @@ export function createTrustedMcpLoader(
   }
 
   return {
-    async admitServer(ctx, serverId, action = "load") {
+    async admitServer(ctx, serverId, action = "load", requestSignal) {
+      const signal = requestSignal
+        ? AbortSignal.any([lifecycle.signal, requestSignal])
+        : lifecycle.signal;
+      signal.throwIfAborted();
       try {
         return await gate.admit(
           ctx,
@@ -291,6 +304,7 @@ export function createTrustedMcpLoader(
               server,
               artifact,
               defaultTimeoutMs,
+              signal,
               authentication,
             );
             return frozenClone<AdmittedMcpServer>({
@@ -319,7 +333,10 @@ export function createTrustedMcpLoader(
     },
 
     async invokeTool(ctx, request) {
-      request.signal?.throwIfAborted();
+      const signal = request.signal
+        ? AbortSignal.any([lifecycle.signal, request.signal])
+        : lifecycle.signal;
+      signal.throwIfAborted();
       const server = await registry.get(request.server_id);
       const inferredOrigin =
         request.target_origin ??
@@ -378,16 +395,16 @@ export function createTrustedMcpLoader(
               authorized,
               serverOrigin,
             );
-            request.signal?.throwIfAborted();
             const timeoutMs = request.timeout_ms ?? defaultTimeoutMs;
             const active = await openConnection(
               currentServer,
               authorized,
               timeoutMs,
+              signal,
               authentication,
             );
 
-            request.signal?.throwIfAborted();
+            signal.throwIfAborted();
             if (isGrantActive && !(await isGrantActive(authorized.grant_id))) {
               throw new IntegrationTrustError("revoked");
             }
@@ -415,9 +432,7 @@ export function createTrustedMcpLoader(
                 (authorized.input ?? {}) as Record<string, unknown>,
                 {
                   timeoutMs,
-                  signal: request.signal
-                    ? AbortSignal.any([abortController.signal, request.signal])
-                    : abortController.signal,
+                  signal: AbortSignal.any([abortController.signal, signal]),
                 },
               );
 
@@ -469,6 +484,9 @@ export function createTrustedMcpLoader(
     },
 
     async closeAll() {
+      const closing = lifecycle;
+      lifecycle = new AbortController();
+      closing.abort();
       const ids = [...connections.keys()];
       await Promise.all(ids.map((id) => teardownServer(id)));
     },

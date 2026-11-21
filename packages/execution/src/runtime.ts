@@ -1400,7 +1400,12 @@ async function admittedMcpTools(
     sessionSignal.throwIfAborted();
     let admitted: Awaited<ReturnType<TrustedMcpLoader["admitServer"]>>;
     try {
-      admitted = await loader.admitServer(context, serverId);
+      admitted = await loader.admitServer(
+        context,
+        serverId,
+        "load",
+        sessionSignal,
+      );
     } catch {
       continue;
     }
@@ -1473,6 +1478,24 @@ function mcpToolParameters(
     "null",
   ]);
   let remaining = 256;
+  const resolveLocalRef = (ref: unknown): unknown => {
+    if (typeof ref !== "string" || !ref.startsWith("#/") || ref.length > 512)
+      return undefined;
+    let pointer: string;
+    try {
+      pointer = decodeURIComponent(ref.slice(2));
+    } catch {
+      return undefined;
+    }
+    let target: unknown = schema;
+    for (const part of pointer.split("/")) {
+      const key = part.replaceAll("~1", "/").replaceAll("~0", "~");
+      if (!target || typeof target !== "object" || !Object.hasOwn(target, key))
+        return undefined;
+      target = (target as Record<string, unknown>)[key];
+    }
+    return target;
+  };
   const project = (value: unknown, depth: number): Record<string, unknown> => {
     if (
       --remaining < 0 ||
@@ -1483,7 +1506,8 @@ function mcpToolParameters(
     )
       return {};
     const node = value as Record<string, unknown>;
-    const result: Record<string, unknown> = {};
+    const target = resolveLocalRef(node.$ref);
+    const result = target === undefined ? {} : project(target, depth + 1);
     if (typeof node.type === "string" && types.has(node.type))
       result.type = node.type;
     if (

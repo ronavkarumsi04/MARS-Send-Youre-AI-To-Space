@@ -567,8 +567,18 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     type: "object",
     properties: {
       query: { type: "string", description: "Untrusted server prose" },
+      filter: { $ref: "#/$defs/Filter" },
     },
-    required: ["query"],
+    $defs: {
+      Filter: {
+        type: "object",
+        properties: {
+          exact: { type: "boolean", description: "Untrusted server prose" },
+        },
+        required: ["exact"],
+      },
+    },
+    required: ["query", "filter"],
   });
   const origin = http.server.url.origin;
   try {
@@ -686,7 +696,10 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
                 type: "function",
                 function: {
                   name,
-                  arguments: JSON.stringify({ query: "ping" }),
+                  arguments: JSON.stringify({
+                    query: "ping",
+                    filter: { exact: true },
+                  }),
                 },
               },
             ],
@@ -701,8 +714,15 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     const outcome = await session.run("Call the approved MCP tool.");
     expect(modelSchema).toMatchObject({
       type: "object",
-      properties: { query: { type: "string" } },
-      required: expect.arrayContaining(["query"]),
+      properties: {
+        query: { type: "string" },
+        filter: {
+          type: "object",
+          properties: { exact: { type: "boolean" } },
+          required: ["exact"],
+        },
+      },
+      required: expect.arrayContaining(["query", "filter"]),
     });
     expect(JSON.stringify(modelSchema)).not.toContain("Untrusted server prose");
     expect(outcome).toMatchObject({ status: "completed" });
