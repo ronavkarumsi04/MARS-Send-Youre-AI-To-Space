@@ -453,26 +453,44 @@ async function runServe(
     });
     registry.ensureCommit = mirror.ensureCommit;
     const globalAuthHeader = process.env.MARS_TEAM_GIT_AUTH_HEADER;
-    const httpsHosts = new Set<string>();
+    const repoEnvKeyOf = (repoId: string) =>
+      `MARS_TEAM_GIT_AUTH_HEADER_${repoId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+    const envKeyOwners = new Map<string, string[]>();
     for (const remote of options.remoteRepos) {
+      const key = repoEnvKeyOf(remote.repo_id);
+      const owners = envKeyOwners.get(key) ?? [];
+      owners.push(remote.repo_id);
+      envKeyOwners.set(key, owners);
+    }
+    for (const [key, owners] of envKeyOwners) {
+      if (owners.length > 1 && process.env[key]) {
+        throw new TeamUsageError(
+          `Ambiguous per-repo credential ${key} matches multiple --remote-repo ids (${owners.join(", ")}); rename repo ids so each has a distinct env key.`,
+        );
+      }
+    }
+    const fallbackHttpsHosts = new Set<string>();
+    for (const remote of options.remoteRepos) {
+      if (process.env[repoEnvKeyOf(remote.repo_id)]) continue;
       try {
         const parsed = new URL(remote.url);
         if (parsed.protocol === "https:")
-          httpsHosts.add(parsed.hostname.toLowerCase());
+          fallbackHttpsHosts.add(parsed.hostname.toLowerCase());
       } catch {
         // invalid URLs are rejected by mirror.registerRemote
       }
     }
-    if (globalAuthHeader && httpsHosts.size > 1 && !options.remoteAuthHost) {
+    if (
+      globalAuthHeader &&
+      fallbackHttpsHosts.size > 1 &&
+      !options.remoteAuthHost
+    ) {
       throw new TeamUsageError(
         "MARS_TEAM_GIT_AUTH_HEADER cannot be shared across multiple HTTPS remote hosts; set --remote-auth-host or per-repo MARS_TEAM_GIT_AUTH_HEADER_<REPO_ID>.",
       );
     }
     for (const remote of options.remoteRepos) {
-      const repoEnvKey = `MARS_TEAM_GIT_AUTH_HEADER_${remote.repo_id
-        .toUpperCase()
-        .replace(/[^A-Z0-9]/g, "_")}`;
-      const perRepoHeader = process.env[repoEnvKey];
+      const perRepoHeader = process.env[repoEnvKeyOf(remote.repo_id)];
       let remoteHost: string | null = null;
       try {
         const parsed = new URL(remote.url);
