@@ -21,7 +21,8 @@ import { chmodSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { gitEnvironment } from "./git";
+import { createGitRunner, gitEnvironment } from "./git";
+import { verifyCommit } from "./git-probe";
 import { RepoRegistrationFailed, type RepoRegistry } from "./registry";
 import { COMMIT_SHA_PATTERN, RepoIdSchema, type RepoSummary } from "./schemas";
 
@@ -40,7 +41,7 @@ export type RemoteRepoRegistration = z.infer<
 >;
 
 export interface RemoteRepoMirrorOptions {
-  /** Base directory where bare mirror clones (`<repo_id>.git`) are stored. */
+  /** Base directory where URL-scoped bare mirror clones are stored. */
   readonly cacheDir: string;
   /** Target `RepoRegistry` into which synced mirrors are registered. */
   readonly registry: RepoRegistry;
@@ -62,8 +63,8 @@ export interface RemoteRepoMirror {
   registerRemote(input: RemoteRepoRegistration): Promise<RepoSummary>;
   /**
    * Ensures `commit_sha` is present in the bare mirror for `repo_id` by
-   * fetching from the registered remote URL if needed. Returns `true` if a
-   * fetch succeeded, `false` if the repo is not remote-backed or fetch failed.
+   * fetching from the registered remote URL if needed. Returns `true` only if
+   * the exact requested commit is present after a fetch.
    */
   ensureCommit(repo_id: string, commit_sha: string): Promise<boolean>;
   /** Lists registered remote repository ids (without exposing URLs or credentials). */
@@ -171,6 +172,7 @@ export function createRemoteRepoMirror(
 
   const allowLocalFileUrl = options.allowLocalFileUrl ?? false;
   const fetchTimeoutMs = Math.max(1000, options.fetchTimeoutMs ?? 30_000);
+  const git = createGitRunner({ homeDir });
   const negativeCacheMs = Math.max(0, options.negativeCacheMs ?? 15_000);
   const nowMs = options.nowMs ?? (() => Date.now());
 
@@ -202,7 +204,10 @@ export function createRemoteRepoMirror(
       homeDir,
       timeoutMs: fetchTimeoutMs,
     });
-    if (direct.ok) return true;
+    const available = async () =>
+      (await verifyCommit(git, entry.mirrorDir, commitSha, fetchTimeoutMs))
+        .state === "ok";
+    if (direct.ok && (await available())) return true;
 
     // Fallback for remotes that disable uploadpack.allowReachableSHA1InWant:
     // fetch heads into the bare mirror so commits reachable from branches resolve.
@@ -219,7 +224,7 @@ export function createRemoteRepoMirror(
       homeDir,
       timeoutMs: fetchTimeoutMs,
     });
-    return heads.ok;
+    return heads.ok && (await available());
   };
 
   const mirror: RemoteRepoMirror = {

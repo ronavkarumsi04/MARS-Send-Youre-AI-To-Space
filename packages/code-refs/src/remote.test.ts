@@ -43,6 +43,38 @@ afterEach(() => {
 });
 
 describe("remote Git repository acquisition and pinned-commit resolution", () => {
+  test("a successful branch fetch without the requested commit is negatively cached", async () => {
+    const root = tempDir();
+    const upstream = join(root, "upstream.git");
+    const work = join(root, "work");
+    runGit(root, ["init", "--bare", upstream]);
+    runGit(root, ["clone", upstream, work]);
+    runGit(work, ["commit", "--allow-empty", "-m", "initial"]);
+    runGit(work, ["push", "origin", "HEAD"]);
+    const registry = createRepoRegistry();
+    let now = 1000;
+    const mirror = createRemoteRepoMirror({
+      registry,
+      cacheDir: join(root, "cache"),
+      allowLocalFileUrl: true,
+      negativeCacheMs: 100,
+      nowMs: () => now,
+    });
+    await mirror.registerRemote({
+      repo_id: "repo",
+      label: "Repo",
+      url: `file://${upstream}`,
+    });
+
+    runGit(work, ["commit", "--allow-empty", "-m", "not yet pushed"]);
+    const missing = runGit(work, ["rev-parse", "HEAD"]);
+    expect(await mirror.ensureCommit("repo", missing)).toBe(false);
+    runGit(work, ["push", "origin", "HEAD"]);
+    expect(await mirror.ensureCommit("repo", missing)).toBe(false);
+    now += 100;
+    expect(await mirror.ensureCommit("repo", missing)).toBe(true);
+  });
+
   test("clones bare mirror, resolves pinned commits, and fetches newer commits on demand", async () => {
     const root = tempDir();
     const upstreamWork = join(root, "upstream-work");
