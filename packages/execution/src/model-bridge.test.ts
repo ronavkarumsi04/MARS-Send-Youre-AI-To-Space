@@ -240,3 +240,42 @@ test("USD clamp dispatches an exact one-token fit but rejects genuinely insuffic
     await f.cleanup();
   }
 });
+
+test("split surrogate pairs use final UTF-8 text bytes plus tool-call bytes", async () => {
+  const f = await fixture();
+  try {
+    for (const withTool of [false, true]) {
+      for (const overflow of [false, true]) {
+        const prefix = "x".repeat(withTool ? 7 : 12);
+        const deltas = [
+          { content: prefix },
+          { content: "\ud83d" },
+          { content: "\ude00" },
+          ...(withTool ? [call("c0", "w", {})] : []),
+          ...(overflow ? [{ content: "!" }] : []),
+        ];
+        const failures: string[] = [];
+        const bridge = createModelBridge({
+          ...f,
+          budget,
+          ledger: ledger(),
+          signal: new AbortController().signal,
+          persistLedger: async () => {},
+          onFailure: (code) => failures.push(code),
+          fetch: async () => sse(deltas),
+        });
+        const stream = bridge(model, context, { maxTokens: 1 });
+        const events: string[] = [];
+        for await (const event of stream) events.push(event.type);
+        const result = await stream.result();
+        expect(result.stopReason).toBe(
+          overflow ? "error" : withTool ? "toolUse" : "stop",
+        );
+        expect(failures).toEqual(overflow ? ["budget_exhausted"] : []);
+        expect(events.includes("toolcall_end")).toBe(withTool && !overflow);
+      }
+    }
+  } finally {
+    await f.cleanup();
+  }
+});

@@ -349,7 +349,7 @@ export function createModelBridge(options: ModelBridgeOptions) {
         });
         let textIndex = -1;
         let emittedText = "";
-        let outputBytes = 0;
+        let toolCallBytes = 0;
         const toolCalls: Extract<
           AssistantMessage["content"][number],
           { type: "toolCall" }
@@ -376,9 +376,12 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 partial: output,
               });
             }
-            outputBytes += Buffer.byteLength(event.text, "utf8");
-            if (outputBytes > maxTokens * 16) throw new ExecutionLimitError();
             emittedText += event.text;
+            if (
+              Buffer.byteLength(emittedText, "utf8") + toolCallBytes >
+              maxTokens * 16
+            )
+              throw new ExecutionLimitError();
             const block = output.content[textIndex];
             if (block?.type === "text") block.text = emittedText;
             stream.push({
@@ -396,11 +399,15 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 workspace.restore,
               ) as typeof event.toolCall.arguments,
             };
-            outputBytes +=
+            toolCallBytes +=
               Buffer.byteLength(toolCall.id, "utf8") +
               Buffer.byteLength(toolCall.name, "utf8") +
               Buffer.byteLength(JSON.stringify(toolCall.arguments), "utf8");
-            if (outputBytes > maxTokens * 16) throw new ExecutionLimitError();
+            if (
+              Buffer.byteLength(emittedText, "utf8") + toolCallBytes >
+              maxTokens * 16
+            )
+              throw new ExecutionLimitError();
             toolCalls.push(toolCall);
           } else if (event.type === "error") {
             throw new Error("Provider stream failed.");
