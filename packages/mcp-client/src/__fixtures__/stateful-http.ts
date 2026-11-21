@@ -2,6 +2,7 @@ export function startStatefulMcpServer(
   toolNames: string[] | ((identity: string | null) => string[]) = ["ping"],
   inputSchema: Record<string, unknown> = { type: "object" },
   onCall?: () => void,
+  beforeInitializeResponse?: () => Promise<void>,
 ) {
   const sessions = new Map<string, string | null>();
   const deleted: Array<{ id: string; identity: string | null }> = [];
@@ -34,6 +35,7 @@ export function startStatefulMcpServer(
       if (rpc?.method === "initialize" && id === null) {
         const newId = String(++nextId);
         sessions.set(newId, identity);
+        await beforeInitializeResponse?.();
         return result(
           {
             protocolVersion: "2025-03-26",

@@ -1477,7 +1477,6 @@ function mcpToolParameters(
     "boolean",
     "null",
   ]);
-  let remaining = 256;
   const resolveLocalRef = (ref: unknown): unknown => {
     if (typeof ref !== "string" || !ref.startsWith("#/") || ref.length > 512)
       return undefined;
@@ -1496,52 +1495,87 @@ function mcpToolParameters(
     }
     return target;
   };
-  const project = (value: unknown, depth: number): Record<string, unknown> => {
-    if (
-      --remaining < 0 ||
-      depth > 8 ||
-      !value ||
-      typeof value !== "object" ||
-      Array.isArray(value)
-    )
-      return {};
-    const node = value as Record<string, unknown>;
-    const target = resolveLocalRef(node.$ref);
-    const result = target === undefined ? {} : project(target, depth + 1);
-    if (typeof node.type === "string" && types.has(node.type))
-      result.type = node.type;
-    if (
-      node.properties &&
-      typeof node.properties === "object" &&
-      !Array.isArray(node.properties)
-    ) {
-      const props = Object.fromEntries(
-        Object.entries(node.properties)
-          .slice(0, Math.min(64, remaining))
-          .filter(
-            ([key]) =>
-              /^[a-zA-Z0-9_.-]{1,80}$/.test(key) &&
-              !["__proto__", "constructor", "prototype"].includes(key),
-          )
-          .map(([key, child]) => [key, project(child, depth + 1)]),
-      );
-      result.properties = props;
-      if (Array.isArray(node.required)) {
-        result.required = [
-          ...new Set(
-            node.required.filter(
-              (key): key is string =>
-                typeof key === "string" && Object.hasOwn(props, key),
-            ),
-          ),
-        ];
+  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const project = (
+    values: unknown[],
+    depth: number,
+    budget: number,
+    ancestors: ReadonlySet<unknown>,
+  ): Record<string, unknown> => {
+    const nodes = new Set<Record<string, unknown>>();
+    const references = new Set(ancestors);
+    for (const value of values) {
+      let node = asRecord(value);
+      while (node && !nodes.has(node) && nodes.size < 8) {
+        nodes.add(node);
+        const target = asRecord(resolveLocalRef(node.$ref));
+        if (!target || references.has(target)) break;
+        references.add(target);
+        node = target;
       }
     }
-    if (node.items && typeof node.items === "object")
-      result.items = project(node.items, depth + 1);
+
+    const properties = new Map<string, unknown[]>();
+    const required = new Set<string>();
+    const items: unknown[] = [];
+    const declaredTypes = new Set<string>();
+    for (const node of nodes) {
+      if (typeof node.type === "string" && types.has(node.type))
+        declaredTypes.add(node.type);
+      for (const [key, child] of Object.entries(
+        asRecord(node.properties) ?? {},
+      ).slice(0, 64)) {
+        if (
+          !/^[a-zA-Z0-9_.-]{1,80}$/.test(key) ||
+          ["__proto__", "constructor", "prototype"].includes(key)
+        )
+          continue;
+        const constraints = properties.get(key);
+        if (constraints) constraints.push(child);
+        else properties.set(key, [child]);
+      }
+      if (Array.isArray(node.required)) {
+        for (const key of node.required.slice(0, 64)) {
+          if (typeof key === "string") required.add(key);
+        }
+      }
+      if (asRecord(node.items)) items.push(node.items);
+    }
+
+    const result: Record<string, unknown> = {};
+    if (declaredTypes.has("integer")) declaredTypes.delete("number");
+    if (declaredTypes.size === 1) result.type = [...declaredTypes][0];
+    else if (declaredTypes.size > 1)
+      result.allOf = [...declaredTypes].map((type) => ({ type }));
+    const childBudget = depth < 8 ? budget - 1 : 0;
+    const hasItems = items.length > 0 && childBudget > 0;
+    const selected = [...properties].slice(
+      0,
+      Math.min(64, childBudget - Number(hasItems)),
+    );
+    const childCount = selected.length + Number(hasItems);
+    if (!childCount) return result;
+    const perChild = Math.floor(childBudget / childCount);
+    if (selected.length) {
+      result.properties = Object.fromEntries(
+        selected.map(([key, children]) => [
+          key,
+          project(children, depth + 1, perChild, references),
+        ]),
+      );
+      const names = selected
+        .map(([key]) => key)
+        .filter((key) => required.has(key));
+      if (names.length) result.required = names;
+    }
+    if (hasItems)
+      result.items = project(items, depth + 1, perChild, references);
     return result;
   };
-  return { ...project(schema, 0), type: "object" };
+  return { ...project([schema], 0, 256, new Set()), type: "object" };
 }
 
 const toolResult = (text: string) => ({

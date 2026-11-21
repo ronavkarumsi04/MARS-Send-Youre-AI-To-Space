@@ -1617,6 +1617,44 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     expect(fixture.deleted).toHaveLength(3);
   });
 
+  it("cleans up an HTTP session allocated before cancelled initialization returns headers", async () => {
+    const allocated = Promise.withResolvers<void>();
+    const sendHeaders = Promise.withResolvers<void>();
+    const fixture = startStatefulMcpServer(
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        allocated.resolve();
+        await sendHeaders.promise;
+      },
+    );
+    activeServers.push(fixture.server);
+    const transport = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url: new URL("/mcp", fixture.server.url).href,
+    });
+    const controller = new AbortController();
+    const initialization = transport
+      .initialize({
+        signal: controller.signal,
+        timeoutMs: 2000,
+        extraHeaders: { Authorization: "Bearer primary" },
+      })
+      .finally(() => transport.close());
+    await allocated.promise;
+    const id = [...fixture.sessions.keys()][0];
+    if (!id) throw new Error("Missing allocated session");
+    controller.abort();
+    sendHeaders.resolve();
+    await expect(initialization).rejects.toThrow(
+      "MCP Streamable HTTP request aborted",
+    );
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.deleted).toEqual([{ id, identity: "Bearer primary" }]);
+    expect(fixture.redirectRequests).toBe(0);
+  });
+
   it("reinitializes only the expired HTTP authentication context without replaying the tool call", async () => {
     const fixture = startStatefulMcpServer();
     activeServers.push(fixture.server);

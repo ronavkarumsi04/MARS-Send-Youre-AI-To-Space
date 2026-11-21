@@ -591,6 +591,7 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   private sessionId: string | null = null;
   private sessionHeaders: Record<string, string> = {};
   private initialized = false;
+  private initializeRequest: Promise<unknown> | undefined;
   private nextId = 1;
   private closed = false;
 
@@ -624,7 +625,11 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     const controller = new AbortController();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const onExternalAbort = () => controller.abort();
+    // An initialize response can carry the only ID we can use to clean up.
+    let awaitingSessionId = payload.method === "initialize";
+    const onExternalAbort = () => {
+      if (!awaitingSessionId) controller.abort();
+    };
     if (options?.signal) {
       if (options.signal.aborted) {
         clearTimeout(timer);
@@ -658,6 +663,11 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       const nextSessionId = response.headers.get("mcp-session-id");
       if (nextSessionId) {
         this.sessionId = nextSessionId;
+      }
+      awaitingSessionId = false;
+      if (this.closed || options?.signal?.aborted) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error("MCP Streamable HTTP request aborted");
       }
 
       return await handleResponse(response, controller.signal);
@@ -766,7 +776,7 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       options?.timeoutMs !== undefined
         ? Date.now() + options.timeoutMs
         : undefined;
-    const raw = await this.sendRequest(
+    const pending = this.sendRequest(
       "initialize",
       {
         protocolVersion: MCP_PROTOCOL_VERSION,
@@ -775,6 +785,10 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       },
       remainingOptions(options, deadlineMs),
     );
+    this.initializeRequest = pending;
+    const raw = await pending.finally(() => {
+      this.initializeRequest = undefined;
+    });
     const init = parseInitializeResult(raw);
     await this.postJsonRpc(
       {
@@ -815,9 +829,10 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    await this.initializeRequest?.catch(() => {});
     const sid = this.sessionId;
     this.sessionId = null;
-    this.closed = true;
     const headers = new Headers(this.sessionHeaders);
     this.sessionHeaders = {};
     if (!sid) return;

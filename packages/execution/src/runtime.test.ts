@@ -566,14 +566,30 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
   const http = startStatefulMcpServer(["ping", "unapproved"], {
     type: "object",
     properties: {
+      tree: { $ref: "#/$defs/Tree" },
       query: { type: "string", description: "Untrusted server prose" },
-      filter: { $ref: "#/$defs/Filter" },
+      filter: {
+        $ref: "#/$defs/Filter",
+        properties: { limit: { type: "integer" } },
+        required: ["limit"],
+      },
+      requiredOnly: { $ref: "#/$defs/Filter", required: ["term"] },
     },
     $defs: {
+      Tree: {
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 8 }, (_, i) => [
+            `branch${i}`,
+            { $ref: "#/$defs/Tree" },
+          ]),
+        ),
+      },
       Filter: {
         type: "object",
         properties: {
           exact: { type: "boolean", description: "Untrusted server prose" },
+          term: { type: "string" },
         },
         required: ["exact"],
       },
@@ -698,7 +714,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
                   name,
                   arguments: JSON.stringify({
                     query: "ping",
-                    filter: { exact: true },
+                    filter: { exact: true, limit: 1 },
                   }),
                 },
               },
@@ -715,11 +731,19 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     expect(modelSchema).toMatchObject({
       type: "object",
       properties: {
+        tree: { type: "object" },
         query: { type: "string" },
         filter: {
           type: "object",
-          properties: { exact: { type: "boolean" } },
-          required: ["exact"],
+          properties: {
+            exact: { type: "boolean" },
+            limit: { type: "integer" },
+          },
+          required: expect.arrayContaining(["exact", "limit"]),
+        },
+        requiredOnly: {
+          properties: { term: { type: "string" } },
+          required: expect.arrayContaining(["exact", "term"]),
         },
       },
       required: expect.arrayContaining(["query", "filter"]),
