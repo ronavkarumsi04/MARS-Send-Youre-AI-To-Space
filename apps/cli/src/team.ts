@@ -642,6 +642,7 @@ async function runServe(
         runTeamAgentRequest({
           request: claimed.request,
           input: claimed.input,
+          signal: claimed.signal,
           registry: modelRegistry,
           rootDir: agentRootDir,
           scan: scanThreat,
