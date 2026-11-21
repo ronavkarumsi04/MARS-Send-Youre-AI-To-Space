@@ -49,6 +49,21 @@ export function canonicalPatchBytes(diff: DiffResult): Buffer {
   return Buffer.from(joined, "utf8");
 }
 
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
+
+/** Structural round trip: every file patch must carry at least one unified-diff hunk. */
+export function patchRoundTrip(diff: DiffResult): {
+  status: "passed" | "failed" | "unavailable";
+  reason: string | null;
+} {
+  if (diff.files.length === 0)
+    return { status: "unavailable", reason: "No changed files in patch." };
+  const broken = diff.files.find((file) => !HUNK_HEADER.test(file.patch));
+  return broken
+    ? { status: "failed", reason: `No applicable hunk for ${broken.path}.` }
+    : { status: "passed", reason: null };
+}
+
 export function sha256Hex(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -261,6 +276,9 @@ export function createFixtureOperations(
           status: updated.status,
           approvals: params.approvals,
           ...(params.model_id ? { model_id: params.model_id } : {}),
+          ...(params.required_checks?.length
+            ? { required_checks: params.required_checks }
+            : {}),
         }),
       );
       return updated;
@@ -367,11 +385,7 @@ export function createFixtureOperations(
         verification: detail.verification.state,
         verified,
         verdict_run_id: detail.verification.record?.run_id ?? null,
-        round_trip: {
-          status: detail.diff.files.length > 0 ? "passed" : "unavailable",
-          reason:
-            detail.diff.files.length > 0 ? null : "No changed files in patch.",
-        },
+        round_trip: patchRoundTrip(detail.diff),
         unsupported: [],
       };
     },

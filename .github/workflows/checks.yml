@@ -20,6 +20,11 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Electron binary and Xvfb for the native desktop shell test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          bun run --cwd apps/shell native:install
       - name: GEPA worker venv (gepa 0.1.4, Python 3.12) and worker tests
         working-directory: packages/optimization/python
         run: |
@@ -32,6 +37,8 @@ jobs:
         working-directory: packages/training/python
         run: python3 -m unittest discover -s tests -v
       - run: bun run check
+        env:
+          MARS_REQUIRE_ELECTRON_XVFB: "1"
       - run: bun run doctor
       - name: VS Code client typecheck, build and Node smoke
         working-directory: apps/vscode

@@ -29,7 +29,7 @@ Main-process hardening: `app.enableSandbox()`, every permission request/check de
 ## What the window shows
 
 - **Sidebar**: session switcher from `tasks.list` grouped by status (glyph + word), runtime column (`oh-my-pi`), and an interactive **Team chat** toggle showing the service badge and channel count.
-- **Prompt composer**: create new tasks via `tasks.create` with request text, comma-separated acceptance criteria (defaults to the request text if blank), independent read/write/execute approvals, model tier selector (`local` / `paid`), explicit paid-model consent gate, and optional immediate launch.
+- **Prompt composer**: create new tasks via `tasks.create` with request text, comma-separated acceptance criteria (defaults to the request text if blank), independent read/write/execute approvals, model tier selector (`local` / `paid`), explicit paid-model consent gate, host checks selected by id from `workbench.describe.checks` (sent as `required_checks` on `tasks.start`; Execute approval required, and a run with no checks records no verdict and cannot be exported), and optional immediate launch.
 - **Main pane**:
   - Task header showing task status, host verification state from `tasks.verification` separately (a `completed` task can be `Unverified`), model tier, task revision, and a **Refresh** control.
   - **Approvals & Launch Consent** card on `pending` tasks with independent `read`, `write`, and `execute` toggles, model selection, explicit paid-model consent checkbox (required before `Start task` unlocks for paid models), and `Start task` / `Cancel task` actions.
@@ -46,7 +46,7 @@ Main-process hardening: `app.enableSandbox()`, every permission request/check de
 
 ## Run it
 
-Headless unit, security/CSP, static-scan, interactive-flow, and Electron/Xvfb checks (part of `bun run check`; the Electron/Xvfb test runs automatically when Electron and `xvfb-run` are installed):
+Headless unit, security/CSP, static-scan, interactive-flow, and Electron/Xvfb checks (part of `bun run check`; the Electron/Xvfb test runs when Electron and `xvfb-run` are installed, and CI installs both and sets `MARS_REQUIRE_ELECTRON_XVFB=1` so a missing binary fails instead of skipping):
 
 ```sh
 bun test apps/shell

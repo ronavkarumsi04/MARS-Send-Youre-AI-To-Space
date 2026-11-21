@@ -1,13 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { FixtureTeamService, MAX_MESSAGE_CHARS } from "@mars/team-chat";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MAX_JOURNAL_ENTRY_IDS } from "@mars/contracts";
+import {
+  FixtureTeamService,
+  MAX_MESSAGE_CHARS,
+  MAX_SEARCH_QUERY_CHARS,
+} from "@mars/team-chat";
 import type { TranscriptProjection } from "@mars/ui-core";
 import { serveWorkbench } from "@mars/workbench";
 import {
   canonicalPatchBytes,
   createFixtureOperations,
   type FixtureData,
+  patchRoundTrip,
   sha256Hex,
 } from "../scripts/fixture-workbench";
 import { type Bridge, createBridge } from "../src/main/bridge";
@@ -17,12 +26,17 @@ import {
   type TeamChatBridge,
 } from "../src/main/team-chat-bridge";
 import { createLoopbackTransport } from "../src/main/transport";
-import { createController } from "../src/renderer/controller";
+import {
+  createController,
+  JOURNAL_BATCH_SIZE,
+  MAX_HYDRATED_EVENT_PAYLOADS,
+} from "../src/renderer/controller";
 import { renderTranscript } from "../src/renderer/transcript";
 import { BRIDGE_METHODS, type ShellBridge } from "../src/shared/methods";
 import {
   TEAM_CHAT_CHANNEL,
   TEAM_CHAT_MAX_MESSAGE_CHARS,
+  TEAM_CHAT_MAX_SEARCH_CHARS,
   TEAM_CHAT_METHODS,
   type TeamChatBridgeApi,
 } from "../src/shared/team-chat";
@@ -68,6 +82,71 @@ async function startTestWorkbench(mutate?: (data: FixtureData) => void) {
     data,
     bridge: toShellBridge(rawBridge),
     close: () => server.stop(true),
+  };
+}
+
+/** Appends synthetic events (with JSON payload artifacts) to a task's first event page. */
+function withSyntheticEvents(
+  bridge: ShellBridge,
+  taskId: string,
+  payloads: unknown[],
+  hooks: { onArtifact?: (artifactId: string) => Promise<void> | void } = {},
+): ShellBridge {
+  const encoded = payloads.map((payload, index) => {
+    const bytes = Buffer.from(JSON.stringify(payload), "utf8");
+    return {
+      artifact_id: `art-synthetic-${index}`,
+      event_id: `evt-synthetic-${index}`,
+      bytes,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  });
+  const lastId = encoded.at(-1)?.event_id;
+  return {
+    ...bridge,
+    "tasks.events": async (params) => {
+      if (params.task_id !== taskId) return bridge["tasks.events"](params);
+      if (lastId && params.after_event_id === lastId)
+        return { ok: true, result: [] };
+      const res = await bridge["tasks.events"](params);
+      if (!res.ok || params.after_event_id || res.result.length === 0)
+        return res;
+      const base = res.result[0];
+      if (!base) return res;
+      return {
+        ok: true,
+        result: [
+          ...res.result,
+          ...encoded.map((item, index) => ({
+            ...base,
+            event_id: item.event_id,
+            sequence: 1000 + index,
+            event_type: "execution.observed" as const,
+            payload: {
+              artifact_id: item.artifact_id,
+              media_type: "application/json",
+              byte_length: item.bytes.byteLength,
+              sha256: item.sha256,
+            },
+          })),
+        ],
+      };
+    },
+    "tasks.artifact": async (params) => {
+      const item = encoded.find(
+        (entry) => entry.artifact_id === params.artifact.artifact_id,
+      );
+      if (!item) return bridge["tasks.artifact"](params);
+      await hooks.onArtifact?.(item.artifact_id);
+      return {
+        ok: true,
+        result: {
+          artifact_id: item.artifact_id,
+          media_type: "application/json",
+          data_base64: item.bytes.toString("base64"),
+        },
+      };
+    },
   };
 }
 
@@ -1405,6 +1484,386 @@ describe("interactive renderer controller flows", () => {
         totals: { input_tokens: 0, output_tokens: 0, cost_usd: null },
       }),
     ).toBeUndefined();
+  });
+  test("regression: more than 100 journal IDs are fetched in schema-sized batches", async () => {
+    expect(JOURNAL_BATCH_SIZE).toBe(MAX_JOURNAL_ENTRY_IDS);
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const ids = Array.from({ length: 150 }, (_, i) => `journal-${i}`);
+      const batches: Array<{ size: number; ok: boolean }> = [];
+      const base = withSyntheticEvents(bridge, "fixture-completed-verified", [
+        { upstream: { entry_ids: ids } },
+      ]);
+      const wrapped: ShellBridge = {
+        ...base,
+        "tasks.journal": async (params) => {
+          const res = await bridge["tasks.journal"](params);
+          batches.push({ size: params.entry_ids.length, ok: res.ok });
+          if (!res.ok) return res;
+          return {
+            ok: true,
+            result: res.result.map((entry) => ({
+              entry_id: entry.entry_id,
+              kind: "assistant",
+              text: `Journal text for ${entry.entry_id}.`,
+            })),
+          };
+        },
+      };
+      // The real bridge schema still rejects an oversized batch.
+      const oversized = await bridge["tasks.journal"]({
+        task_id: "fixture-completed-verified",
+        entry_ids: ids,
+      });
+      expect(oversized.ok).toBe(false);
+
+      const doc = new MiniDocument();
+      const controller = createController(wrapped, doc, doc.root);
+      await controller.load();
+      findByAttr(
+        doc.root,
+        "data-task-id",
+        "fixture-completed-verified",
+      )?.click();
+      await waitFor(() => batches.length >= 2);
+      await controller.settled();
+      expect(batches).toEqual([
+        { size: 100, ok: true },
+        { size: 50, ok: true },
+      ]);
+      expect(doc.root.textContent).toContain("Journal text for journal-0.");
+      expect(doc.root.textContent).toContain("Journal text for journal-149.");
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: event payload hydration is bounded, concurrent, and cached across refreshes", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const fetched: string[] = [];
+      let inFlight = 0;
+      let peak = 0;
+      const wrapped = withSyntheticEvents(
+        bridge,
+        "fixture-completed-verified",
+        Array.from({ length: 400 }, (_, i) => ({ index: i })),
+        {
+          onArtifact: async (artifactId) => {
+            fetched.push(artifactId);
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            inFlight--;
+          },
+        },
+      );
+      const doc = new MiniDocument();
+      const controller = createController(wrapped, doc, doc.root);
+      await controller.load();
+      findByAttr(
+        doc.root,
+        "data-task-id",
+        "fixture-completed-verified",
+      )?.click();
+      await waitFor(() => fetched.length >= MAX_HYDRATED_EVENT_PAYLOADS, 5000);
+      await controller.settled();
+      expect(fetched.length).toBe(MAX_HYDRATED_EVENT_PAYLOADS);
+      expect(fetched).not.toContain("art-synthetic-0");
+      expect(fetched).toContain("art-synthetic-399");
+      expect(peak).toBeGreaterThan(1);
+      expect(peak).toBeLessThanOrEqual(6);
+
+      await controller.load();
+      await controller.settled();
+      expect(fetched.length).toBe(MAX_HYDRATED_EVENT_PAYLOADS);
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: a completed task's verified final text/plain artifact appears in the transcript", async () => {
+    const finalBody = "Final answer from the verified artifact.";
+    const finalBytes = Buffer.from(finalBody, "utf8");
+    const finalRef = {
+      artifact_id: "artifact-final-answer",
+      media_type: "text/plain; charset=utf-8",
+      byte_length: finalBytes.byteLength,
+      sha256: createHash("sha256").update(finalBytes).digest("hex"),
+    };
+    const addFinal = (tamper: boolean) => (fixture: FixtureData) => {
+      const task = fixture.tasks.find(
+        (t) => t.task_id === "fixture-completed-verified",
+      );
+      if (!task) throw new Error("missing fixture task");
+      task.artifacts = [...task.artifacts, finalRef];
+      fixture.artifact_data[finalRef.artifact_id] = {
+        media_type: finalRef.media_type,
+        data_base64: (tamper
+          ? Buffer.from("Tampered final answer.", "utf8")
+          : finalBytes
+        ).toString("base64"),
+      };
+    };
+    for (const tamper of [false, true]) {
+      const { bridge, close } = await startTestWorkbench(addFinal(tamper));
+      try {
+        const doc = new MiniDocument();
+        const controller = createController(bridge, doc, doc.root);
+        await controller.load();
+        findByAttr(
+          doc.root,
+          "data-task-id",
+          "fixture-completed-verified",
+        )?.click();
+        await waitFor(() =>
+          doc.root.textContent.includes("Task fixture-completed-verified"),
+        );
+        await controller.settled();
+        const transcript = findAll(
+          doc.root,
+          (el) => el.getAttribute("class") === "transcript",
+        )[0];
+        if (!transcript) throw new Error("transcript missing");
+        if (tamper) {
+          expect(transcript.textContent).not.toContain(
+            "Tampered final answer.",
+          );
+          expect(transcript.textContent).not.toContain(finalBody);
+        } else {
+          expect(transcript.textContent).toContain(finalBody);
+        }
+      } finally {
+        close();
+      }
+    }
+  });
+
+  test("regression: desktop launches pass selected host checks as required_checks", async () => {
+    const { bridge, close } = await startTestWorkbench((fixture) => {
+      fixture.describe = {
+        ...fixture.describe,
+        capabilities: { ...fixture.describe.capabilities, execute: true },
+        checks: [{ id: "unit-tests", label: "Unit tests" }],
+      };
+    });
+    try {
+      const starts: Array<Parameters<ShellBridge["tasks.start"]>[0]> = [];
+      const wrapped: ShellBridge = {
+        ...bridge,
+        "tasks.start": async (params) => {
+          starts.push(params);
+          return bridge["tasks.start"](params);
+        },
+      };
+      const doc = new MiniDocument();
+      const controller = createController(wrapped, doc, doc.root);
+      await controller.load();
+      findByAttr(doc.root, "data-task-id", "fixture-pending")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-control", "launch-check-unit-tests") !==
+          undefined,
+      );
+      // Checks stay disabled until Execute is approved.
+      expect(
+        findByAttr(
+          doc.root,
+          "data-control",
+          "launch-check-unit-tests",
+        )?.getAttribute("disabled"),
+      ).not.toBeNull();
+      const toggle = (key: string) => {
+        const box = findByAttr(doc.root, "data-control", key);
+        if (!box) throw new Error(`missing ${key}`);
+        box.checked = !box.checked;
+        box.dispatch("change");
+      };
+      toggle("approval-execute");
+      toggle("launch-check-unit-tests");
+      expect(doc.root.textContent).toContain(
+        "The host verifies the result against: Unit tests.",
+      );
+      findByAttr(doc.root, "data-action", "start-task")?.click();
+      await waitFor(() => starts.length === 1);
+      await controller.settled();
+      expect(starts[0]?.required_checks).toEqual([
+        { kind: "host_test", check_id: "unit-tests" },
+      ]);
+      expect(starts[0]?.approvals.execute).toBe(true);
+      expect(doc.root.textContent).not.toContain("failed to start");
+
+      // Composer path: create + start immediately with the same check.
+      const request = findByAttr(doc.root, "data-control", "composer-request");
+      if (!request) throw new Error("composer missing");
+      request.value = "Run with host checks";
+      request.dispatch("input");
+      toggle("composer-start-now");
+      toggle("composer-execute");
+      toggle("composer-check-unit-tests");
+      // Withdrawing Execute clears the selection, re-approving restores the control.
+      toggle("composer-execute");
+      expect(
+        findByAttr(doc.root, "data-control", "composer-check-unit-tests")
+          ?.checked,
+      ).toBe(false);
+      toggle("composer-execute");
+      toggle("composer-check-unit-tests");
+      findByAttr(doc.root, "data-action", "create-task")?.click();
+      await waitFor(() => starts.length === 2);
+      await controller.settled();
+      expect(starts[1]?.required_checks).toEqual([
+        { kind: "host_test", check_id: "unit-tests" },
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: Team Chat search-hit reactions toggle in place and long queries keep controls", async () => {
+    expect(TEAM_CHAT_MAX_SEARCH_CHARS).toBe(MAX_SEARCH_QUERY_CHARS);
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const baseTeam = toShellTeamChat(
+        createTeamChatBridge({ service: new FixtureTeamService() }),
+      );
+      const reactions: boolean[] = [];
+      const searches: string[] = [];
+      const spyTeam: TeamChatBridgeApi = {
+        ...baseTeam,
+        "team.setReaction": async (params) => {
+          reactions.push(params.on);
+          return baseTeam["team.setReaction"](params);
+        },
+        "team.search": async (params) => {
+          searches.push(params.query);
+          return baseTeam["team.search"](params);
+        },
+      };
+      const doc = new MiniDocument();
+      const controller = createController(bridge, doc, doc.root, spyTeam);
+      await controller.load();
+      findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-focus-key", "team-composer") !== undefined,
+      );
+      const searchInput = () =>
+        findAll(
+          doc.root,
+          (el) => el.getAttribute("class") === "team-search-input",
+        )[0];
+      const searchBtn = () =>
+        findAll(
+          doc.root,
+          (el) => el.getAttribute("class") === "team-search-btn",
+        )[0];
+
+      // Over-long query: inline notice, input and composer stay mounted, no host call.
+      const longQuery = "q".repeat(MAX_SEARCH_QUERY_CHARS + 1);
+      const input = searchInput();
+      if (!input) throw new Error("search input missing");
+      input.value = longQuery;
+      searchBtn()?.click();
+      await waitFor(
+        () => findByAttr(doc.root, "data-team-notice", "true") !== undefined,
+      );
+      expect(
+        findByAttr(doc.root, "data-team-notice", "true")?.textContent,
+      ).toContain("Search is too long");
+      expect(searchInput()?.value).toBe(longQuery);
+      expect(
+        findByAttr(doc.root, "data-focus-key", "team-composer"),
+      ).toBeDefined();
+      expect(searches).toEqual([]);
+
+      // Search across conversations, then react twice on a hit.
+      const retry = searchInput();
+      if (!retry) throw new Error("search input missing");
+      retry.value = "badge";
+      searchBtn()?.click();
+      await waitFor(() => doc.root.textContent.includes("Search results ("));
+      expect(findByAttr(doc.root, "data-team-notice", "true")).toBeUndefined();
+      const hitButton = () =>
+        findAll(
+          doc.root,
+          (el) =>
+            el.tagName === "BUTTON" &&
+            el.attributes.get("data-reaction") === "🎉",
+        )[0];
+      expect(hitButton()?.attributes.get("aria-pressed")).not.toBe("true");
+      hitButton()?.click();
+      await waitFor(
+        () => hitButton()?.attributes.get("aria-pressed") === "true",
+      );
+      hitButton()?.click();
+      await waitFor(
+        () => hitButton()?.attributes.get("aria-pressed") !== "true",
+      );
+      expect(reactions).toEqual([true, false]);
+      expect(doc.root.textContent).toContain("Search results (");
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: the verified fixture patch applies with git and a hunkless patch fails the round trip", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    const repo = await mkdtemp(join(tmpdir(), "mars-shell-apply-"));
+    try {
+      const diff = await bridge["tasks.diff"]({
+        task_id: "fixture-completed-verified",
+      });
+      if (!diff.ok || !diff.result.digest) throw new Error("missing diff");
+      const exported = await bridge["tasks.export"]({
+        task_id: "fixture-completed-verified",
+        expected_revision: "fixture-r5",
+        expected_patch_sha256: diff.result.digest,
+      });
+      if (!exported.ok) throw new Error("export failed");
+      expect(exported.result.round_trip).toEqual({
+        status: "passed",
+        reason: null,
+      });
+      const artifact = await bridge["tasks.artifact"]({
+        task_id: "fixture-completed-verified",
+        artifact: exported.result.artifact,
+      });
+      if (!artifact.ok) throw new Error("artifact failed");
+      const patchPath = join(repo, "export.patch");
+      await writeFile(
+        patchPath,
+        Buffer.from(artifact.result.data_base64, "base64"),
+      );
+      await writeFile(join(repo, "README.md"), "old sample\n");
+      const init = spawnSync("git", ["init", "-q"], { cwd: repo });
+      expect(init.status).toBe(0);
+      const check = spawnSync("git", ["apply", "--check", patchPath], {
+        cwd: repo,
+        encoding: "utf8",
+      });
+      expect(check.stderr).toBe("");
+      expect(check.status).toBe(0);
+
+      expect(
+        patchRoundTrip({
+          files: [
+            {
+              path: "README.md",
+              status: "modified",
+              patch:
+                "--- a/README.md\n+++ b/README.md\n-old sample\n+new sample",
+            },
+          ],
+        } as unknown as Parameters<typeof patchRoundTrip>[0]),
+      ).toEqual({
+        status: "failed",
+        reason: "No applicable hunk for README.md.",
+      });
+    } finally {
+      close();
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 });
 

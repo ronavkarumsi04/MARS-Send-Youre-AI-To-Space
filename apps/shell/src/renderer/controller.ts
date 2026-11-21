@@ -1,9 +1,14 @@
-import type { EventEnvelope, Task } from "@mars/contracts";
-import type { ReactionEmoji, ReferencePreview } from "@mars/team-chat";
+import type { ArtifactRef, EventEnvelope, Task } from "@mars/contracts";
+import type {
+  MessageView,
+  ReactionEmoji,
+  ReferencePreview,
+} from "@mars/team-chat";
 import { type ProjectionEvent, projectTranscript } from "@mars/ui-core";
 import type { BridgeResult, ShellBridge } from "../shared/methods";
 import {
   TEAM_CHAT_MAX_MESSAGE_CHARS,
+  TEAM_CHAT_MAX_SEARCH_CHARS,
   type TeamChatBridgeApi,
 } from "../shared/team-chat";
 import type { ShellDocument, ShellElement } from "./dom";
@@ -23,6 +28,12 @@ import {
 const TEXT_MEDIA_TYPES = new Set(["application/json", "application/x-ndjson"]);
 const MAX_RENDERED_ARTIFACT_BYTES = 256 * 1024;
 const MAX_TASK_EVENTS = 1000;
+/** Mirrors `MAX_JOURNAL_ENTRY_IDS` from `@mars/contracts` (asserted in tests). */
+export const JOURNAL_BATCH_SIZE = 100;
+/** Newest event payloads hydrated per load; older events render as markers. */
+export const MAX_HYDRATED_EVENT_PAYLOADS = 300;
+const PAYLOAD_FETCH_CONCURRENCY = 6;
+const MAX_PAYLOAD_CACHE_ENTRIES = 5000;
 const FOCUS_KEY = "data-focus-key";
 const DEFAULT_PAID_MODEL_ID = "claude-sonnet-4-5";
 
@@ -48,6 +59,7 @@ function createInitialComposer(): ComposerState {
     modelChoice: "default",
     paidModelId: DEFAULT_PAID_MODEL_ID,
     paidModelConsent: false,
+    checkIds: [],
     submitting: false,
   };
 }
@@ -58,9 +70,34 @@ function createInitialLaunch(): LaunchCardState {
     modelChoice: "default",
     paidModelId: DEFAULT_PAID_MODEL_ID,
     paidModelConsent: false,
+    checkIds: [],
     steerDraft: "",
     busy: false,
   };
+}
+
+function toggleId(ids: readonly string[], id: string, on: boolean): string[] {
+  const rest = ids.filter((existing) => existing !== id);
+  return on ? [...rest, id] : rest;
+}
+
+type StartParams = Parameters<ShellBridge["tasks.start"]>[0];
+type JournalEntry = Extract<
+  Awaited<ReturnType<ShellBridge["tasks.journal"]>>,
+  { ok: true }
+>["result"][number];
+
+/** Host-defined checks the user selected, by id only; none without execute approval. */
+function requiredChecksFor(
+  checkIds: readonly string[],
+  available: readonly { id: string }[] | undefined,
+  executeApproved: boolean,
+): NonNullable<StartParams["required_checks"]> {
+  if (!executeApproved) return [];
+  const known = new Set((available ?? []).map((check) => check.id));
+  return checkIds
+    .filter((id) => known.has(id))
+    .map((id) => ({ kind: "host_test" as const, check_id: id }));
 }
 
 export function createController(
@@ -142,6 +179,21 @@ export function createController(
         composer = {
           ...composer,
           approvals: { ...composer.approvals, [key]: val },
+          ...(key === "execute" && !val ? { checkIds: [] } : {}),
+        };
+        render();
+      },
+      onComposerCheckChange: (checkId, selected) => {
+        composer = {
+          ...composer,
+          checkIds: toggleId(composer.checkIds, checkId, selected),
+        };
+        render();
+      },
+      onLaunchCheckChange: (checkId, selected) => {
+        launch = {
+          ...launch,
+          checkIds: toggleId(launch.checkIds, checkId, selected),
         };
         render();
       },
@@ -150,6 +202,7 @@ export function createController(
         launch = {
           ...launch,
           approvals: { ...launch.approvals, [key]: val },
+          ...(key === "execute" && !val ? { checkIds: [] } : {}),
         };
         render();
       },
@@ -490,23 +543,31 @@ export function createController(
       render();
       return;
     }
+    const applyReactions = (messages: readonly MessageView[]) =>
+      messages.map((msg) =>
+        msg.message_id === messageId
+          ? { ...msg, reactions: res.value.reactions }
+          : msg,
+      );
     const currentView = teamState.activeView;
-    if (currentView && currentView.conversation.conversation_id === convId) {
-      teamState = {
-        ...teamState,
-        activeView: {
-          ...currentView,
-          messages: currentView.messages.map((msg) =>
-            msg.message_id === messageId
-              ? { ...msg, reactions: res.value.reactions }
-              : msg,
-          ),
-        },
-      };
-      render();
+    const hits = teamState.searchHits;
+    const inView = Boolean(
+      currentView?.messages.some((msg) => msg.message_id === messageId),
+    );
+    const inHits = Boolean(hits?.some((msg) => msg.message_id === messageId));
+    if (!inView && !inHits) {
+      await openTeamConversation(convId, { preserveHistory: true });
       return;
     }
-    await openTeamConversation(convId, { preserveHistory: true });
+    const next: TeamChatViewState = { ...teamState };
+    if (currentView && inView)
+      next.activeView = {
+        ...currentView,
+        messages: applyReactions(currentView.messages),
+      };
+    if (hits && inHits) next.searchHits = applyReactions(hits);
+    teamState = next;
+    render();
   };
 
   const resolveTeamReference = async (
@@ -542,6 +603,15 @@ export function createController(
       render();
       return;
     }
+    if (trimmed.length > TEAM_CHAT_MAX_SEARCH_CHARS) {
+      teamState = {
+        ...teamState,
+        searchQuery: query,
+        notice: `Search is too long (${trimmed.length}/${TEAM_CHAT_MAX_SEARCH_CHARS} characters). Shorten it and search again.`,
+      };
+      render();
+      return;
+    }
     const res = await teamChat["team.search"]({ query: trimmed });
     if (!res.ok) {
       teamState = {
@@ -552,11 +622,13 @@ export function createController(
       render();
       return;
     }
-    teamState = {
+    const found: TeamChatViewState = {
       ...teamState,
       searchQuery: trimmed,
       searchHits: res.value.hits,
     };
+    delete found.notice;
+    teamState = found;
     render();
   };
 
@@ -626,6 +698,7 @@ export function createController(
       paidModelConsent: composer.paidModelConsent,
       paidModelId: composer.paidModelId.trim(),
       approvals: { ...composer.approvals },
+      checkIds: [...composer.checkIds],
       criteria: composer.criteria,
     };
     const nextComposer: ComposerState = { ...composer, submitting: true };
@@ -701,11 +774,18 @@ export function createController(
         write: snapshot.approvals.write,
         execute: described.capabilities.execute && snapshot.approvals.execute,
       };
-      const startParams: Parameters<ShellBridge["tasks.start"]>[0] = {
+      const startParams: StartParams = {
         task_id: created.task_id,
         expected_revision: created.revision,
         approvals,
       };
+      const composerChecks = requiredChecksFor(
+        snapshot.checkIds,
+        described.checks,
+        approvals.execute,
+      );
+      if (composerChecks.length > 0)
+        startParams.required_checks = composerChecks;
       if (snapshot.modelChoice === "paid") {
         startParams.model_id = snapshot.paidModelId;
       }
@@ -756,7 +836,7 @@ export function createController(
     launch = nextLaunch;
     render();
     try {
-      const startParams: Parameters<ShellBridge["tasks.start"]>[0] = {
+      const startParams: StartParams = {
         task_id: task.task_id,
         expected_revision: task.revision,
         approvals: {
@@ -770,6 +850,12 @@ export function createController(
       if (launch.modelChoice === "paid") {
         startParams.model_id = paidModelId;
       }
+      const launchChecks = requiredChecksFor(
+        launch.checkIds,
+        state.describe?.checks,
+        startParams.approvals.execute,
+      );
+      if (launchChecks.length > 0) startParams.required_checks = launchChecks;
       await value(bridge["tasks.start"](startParams));
       launch = {
         ...launch,
@@ -1000,38 +1086,66 @@ export function createController(
     return { events, capped };
   };
 
+  // Verified payloads are immutable (content-addressed), so a refresh only
+  // fetches payloads it has not already verified for that task.
+  const payloadCache = new Map<string, unknown>();
   const loadEventPayloads = async (
     taskId: string,
     events: EventEnvelope[],
   ): Promise<Map<string, unknown>> => {
     const payloads = new Map<string, unknown>();
-    for (const event of events) {
+    const pending: { eventId: string; key: string; ref: ArtifactRef }[] = [];
+    const hydratable = events
+      .filter(
+        (event) =>
+          event.payload &&
+          textLike(event.payload.media_type) &&
+          event.payload.byte_length <= MAX_RENDERED_ARTIFACT_BYTES,
+      )
+      .slice(-MAX_HYDRATED_EVENT_PAYLOADS);
+    for (const event of hydratable) {
       const ref = event.payload;
-      if (
-        !ref ||
-        !textLike(ref.media_type) ||
-        ref.byte_length > MAX_RENDERED_ARTIFACT_BYTES
-      ) {
-        continue;
-      }
-      try {
-        const fetched = await bridge["tasks.artifact"]({
-          task_id: taskId,
-          artifact: ref,
-        });
-        if (!fetched.ok) continue;
-        const ok = await verifyArtifact(
-          ref,
-          fetched.result,
-          globalThis.crypto.subtle,
-        );
-        if (!ok) continue;
-        const text = decodeBase64Utf8(fetched.result.data_base64);
-        payloads.set(event.event_id, JSON.parse(text) as unknown);
-      } catch {
-        // Skip unreadable or non-JSON payloads; projection degrades gracefully.
-      }
+      if (!ref) continue;
+      const key = `${taskId}\u0000${ref.sha256}\u0000${ref.byte_length}\u0000${ref.media_type}`;
+      if (payloadCache.has(key))
+        payloads.set(event.event_id, payloadCache.get(key));
+      else pending.push({ eventId: event.event_id, key, ref });
     }
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < pending.length) {
+        const item = pending[nextIndex++];
+        if (!item) return;
+        try {
+          const fetched = await bridge["tasks.artifact"]({
+            task_id: taskId,
+            artifact: item.ref,
+          });
+          if (!fetched.ok) continue;
+          const ok = await verifyArtifact(
+            item.ref,
+            fetched.result,
+            globalThis.crypto.subtle,
+          );
+          if (!ok) continue;
+          const parsed = JSON.parse(
+            decodeBase64Utf8(fetched.result.data_base64),
+          ) as unknown;
+          if (payloadCache.size >= MAX_PAYLOAD_CACHE_ENTRIES)
+            payloadCache.clear();
+          payloadCache.set(item.key, parsed);
+          payloads.set(item.eventId, parsed);
+        } catch {
+          // Skip unreadable or non-JSON payloads; projection degrades gracefully.
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(PAYLOAD_FETCH_CONCURRENCY, pending.length) },
+        worker,
+      ),
+    );
     return payloads;
   };
 
@@ -1144,17 +1258,41 @@ export function createController(
           }
         }
       }
-      const journal =
-        entryIds.size > 0
-          ? await optionalValue(() =>
-              value(
-                bridge["tasks.journal"]({
-                  task_id: selected.task_id,
-                  entry_ids: [...entryIds],
-                }),
-              ),
+      const journalEntries = new Map<string, JournalEntry>();
+      let journalAvailable = false;
+      const pendingIds = [...entryIds];
+      for (
+        let index = 0;
+        index < pendingIds.length;
+        index += JOURNAL_BATCH_SIZE
+      ) {
+        const batch = await optionalValue(() =>
+          value(
+            bridge["tasks.journal"]({
+              task_id: selected.task_id,
+              entry_ids: pendingIds.slice(index, index + JOURNAL_BATCH_SIZE),
+            }),
+          ),
+        );
+        if (!batch.ok) continue;
+        journalAvailable = true;
+        for (const entry of batch.value)
+          journalEntries.set(entry.entry_id, entry);
+      }
+
+      let finalText: string | null = null;
+      if (inspected.status === "completed") {
+        const finalRef = inspected.artifacts.findLast((ref) =>
+          ref.media_type.startsWith("text/plain"),
+        );
+        const finalView = finalRef
+          ? artifacts.find(
+              (view) => view.ref.artifact_id === finalRef.artifact_id,
             )
-          : { ok: false as const, error: "" };
+          : undefined;
+        if (finalView?.status === "verified" && finalView.content !== undefined)
+          finalText = finalView.content;
+      }
 
       const projectionEvents: ProjectionEvent[] = eventList.map((event) => ({
         event,
@@ -1164,14 +1302,13 @@ export function createController(
         task: inspected,
         events: projectionEvents,
       };
-      if (journal.ok) {
+      if (journalAvailable) {
         projectionInput.journal = {
           status: "available",
-          entries: new Map(
-            journal.value.map((entry) => [entry.entry_id, entry]),
-          ),
+          entries: journalEntries,
         };
       }
+      if (finalText !== null) projectionInput.finalText = finalText;
       if (diff.ok) projectionInput.diff = diff.value;
       if (verification.ok) projectionInput.verification = verification.value;
       const transcript = projectTranscript(projectionInput);

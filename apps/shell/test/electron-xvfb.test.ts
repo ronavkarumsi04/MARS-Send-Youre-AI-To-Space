@@ -27,6 +27,18 @@ const ELECTRON_BIN = decodeURIComponent(
 const HAS_ELECTRON = existsSync(ELECTRON_BIN);
 const HAS_XVFB = process.platform === "linux" && Bun.which("xvfb-run") !== null;
 const CAN_RUN_ELECTRON_XVFB = HAS_ELECTRON && HAS_XVFB;
+/** CI sets this so a missing Electron binary or Xvfb fails instead of skipping. */
+const REQUIRE_ELECTRON_XVFB = process.env.MARS_REQUIRE_ELECTRON_XVFB === "1";
+
+test.skipIf(!REQUIRE_ELECTRON_XVFB)(
+  "Electron binary and xvfb-run are present when required",
+  () => {
+    expect({ electron: HAS_ELECTRON, xvfb: HAS_XVFB }).toEqual({
+      electron: true,
+      xvfb: true,
+    });
+  },
+);
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {

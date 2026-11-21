@@ -37,6 +37,8 @@ export function isTeamChatMethod(value: unknown): value is TeamChatMethod {
 export const TEAM_CHAT_CHANNEL = "mars-shell:team-chat";
 /** Mirrors `MAX_MESSAGE_CHARS` from `@mars/team-chat` (asserted in tests). */
 export const TEAM_CHAT_MAX_MESSAGE_CHARS = 4000;
+/** Mirrors `MAX_SEARCH_QUERY_CHARS` from `@mars/team-chat` (asserted in tests). */
+export const TEAM_CHAT_MAX_SEARCH_CHARS = 200;
 export const TEAM_CHAT_GLOBAL = "marsTeamChat";
 
 export type TeamChatBootstrapState = {

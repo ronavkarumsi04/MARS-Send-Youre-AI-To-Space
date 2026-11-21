@@ -39,6 +39,8 @@ export type ComposerState = {
   modelChoice: "default" | "paid";
   paidModelId: string;
   paidModelConsent: boolean;
+  /** Host check ids (from `workbench.describe`) required at launch. */
+  checkIds: string[];
   submitting: boolean;
   error?: string;
 };
@@ -48,6 +50,7 @@ export type LaunchCardState = {
   modelChoice: "default" | "paid";
   paidModelId: string;
   paidModelConsent: boolean;
+  checkIds: string[];
   steerDraft: string;
   busy: boolean;
   actionNotice?: string;
@@ -93,6 +96,8 @@ export type ShellState = {
   onCreateTask?: () => void;
   onLaunchApprovalChange?: (key: keyof ApprovalsState, value: boolean) => void;
   onLaunchChange?: (patch: Partial<LaunchCardState>) => void;
+  onComposerCheckChange?: (checkId: string, selected: boolean) => void;
+  onLaunchCheckChange?: (checkId: string, selected: boolean) => void;
   onStartTask?: () => void;
   onResumeTask?: () => void;
   onSteerTask?: (instruction: string) => void;
@@ -133,6 +138,61 @@ function status(doc: ShellDocument, task: Task): ShellElement {
     "span",
     { class: `status status-${task.status}`, "aria-label": label.word },
     `${label.glyph} ${label.word}`,
+  );
+}
+
+function hostChecksField(
+  doc: ShellDocument,
+  state: ShellState,
+  options: {
+    selected: readonly string[];
+    executeApproved: boolean;
+    disabled?: boolean;
+    prefix: string;
+    onToggle: (checkId: string, selected: boolean) => void;
+  },
+): ShellElement {
+  const checks = state.describe?.checks ?? [];
+  const legend = h(doc, "legend", {}, "Required host checks");
+  if (checks.length === 0) {
+    return h(
+      doc,
+      "fieldset",
+      { class: "checks-group", "data-host-checks": "none" },
+      legend,
+      h(
+        doc,
+        "p",
+        { class: "muted" },
+        "No host checks configured · the host records no verdict, so the result cannot be exported.",
+      ),
+    );
+  }
+  const chosen = checks.filter((check) => options.selected.includes(check.id));
+  return h(
+    doc,
+    "fieldset",
+    { class: "checks-group", "data-host-checks": "available" },
+    legend,
+    ...checks.map((check) =>
+      checkboxField(doc, {
+        label: check.label,
+        checked: options.executeApproved && options.selected.includes(check.id),
+        disabled: Boolean(options.disabled) || !options.executeApproved,
+        dataKey: `${options.prefix}-check-${check.id}`,
+        onChange: (checked) => options.onToggle(check.id, checked),
+      }),
+    ),
+    h(
+      doc,
+      "p",
+      { class: "muted" },
+      !options.executeApproved
+        ? "Host checks run commands in the sandbox; approve Execute to select them."
+        : chosen.length === 0
+          ? "No checks selected · the host records no verdict, so the result cannot be exported."
+          : `The host verifies the result against: ${chosen.map((check) => check.label).join(", ")}.`,
+    ),
   );
 }
 
@@ -456,6 +516,14 @@ function approvalAndLifecycleCard(
             state.onLaunchApprovalChange?.("execute", checked),
         }),
       ),
+      hostChecksField(doc, state, {
+        selected: launch.checkIds,
+        executeApproved: canExecute && launch.approvals.execute,
+        disabled: launch.busy,
+        prefix: "launch",
+        onToggle: (checkId, checked) =>
+          state.onLaunchCheckChange?.(checkId, checked),
+      }),
       h(
         doc,
         "div",
@@ -767,6 +835,16 @@ function promptComposer(
         : null,
       composer.startNow ? modelSelect : null,
     ),
+    composer.startNow
+      ? hostChecksField(doc, state, {
+          selected: composer.checkIds,
+          executeApproved: canExecute && composer.approvals.execute,
+          disabled: composer.submitting,
+          prefix: "composer",
+          onToggle: (checkId, checked) =>
+            state.onComposerCheckChange?.(checkId, checked),
+        })
+      : null,
     paidConsent,
     h(doc, "div", { class: "action-buttons" }, submitBtn),
     composer.error
