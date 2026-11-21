@@ -9,6 +9,7 @@ import {
   keyIntent,
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
+  type MentionRepo,
   type MessageView,
   mentionOptionId,
   nextPickerStatus,
@@ -154,9 +155,21 @@ textarea.addEventListener("keydown", (event) => {
 let lastPathSearchKey: string | null = null;
 let lastPathSearchDigest = "";
 
+function currentPathSearchKey(
+  repos: readonly MentionRepo[],
+  pathQuery: string,
+): string {
+  return `${repos.map((r) => `${r.repo_id}@${r.commit_sha}`).join(",")}:${pathQuery}`;
+}
+
 function env(): ComposerEnvironment {
   const base = state?.mention_index ?? { repos: [] };
-  const matches = state?.path_search ?? [];
+  const pathQuery = composer.picker?.query.trim().split(":")[0] ?? "";
+  const matches =
+    pathQuery &&
+    lastPathSearchKey === currentPathSearchKey(base.repos, pathQuery)
+      ? (state?.path_search ?? [])
+      : [];
   const repos =
     matches.length === 0
       ? base.repos
@@ -201,7 +214,7 @@ function maybeRequestPathSearch(): void {
   if (repos.length === 0) return;
   const pathQuery = pickerState.query.trim().split(":")[0] ?? "";
   if (!pathQuery) return;
-  const key = `${repos.map((r) => `${r.repo_id}@${r.commit_sha}`).join(",")}:${pathQuery}`;
+  const key = currentPathSearchKey(repos, pathQuery);
   if (key === lastPathSearchKey) return;
   lastPathSearchKey = key;
   for (const repo of repos) {

@@ -111,7 +111,7 @@ export function mentionCandidates(
           (file.line_count <= 0 || end <= file.line_count)
         )
           files.push({
-            key: `${repo.repo_id}:${file.path}:${start}-${end}`,
+            key: `${repo.repo_id}@${repo.commit_sha}:${file.path}:${start}-${end}`,
             kind: "range",
             repo_id: repo.repo_id,
             repo_name: repo.name,
@@ -131,7 +131,7 @@ export function mentionCandidates(
       }
       if (fileMatches)
         files.push({
-          key: `${repo.repo_id}:${file.path}`,
+          key: `${repo.repo_id}@${repo.commit_sha}:${file.path}`,
           kind: "file",
           repo_id: repo.repo_id,
           repo_name: repo.name,
@@ -154,7 +154,7 @@ export function mentionCandidates(
       for (const symbol of file.symbols) {
         if (!symbol.name.toLowerCase().includes(pathQuery)) continue;
         symbols.push({
-          key: `${repo.repo_id}:${file.path}#${symbol.name}`,
+          key: `${repo.repo_id}@${repo.commit_sha}:${file.path}#${symbol.name}`,
           kind: "symbol",
           repo_id: repo.repo_id,
           repo_name: repo.name,
