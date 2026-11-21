@@ -1026,7 +1026,11 @@ export class TeamChatController {
       reference_ids: effectiveReferenceIds,
     });
     if (!result.ok) {
+      this.notice = null;
       this.failed(result.code, conversationId);
+      if (!this.notice && !REMOVAL_CODES.has(result.code)) {
+        this.notice = this.noticeForAgentError(result.code, "preview");
+      }
       return;
     }
     if (result.value.restricted_reference_ids.length > 0) {
@@ -1075,12 +1079,47 @@ export class TeamChatController {
       preview_sha256: previewSha256,
     });
     if (!result.ok) {
+      this.notice = null;
       this.failed(result.code, conversationId);
+      if (!this.notice && !REMOVAL_CODES.has(result.code)) {
+        this.notice = this.noticeForAgentError(result.code, "request");
+      }
       return;
     }
     this.notice = null;
     this.agentPreviewState = null;
     this.agentRequestState = result.value;
+  }
+
+  private noticeForAgentError(
+    code: TeamErrorCode,
+    phase: "preview" | "request",
+  ): TeamChatNotice {
+    if (code === "invalid_request") {
+      return {
+        kind: "error",
+        text:
+          phase === "preview"
+            ? "Could not build @MARS preview: selected messages or attached code references exceed the agent context limit."
+            : "Could not submit @MARS request: selection is invalid or exceeds the agent context limit.",
+      };
+    }
+    if (code === "conflict") {
+      return {
+        kind: "error",
+        text: "The @MARS preview is out of date. Re-preview before confirming.",
+      };
+    }
+    if (code === "forbidden") {
+      return {
+        kind: "error",
+        text: "Not every participant can read the selected @MARS context.",
+      };
+    }
+    return {
+      kind: "error",
+      text: `@MARS ${phase} failed (${code}).`,
+    };
   }
 
   private async runAgentCancel(requestId: string): Promise<void> {
