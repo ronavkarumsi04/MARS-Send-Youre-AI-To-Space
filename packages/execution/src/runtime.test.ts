@@ -2365,7 +2365,7 @@ test("cancellation during an edit read forbids the subsequent read and write", a
 }, 30000);
 
 test("edits reject oversized files, content, results and invalid UTF-8 without writes", async () => {
-  const f = await fixture(4_000_000);
+  const f = await fixture(4_000_000, { maxOutputTokens: 16384 });
   const task = {
     ...f.task,
     budget: { ...f.task.budget, max_tokens: 2_000_000 },
@@ -2463,7 +2463,10 @@ test("mars_replace uniqueness errors include plain recovery, replace_all writes 
 });
 
 test("mars_replace rejects explosive replace_all before allocation without changing the file", async () => {
-  const f = await fixture(1_000_000, { editFormat: "replace" });
+  const f = await fixture(1_000_000, {
+    editFormat: "replace",
+    maxOutputTokens: 8192,
+  });
   let writes = 0;
   try {
     const original = "a".repeat(100000);

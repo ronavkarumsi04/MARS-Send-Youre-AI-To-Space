@@ -16,6 +16,7 @@ import {
   type LaunchLocation,
   readLaunch,
   readLaunchIfPresent,
+  rewriteLaunch,
   taskStateDir,
   writeLaunch,
 } from "./host-launch";
@@ -86,6 +87,23 @@ test("launch metadata is written once, atomically, and read back", async () => {
   ).rejects.toMatchObject({ code: "EEXIST" });
   expect(await readdir(dir)).toEqual(["launch.json"]);
   expect((await readLaunch(where, task)).model_id).toBe("fixture/free");
+});
+
+test("oversized launch writes and rewrites fail without publishing unreadable state", async () => {
+  const where = await location();
+  const dir = taskStateDir(where, task.task_id);
+  await mkdir(dir, { mode: 0o700 });
+  const oversized = { ...launch, cwd: "/" + "x".repeat(128 * 1024) };
+  await expect(writeLaunch(where, task, oversized)).rejects.toMatchObject({
+    code: "too_large",
+  });
+  expect(await readdir(dir)).toEqual([]);
+  await writeLaunch(where, task, launch);
+  await expect(rewriteLaunch(where, task, oversized)).rejects.toMatchObject({
+    code: "too_large",
+  });
+  expect(await readLaunch(where, task)).toEqual(launch);
+  expect(await readdir(dir)).toEqual(["launch.json"]);
 });
 
 test("corrupt, unreadable or out-of-scope launch metadata throws instead of reading as absent", async () => {

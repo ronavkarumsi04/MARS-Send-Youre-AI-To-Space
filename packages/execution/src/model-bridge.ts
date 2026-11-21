@@ -275,7 +275,7 @@ export function createModelBridge(options: ModelBridgeOptions) {
           Buffer.byteLength(JSON.stringify(request), "utf8") + 512;
         const remaining = budget.max_tokens - ledger.reserved_tokens;
         const outputCap = maxOutputTokens(selected);
-        const maxTokens = Math.min(
+        let maxTokens = Math.min(
           outputCap,
           streamOptions?.maxTokens ?? outputCap,
           remaining - inputAllowance,
@@ -290,6 +290,16 @@ export function createModelBridge(options: ModelBridgeOptions) {
           : selected.pricing.outputPerMTokUsd;
         if (inputRate === undefined || outputRate === undefined)
           throw new ExecutionLimitError();
+        const outputUsd =
+          budget.max_usd -
+          ledger.reserved_usd -
+          (inputAllowance * inputRate) / 1_000_000;
+        if (outputRate > 0)
+          maxTokens = Math.min(
+            maxTokens,
+            Math.floor((outputUsd * 1_000_000) / outputRate),
+          );
+        if (maxTokens < 1) throw new ExecutionLimitError();
         const reservedCost =
           (inputAllowance * inputRate + maxTokens * outputRate) / 1_000_000;
         if (exceedsUsd(ledger.reserved_usd + reservedCost, budget.max_usd))
@@ -335,6 +345,11 @@ export function createModelBridge(options: ModelBridgeOptions) {
         });
         let textIndex = -1;
         let emittedText = "";
+        let outputBytes = 0;
+        const toolCalls: Extract<
+          AssistantMessage["content"][number],
+          { type: "toolCall" }
+        >[] = [];
         let done = false;
         stream.push({ type: "start", partial: output });
         const routed: OpenAICompatibleChatRequest = {
@@ -357,9 +372,9 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 partial: output,
               });
             }
+            outputBytes += Buffer.byteLength(event.text, "utf8");
+            if (outputBytes > maxTokens * 16) throw new ExecutionLimitError();
             emittedText += event.text;
-            if (Buffer.byteLength(emittedText, "utf8") > maxTokens * 16)
-              throw new ExecutionLimitError();
             const block = output.content[textIndex];
             if (block?.type === "text") block.text = emittedText;
             stream.push({
@@ -369,7 +384,6 @@ export function createModelBridge(options: ModelBridgeOptions) {
               partial: output,
             });
           } else if (event.type === "tool-call") {
-            const index = output.content.length;
             const toolCall = {
               type: "toolCall" as const,
               ...event.toolCall,
@@ -378,30 +392,22 @@ export function createModelBridge(options: ModelBridgeOptions) {
                 workspace.restore,
               ) as typeof event.toolCall.arguments,
             };
-            output.content.push(toolCall);
-            stream.push({
-              type: "toolcall_start",
-              contentIndex: index,
-              partial: output,
-            });
-            stream.push({
-              type: "toolcall_end",
-              contentIndex: index,
-              toolCall,
-              partial: output,
-            });
+            outputBytes +=
+              Buffer.byteLength(toolCall.id, "utf8") +
+              Buffer.byteLength(toolCall.name, "utf8") +
+              Buffer.byteLength(JSON.stringify(toolCall.arguments), "utf8");
+            if (outputBytes > maxTokens * 16) throw new ExecutionLimitError();
+            toolCalls.push(toolCall);
           } else if (event.type === "error") {
             throw new Error("Provider stream failed.");
           } else if (event.type === "done") {
             if (done || event.response.content !== emittedText)
               throw new Error("Provider stream response mismatch.");
-            const calls = output.content
-              .filter((part) => part.type === "toolCall")
-              .map(({ id, name, arguments: args }) => ({
-                id,
-                name,
-                arguments: args,
-              }));
+            const calls = toolCalls.map(({ id, name, arguments: args }) => ({
+              id,
+              name,
+              arguments: args,
+            }));
             if (
               JSON.stringify(calls) !==
               JSON.stringify(
@@ -466,6 +472,21 @@ export function createModelBridge(options: ModelBridgeOptions) {
           }
         }
         if (!done) throw new Error("Provider stream ended without completion.");
+        for (const toolCall of toolCalls) {
+          const index = output.content.length;
+          output.content.push(toolCall);
+          stream.push({
+            type: "toolcall_start",
+            contentIndex: index,
+            partial: output,
+          });
+          stream.push({
+            type: "toolcall_end",
+            contentIndex: index,
+            toolCall,
+            partial: output,
+          });
+        }
         stream.push({
           type: "done",
           reason: output.stopReason as "stop" | "length" | "toolUse",
