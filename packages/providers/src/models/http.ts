@@ -101,10 +101,11 @@ export function requireToolCall(
 }
 
 export function parseRetryAfter(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const seconds = Number(header);
+  const trimmed = header?.trim();
+  if (!trimmed) return undefined;
+  const seconds = Number(trimmed);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const timestamp = Date.parse(header);
+  const timestamp = Date.parse(trimmed);
   return Number.isNaN(timestamp)
     ? undefined
     : Math.max(0, timestamp - Date.now());

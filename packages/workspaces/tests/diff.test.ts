@@ -90,3 +90,17 @@ test("CRLF and missing final newline survive a git apply round trip byte for byt
   const after = [...BOM, ...text("a\r\nB\r\nc\n")];
   expect([...(await gitApplyRoundTrip(before, after))]).toEqual(after);
 });
+
+test("NUL bytes beyond the first 8000 bytes are still detected as binary", () => {
+  const before = new Array<number>(9000).fill(0x61);
+  const after = [...before];
+  after[8500] = 0x00;
+  const entry = createWorkspaceDiff(
+    [file("payload.bin", before)],
+    [file("payload.bin", after)],
+  ).files[0];
+  expect(entry?.patch).toContain(
+    "Binary files a/payload.bin and b/payload.bin differ",
+  );
+  expect(entry?.patch.includes("\0")).toBe(false);
+});

@@ -82,4 +82,31 @@ describe("resolveForSafety", () => {
       resolveForSafety(resolve("relative-missing-path")),
     );
   });
+
+  test("follows dangling symlinks so targets outside the root cannot masquerade as inside", () => {
+    withTempDir((dir) => {
+      const ws = join(dir, "ws");
+      const outside = join(dir, "outside");
+      mkdirSync(ws);
+      mkdirSync(outside);
+      symlinkSync(join(outside, "missing.txt"), join(ws, "dangling.txt"));
+      symlinkSync("../outside/missing-dir", join(ws, "dangling-dir"));
+      const direct = resolveForSafety(join(ws, "dangling.txt"));
+      expect(direct).toBe(join(outside, "missing.txt"));
+      expect(isInsideOrEqual(ws, direct)).toBe(false);
+      const nested = resolveForSafety(join(ws, "dangling-dir", "child.txt"));
+      expect(nested).toBe(join(outside, "missing-dir", "child.txt"));
+      expect(isInsideOrEqual(ws, nested)).toBe(false);
+    });
+  });
+
+  test("rejects symlink loops with ELOOP instead of returning a path inside the root", () => {
+    withTempDir((dir) => {
+      symlinkSync(join(dir, "b"), join(dir, "a"));
+      symlinkSync(join(dir, "a"), join(dir, "b"));
+      expect(() => resolveForSafety(join(dir, "a"))).toThrow(
+        /Too many levels of symbolic links/,
+      );
+    });
+  });
 });

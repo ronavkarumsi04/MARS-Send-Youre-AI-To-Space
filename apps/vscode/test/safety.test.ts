@@ -96,6 +96,17 @@ describe("resolveInsideRoot", () => {
       (await resolveInsideRoot(root, ["link", "new.txt"], realpath)).ok,
     ).toBe(false);
   });
+  test("rejects dangling symlinks pointing outside the workspace", async () => {
+    symlinkSync(join(outside, "missing.txt"), join(root, "dangling.txt"));
+    symlinkSync(join(outside, "missing-dir"), join(root, "dangling-dir"));
+    expect((await resolveInsideRoot(root, ["dangling.txt"], realpath)).ok).toBe(
+      false,
+    );
+    expect(
+      (await resolveInsideRoot(root, ["dangling-dir", "leaf.txt"], realpath))
+        .ok,
+    ).toBe(false);
+  });
 });
 
 describe("patch helpers", () => {

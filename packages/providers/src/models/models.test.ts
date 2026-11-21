@@ -21,6 +21,7 @@ import type { ProviderAdapter } from "./adapter-types";
 import { createAnthropicAdapter } from "./anthropic";
 import { discoverModels } from "./discovery";
 import { ProviderError } from "./errors";
+import { parseRetryAfter } from "./http";
 import { createOpenAICompatibleAdapter } from "./openai-compatible";
 import { loadModelRegistry } from "./registry";
 import { ModelRouter } from "./router";
@@ -1961,4 +1962,130 @@ test("addProvider and addModel write only user additions and reload the registry
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("parseRetryAfter ignores whitespace-only headers instead of returning 0ms", () => {
+  expect(parseRetryAfter("   ")).toBeUndefined();
+  expect(parseRetryAfter("\t\n")).toBeUndefined();
+  expect(parseRetryAfter(" 2 ")).toBe(2000);
+});
+
+test("anthropic merges consecutive tool results into a single user message", async () => {
+  let capturedBody: { messages?: Array<{ role: string; content: unknown }> } =
+    {};
+  const adapter = createAnthropicAdapter(
+    provider("anthropic-merge", "https://anthropic.example", {
+      kind: "anthropic",
+    }),
+    {
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        capturedBody = JSON.parse(String(init?.body)) as typeof capturedBody;
+        return new Response(
+          JSON.stringify({
+            type: "message",
+            content: [{ type: "text", text: "done" }],
+            stop_reason: "end_turn",
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    },
+  );
+  await adapter.complete(
+    {
+      messages: [
+        { role: "user", content: "run two tools" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: "call-1", name: "first", arguments: {} },
+            { id: "call-2", name: "second", arguments: {} },
+          ],
+        },
+        { role: "tool", tool_call_id: "call-1", content: "one" },
+        { role: "tool", tool_call_id: "call-2", content: "two" },
+      ],
+    },
+    model("anthropic-merge/m", "anthropic-merge"),
+  );
+  expect(capturedBody.messages?.map((m) => m.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+  ]);
+  expect(capturedBody.messages?.[2]?.content).toEqual([
+    { type: "tool_result", tool_use_id: "call-1", content: "one" },
+    { type: "tool_result", tool_use_id: "call-2", content: "two" },
+  ]);
+});
+
+test("empty opening text chunks do not emit text-delta or disable stream retries", async () => {
+  const encode = (chunks: string[]) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+
+  const anthropicAdapter = createAnthropicAdapter(
+    provider("anthropic-empty", "https://anthropic.example", {
+      kind: "anthropic",
+    }),
+    {
+      fetch: (async () =>
+        new Response(
+          encode([
+            'event: message_start\ndata: {"type":"message_start","message":{"model":"claude"}}\n\n',
+            'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+          ]),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    },
+  );
+  const anthropicEvents: StreamEvent[] = [];
+  let anthropicError: unknown;
+  try {
+    for await (const event of anthropicAdapter.stream(
+      request,
+      model("anthropic-empty/m", "anthropic-empty"),
+    )) {
+      anthropicEvents.push(event);
+    }
+  } catch (error) {
+    anthropicError = error;
+  }
+  expect(anthropicEvents).toEqual([]);
+  expect(anthropicError).toBeInstanceOf(ProviderError);
+  expect((anthropicError as ProviderError).retryable).toBe(true);
+
+  const openaiAdapter = createOpenAICompatibleAdapter(
+    provider("openai-empty", "https://openai.example/v1"),
+    {
+      fetch: (async () =>
+        new Response(
+          encode([
+            'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n',
+          ]),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    },
+  );
+  const openaiEvents: StreamEvent[] = [];
+  let openaiError: unknown;
+  try {
+    for await (const event of openaiAdapter.stream(
+      request,
+      model("openai-empty/m", "openai-empty"),
+    )) {
+      openaiEvents.push(event);
+    }
+  } catch (error) {
+    openaiError = error;
+  }
+  expect(openaiEvents).toEqual([]);
+  expect(openaiError).toBeInstanceOf(ProviderError);
+  expect((openaiError as ProviderError).retryable).toBe(true);
 });

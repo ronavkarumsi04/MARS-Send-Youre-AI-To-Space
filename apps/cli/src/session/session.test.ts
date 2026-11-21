@@ -11,7 +11,12 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { z } from "zod";
 import { SessionView } from "./app";
 import { compact } from "./cards";
-import { READ_METHODS, SessionClient, SessionRpcError } from "./client";
+import {
+  httpTransport,
+  READ_METHODS,
+  SessionClient,
+  SessionRpcError,
+} from "./client";
 import { SessionController } from "./controller";
 import {
   FINAL_TEXT,
@@ -396,4 +401,27 @@ test("platform fixtures parse with the host's own strict schemas", async () => {
   );
   expect(described.graph?.isolation).toBe("process_env");
   expect(inspected.context_rows?.some((row) => row.tokens === null)).toBe(true);
+});
+
+test("httpTransport rejects non-object JSON replies as SessionRpcError instead of TypeError", async () => {
+  for (const body of ["true", "null", "42", '"text"', "[1,2]"]) {
+    const transport = httpTransport(
+      {
+        url: "http://127.0.0.1:7331",
+        token: "a".repeat(32),
+        scope: { owner_id: "o", project_id: "p" },
+      },
+      (async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+    await expect(
+      transport({ method: "workbench.describe", params: {} }),
+    ).rejects.toMatchObject({
+      code: "protocol",
+      status: 200,
+    });
+  }
 });

@@ -266,7 +266,7 @@ export function createOpenAICompatibleAdapter(
             Array.isArray(payload.choices) ? payload.choices[0] : undefined,
           );
           const delta = asObject(choice.delta);
-          if (typeof delta.content === "string") {
+          if (typeof delta.content === "string" && delta.content.length > 0) {
             content += delta.content;
             emittedContent = true;
             yield { type: "text-delta", text: delta.content };

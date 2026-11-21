@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -7,6 +7,8 @@ import {
   resolve,
   sep,
 } from "node:path";
+
+const MAX_SYMLINK_HOPS = 40;
 
 function relation(root: string, candidate: string): string | null {
   const rel = relative(root, candidate);
@@ -28,22 +30,50 @@ export function isStrictlyInside(root: string, candidate: string): boolean {
 
 /**
  * Resolves `value` to an absolute path with symlinks expanded. When the path
- * does not exist yet, its nearest existing ancestor is resolved and the
- * missing components are appended.
+ * does not exist yet, its nearest existing ancestor (and any dangling symlink
+ * along the way) is resolved and the missing components are appended.
  */
 export function resolveForSafety(value: string): string {
+  return resolveWithLimit(value, 0);
+}
+
+function resolveWithLimit(value: string, hops: number): string {
   const absolute = resolve(value);
   try {
     return realpathSync(absolute);
   } catch {
     const suffix: string[] = [];
     let existing = absolute;
-    while (!existsSync(existing)) {
-      const parent = dirname(existing);
-      if (parent === existing) return absolute;
-      suffix.unshift(basename(existing));
-      existing = parent;
+    for (;;) {
+      try {
+        const stat = lstatSync(existing);
+        if (stat.isSymbolicLink()) {
+          if (hops >= MAX_SYMLINK_HOPS) {
+            const error = new Error(
+              "Too many levels of symbolic links while resolving path.",
+            ) as NodeJS.ErrnoException;
+            error.code = "ELOOP";
+            throw error;
+          }
+          const target = readlinkSync(existing);
+          return resolveWithLimit(
+            resolve(dirname(existing), target, ...suffix),
+            hops + 1,
+          );
+        }
+        return resolve(realpathSync(existing), ...suffix);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error as NodeJS.ErrnoException).code === "ELOOP"
+        ) {
+          throw error;
+        }
+        const parent = dirname(existing);
+        if (parent === existing) return absolute;
+        suffix.unshift(basename(existing));
+        existing = parent;
+      }
     }
-    return resolve(realpathSync(existing), ...suffix);
   }
 }
