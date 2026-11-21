@@ -1058,4 +1058,91 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     );
     await transport.close();
   });
+
+  it("never spawns a drifted stdio entrypoint during admission even after a pending drift review is recorded", async () => {
+    const dir = await makeTempDir("mars-mcp-pending-drift-");
+    const stateDir = join(dir, "state");
+    const workspaceDir = await makeTempDir("mars-mcp-pending-drift-ws-");
+    const entrypoint = join(dir, "server.ts");
+    const markerFile = join(dir, "spawned-after-drift.txt");
+
+    // Initial approved server: copy the stdio fixture so it is a valid MCP server.
+    const fixtureSrc = await readFile(STDIO_FIXTURE, "utf8");
+    await writeFile(entrypoint, fixtureSrc, "utf8");
+
+    const cp = await createHostMcpControlPlane({
+      stateDir,
+      workspaceRoots: [workspaceDir],
+      approvers: [{ approver_id: "op", owner_id: "op", project_ids: ["proj"] }],
+    });
+    activeControlPlanes.push(cp);
+    const ctx = defaultRequestContext("op", "proj");
+
+    const cfg: McpServerConfig = {
+      schema_version: 1,
+      id: "drift-no-spawn",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        args: ["run", entrypoint],
+        entrypoint,
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+      registered_at: new Date().toISOString(),
+    };
+    await cp.registry.upsert(cfg);
+
+    const evidence = await cp.probe.observeServer(ctx, cfg, {
+      allowUnapprovedStdioProbe: true,
+    });
+    const review = await cp.admin.submitCandidate(ctx, {
+      evidence,
+      permissions: cfg.permissions,
+      credential_bindings: [],
+    });
+    const proof = cp.signHostProof({
+      review_id: review.review_id,
+      review_revision: review.revision,
+      binding_sha256: review.binding_sha256,
+      scope: review.scope,
+      decision: "approve",
+      expires_at: review.expires_at,
+    });
+    await cp.admin.approve(ctx, {
+      review_id: review.review_id,
+      expected_revision: review.revision,
+      proof,
+    });
+
+    // Tamper with the entrypoint on disk so any spawn would leave a marker file.
+    await writeFile(
+      entrypoint,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerFile)}, "SPAWNED");\n`,
+      "utf8",
+    );
+
+    // First admit detects artifact drift, supersedes the grant, and records a
+    // pending drift review WITHOUT spawning the tampered entrypoint.
+    await expect(cp.loader.admitServer(ctx, "drift-no-spawn")).rejects.toThrow(
+      IntegrationTrustError,
+    );
+    await expect(readFile(markerFile, "utf8")).rejects.toThrow();
+
+    // Confirm a pending drift review now exists in trust state.
+    const { state } = await cp.readState();
+    expect(
+      state.reviews.some(
+        (r) => r.integration_id === "drift-no-spawn" && r.state === "pending",
+      ),
+    ).toBe(true);
+
+    // Second admit MUST STILL refuse without spawning — the automatically
+    // recorded pending drift review is NOT a trusted baseline for admission.
+    await expect(cp.loader.admitServer(ctx, "drift-no-spawn")).rejects.toThrow(
+      IntegrationTrustError,
+    );
+    await expect(readFile(markerFile, "utf8")).rejects.toThrow();
+  });
 });

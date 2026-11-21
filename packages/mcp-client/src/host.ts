@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -154,6 +155,11 @@ export async function createHostMcpControlPlane(
   ];
 
   const probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
+  // Pending reviews are NEVER trusted baselines for runtime admission/dispatch
+  // (otherwise an automatically recorded drift review would let the next admit
+  // spawn an unapproved drifted stdio binary). Only an active host `admin.approve`
+  // call — after verifying the signed host proof — may probe its target review.
+  const approvalProbeContext = new AsyncLocalStorage<string>();
   const probe = new McpEvidenceProbe({
     registry,
     ...(options.clock ? { clock: options.clock } : {}),
@@ -172,15 +178,19 @@ export async function createHostMcpControlPlane(
           g.scope.project_id === ctx.scope.project_id,
       );
       if (grant) baselines.push({ evidence: grant.evidence });
-      const pending = state.reviews.findLast(
-        (r) =>
-          r.state === "pending" &&
-          r.kind === identity.kind &&
-          r.integration_id === identity.integration_id &&
-          r.scope.owner_id === ctx.scope.owner_id &&
-          r.scope.project_id === ctx.scope.project_id,
-      );
-      if (pending) baselines.push({ evidence: pending.evidence });
+      const approvingReviewId = approvalProbeContext.getStore();
+      if (approvingReviewId !== undefined) {
+        const pending = state.reviews.find(
+          (r) =>
+            r.review_id === approvingReviewId &&
+            r.state === "pending" &&
+            r.kind === identity.kind &&
+            r.integration_id === identity.integration_id &&
+            r.scope.owner_id === ctx.scope.owner_id &&
+            r.scope.project_id === ctx.scope.project_id,
+        );
+        if (pending) baselines.push({ evidence: pending.evidence });
+      }
       return baselines.length > 0 ? baselines : undefined;
     },
   });
@@ -190,7 +200,7 @@ export async function createHostMcpControlPlane(
     approvers,
   });
 
-  const { admin, gate } = createIntegrationTrust({
+  const { admin: rawAdmin, gate } = createIntegrationTrust({
     store,
     authorizer,
     probe,
@@ -200,6 +210,15 @@ export async function createHostMcpControlPlane(
       ...options.policy,
     },
   });
+
+  const admin: IntegrationTrustAdmin = {
+    ...rawAdmin,
+    approve(ctx, request) {
+      return approvalProbeContext.run(request.review_id, () =>
+        rawAdmin.approve(ctx, request),
+      );
+    },
+  };
 
   const loader = createTrustedMcpLoader({
     gate,
