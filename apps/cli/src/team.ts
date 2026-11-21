@@ -499,6 +499,38 @@ async function runServe(
   };
   for (const [index, user_id] of options.members.entries())
     ensureMember(user_id, index === 0);
+  // Register local authenticators (dev, HS256 token) before remote providers
+  // (GitHub) so local credentials are never forwarded to upstream APIs.
+  if (options.devUsers) {
+    const tokens = await ensureDevTokens(
+      options.state,
+      options.team,
+      options.devUsers,
+    );
+    devTokensFile = join(options.state, DEV_TOKENS_FILE);
+    activeDevUsers = tokens.users.length;
+    const users: DevUser[] = tokens.users.map((user) => ({
+      token: user.token,
+      user_id: user.user_id,
+      team_ids: [options.team],
+    }));
+    authenticators.push(createDevAuthenticator(users));
+    for (const user of tokens.users) {
+      provisionedUsers.add(user.user_id);
+      if (
+        opened.teamMemberState({
+          team_id: options.team,
+          user_id: user.user_id,
+        }) === null
+      ) {
+        opened.setTeamMember({
+          team_id: options.team,
+          user_id: user.user_id,
+          role: user.role,
+        });
+      }
+    }
+  }
   if (options.authProvider === "token") {
     const secret = process.env[options.authSecretEnv];
     if (!secret || Buffer.byteLength(secret, "utf8") < 32)
@@ -531,36 +563,6 @@ async function runServe(
         resolveTeams: (_profile, userId) => opened.activeTeamIds(userId),
       }),
     );
-  }
-  if (options.devUsers) {
-    const tokens = await ensureDevTokens(
-      options.state,
-      options.team,
-      options.devUsers,
-    );
-    devTokensFile = join(options.state, DEV_TOKENS_FILE);
-    activeDevUsers = tokens.users.length;
-    const users: DevUser[] = tokens.users.map((user) => ({
-      token: user.token,
-      user_id: user.user_id,
-      team_ids: [options.team],
-    }));
-    authenticators.push(createDevAuthenticator(users));
-    for (const user of tokens.users) {
-      provisionedUsers.add(user.user_id);
-      if (
-        opened.teamMemberState({
-          team_id: options.team,
-          user_id: user.user_id,
-        }) === null
-      ) {
-        opened.setTeamMember({
-          team_id: options.team,
-          user_id: user.user_id,
-          role: user.role,
-        });
-      }
-    }
   }
   const authenticator: Authenticator =
     authenticators.length === 0
