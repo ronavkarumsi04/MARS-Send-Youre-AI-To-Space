@@ -3,10 +3,13 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   realpath,
   rename,
   rm,
+  stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
@@ -83,8 +86,10 @@ function inside(root: string, candidate: string): boolean {
  */
 export class FileMcpRegistry implements McpServerRegistry {
   private readonly filePath: string;
+  private readonly lockPath: string;
   private readonly dirPath: string;
   private readonly workspaceRoots: string[];
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(options: { dir: string; workspaceRoots: string[] }) {
     if (!options.dir) {
@@ -92,7 +97,61 @@ export class FileMcpRegistry implements McpServerRegistry {
     }
     this.dirPath = resolve(options.dir);
     this.filePath = resolve(this.dirPath, "servers.json");
+    this.lockPath = resolve(this.dirPath, ".servers.lock");
     this.workspaceRoots = options.workspaceRoots.map((r) => resolve(r));
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    let releaseQueue!: () => void;
+    const prev = this.writeQueue;
+    this.writeQueue = new Promise<void>((r) => {
+      releaseQueue = r;
+    });
+    await prev;
+    try {
+      await this.verifyLocation();
+      await mkdir(this.dirPath, { recursive: true, mode: 0o700 });
+      await chmod(this.dirPath, 0o700);
+      const deadline = Date.now() + 5_000;
+      let handle: Awaited<ReturnType<typeof open>> | null = null;
+      while (!handle) {
+        try {
+          handle = await open(this.lockPath, "wx", 0o600);
+        } catch (error) {
+          if (
+            !(
+              error &&
+              typeof error === "object" &&
+              "code" in error &&
+              (error as { code?: unknown }).code === "EEXIST"
+            )
+          ) {
+            throw error;
+          }
+          try {
+            const st = await stat(this.lockPath);
+            if (Date.now() - st.mtimeMs > 10_000) {
+              await unlink(this.lockPath).catch(() => {});
+              continue;
+            }
+          } catch {
+            continue;
+          }
+          if (Date.now() >= deadline) {
+            throw new IntegrationTrustError("store_locked");
+          }
+          await new Promise((r) => setTimeout(r, 15));
+        }
+      }
+      try {
+        return await fn();
+      } finally {
+        await handle.close().catch(() => {});
+        await unlink(this.lockPath).catch(() => {});
+      }
+    } finally {
+      releaseQueue();
+    }
   }
 
   private async verifyLocation(): Promise<void> {
@@ -177,16 +236,20 @@ export class FileMcpRegistry implements McpServerRegistry {
 
   async upsert(config: McpServerConfig): Promise<void> {
     const parsed = McpServerConfigSchema.parse(config);
-    const state = await this.readState();
-    state.servers[parsed.id] = parsed;
-    await this.writeState(state);
+    await this.withLock(async () => {
+      const state = await this.readState();
+      state.servers[parsed.id] = parsed;
+      await this.writeState(state);
+    });
   }
 
   async remove(serverId: string): Promise<boolean> {
-    const state = await this.readState();
-    if (!(serverId in state.servers)) return false;
-    delete state.servers[serverId];
-    await this.writeState(state);
-    return true;
+    return this.withLock(async () => {
+      const state = await this.readState();
+      if (!(serverId in state.servers)) return false;
+      delete state.servers[serverId];
+      await this.writeState(state);
+      return true;
+    });
   }
 }
