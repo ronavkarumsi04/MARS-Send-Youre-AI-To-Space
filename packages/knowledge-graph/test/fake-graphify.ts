@@ -55,6 +55,7 @@ if (args[0] === "extract") {
   const outRoot = outFlag >= 0 ? args[outFlag + 1] : undefined;
   const envOut = (process.env.GRAPHIFY_OUT ?? "").trim();
   // Mirror real graphifyy==0.9.101 pathlib semantics: Path(out_root) / GRAPHIFY_OUT
+  // An absolute GRAPHIFY_OUT bypasses flag parsing here; parity uses real-graphify.test.ts.
   const dir = envOut
     ? isAbsolute(envOut)
       ? envOut
