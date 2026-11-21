@@ -452,17 +452,23 @@ export function createController(
       render();
       return;
     }
-    if (
-      composer.startNow &&
-      composer.modelChoice === "paid" &&
-      !composer.paidModelConsent
-    ) {
-      composer = {
-        ...composer,
-        error: "Paid-model consent is required before launching.",
-      };
-      render();
-      return;
+    if (composer.startNow && composer.modelChoice === "paid") {
+      if (!composer.paidModelId.trim()) {
+        composer = {
+          ...composer,
+          error: "Enter a paid model ID before launching.",
+        };
+        render();
+        return;
+      }
+      if (!composer.paidModelConsent) {
+        composer = {
+          ...composer,
+          error: "Paid-model consent is required before launching.",
+        };
+        render();
+        return;
+      }
     }
     if (composer.submitting) return;
     const snapshot = {
@@ -576,13 +582,24 @@ export function createController(
   const handleStartTask = async () => {
     const task = state.selectedTask;
     if (!task) return;
-    if (launch.modelChoice === "paid" && !launch.paidModelConsent) {
-      launch = {
-        ...launch,
-        actionError: "Paid-model consent is required before starting.",
-      };
-      render();
-      return;
+    const paidModelId = launch.paidModelId.trim();
+    if (launch.modelChoice === "paid") {
+      if (!paidModelId) {
+        launch = {
+          ...launch,
+          actionError: "Enter a paid model ID before starting.",
+        };
+        render();
+        return;
+      }
+      if (!launch.paidModelConsent) {
+        launch = {
+          ...launch,
+          actionError: "Paid-model consent is required before starting.",
+        };
+        render();
+        return;
+      }
     }
     const nextLaunch: LaunchCardState = { ...launch, busy: true };
     delete nextLaunch.actionError;
@@ -602,7 +619,7 @@ export function createController(
         },
       };
       if (launch.modelChoice === "paid") {
-        startParams.model_id = launch.paidModelId;
+        startParams.model_id = paidModelId;
       }
       await value(bridge["tasks.start"](startParams));
       launch = {

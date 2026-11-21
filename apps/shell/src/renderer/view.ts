@@ -334,6 +334,31 @@ function approvalAndLifecycleCard(
     });
 
     const paidConsentNeeded = launch.modelChoice === "paid";
+    const paidModelInput = paidConsentNeeded
+      ? h(doc, "input", {
+          type: "text",
+          class: "paid-model-input",
+          value: launch.paidModelId,
+          placeholder: "Host-configured paid model ID",
+          disabled: launch.busy,
+          "aria-label": "Paid model ID",
+          "data-control": "launch-paid-model-id",
+          "data-focus-key": "launch-paid-model-id",
+        })
+      : null;
+    if (paidModelInput) {
+      paidModelInput.value = launch.paidModelId;
+      paidModelInput.disabled = launch.busy;
+      paidModelInput.addEventListener("input", (event) => {
+        const next =
+          (event.target as { value?: string } | undefined)?.value ?? "";
+        state.onLaunchChange?.({
+          paidModelId: next,
+          paidModelConsent: false,
+        });
+      });
+    }
+    const trimmedPaidModelId = launch.paidModelId.trim();
     const paidConsentBox = paidConsentNeeded
       ? h(
           doc,
@@ -342,13 +367,21 @@ function approvalAndLifecycleCard(
           h(doc, "strong", {}, "Paid-model consent required"),
           h(
             doc,
+            "label",
+            { class: "paid-model-label" },
+            "Model ID ",
+            paidModelInput,
+          ),
+          h(
+            doc,
             "p",
             { class: "muted" },
-            `Launching with ${launch.paidModelId} may incur metered model charges within the task budget ($${task.budget.max_usd}).`,
+            `Launching with ${trimmedPaidModelId || "a paid model"} may incur metered model charges within the task budget ($${task.budget.max_usd}).`,
           ),
           checkboxField(doc, {
             label: "I consent to paid model usage for this task",
             checked: launch.paidModelConsent,
+            disabled: launch.busy || trimmedPaidModelId.length === 0,
             dataKey: "launch-paid-consent",
             onChange: (checked) =>
               state.onLaunchChange?.({ paidModelConsent: checked }),
@@ -357,7 +390,9 @@ function approvalAndLifecycleCard(
       : null;
 
     const startBlocked =
-      launch.busy || (paidConsentNeeded && !launch.paidModelConsent);
+      launch.busy ||
+      (paidConsentNeeded &&
+        (!launch.paidModelConsent || trimmedPaidModelId.length === 0));
     const startBtn = h(
       doc,
       "button",
@@ -614,15 +649,48 @@ function promptComposer(
 
   const paidConsentNeeded =
     composer.startNow && composer.modelChoice === "paid";
+  const composerPaidModelInput = paidConsentNeeded
+    ? h(doc, "input", {
+        type: "text",
+        class: "paid-model-input",
+        value: composer.paidModelId,
+        placeholder: "Host-configured paid model ID",
+        disabled: composer.submitting,
+        "aria-label": "Composer paid model ID",
+        "data-control": "composer-paid-model-id",
+        "data-focus-key": "composer-paid-model-id",
+      })
+    : null;
+  if (composerPaidModelInput) {
+    composerPaidModelInput.value = composer.paidModelId;
+    composerPaidModelInput.disabled = composer.submitting;
+    composerPaidModelInput.addEventListener("input", (event) => {
+      const next =
+        (event.target as { value?: string } | undefined)?.value ?? "";
+      state.onComposerChange?.({
+        paidModelId: next,
+        paidModelConsent: false,
+      });
+    });
+  }
+  const trimmedComposerPaidModelId = composer.paidModelId.trim();
   const paidConsent = paidConsentNeeded
     ? h(
         doc,
         "div",
         { class: "consent-card", "data-card": "composer-paid-consent" },
+        h(
+          doc,
+          "label",
+          { class: "paid-model-label" },
+          "Model ID ",
+          composerPaidModelInput,
+        ),
         checkboxField(doc, {
-          label: `I consent to paid model usage (${composer.paidModelId})`,
+          label: `I consent to paid model usage (${trimmedComposerPaidModelId || "paid model"})`,
           checked: composer.paidModelConsent,
-          disabled: composer.submitting,
+          disabled:
+            composer.submitting || trimmedComposerPaidModelId.length === 0,
           dataKey: "composer-paid-consent",
           onChange: (checked) =>
             state.onComposerChange?.({ paidModelConsent: checked }),
@@ -631,7 +699,9 @@ function promptComposer(
     : null;
 
   const submitDisabled =
-    composer.submitting || (paidConsentNeeded && !composer.paidModelConsent);
+    composer.submitting ||
+    (paidConsentNeeded &&
+      (!composer.paidModelConsent || trimmedComposerPaidModelId.length === 0));
   const submitBtn = h(
     doc,
     "button",
