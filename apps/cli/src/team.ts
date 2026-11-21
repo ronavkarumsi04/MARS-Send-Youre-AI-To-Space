@@ -204,11 +204,11 @@ function parseUsers(value: unknown): string[] {
   if (
     ids.length === 0 ||
     ids.length > 64 ||
-    ids.some((id) => !ID_PATTERN.test(id) || id === "mars") ||
+    ids.some((id) => !ID_PATTERN.test(id) || id.toLowerCase() === "mars") ||
     new Set(ids).size !== ids.length
   )
     throw new TeamUsageError(
-      "--dev-users must list distinct ids of letters, digits, '.', '_' or '-' (never 'mars').",
+      "--dev-users must list distinct ids of letters, digits, '.', '_' or '-' (never 'mars', in any casing).",
     );
   return ids;
 }

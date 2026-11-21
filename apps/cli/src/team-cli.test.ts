@@ -543,12 +543,21 @@ test("mars team serve requires an identity option, rejects bad repo specs, and -
         () => {},
       ),
     ).rejects.toBeInstanceOf(TeamUsageError);
-    await expect(
-      runTeam(
-        ["serve", "--state", state, "--port", "0", "--dev-users", "ada,mars"],
-        () => {},
-      ),
-    ).rejects.toBeInstanceOf(TeamUsageError);
+    for (const reserved of ["mars", "MARS", "Mars"])
+      await expect(
+        runTeam(
+          [
+            "serve",
+            "--state",
+            state,
+            "--port",
+            "0",
+            "--dev-users",
+            `ada,${reserved}`,
+          ],
+          () => {},
+        ),
+      ).rejects.toBeInstanceOf(TeamUsageError);
     await expect(
       runTeam(
         [

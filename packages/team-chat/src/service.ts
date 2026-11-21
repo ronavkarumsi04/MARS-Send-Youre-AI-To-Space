@@ -640,8 +640,8 @@ export class FixtureTeamService implements TeamService {
         duplicate: true,
       });
     }
-    if (body.length === 0 && input.references.length === 0)
-      return fail("empty_message");
+    // The team protocol requires body text, so references alone are not a message.
+    if (body.length === 0) return fail("empty_message");
     if (body.length > MAX_MESSAGE_CHARS) return fail("invalid");
     if (input.references.length > MAX_REFERENCES_PER_MESSAGE)
       return fail("too_many_references");

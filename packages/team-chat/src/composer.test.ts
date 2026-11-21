@@ -375,6 +375,58 @@ describe("@MARS invocations", () => {
     });
   });
 
+  test.each([
+    "@mars.svg:1 needs a new icon",
+    "@mars.svg:1-4 needs a new icon",
+    "@MARS.config.ts:12, see this line",
+    "look at @mars.svg:1",
+  ])("leaves the file-and-line token in %j as ordinary chat", (text) => {
+    expect(parseMarsInvocation(text)).toBeNull();
+    expect(parseMarsInvocation(text, { leadingOnly: true })).toBeNull();
+    expect(parseMarsInvocation("@MARS.Summarize this")).toEqual({
+      prompt: "Summarize this",
+    });
+    expect(parseMarsInvocation("@MARS: 1 question")).toEqual({
+      prompt: "1 question",
+    });
+  });
+
+  test("the picker never offers a teammate whose handle is a casing of @MARS", () => {
+    const users = [
+      { user_id: "MARS", handle: "MARS", display_name: "Mars Person" },
+      { user_id: "marsha", handle: "marsha", display_name: "Marsha" },
+    ];
+    for (const agent_available of [false, true]) {
+      const picked = mentionCandidates(
+        { repos: [], users, agent_available },
+        "mars",
+        null,
+      );
+      expect(
+        picked.filter((c) => c.kind === "user").map((c) => c.label),
+      ).toEqual(["@marsha"]);
+      expect(picked.some((c) => c.kind === "agent")).toBe(agent_available);
+    }
+    // Picking the remaining teammate and sending stays ordinary chat.
+    const mentionEnv = { ...env, index: { repos: [], users } };
+    const draft = reduceComposer(
+      reduceComposer(
+        EMPTY_COMPOSER,
+        { type: "input", text: "@mars", caret: 5 },
+        mentionEnv,
+      ),
+      { type: "pickerSelect" },
+      mentionEnv,
+    );
+    expect(draft.text).toBe("@marsha ");
+    expect(
+      parseMarsInvocation(`${draft.text}can you review this?`, {
+        teammates: users,
+        leadingOnly: true,
+      }),
+    ).toBeNull();
+  });
+
   test("only leading invocations are reserved when the agent is disabled", () => {
     const options = { leadingOnly: true };
     expect(parseMarsInvocation("Is @MARS enabled here?", options)).toBeNull();

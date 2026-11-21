@@ -71,6 +71,8 @@ export function mentionCandidates(
       const handle = user.handle.toLowerCase();
       const name = user.display_name.toLowerCase();
       const uid = user.user_id.toLowerCase();
+      // `@MARS` is reserved in every casing, so a colliding handle could not be sent.
+      if (handle === "mars") continue;
       if (
         lowered === "" ||
         handle.includes(lowered) ||
@@ -194,6 +196,8 @@ export function mentionCandidates(
 
 const USER_MENTION_RE = /(?:^|[\s(])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/g;
 const MARS_INVOCATION_RE = /(?:^|\s)@mars(?=$|[\s,.;:!?])/gi;
+/** A dotted `@mars.<name>:<line>[-<line>]` token is a file-and-line mention, not a command. */
+const MARS_FILE_RANGE_RE = /^\.[^\s:]+:\d+(?:-\d+)?(?=$|[\s,.;:!?)])/;
 
 /** Extract distinct teammate `@handles` from a message body (excluding `@MARS`). */
 export function extractUserMentions(text: string): string[] {
@@ -221,6 +225,7 @@ export function parseMarsInvocation(
     const before = text.slice(0, match.index).trim();
     if (options.leadingOnly && before) return null;
     const tail = text.slice(match.index + match[0].length);
+    if (MARS_FILE_RANGE_RE.test(tail)) continue;
     if (tail.startsWith(".")) {
       const suffix = /^[a-z0-9._-]+/i.exec(tail)?.[0] ?? "";
       const handle = `mars${suffix.toLowerCase()}`;
