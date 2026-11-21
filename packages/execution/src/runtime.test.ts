@@ -581,6 +581,33 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
       ...Object.fromEntries(
         Array.from({ length: 11 }, (_, i) => [`flag${i}`, { type: "boolean" }]),
       ),
+      wide: {
+        type: "object",
+        properties: {
+          ...Object.fromEntries(
+            Array.from({ length: 4 }, (_, group) => [
+              `group${group}`,
+              {
+                type: "object",
+                properties: Object.fromEntries(
+                  Array.from({ length: 63 }, (_, field) => [
+                    `field${field}`,
+                    { type: "string" },
+                  ]),
+                ),
+              },
+            ]),
+          ),
+          routes: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { destination: { type: "string" } },
+              required: ["destination"],
+            },
+          },
+        },
+      },
       config: {
         type: "object",
         properties: {
@@ -700,6 +727,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     let modelCalls = 0;
     let modelSchema: unknown;
     const session = await f.open({
+      task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
       mcp,
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as {
@@ -785,6 +813,22 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
             fallback: {
               required: ["postalCode"],
               properties: { postalCode: { type: "string" } },
+            },
+          },
+        },
+        wide: {
+          properties: {
+            group0: { type: "object" },
+            group1: { type: "object" },
+            group2: { type: "object" },
+            group3: { type: "object" },
+            routes: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { destination: { type: "string" } },
+                required: ["destination"],
+              },
             },
           },
         },

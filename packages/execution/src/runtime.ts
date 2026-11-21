@@ -1503,17 +1503,26 @@ function mcpToolParameters(
   type Projection = {
     constraints: Constraint[];
     depth: number;
-    result: Record<string, unknown>;
+    attach: (result: Record<string, unknown>) => void;
   };
-  const root = {};
-  const queue: Projection[] = [
+  const maxNodes = 256;
+  let root: Record<string, unknown> = {};
+  const structural: Projection[] = [
     {
       constraints: [{ value: schema, path: new Set() }],
       depth: 0,
-      result: root,
+      attach: (result) => {
+        root = result;
+      },
     },
   ];
-  for (const { constraints, depth, result } of queue) {
+  const optional: Projection[] = [];
+  for (let remaining = maxNodes; remaining > 0; remaining--) {
+    const next = structural.shift() ?? optional.shift();
+    if (!next) break;
+    const { constraints, depth, attach } = next;
+    const result: Record<string, unknown> = {};
+    attach(result);
     const nodes = new Set<Record<string, unknown>>();
     const properties = new Map<string, Constraint[]>();
     const required = new Set<string>();
@@ -1557,22 +1566,36 @@ function mcpToolParameters(
     if (declaredTypes.size === 1) result.type = [...declaredTypes][0];
     else if (declaredTypes.size > 1)
       result.allOf = [...declaredTypes].map((type) => ({ type }));
-    if (depth >= 8 || queue.length >= 256) continue;
-    const enqueue = (constraints: Constraint[]) => {
-      const child = {};
-      queue.push({ constraints, depth: depth + 1, result: child });
-      return child;
+    if (depth >= 8 || remaining === 1) continue;
+    const enqueue = (
+      queue: Projection[],
+      constraints: Constraint[],
+      attach: Projection["attach"],
+    ) => {
+      if (queue.length < remaining - 1)
+        queue.push({ constraints, depth: depth + 1, attach });
     };
-    if (items.length) result.items = enqueue(items);
-    const selected = [...properties].slice(0, Math.min(64, 256 - queue.length));
-    if (selected.length) {
-      result.properties = Object.fromEntries(
-        selected.map(([key, children]) => [key, enqueue(children)]),
-      );
-      const names = selected
-        .map(([key]) => key)
-        .filter((key) => required.has(key));
-      if (names.length) result.required = names;
+    if (items.length)
+      enqueue(structural, items, (item) => {
+        result.items = item;
+      });
+    const projectedProperties: Record<string, unknown> = {};
+    const projectedRequired: string[] = [];
+    const entries = [...properties];
+    const selected = [
+      ...entries.filter(([key]) => required.has(key)),
+      ...entries.filter(([key]) => !required.has(key)),
+    ].slice(0, 64);
+    for (const [key, children] of selected) {
+      const isRequired = required.has(key);
+      enqueue(isRequired ? structural : optional, children, (child) => {
+        result.properties = projectedProperties;
+        projectedProperties[key] = child;
+        if (isRequired) {
+          projectedRequired.push(key);
+          result.required = projectedRequired;
+        }
+      });
     }
   }
   return { ...root, type: "object" };

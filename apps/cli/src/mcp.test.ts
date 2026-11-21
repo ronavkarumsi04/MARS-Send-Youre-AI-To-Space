@@ -233,6 +233,15 @@ describe("mars mcp CLI flow", () => {
       review: { review_id: string };
     };
 
+    await expect(
+      execMcpCli([
+        "approve",
+        review.review_id,
+        "--ttl-ms",
+        "86400001",
+        ...common,
+      ]),
+    ).rejects.toMatchObject({ code: "config_invalid" });
     await execMcpCli([
       "approve",
       review.review_id,
