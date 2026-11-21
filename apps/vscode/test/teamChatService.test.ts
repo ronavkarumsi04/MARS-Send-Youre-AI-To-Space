@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ResultShare } from "@mars/contracts";
 import { succeed } from "@mars/team-chat";
 import { RpcError } from "../src/rpc";
 import { TeamClient } from "../src/teamChat/client";
@@ -120,6 +121,75 @@ async function until(check: () => boolean, tries = 200): Promise<void> {
 }
 
 describe("TeamClient", () => {
+  test("share creation unwraps the published card and rejects mismatched responses", async () => {
+    const server = new FakeTeamServer();
+    server.seedDm(GRACE, ADA, ["Verification completed"]);
+    const [message] = server.messages;
+    if (!message) throw new Error("missing seeded message");
+    const digest = "a".repeat(64);
+    const share: ResultShare = {
+      link_id: "link_1",
+      requester_id: ADA,
+      attested_by: ADA,
+      summary: message.body,
+      run_status: "completed",
+      verified: false,
+      verified_reason: "missing",
+      task_revision: 1,
+      workspace: {
+        workspace_id: "ws_1",
+        provider: "git-worktree",
+        revision: "r1",
+      },
+      diff_sha256: null,
+      evidence_event_id: null,
+      evidence_sha256: digest,
+      verify_records: [],
+      export_status: "not_exported",
+      git_status: "unknown",
+      share_id: "share_1",
+      message_id: message.message_id,
+      preview_sha256: digest,
+      stale: false,
+      superseded_by: null,
+      created_at: message.created_at,
+    };
+    const envelope = { ...message, kind: "result_card", payload: share };
+    let response: unknown = envelope;
+    const transport = server.transport(ADA);
+    const client = new TeamClient({
+      async send(request, signal) {
+        if (request.method === "shares.create") return response;
+        return transport.send(request, signal);
+      },
+    });
+    const input = {
+      link_id: share.link_id,
+      evidence: {},
+      run_status: share.run_status,
+      selection: {
+        summary: share.summary,
+        include_diff_digest: false,
+        verify_event_ids: [],
+      },
+      preview_sha256: digest,
+    };
+    await client.describe();
+    expect(await client.shareCreate(input)).toEqual(share);
+    for (const invalid of [
+      { ...envelope, author_id: GRACE },
+      { ...envelope, payload: undefined },
+      { ...envelope, payload: { ...share, message_id: "different_message" } },
+      { ...envelope, payload: { ...share, link_id: "different_link" } },
+      { ...envelope, payload: { ...share, preview_sha256: "b".repeat(64) } },
+    ]) {
+      response = invalid;
+      await expect(client.shareCreate(input)).rejects.toMatchObject({
+        kind: "protocol",
+      });
+    }
+  });
+
   test("validates every result and rejects records for another tenant or user", async () => {
     const server = new FakeTeamServer();
     server.seedDm(ADA, GRACE, ["hello"]);

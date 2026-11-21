@@ -19,6 +19,7 @@ import {
   MAX_SEARCH_LIMIT,
   MessageListSchema,
   type MessageView,
+  MessageViewSchema,
   MIN_SEARCH_QUERY_CHARS,
   ParticipantResultSchema,
   type PathSearchResult,
@@ -33,7 +34,6 @@ import {
   type RepoListItem,
   RepoListSchema,
   type ResultShareResult,
-  ResultShareSchema,
   type SearchResponse,
   SearchResultSchema,
   type SharePreviewResult,
@@ -601,6 +601,18 @@ export class TeamClient {
       input,
       signal,
     );
-    return validate(ResultShareSchema, result, "result share");
+    const message = validate(MessageViewSchema, result, "result card message");
+    const share = message.payload;
+    if (
+      message.kind !== "result_card" ||
+      message.author_id !== this.described?.user_id ||
+      !share ||
+      share.message_id !== message.message_id ||
+      share.link_id !== input.link_id ||
+      share.preview_sha256 !== input.preview_sha256
+    ) {
+      throw invalid("result share");
+    }
+    return share;
   }
 }
