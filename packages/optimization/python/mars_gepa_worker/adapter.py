@@ -86,14 +86,25 @@ class BrokeredAdapter:
         replies = iter(self._broker.request_many(flat, "score_result"))
         batches: list[Any] = []
         for (candidate, batch), requests in zip(items, plan, strict=True):
-            scores_by_id: dict[str, dict[str, Any]] = {}
-            for _request in requests:
-                result = next(replies)["result"]
+            scores_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+            for request in requests:
+                reply = next(replies)
+                result = reply.get("result")
+                if not isinstance(result, dict) or not isinstance(result.get("scores"), list):
+                    raise ProtocolError("score_result missing object 'result' with list 'scores'")
+                split = request["request"]["split"]
                 for score in result["scores"]:
-                    scores_by_id[score["instance_id"]] = score
+                    if (
+                        not isinstance(score, dict)
+                        or not isinstance(score.get("instance_id"), str)
+                        or isinstance(score.get("score"), bool)
+                        or not isinstance(score.get("score"), (int, float))
+                    ):
+                        raise ProtocolError("score_result entry missing valid 'instance_id' or numeric 'score'")
+                    scores_by_key[(split, score["instance_id"])] = score
             traces: list[Trace] = []
             for item in batch:
-                score = scores_by_id.get(item["instance_id"])
+                score = scores_by_key.get((item["split"], item["instance_id"]))
                 if score is None:
                     raise ProtocolError(f"host returned no score for {item['instance_id']!r}")
                 traces.append(

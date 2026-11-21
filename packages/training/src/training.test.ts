@@ -958,6 +958,58 @@ describe("consumes @mars/datasets output", () => {
       (await service.validate(context, await putManifest(wrongId))).missing,
     ).toEqual(["dataset_manifest_invalid"]);
   });
+
+  test("rejects newline-terminated worker lines exceeding 1 MiB", async () => {
+    const oversized = `${"x".repeat(1024 * 1024 + 16)}\n`;
+    const probeLine = `${JSON.stringify({
+      type: "probe",
+      cpu_count: 2,
+      versions: {
+        python: "3.12.16",
+        torch: "2.15.0+cpu",
+        transformers: "5.22.1",
+        trl: "1.17.1",
+        peft: "0.21.2",
+        datasets: "5.1.0",
+        accelerate: "1.15.0",
+        bitsandbytes: null,
+        cuda_available: false,
+        cuda_devices: [],
+      },
+    })}\n`;
+    const launcher = {
+      id: "fake:oversized-line",
+      spawn(mode: "train" | "probe") {
+        const payload = mode === "probe" ? probeLine : oversized;
+        return {
+          pid: 999_999,
+          write() {},
+          closeStdin() {},
+          stdout: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(payload));
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          exited: Promise.resolve(0),
+          killChild() {},
+        };
+      },
+    };
+    const { service, bytes, putManifest } = await setup("ok", { launcher });
+    const manifest = await putManifest(manifestFor(bytes));
+    const job = await service.submit(context, manifest, budget);
+    const final = await service.wait(context, job.job_id);
+    expect(final.status).toBe("failed");
+    const record = await service.inspectRecord(context, job.job_id);
+    expect(record.error?.code).toBe("worker_protocol");
+    expect(record.error?.message).toContain("exceeds 1 MiB");
+  });
 });
 
 export type { TrainingManifest };

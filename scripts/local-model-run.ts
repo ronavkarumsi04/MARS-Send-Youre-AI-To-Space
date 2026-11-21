@@ -41,7 +41,7 @@ const cwd = values.cwd ?? (await mkdtemp(join(tmpdir(), "mars-local-run-")));
 const stateDir = await mkdtemp(join(tmpdir(), "mars-local-state-"));
 const registry = await loadModelRegistry({
   cwd,
-  home: process.env.MARS_HOME ?? join(process.env.HOME ?? "", ".mars"),
+  ...(process.env.HOME ? { home: process.env.HOME } : {}),
   env: process.env,
 });
 

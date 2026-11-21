@@ -146,7 +146,12 @@ export function validateManifest(input: unknown): SourceManifest {
         throw new Error(
           `Unpinned source URL: ${component.id} / ${source.path}`,
         );
-      if (source.path.split("/").some((part) => part === ".." || part === ""))
+      if (
+        source.path.includes("\\") ||
+        source.path
+          .split("/")
+          .some((part) => part === ".." || part === "." || part === "")
+      )
         throw new Error("Invalid source path");
     }
   }

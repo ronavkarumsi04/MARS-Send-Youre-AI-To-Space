@@ -32,7 +32,11 @@ for (const path of files) {
   const full = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const outlined = renderRead(path, bytes);
   const outputBytes = Buffer.byteLength(outlined, "utf8");
+  const savings =
+    bytes.length === 0
+      ? "0.0%"
+      : `${(100 * (1 - outputBytes / bytes.length)).toFixed(1)}%`;
   console.log(
-    `| ${path} | ${bytes.length} | ${outputBytes} | ${countTokens(full, Encoding.O200kBase)} | ${countTokens(outlined, Encoding.O200kBase)} | ${(100 * (1 - outputBytes / bytes.length)).toFixed(1)}% |`,
+    `| ${path} | ${bytes.length} | ${outputBytes} | ${countTokens(full, Encoding.O200kBase)} | ${countTokens(outlined, Encoding.O200kBase)} | ${savings} |`,
   );
 }

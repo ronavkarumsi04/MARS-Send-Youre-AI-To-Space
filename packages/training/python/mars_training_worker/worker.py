@@ -13,6 +13,7 @@ the start message with ``local_files_only=True``; the host additionally sets
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import signal
@@ -90,7 +91,12 @@ def _read_jsonl(path: str) -> list[dict[str, Any]]:
         for number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise WorkerFailure(
+                    "dataset_malformed", f"{Path(path).name}:{number} invalid JSON: {error.msg}"
+                ) from None
             messages = row.get("messages") if isinstance(row, dict) else None
             if not isinstance(messages, list) or not messages:
                 raise WorkerFailure("dataset_malformed", f"{Path(path).name}:{number} has no messages")
@@ -102,6 +108,8 @@ def _read_jsonl(path: str) -> list[dict[str, Any]]:
                 ):
                     raise WorkerFailure("dataset_malformed", f"{Path(path).name}:{number} bad message")
             rows.append({"messages": [{"role": m["role"], "content": m["content"]} for m in messages]})
+    if not rows:
+        raise WorkerFailure("dataset_malformed", f"{Path(path).name} has no examples")
     return rows
 
 
@@ -318,7 +326,10 @@ def _start_watchdog(deadline_seconds: Any, scratch_dir: Any = None) -> None:
     parent = os.getppid()
     limit = (
         time.monotonic() + float(deadline_seconds)
-        if isinstance(deadline_seconds, (int, float)) and deadline_seconds > 0
+        if not isinstance(deadline_seconds, bool)
+        and isinstance(deadline_seconds, (int, float))
+        and math.isfinite(deadline_seconds)
+        and deadline_seconds > 0
         else None
     )
 
@@ -346,7 +357,10 @@ def run() -> int:
         line = sys.stdin.readline()
         if not line:
             raise WorkerFailure("protocol_error", "host closed stdin before start")
-        start = json.loads(line)
+        try:
+            start = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise WorkerFailure("protocol_error", f"invalid JSON from host: {error.msg}") from None
         if not isinstance(start, dict) or start.get("type") != "start":
             raise WorkerFailure("protocol_error", "first message must be start")
         if start.get("protocol") != PROTOCOL_VERSION:

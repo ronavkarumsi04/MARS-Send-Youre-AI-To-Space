@@ -129,6 +129,7 @@ export function killWorkerGroup(
   const escalate = setTimeout(() => signal("SIGKILL"), graceMs);
   escalate.unref();
   void proc.exited.finally(() => {
+    clearTimeout(escalate);
     // The group may outlive its leader; always finish with SIGKILL.
     setTimeout(
       () => {
@@ -154,8 +155,11 @@ async function* lines(
       buffer += decoder.decode(value, { stream: true });
       let index = buffer.indexOf("\n");
       while (index >= 0) {
-        yield buffer.slice(0, index);
+        const line = buffer.slice(0, index);
         buffer = buffer.slice(index + 1);
+        if (line.length > MAX_LINE_BYTES)
+          throw new Error("worker line exceeds 1 MiB");
+        yield line;
         index = buffer.indexOf("\n");
       }
       if (buffer.length > MAX_LINE_BYTES)
