@@ -185,9 +185,17 @@ covered by a test). For prevention, pass `createDockerSandbox` from
 evaluator always runs in the host process or behind `@mars/evaluation`, never in
 a candidate workspace, and reads a host-owned copy of the bundle.
 
-The CLI live smoke's toy evaluator reads the solver process's stdout as its
-answer. Treat its scores as smoke diagnostics, not as a trusted promotion
-signal for adversarial candidates.
+Live-smoke builds still run in Docker with networking disabled. The host CLI
+scorer loads the resulting `solver.mjs` as source into a fresh QuickJS
+WebAssembly runtime for each attempt, with memory, stack, and time limits.
+The runtime has no host filesystem, network, or process bindings, and its
+console discards output. The host passes only the task ID and input, and uses
+the VM's strict equality operation to compare the actual synchronous `solve`
+return with the expected string. The candidate never receives the expected
+value or writes the score; logs, exit status, and bundle sidecar files do not
+enter the comparison. The evaluator digest changed, so start a new smoke run
+instead of resuming one pinned to the stdout evaluator. The historical evidence
+below predates this scoring change.
 
 ## Not verified
 

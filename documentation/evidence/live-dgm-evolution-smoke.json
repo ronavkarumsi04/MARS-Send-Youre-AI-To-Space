@@ -1,6 +1,7 @@
 {
   "schema": "mars.evolution-live-smoke-evidence/v1",
   "recorded_at": "2026-11-21T18:55:00Z",
+  "scoring_note": "This historical run predates the QuickJS WebAssembly scoring boundary.",
   "command": "bun apps/cli/src/main.ts evolution live-smoke --state /tmp/mars-live-smoke --model openrouter/free --generations 1 --children 2",
   "budget_usd": 0,
   "provider_policy": "free_tier_only (openrouter/free or :free)",
