@@ -401,6 +401,32 @@ function renderEntry(doc: ShellDocument, entry: Entry): ShellElement {
   }
 }
 
+function formatUsd(value: number): string {
+  return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
+}
+
+export function renderUsageTotals(
+  doc: ShellDocument,
+  totals: TranscriptProjection["totals"],
+): ShellElement | null {
+  if (
+    totals.input_tokens === 0 &&
+    totals.output_tokens === 0 &&
+    totals.cost_usd === null
+  )
+    return null;
+  const parts = [
+    `Transcript usage · ${totals.input_tokens} in / ${totals.output_tokens} out tokens`,
+  ];
+  if (totals.cost_usd !== null) parts.push(formatUsd(totals.cost_usd));
+  return h(
+    doc,
+    "p",
+    { class: "muted transcript-totals", "data-transcript-totals": "true" },
+    parts.join(" · "),
+  );
+}
+
 export function renderTranscript(
   doc: ShellDocument,
   projection: TranscriptProjection | undefined,
@@ -418,8 +444,10 @@ export function renderTranscript(
       ),
     ];
   }
+  const totals = renderUsageTotals(doc, projection.totals);
   const nodes: ShellElement[] = [
     h(doc, "p", { class: "muted transcript-meta" }, countLabel),
+    ...(totals ? [totals] : []),
     ...projection.entries.map((entry) => renderEntry(doc, entry)),
   ];
   if (projection.trimmed > 0) {

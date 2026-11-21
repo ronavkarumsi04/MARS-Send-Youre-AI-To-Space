@@ -2,7 +2,10 @@ import type { EventEnvelope, Task } from "@mars/contracts";
 import type { ReactionEmoji, ReferencePreview } from "@mars/team-chat";
 import { type ProjectionEvent, projectTranscript } from "@mars/ui-core";
 import type { BridgeResult, ShellBridge } from "../shared/methods";
-import type { TeamChatBridgeApi } from "../shared/team-chat";
+import {
+  TEAM_CHAT_MAX_MESSAGE_CHARS,
+  type TeamChatBridgeApi,
+} from "../shared/team-chat";
 import type { ShellDocument, ShellElement } from "./dom";
 import type { TeamChatViewState } from "./team-chat-view";
 import { verifyArtifact } from "./verify";
@@ -281,6 +284,7 @@ export function createController(
     };
     delete loadingState.searchHits;
     delete loadingState.error;
+    if (switchedConversation) delete loadingState.notice;
     teamState = loadingState;
     render();
     try {
@@ -366,7 +370,7 @@ export function createController(
         teamState = {
           ...teamState,
           loading: false,
-          error: `Team chat error: ${res.code}`,
+          notice: `Unable to load older messages (${res.code}).`,
         };
         render();
         return;
@@ -394,7 +398,7 @@ export function createController(
       teamState = {
         ...teamState,
         loading: false,
-        error: "Unable to load older messages.",
+        notice: "Unable to load older messages.",
       };
       render();
     }
@@ -415,6 +419,20 @@ export function createController(
   const sendTeamMessage = async (body: string) => {
     if (!teamChat || !teamState.activeConversationId) return;
     const convId = teamState.activeConversationId;
+    const keepDraft = (notice: string) => {
+      teamState = {
+        ...teamState,
+        draft: teamState.draft.trim() === body ? teamState.draft : body,
+        notice,
+      };
+      render();
+    };
+    if (body.length > TEAM_CHAT_MAX_MESSAGE_CHARS) {
+      keepDraft(
+        `Message is too long (${body.length}/${TEAM_CHAT_MAX_MESSAGE_CHARS} characters). Shorten it and send again.`,
+      );
+      return;
+    }
     try {
       const res = await teamChat["team.send"]({
         input: {
@@ -426,15 +444,17 @@ export function createController(
         },
       });
       if (!res.ok) {
-        teamState = { ...teamState, error: `Team chat error: ${res.code}` };
-        render();
+        keepDraft(
+          `Message was not sent (${res.code}). Edit it and send again.`,
+        );
         return;
       }
-      teamState = { ...teamState, draft: "" };
+      const sent: TeamChatViewState = { ...teamState, draft: "" };
+      delete sent.notice;
+      teamState = sent;
       await openTeamConversation(convId, { preserveHistory: true });
     } catch {
-      teamState = { ...teamState, error: "Unable to send message." };
-      render();
+      keepDraft("Unable to send message. Edit it and send again.");
     }
   };
 
@@ -445,7 +465,7 @@ export function createController(
       pinned,
     });
     if (!res.ok) {
-      teamState = { ...teamState, error: `Team chat error: ${res.code}` };
+      teamState = { ...teamState, notice: `Team chat error: ${res.code}` };
       render();
       return;
     }
@@ -466,7 +486,7 @@ export function createController(
       on,
     });
     if (!res.ok) {
-      teamState = { ...teamState, error: `Team chat error: ${res.code}` };
+      teamState = { ...teamState, notice: `Team chat error: ${res.code}` };
       render();
       return;
     }
@@ -499,7 +519,7 @@ export function createController(
       reference_id: referenceId,
     });
     if (!res.ok) {
-      teamState = { ...teamState, error: `Team chat error: ${res.code}` };
+      teamState = { ...teamState, notice: `Team chat error: ${res.code}` };
       render();
       return;
     }
@@ -527,7 +547,7 @@ export function createController(
       teamState = {
         ...teamState,
         searchQuery: trimmed,
-        error: `Team chat error: ${res.code}`,
+        notice: `Team chat error: ${res.code}`,
       };
       render();
       return;
@@ -544,7 +564,7 @@ export function createController(
     if (!teamChat) return;
     const res = await teamChat["team.switchViewer"]({ viewer });
     if (!res.ok) {
-      teamState = { ...teamState, error: `Team chat error: ${res.code}` };
+      teamState = { ...teamState, notice: `Team chat error: ${res.code}` };
       render();
       return;
     }

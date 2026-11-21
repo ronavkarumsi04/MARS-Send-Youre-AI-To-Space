@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { FixtureTeamService, MAX_MESSAGE_CHARS } from "@mars/team-chat";
+import type { TranscriptProjection } from "@mars/ui-core";
 import { serveWorkbench } from "@mars/workbench";
 import {
+  canonicalPatchBytes,
   createFixtureOperations,
   type FixtureData,
+  sha256Hex,
 } from "../scripts/fixture-workbench";
 import { type Bridge, createBridge } from "../src/main/bridge";
 import { registerTeamChatBridge } from "../src/main/ipc";
@@ -13,9 +18,11 @@ import {
 } from "../src/main/team-chat-bridge";
 import { createLoopbackTransport } from "../src/main/transport";
 import { createController } from "../src/renderer/controller";
+import { renderTranscript } from "../src/renderer/transcript";
 import { BRIDGE_METHODS, type ShellBridge } from "../src/shared/methods";
 import {
   TEAM_CHAT_CHANNEL,
+  TEAM_CHAT_MAX_MESSAGE_CHARS,
   TEAM_CHAT_METHODS,
   type TeamChatBridgeApi,
 } from "../src/shared/team-chat";
@@ -40,8 +47,9 @@ function toShellTeamChat(teamBridge: TeamChatBridge): TeamChatBridgeApi {
   return api as unknown as TeamChatBridgeApi;
 }
 
-async function startTestWorkbench() {
+async function startTestWorkbench(mutate?: (data: FixtureData) => void) {
   const data = (await loadFixtureData()) as FixtureData;
+  mutate?.(data);
   const server = serveWorkbench({
     api: createFixtureOperations(data),
     token: TOKEN,
@@ -150,13 +158,47 @@ describe("interactive workbench bridge and fixture lifecycle", () => {
         expect(afterCancel.result.status).toBe("cancelled");
       }
 
-      // Unverified completed task must reject export
+      // Unverified task: the current candidate revision and actual patch
+      // SHA-256 are accepted, but the bridge reports the unverified verdict.
+      const unverifiedVerification = await bridge["tasks.verification"]({
+        task_id: "fixture-completed-unverified",
+      });
+      expect(unverifiedVerification.ok).toBe(true);
+      if (!unverifiedVerification.ok) return;
+      const unverifiedRevision =
+        unverifiedVerification.result.candidate?.revision;
+      expect(unverifiedRevision).toBeDefined();
+      if (!unverifiedRevision) return;
+      const unverifiedDiff = await bridge["tasks.diff"]({
+        task_id: "fixture-completed-unverified",
+      });
+      expect(unverifiedDiff.ok).toBe(true);
+      if (!unverifiedDiff.ok) return;
+      const unverifiedPatchSha = sha256Hex(
+        canonicalPatchBytes(unverifiedDiff.result),
+      );
       const unverifiedExport = await bridge["tasks.export"]({
         task_id: "fixture-completed-unverified",
-        expected_revision: "fixture-r4",
-        expected_patch_sha256: "a".repeat(64),
+        expected_revision: unverifiedRevision,
+        expected_patch_sha256: unverifiedPatchSha,
       });
-      expect(unverifiedExport.ok).toBe(false);
+      expect(unverifiedExport.ok).toBe(true);
+      if (!unverifiedExport.ok) return;
+      expect(unverifiedExport.result.verified).toBe(false);
+      expect(unverifiedExport.result.verification).toBe("unverified");
+      expect(unverifiedExport.result.verdict_run_id).toBeNull();
+      expect(unverifiedExport.result.candidate.revision).toBe(
+        unverifiedRevision,
+      );
+      expect(unverifiedExport.result.patch_sha256).toBe(unverifiedPatchSha);
+
+      // A stale revision is still a conflict, not an unverified export.
+      const staleExport = await bridge["tasks.export"]({
+        task_id: "fixture-completed-unverified",
+        expected_revision: "fixture-r1",
+        expected_patch_sha256: unverifiedPatchSha,
+      });
+      expect(staleExport.ok).toBe(false);
 
       // Verified task rejects wrong patch digest
       const badHashExport = await bridge["tasks.export"]({
@@ -930,153 +972,150 @@ describe("interactive renderer controller flows", () => {
     }
   });
 
-  test("regression: Team Chat paginates older messages via older_cursor and clears draft on thread switch", async () => {
+  test("regression: Team Chat paginates through real bridge cursors and keeps the cursor across a send", async () => {
     const { bridge, close } = await startTestWorkbench();
     try {
-      const baseTeam = toShellTeamChat(createTeamChatBridge());
-      const openCalls: Array<{
-        conversation_id: string;
-        before?: string | null;
-      }> = [];
-      const paginatedTeam: TeamChatBridgeApi = {
+      const service = new FixtureTeamService();
+      const teamBridge = createTeamChatBridge({ service });
+      const baseTeam = toShellTeamChat(teamBridge);
+      const initial = await baseTeam["team.state"]({});
+      expect(initial.ok).toBe(true);
+      if (!initial.ok) return;
+      const convId = initial.value.conversations[0]?.conversation_id;
+      if (!convId) throw new Error("fixture has no conversation");
+      // 45 seeded + fixture history = at least three 20-message pages.
+      for (let i = 1; i <= 45; i++) {
+        const sent = await baseTeam["team.send"]({
+          input: {
+            conversation_id: convId,
+            body: `History message ${String(i).padStart(2, "0")}`,
+            client_message_id: `seed-${i}`,
+            reply_to: null,
+            references: [],
+          },
+        });
+        expect(sent.ok).toBe(true);
+      }
+      const seeded = await baseTeam["team.state"]({});
+      expect(seeded.ok && seeded.value.conversations[0]?.conversation_id).toBe(
+        convId,
+      );
+
+      const openCalls: Array<{ before: string | null; older: string | null }> =
+        [];
+      const spyTeam: TeamChatBridgeApi = {
         ...baseTeam,
-        "team.setReaction": async (params) => {
-          if (params.message_id === "msg-older-1") {
-            return {
-              ok: true,
-              value: {
-                reactions: [
-                  {
-                    emoji: params.emoji,
-                    count: params.on ? 1 : 0,
-                    mine: params.on,
-                  },
-                ],
-              },
-            };
-          }
-          return baseTeam["team.setReaction"](params);
-        },
         "team.open": async (params) => {
+          const res = await baseTeam["team.open"](params);
           openCalls.push({
-            conversation_id: params.conversation_id,
-            ...(params.before !== undefined ? { before: params.before } : {}),
+            before: params.before ?? null,
+            older: res.ok ? res.value.older_cursor : null,
           });
-          const res = await baseTeam["team.open"]({
-            conversation_id: params.conversation_id,
-          });
-          if (!res.ok) return res;
-          if (!params.before) {
-            return {
-              ok: true,
-              value: {
-                ...res.value,
-                older_cursor: "cursor-page-1",
-              },
-            };
-          }
-          return {
-            ok: true,
-            value: {
-              ...res.value,
-              messages: [
-                {
-                  ...(res.value.messages[0] ?? {
-                    conversation_id: params.conversation_id,
-                    author_id: "alice",
-                    author_name: "Alice",
-                    client_message_id: "client-older-1",
-                    created_at: "2026-01-01T00:00:00Z",
-                    reply_to: null,
-                    references: [],
-                    reactions: [],
-                    edited_at: null,
-                    deleted_at: null,
-                  }),
-                  message_id: "msg-older-1",
-                  sequence: 0,
-                  body: "Older history message from cursor-page-1",
-                },
-              ],
-              older_cursor: null,
-            },
-          };
+          return res;
         },
       };
 
-      const doc = new MiniDocument();
-      const controller = createController(bridge, doc, doc.root, paginatedTeam);
-      await controller.load();
+      const renderedIds = (doc: MiniDocument) =>
+        findAll(doc.root, (el) => el.getAttribute("data-message-id") !== null)
+          .map((el) => el.getAttribute("data-message-id"))
+          .filter((id): id is string => typeof id === "string");
+      const pageIds = async (before: string | null) => {
+        const page = await baseTeam["team.open"]({
+          conversation_id: convId,
+          ...(before ? { before } : {}),
+        });
+        if (!page.ok) throw new Error(`team.open failed: ${page.code}`);
+        return {
+          ids: page.value.messages.map((m) => m.message_id),
+          older: page.value.older_cursor,
+        };
+      };
 
+      const doc = new MiniDocument();
+      const controller = createController(bridge, doc, doc.root, spyTeam);
+      await controller.load();
       findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
       await waitFor(
         () =>
           findByAttr(doc.root, "data-action", "team-load-older") !== undefined,
       );
 
-      // Click "Load older messages" -> calls team.open with before=cursor-page-1
+      // Page 1 (newest) is rendered; older history is not.
+      const page1 = await pageIds(null);
+      expect(page1.older).not.toBeNull();
+      expect(renderedIds(doc)).toEqual(page1.ids);
+      expect(doc.root.textContent).toContain("History message 45");
+      expect(doc.root.textContent).not.toContain("History message 25");
+
+      // Load page 2 through the real cursor.
       findByAttr(doc.root, "data-action", "team-load-older")?.click();
-      await waitFor(() =>
-        doc.root.textContent.includes(
-          "Older history message from cursor-page-1",
-        ),
-      );
-      expect(openCalls.some((c) => c.before === "cursor-page-1")).toBe(true);
+      await waitFor(() => doc.root.textContent.includes("History message 25"));
+      const page2 = await pageIds(page1.older);
+      expect(page2.older).not.toBeNull();
+      expect(openCalls.at(-1)?.before).toBe(page1.older);
+      expect(renderedIds(doc)).toEqual([...page2.ids, ...page1.ids]);
       expect(
         findByAttr(doc.root, "data-action", "team-load-older"),
-      ).toBeUndefined();
+      ).toBeDefined();
 
-      // Reacting to an older loaded message preserves loaded history and updates the reaction in place
+      // Send while older history remains: loaded history and the page-2 cursor survive.
+      const composer = findByAttr(doc.root, "data-focus-key", "team-composer");
+      if (!composer) throw new Error("composer missing");
+      composer.value = "Fresh message while history remains";
+      composer.dispatch("input");
+      findAll(
+        doc.root,
+        (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
+      )[0]?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes("Fresh message while history remains"),
+      );
+      expect(doc.root.textContent).toContain("History message 06");
+      expect(
+        findByAttr(doc.root, "data-action", "team-load-older"),
+      ).toBeDefined();
+      const afterSend = renderedIds(doc);
+      expect(afterSend.slice(0, page2.ids.length + page1.ids.length)).toEqual([
+        ...page2.ids,
+        ...page1.ids,
+      ]);
+      expect(afterSend.length).toBe(page2.ids.length + page1.ids.length + 1);
+
+      // The preserved cursor fetches page 3, the next older page.
+      findByAttr(doc.root, "data-action", "team-load-older")?.click();
+      const page3 = await pageIds(page2.older);
+      expect(page3.ids.length).toBeGreaterThan(0);
+      await waitFor(() => renderedIds(doc).includes(page3.ids[0] ?? ""));
+      expect(openCalls.at(-1)?.before).toBe(page2.older);
+      expect(doc.root.textContent).toContain("History message 05");
+      const all = renderedIds(doc);
+      expect(all.slice(0, page3.ids.length)).toEqual(page3.ids);
+      expect(new Set(all).size).toBe(all.length);
+
+      // Reacting to an older message keeps loaded history in place.
       const olderReactionBtn = findAll(
         doc.root,
         (el) =>
           el.tagName === "BUTTON" &&
           el.attributes.get("data-reaction") === "👍",
       )[0];
-      expect(olderReactionBtn).toBeDefined();
       olderReactionBtn?.click();
-      await waitFor(() => {
-        const btn = findAll(
-          doc.root,
-          (el) =>
-            el.tagName === "BUTTON" &&
-            el.attributes.get("data-reaction") === "👍",
-        )[0];
-        return btn?.attributes.get("aria-pressed") === "true";
-      });
-      expect(doc.root.textContent).toContain(
-        "Older history message from cursor-page-1",
+      await waitFor(
+        () =>
+          findAll(
+            doc.root,
+            (el) =>
+              el.tagName === "BUTTON" &&
+              el.attributes.get("data-reaction") === "👍",
+          )[0]?.attributes.get("aria-pressed") === "true",
       );
+      expect(renderedIds(doc)).toEqual(all);
 
-      // Sending a message after loading older history preserves loaded older messages and older_cursor
-      const sendComposer = findByAttr(
-        doc.root,
-        "data-focus-key",
-        "team-composer",
-      );
-      if (sendComposer) {
-        sendComposer.value = "Follow-up after loading history";
-        sendComposer.dispatch("input");
-      }
-      findAll(
-        doc.root,
-        (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
-      )[0]?.click();
-      await waitFor(() =>
-        doc.root.textContent.includes("Follow-up after loading history"),
-      );
-      expect(doc.root.textContent).toContain(
-        "Older history message from cursor-page-1",
-      );
-      expect(
-        findByAttr(doc.root, "data-action", "team-load-older"),
-      ).toBeUndefined();
-
-      // Type a draft, then switch conversations -> draft must reset to ""
-      const composer = findByAttr(doc.root, "data-focus-key", "team-composer");
-      if (composer) {
-        composer.value = "Sensitive draft for thread A";
-        composer.dispatch("input");
+      // Switching conversations clears the draft.
+      const draftBox = findByAttr(doc.root, "data-focus-key", "team-composer");
+      if (draftBox) {
+        draftBox.value = "Sensitive draft for thread A";
+        draftBox.dispatch("input");
       }
       const convButtons = findAll(
         doc.root,
@@ -1092,11 +1131,296 @@ describe("interactive renderer controller flows", () => {
           (findByAttr(doc.root, "data-focus-key", "team-composer")?.value ??
             "") === "",
       );
-      expect(
-        findByAttr(doc.root, "data-focus-key", "team-composer")?.value ?? "",
-      ).toBe("");
     } finally {
       close();
     }
   });
+
+  test("regression: an oversized Team Chat message keeps the composer and draft for edit and retry", async () => {
+    expect(TEAM_CHAT_MAX_MESSAGE_CHARS).toBe(MAX_MESSAGE_CHARS);
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const teamBridge = createTeamChatBridge({
+        service: new FixtureTeamService(),
+      });
+      const baseTeam = toShellTeamChat(teamBridge);
+      const sends: string[] = [];
+      const spyTeam: TeamChatBridgeApi = {
+        ...baseTeam,
+        "team.send": async (params) => {
+          sends.push(params.input.body);
+          return baseTeam["team.send"](params);
+        },
+      };
+      const doc = new MiniDocument();
+      const controller = createController(bridge, doc, doc.root, spyTeam);
+      await controller.load();
+      findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-focus-key", "team-composer") !== undefined,
+      );
+      const sendBtn = () =>
+        findAll(
+          doc.root,
+          (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
+        )[0];
+      const composer = () =>
+        findByAttr(doc.root, "data-focus-key", "team-composer");
+      const messageCount = () =>
+        findAll(doc.root, (el) => el.getAttribute("data-message-id") !== null)
+          .length;
+      const before = messageCount();
+
+      const oversized = "x".repeat(MAX_MESSAGE_CHARS + 1);
+      const box = composer();
+      if (!box) throw new Error("composer missing");
+      box.value = oversized;
+      box.dispatch("input");
+      sendBtn()?.click();
+      await waitFor(
+        () => findByAttr(doc.root, "data-team-notice", "true") !== undefined,
+      );
+      expect(
+        findByAttr(doc.root, "data-team-notice", "true")?.textContent,
+      ).toContain("too long");
+      expect(composer()?.value).toBe(oversized);
+      expect(sendBtn()).toBeDefined();
+      expect(messageCount()).toBe(before);
+      expect(sends).toEqual([]);
+
+      // The bridge rejects the same body if it ever reaches the host.
+      const direct = await baseTeam["team.send"]({
+        input: {
+          conversation_id:
+            findAll(
+              doc.root,
+              (el) =>
+                el.getAttribute("aria-pressed") === "true" &&
+                el.getAttribute("data-conversation-id") !== null,
+            )[0]?.getAttribute("data-conversation-id") ?? "",
+          body: oversized,
+          client_message_id: "direct-oversized",
+          reply_to: null,
+          references: [],
+        },
+      });
+      expect(direct.ok).toBe(false);
+
+      // Edit and retry succeeds, clearing the notice and the draft.
+      const edited = composer();
+      if (!edited) throw new Error("composer missing after rejection");
+      edited.value = "Shortened message after edit";
+      edited.dispatch("input");
+      sendBtn()?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes("Shortened message after edit"),
+      );
+      expect(findByAttr(doc.root, "data-team-notice", "true")).toBeUndefined();
+      expect(composer()?.value ?? "").toBe("");
+      expect(sends).toEqual(["Shortened message after edit"]);
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: a bridge-rejected Team Chat send keeps the composer and draft", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const baseTeam = toShellTeamChat(
+        createTeamChatBridge({ service: new FixtureTeamService() }),
+      );
+      const rejectingTeam: TeamChatBridgeApi = {
+        ...baseTeam,
+        "team.send": async () => ({ ok: false, code: "invalid" }),
+      };
+      const doc = new MiniDocument();
+      const controller = createController(bridge, doc, doc.root, rejectingTeam);
+      await controller.load();
+      findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-focus-key", "team-composer") !== undefined,
+      );
+      const box = findByAttr(doc.root, "data-focus-key", "team-composer");
+      if (!box) throw new Error("composer missing");
+      box.value = "Draft the host refuses";
+      box.dispatch("input");
+      findAll(
+        doc.root,
+        (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
+      )[0]?.click();
+      await waitFor(
+        () => findByAttr(doc.root, "data-team-notice", "true") !== undefined,
+      );
+      expect(
+        findByAttr(doc.root, "data-team-notice", "true")?.textContent,
+      ).toContain("invalid");
+      expect(
+        findByAttr(doc.root, "data-focus-key", "team-composer")?.value,
+      ).toBe("Draft the host refuses");
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: renderer refuses to present an unverified bridge export as verified", async () => {
+    let actualSha = "";
+    const { data, bridge, close } = await startTestWorkbench((fixture) => {
+      const verifiedDiff = fixture.details["fixture-completed-verified"]?.diff;
+      const target = fixture.details["fixture-completed-unverified"];
+      if (!verifiedDiff || !target) throw new Error("missing fixture detail");
+      target.diff = structuredClone(verifiedDiff);
+      actualSha = sha256Hex(canonicalPatchBytes(target.diff));
+    });
+    try {
+      const revision =
+        data.details["fixture-completed-unverified"]?.verification.candidate
+          ?.revision;
+      if (!revision) throw new Error("missing candidate revision");
+      const exportCalls: Array<{
+        expected_revision: string;
+        expected_patch_sha256: string;
+        verified: boolean | undefined;
+      }> = [];
+
+      // Honest host state: the export action stays disabled.
+      const honestDoc = new MiniDocument();
+      await createController(bridge, honestDoc, honestDoc.root).load();
+      findByAttr(
+        honestDoc.root,
+        "data-task-id",
+        "fixture-completed-unverified",
+      )?.click();
+      await waitFor(
+        () =>
+          findByAttr(honestDoc.root, "data-action", "export-patch") !==
+          undefined,
+      );
+      expect(
+        findByAttr(honestDoc.root, "data-action", "export-patch")?.getAttribute(
+          "disabled",
+        ),
+      ).not.toBeNull();
+
+      // A stale or spoofed "verified" view must still be refused once the
+      // bridge returns the real unverified verdict.
+      const spoofed: ShellBridge = {
+        ...bridge,
+        "tasks.verification": async (params) => {
+          const res = await bridge["tasks.verification"](params);
+          if (!res.ok || params.task_id !== "fixture-completed-unverified")
+            return res;
+          return {
+            ok: true,
+            result: {
+              ...res.result,
+              state: "verified",
+              patch_sha256: actualSha,
+            },
+          };
+        },
+        "tasks.export": async (params) => {
+          const res = await bridge["tasks.export"](params);
+          exportCalls.push({
+            expected_revision: params.expected_revision,
+            expected_patch_sha256: params.expected_patch_sha256,
+            verified: res.ok ? res.result.verified : undefined,
+          });
+          return res;
+        },
+      };
+      const doc = new MiniDocument();
+      await createController(spoofed, doc, doc.root).load();
+      findByAttr(
+        doc.root,
+        "data-task-id",
+        "fixture-completed-unverified",
+      )?.click();
+      await waitFor(() => {
+        const btn = findByAttr(doc.root, "data-action", "export-patch");
+        return btn !== undefined && btn.getAttribute("disabled") === null;
+      });
+      findByAttr(doc.root, "data-action", "export-patch")?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes(
+          "Exported patch was not confirmed as host-verified.",
+        ),
+      );
+      expect(exportCalls).toEqual([
+        {
+          expected_revision: revision,
+          expected_patch_sha256: actualSha,
+          verified: false,
+        },
+      ]);
+      expect(
+        findByAttr(doc.root, "data-export-verified", "true"),
+      ).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
+  test("transcript renders transcript-wide token totals and cost when available", () => {
+    const doc = new MiniDocument();
+    const base: TranscriptProjection = {
+      entries: [
+        {
+          kind: "user",
+          id: "request:t1",
+          text: "Do the thing",
+          source: "request",
+          provenance: { source: "tasks.inspect.request", event_id: null },
+        },
+      ],
+      trimmed: 0,
+      totals: { input_tokens: 1200, output_tokens: 345, cost_usd: 0.0123 },
+      children: 0,
+      verify: { pass: 0, fail: 0 },
+      journal: null,
+    } as unknown as TranscriptProjection;
+    const totalsText = (projection: TranscriptProjection) => {
+      const root = doc.createElement("div");
+      for (const node of renderTranscript(doc, projection, 3))
+        root.append(node);
+      return findByAttr(
+        root as unknown as MiniElement,
+        "data-transcript-totals",
+        "true",
+      )?.textContent;
+    };
+    expect(totalsText(base)).toBe(
+      "Transcript usage · 1200 in / 345 out tokens · $0.0123",
+    );
+    expect(
+      totalsText({
+        ...base,
+        totals: { input_tokens: 10, output_tokens: 5, cost_usd: null },
+      }),
+    ).toBe("Transcript usage · 10 in / 5 out tokens");
+    expect(
+      totalsText({
+        ...base,
+        totals: { input_tokens: 0, output_tokens: 0, cost_usd: null },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+test("SHELL.md documents the real Team Chat channel and preload allowlist", async () => {
+  const doc = await readFile(
+    new URL("../../../documentation/SHELL.md", import.meta.url),
+    "utf8",
+  );
+  expect(doc).toContain(`\`${TEAM_CHAT_CHANNEL}\``);
+  expect(doc).not.toContain("`mars:team-chat`");
+  const line = doc
+    .split("\n")
+    .find((l) => l.startsWith("Team Chat bridge methods"));
+  if (!line) throw new Error("Team Chat method list missing");
+  const documented = [...line.matchAll(/`(team\.[A-Za-z]+)`/g)].map(
+    (m) => m[1],
+  );
+  expect(documented).toEqual([...TEAM_CHAT_METHODS]);
 });

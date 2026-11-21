@@ -42,14 +42,14 @@ export type FixtureData = {
   artifact_data: Record<string, ArtifactData>;
 };
 
-function canonicalPatchBytes(diff: DiffResult): Buffer {
+export function canonicalPatchBytes(diff: DiffResult): Buffer {
   const joined = diff.files
     .map((file) => (file.patch.endsWith("\n") ? file.patch : `${file.patch}\n`))
     .join("");
   return Buffer.from(joined, "utf8");
 }
 
-function sha256Hex(bytes: Buffer): string {
+export function sha256Hex(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 

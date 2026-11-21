@@ -16,6 +16,8 @@ export interface TeamChatViewState {
   open: boolean;
   loading?: boolean;
   error?: string;
+  /** Non-fatal action failure shown beside the composer, which stays editable. */
+  notice?: string;
   label?: TeamServiceLabel;
   capabilities?: TeamCapabilities;
   viewer?: string;
@@ -399,6 +401,18 @@ export function renderTeamChatPane(
     composerInput,
     sendBtn,
   );
+  const notice = state.notice
+    ? h(
+        doc,
+        "p",
+        {
+          class: "error team-notice",
+          role: "alert",
+          "data-team-notice": "true",
+        },
+        state.notice,
+      )
+    : null;
 
   return h(
     doc,
@@ -411,7 +425,7 @@ export function renderTeamChatPane(
       "div",
       { class: "team-layout" },
       h(doc, "ul", { class: "team-conv-list" }, ...convItems),
-      h(doc, "div", { class: "team-thread" }, messageFeed, composer),
+      h(doc, "div", { class: "team-thread" }, messageFeed, notice, composer),
     ),
   );
 }
