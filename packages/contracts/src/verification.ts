@@ -228,8 +228,19 @@ function latest(
   records: readonly VerificationEvidenceRecord[],
 ): VerificationEvidenceRecord | null {
   let chosen: VerificationEvidenceRecord | null = null;
-  for (const record of records)
-    if (!chosen || record.recorded_at >= chosen.recorded_at) chosen = record;
+  let chosenTime = Number.NEGATIVE_INFINITY;
+  for (const record of records) {
+    const time = Date.parse(record.recorded_at);
+    const newer =
+      !chosen ||
+      (Number.isFinite(time) && Number.isFinite(chosenTime)
+        ? time >= chosenTime
+        : record.recorded_at >= chosen.recorded_at);
+    if (newer) {
+      chosen = record;
+      chosenTime = time;
+    }
+  }
   return chosen;
 }
 

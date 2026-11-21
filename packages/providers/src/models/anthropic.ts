@@ -41,16 +41,30 @@ function anthropicMessages(messages: ChatMessage[]): JsonObject[] {
   for (const message of messages) {
     if (message.role === "system") continue;
     if (message.role === "tool") {
-      result.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: message.tool_call_id,
-            content: contentText(message.content),
-          },
-        ],
-      });
+      const toolResultBlock: JsonObject = {
+        type: "tool_result",
+        tool_use_id: message.tool_call_id,
+        content: contentText(message.content),
+      };
+      const previous = result.at(-1);
+      if (
+        previous &&
+        previous.role === "user" &&
+        Array.isArray(previous.content) &&
+        previous.content.every(
+          (block) =>
+            block !== null &&
+            typeof block === "object" &&
+            (block as JsonObject).type === "tool_result",
+        )
+      ) {
+        previous.content.push(toolResultBlock);
+      } else {
+        result.push({
+          role: "user",
+          content: [toolResultBlock],
+        });
+      }
       continue;
     }
     if (message.role === "user") {
@@ -253,7 +267,11 @@ export function createAnthropicAdapter(
           } else if (eventType === "content_block_start") {
             const index = typeof payload.index === "number" ? payload.index : 0;
             const block = asObject(payload.content_block);
-            if (block.type === "text" && typeof block.text === "string") {
+            if (
+              block.type === "text" &&
+              typeof block.text === "string" &&
+              block.text.length > 0
+            ) {
               content += block.text;
               emittedContent = true;
               yield { type: "text-delta", text: block.text };
@@ -268,7 +286,11 @@ export function createAnthropicAdapter(
           } else if (eventType === "content_block_delta") {
             const index = typeof payload.index === "number" ? payload.index : 0;
             const delta = asObject(payload.delta);
-            if (delta.type === "text_delta" && typeof delta.text === "string") {
+            if (
+              delta.type === "text_delta" &&
+              typeof delta.text === "string" &&
+              delta.text.length > 0
+            ) {
               content += delta.text;
               emittedContent = true;
               yield { type: "text-delta", text: delta.text };

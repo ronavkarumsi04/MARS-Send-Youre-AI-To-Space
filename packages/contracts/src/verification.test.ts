@@ -78,6 +78,25 @@ describe("verificationStateFor", () => {
     expect(verificationStateFor("r1", [pass, failed]).state).toBe("verified");
     expect(verificationStateFor("r1", [failed, pass]).state).toBe("verified");
   });
+  test("latest verdict compares actual timestamps across timezone offsets and fractional seconds", () => {
+    const olderWithOffset = record("r1", "passed", "2026-11-03T12:00:00+05:00");
+    const newerUtc = record("r1", "failed", "2026-11-03T10:00:00Z", [
+      "later failure",
+    ]);
+    expect(verificationStateFor("r1", [olderWithOffset, newerUtc]).state).toBe(
+      "failed",
+    );
+    expect(verificationStateFor("r1", [newerUtc, olderWithOffset]).state).toBe(
+      "failed",
+    );
+    const wholeSecond = record("r1", "passed", "2026-11-03T10:00:00Z");
+    const halfSecondLater = record("r1", "failed", "2026-11-03T10:00:00.500Z", [
+      "half-second later",
+    ]);
+    expect(
+      verificationStateFor("r1", [wholeSecond, halfSecondLater]).state,
+    ).toBe("failed");
+  });
   test("a verdict without a candidate is inconclusive for any presented candidate", () => {
     const unbound = VerificationEvidenceRecordSchema.parse({
       ...record("r1", "inconclusive", "2026-11-03T00:00:02Z", [

@@ -108,11 +108,22 @@ export function httpTransport(
         response.status,
       );
     }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      throw new SessionRpcError(
+        "protocol",
+        "Workbench answered with an invalid response.",
+        response.status,
+      );
+    }
     const reply = parsed as {
       result?: unknown;
       error?: { code?: unknown; message?: unknown };
     };
-    if (reply?.error)
+    if (reply.error)
       throw new SessionRpcError(
         typeof reply.error.code === "string" ? reply.error.code : "protocol",
         typeof reply.error.message === "string"
@@ -120,7 +131,7 @@ export function httpTransport(
           : "Workbench error.",
         response.status,
       );
-    if (!response.ok || !("result" in (reply ?? {})))
+    if (!response.ok || !("result" in reply))
       throw new SessionRpcError(
         response.status === 401 ? "unauthorized" : "protocol",
         `HTTP ${response.status}`,

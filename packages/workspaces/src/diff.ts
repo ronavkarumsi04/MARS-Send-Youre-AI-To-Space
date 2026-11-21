@@ -106,7 +106,7 @@ function makePatch(
 const utf8 = () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function isBinary(data: Uint8Array): boolean {
-  if (data.subarray(0, 8000).includes(0)) return true;
+  if (data.includes(0)) return true;
   try {
     utf8().decode(data);
     return false;

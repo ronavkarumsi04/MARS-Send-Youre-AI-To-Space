@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { isStrictlyInside } from "@mars/contracts/path-containment";
 
@@ -69,6 +70,14 @@ export async function resolveInsideRoot(
     try {
       real = await realpath(probe);
     } catch {
+      if (depth > 0) {
+        try {
+          if ((await lstat(probe)).isSymbolicLink())
+            return { ok: false, reason: "Path contains a broken symlink." };
+        } catch {
+          // Probe does not exist on disk; continue to parent ancestor.
+        }
+      }
       continue;
     }
     if (depth > 0 && !isStrictlyInside(realRoot, real))
