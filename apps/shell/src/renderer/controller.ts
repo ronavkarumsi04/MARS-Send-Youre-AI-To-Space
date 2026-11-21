@@ -241,8 +241,12 @@ export function createController(
     }
   };
 
-  const openTeamConversation = async (conversationId: string) => {
+  const openTeamConversation = async (
+    conversationId: string,
+    options?: { preserveHistory?: boolean },
+  ) => {
     if (!teamChat) return;
+    const preserveHistory = options?.preserveHistory === true;
     const switchedConversation =
       teamState.activeConversationId !== conversationId;
     const loadingState: TeamChatViewState = {
@@ -268,6 +272,9 @@ export function createController(
         render();
         return;
       }
+      if (teamState.activeConversationId !== conversationId) {
+        return;
+      }
       const lastSeq = res.value.messages.at(-1)?.sequence;
       if (lastSeq !== undefined && lastSeq > 0) {
         await teamChat["team.markRead"]({
@@ -276,11 +283,35 @@ export function createController(
         });
       }
       await loadTeamBootstrap();
+      if (teamState.activeConversationId !== conversationId) {
+        return;
+      }
+      const previousView =
+        preserveHistory &&
+        teamState.activeView?.conversation.conversation_id === conversationId
+          ? teamState.activeView
+          : undefined;
+      let nextView = res.value;
+      if (previousView) {
+        const freshIds = new Set(res.value.messages.map((m) => m.message_id));
+        const keptOlder = previousView.messages.filter(
+          (m) => !freshIds.has(m.message_id),
+        );
+        if (keptOlder.length > 0) {
+          nextView = {
+            ...res.value,
+            messages: [...keptOlder, ...res.value.messages].sort(
+              (a, b) => a.sequence - b.sequence,
+            ),
+            older_cursor: previousView.older_cursor,
+          };
+        }
+      }
       teamState = {
         ...teamState,
         loading: false,
         activeConversationId: conversationId,
-        activeView: res.value,
+        activeView: nextView,
       };
       render();
     } catch {
@@ -376,7 +407,7 @@ export function createController(
         return;
       }
       teamState = { ...teamState, draft: "" };
-      await openTeamConversation(convId);
+      await openTeamConversation(convId, { preserveHistory: true });
     } catch {
       teamState = { ...teamState, error: "Unable to send message." };
       render();
@@ -403,7 +434,8 @@ export function createController(
     emoji: ReactionEmoji,
     on: boolean,
   ) => {
-    if (!teamChat || !teamState.activeConversationId) return;
+    const convId = teamState.activeConversationId;
+    if (!teamChat || !convId) return;
     const res = await teamChat["team.setReaction"]({
       message_id: messageId,
       emoji,
@@ -414,7 +446,23 @@ export function createController(
       render();
       return;
     }
-    await openTeamConversation(teamState.activeConversationId);
+    const currentView = teamState.activeView;
+    if (currentView && currentView.conversation.conversation_id === convId) {
+      teamState = {
+        ...teamState,
+        activeView: {
+          ...currentView,
+          messages: currentView.messages.map((msg) =>
+            msg.message_id === messageId
+              ? { ...msg, reactions: res.value.reactions }
+              : msg,
+          ),
+        },
+      };
+      render();
+      return;
+    }
+    await openTeamConversation(convId, { preserveHistory: true });
   };
 
   const resolveTeamReference = async (
