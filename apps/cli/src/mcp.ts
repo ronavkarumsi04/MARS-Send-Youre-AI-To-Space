@@ -138,6 +138,7 @@ async function handleList(
   const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
   const servers = await cp.registry.list();
+  const nowMs = Date.now();
   const items = await Promise.all(
     servers.map(async (server) => {
       const inspected = await cp.admin.inspect(ctx, {
@@ -163,6 +164,7 @@ async function handleList(
         grants: inspected.grants.map((g) => ({
           grant_id: g.grant_id,
           state: g.state,
+          expired: g.state === "approved" && Date.parse(g.expires_at) <= nowMs,
           revision: g.revision,
           binding_sha256: g.binding_sha256,
           expires_at: g.expires_at,
@@ -180,13 +182,20 @@ async function handleList(
     return;
   }
   for (const item of items) {
-    const activeGrant = item.grants.find((g) => g.state === "approved");
-    const pendingReview = item.reviews.find((r) => r.state === "pending");
+    const activeGrant = item.grants.findLast(
+      (g) => g.state === "approved" && !g.expired,
+    );
+    const pendingReview = item.reviews.findLast((r) => r.state === "pending");
+    const expiredGrant = !activeGrant
+      ? item.grants.findLast((g) => g.state === "approved" && g.expired)
+      : undefined;
     const status = activeGrant
       ? `active (grant=${activeGrant.grant_id}, expires=${activeGrant.expires_at})`
       : pendingReview
         ? `pending_review (review=${pendingReview.review_id})`
-        : "unapproved";
+        : expiredGrant
+          ? `expired (grant=${expiredGrant.grant_id}, expired_at=${expiredGrant.expires_at})`
+          : "unapproved";
     out(`${item.id} [${item.transport}] ${item.target} — ${status}`);
   }
 }

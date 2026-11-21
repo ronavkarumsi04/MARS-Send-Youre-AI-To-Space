@@ -7,6 +7,7 @@ import {
   IntegrationTrustError,
   type Permission,
 } from "@mars/integration-trust";
+import { buildCredentialHeaders } from "./probe";
 import type { McpServerRegistry } from "./registry";
 import { sanitizeToolOutput } from "./sanitize";
 import {
@@ -81,18 +82,6 @@ export interface TrustedMcpLoader {
   closeAll(): Promise<void>;
 }
 
-function buildCredentialHeaders(
-  server: McpServerConfig,
-  secretValue: string,
-): Record<string, string> {
-  if (server.transport.type !== "streamable-http") {
-    throw new IntegrationTrustError("credential_denied");
-  }
-  const headerName = server.transport.credential_header ?? "Authorization";
-  const prefix = server.transport.credential_prefix ?? "Bearer ";
-  return { [headerName]: `${prefix}${secretValue}` };
-}
-
 /**
  * Creates a default-deny MCP client/loader that routes every server load
  * exclusively through `gate.admit` and every tool invocation exclusively
@@ -121,6 +110,7 @@ export function createTrustedMcpLoader(
     server: McpServerConfig,
     artifact: AuthorizedArtifact,
     timeoutMs: number,
+    extraHeaders?: Record<string, string>,
   ): Promise<ActiveConnection> {
     const existing = connections.get(server.id);
     if (
@@ -136,7 +126,10 @@ export function createTrustedMcpLoader(
 
     const transport = createMcpTransport(server.transport);
     try {
-      const descriptor = await transport.initialize({ timeoutMs });
+      const descriptor = await transport.initialize({
+        timeoutMs,
+        ...(extraHeaders ? { extraHeaders } : {}),
+      });
       const active: ActiveConnection = {
         serverId: server.id,
         grantId: artifact.grant_id,
@@ -212,10 +205,40 @@ export function createTrustedMcpLoader(
             if (!server) {
               throw new IntegrationTrustError("evidence_unavailable");
             }
+            let admitHeaders: Record<string, string> | undefined;
+            if (
+              server.transport.type === "streamable-http" &&
+              credentialResolver
+            ) {
+              const serverOrigin = normalizeOrigin(
+                new URL(server.transport.url).origin,
+              );
+              const binding = server.credential_bindings.find(
+                (b) =>
+                  normalizeOrigin(b.allowed_origin) === serverOrigin &&
+                  artifact.permissions.some(
+                    (p) =>
+                      p.capability === "credential.use" &&
+                      p.resource === b.ref_id,
+                  ),
+              );
+              if (binding) {
+                const secretValue = await credentialResolver.resolve({
+                  ref_id: binding.ref_id,
+                  target_origin: serverOrigin,
+                  server_id: server.id,
+                  grant_id: artifact.grant_id,
+                });
+                if (secretValue) {
+                  admitHeaders = buildCredentialHeaders(server, secretValue);
+                }
+              }
+            }
             const active = await openConnection(
               server,
               artifact,
               defaultTimeoutMs,
+              admitHeaders,
             );
             return frozenClone<AdmittedMcpServer>({
               server_id: server.id,
@@ -305,6 +328,7 @@ export function createTrustedMcpLoader(
               currentServer,
               authorized,
               timeoutMs,
+              extraHeaders,
             );
 
             const abortController = new AbortController();

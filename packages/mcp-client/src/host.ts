@@ -163,6 +163,9 @@ export async function createHostMcpControlPlane(
   const probe = new McpEvidenceProbe({
     registry,
     ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.credentialResolver
+      ? { credentialResolver: options.credentialResolver }
+      : {}),
     probeTimeoutMs,
     getTrustedBaseline: async (ctx, identity) => {
       const { state } = await store.load();

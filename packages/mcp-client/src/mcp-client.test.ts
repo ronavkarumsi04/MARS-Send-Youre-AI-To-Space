@@ -583,11 +583,15 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
   it("supports Streamable HTTP (JSON + SSE), caps remote grant lifetime, enforces origin-bound credentials, and detects drift", async () => {
     const httpSrv = startHttpMcpServer({ useSse: true });
     const otherSrv = startHttpMcpServer();
-    let resolverCalls = 0;
+    let invokeResolverCalls = 0;
+    const resolvedOrigins: string[] = [];
 
     const resolver: McpCredentialResolver = {
       async resolve(params) {
-        resolverCalls += 1;
+        resolvedOrigins.push(params.target_origin);
+        if (params.grant_id !== "probe") {
+          invokeResolverCalls += 1;
+        }
         if (
           params.ref_id === "api_token" &&
           params.target_origin === httpSrv.origin
@@ -645,9 +649,10 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     });
     expect(out.untrusted).toBe(true);
     expect(out.content[0]?.text).toBe("pong:sse-ok:Bearer super-secret-token");
-    expect(resolverCalls).toBe(1);
+    expect(invokeResolverCalls).toBe(1);
+    expect(resolvedOrigins.every((o) => o === httpSrv.origin)).toBe(true);
 
-    // Mismatched origin -> denied, resolver NOT called again
+    // Mismatched origin -> denied, resolver NOT called for invocation or otherSrv.origin
     await expect(
       cp.loader.invokeTool(ctx, {
         server_id: "remote-http",
@@ -661,7 +666,8 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         credential_ref: "api_token",
       }),
     ).rejects.toBeInstanceOf(IntegrationTrustError);
-    expect(resolverCalls).toBe(1);
+    expect(invokeResolverCalls).toBe(1);
+    expect(resolvedOrigins).not.toContain(otherSrv.origin);
 
     // Prompt steering immunity over Streamable HTTP
     const steered = await cp.loader.invokeTool(ctx, {
@@ -969,6 +975,8 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
   });
 
   it("enforces a single total timeout budget across initialize and paginated tools/list", async () => {
+    let initializeCompleted = false;
+    const seenCursors: Array<string | undefined> = [];
     const slowPaginated = Bun.serve({
       port: 0,
       async fetch(req) {
@@ -978,7 +986,8 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
           params?: { cursor?: string };
         };
         if (body.method === "initialize") {
-          await Bun.sleep(60);
+          await Bun.sleep(20);
+          initializeCompleted = true;
           return Response.json({
             jsonrpc: "2.0",
             id: body.id,
@@ -993,8 +1002,9 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
           return new Response(null, { status: 202 });
         }
         if (body.method === "tools/list") {
-          await Bun.sleep(80);
           const cursor = body.params?.cursor;
+          seenCursors.push(cursor);
+          await Bun.sleep(cursor ? 150 : 100);
           if (!cursor) {
             return Response.json({
               jsonrpc: "2.0",
@@ -1046,16 +1056,20 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     });
     activeServers.push(slowPaginated);
 
-    // Total latency is ~60 + 80 + 80 + 80 = 300ms; each single request is < 160ms.
-    // With a shared 160ms total timeout budget, initialize() must fail rather than
-    // resetting the timeout per page.
+    // Individual requests are 20ms, 100ms, 150ms (each well under 240ms), while
+    // cumulative latency reaches ~270ms on page2. A shared 240ms budget must let
+    // initialize + page1 finish, reach page2, and time out during page2 rather
+    // than resetting the timeout per page.
     const transport = new StreamableHttpMcpTransport({
       type: "streamable-http",
       url: `http://127.0.0.1:${slowPaginated.port}/mcp`,
     });
-    await expect(transport.initialize({ timeoutMs: 160 })).rejects.toThrow(
+    await expect(transport.initialize({ timeoutMs: 240 })).rejects.toThrow(
       /timed out|aborted/i,
     );
+    expect(initializeCompleted).toBe(true);
+    expect(seenCursors).toContain(undefined);
+    expect(seenCursors).toContain("page2");
     await transport.close();
   });
 
@@ -1138,11 +1152,170 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
       ),
     ).toBe(true);
 
-    // Second admit MUST STILL refuse without spawning — the automatically
-    // recorded pending drift review is NOT a trusted baseline for admission.
+    // Directly invoke the probe outside admin.approve — the automatically
+    // recorded pending drift review MUST NOT act as a trusted stdio baseline
+    // and MUST NOT spawn the tampered entrypoint.
+    let probeErr: unknown;
+    try {
+      await cp.probe.observe(ctx, {
+        kind: "mcp",
+        integration_id: "drift-no-spawn",
+      });
+    } catch (err) {
+      probeErr = err;
+    }
+    expect(probeErr).toBeInstanceOf(IntegrationTrustError);
+    expect((probeErr as IntegrationTrustError).code).toBe(
+      "evidence_unavailable",
+    );
+    await expect(readFile(markerFile, "utf8")).rejects.toThrow();
+
+    // Second admit MUST STILL refuse without spawning as well.
     await expect(cp.loader.admitServer(ctx, "drift-no-spawn")).rejects.toThrow(
       IntegrationTrustError,
     );
     await expect(readFile(markerFile, "utf8")).rejects.toThrow();
+  });
+
+  it("sends exact origin-bound credentials during HTTP descriptor discovery and admission", async () => {
+    const dir = await makeTempDir("mars-mcp-authed-discovery-");
+    const stateDir = join(dir, "state");
+    const workspaceDir = await makeTempDir("mars-mcp-authed-discovery-ws-");
+    const seenHeaders: Array<{ method: string; auth: string | null }> = [];
+
+    const authedServer = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const auth = req.headers.get("authorization");
+        const body = (await req.json()) as { id?: number; method: string };
+        seenHeaders.push({ method: body.method, auth });
+        if (auth !== "Bearer discovery-secret-123") {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        if (body.method === "initialize") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: "authed-http", version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        if (body.method === "tools/list") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              tools: [
+                {
+                  name: "secret_echo",
+                  description: "Authenticated echo",
+                  inputSchema: { type: "object" },
+                },
+              ],
+            },
+          });
+        }
+        if (body.method === "tools/call") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              content: [{ type: "text", text: "authed-ok" }],
+            },
+          });
+        }
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    activeServers.push(authedServer);
+
+    const origin = `http://127.0.0.1:${authedServer.port}`;
+    const cp = await createHostMcpControlPlane({
+      stateDir,
+      workspaceRoots: [workspaceDir],
+      approvers: [{ approver_id: "op", owner_id: "op", project_ids: ["proj"] }],
+      credentialResolver: {
+        resolve: async ({ ref_id, target_origin }) =>
+          ref_id === "api_token" && target_origin === origin
+            ? "discovery-secret-123"
+            : undefined,
+      },
+    });
+    activeControlPlanes.push(cp);
+    const ctx = defaultRequestContext("op", "proj");
+
+    const cfg: McpServerConfig = {
+      schema_version: 1,
+      id: "authed-http-server",
+      transport: {
+        type: "streamable-http",
+        url: `${origin}/mcp`,
+      },
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "secret_echo" },
+        { capability: "credential.use", resource: "api_token" },
+      ],
+      credential_bindings: [{ ref_id: "api_token", allowed_origin: origin }],
+      registered_at: new Date().toISOString(),
+    };
+    await cp.registry.upsert(cfg);
+
+    // Discovery succeeds using the exact origin-bound credential.
+    const evidence = await cp.probe.observeServer(ctx, cfg);
+    expect(evidence.tools.map((t) => t.name)).toEqual(["secret_echo"]);
+    expect(
+      seenHeaders.some(
+        (h) =>
+          h.method === "initialize" && h.auth === "Bearer discovery-secret-123",
+      ),
+    ).toBe(true);
+    expect(
+      seenHeaders.some(
+        (h) =>
+          h.method === "tools/list" && h.auth === "Bearer discovery-secret-123",
+      ),
+    ).toBe(true);
+
+    // Approve, admit, and invoke end-to-end.
+    const review = await cp.admin.submitCandidate(ctx, {
+      evidence,
+      permissions: cfg.permissions,
+      credential_bindings: cfg.credential_bindings,
+    });
+    const proof = cp.signHostProof({
+      review_id: review.review_id,
+      review_revision: review.revision,
+      binding_sha256: review.binding_sha256,
+      scope: review.scope,
+      decision: "approve",
+      expires_at: review.expires_at,
+    });
+    await cp.admin.approve(ctx, {
+      review_id: review.review_id,
+      expected_revision: review.revision,
+      proof,
+    });
+
+    const admitted = await cp.loader.admitServer(ctx, "authed-http-server");
+    expect(admitted.descriptor.tools.map((t) => t.name)).toEqual([
+      "secret_echo",
+    ]);
+
+    const out = await cp.loader.invokeTool(ctx, {
+      server_id: "authed-http-server",
+      tool: "secret_echo",
+      input: {},
+      credential_ref: "api_token",
+      target_origin: origin,
+    });
+    expect(out.content[0]?.text).toBe("authed-ok");
   });
 });

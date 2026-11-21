@@ -518,4 +518,84 @@ describe("mars mcp CLI flow", () => {
     };
     expect(result.content[0]?.text).toBe("echo:v2-ok");
   });
+
+  it("displays expired approved grants as expired rather than active in mars mcp list", async () => {
+    const stateDir = await makeStateDir();
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const body = (await req.json()) as { id?: number; method: string };
+        if (body.method === "initialize") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: "exp-http", version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        if (body.method === "tools/list") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              tools: [{ name: "ping", inputSchema: { type: "object" } }],
+            },
+          });
+        }
+        return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+      },
+    });
+    activeServers.push(server);
+
+    const common = [
+      "--state-dir",
+      stateDir,
+      "--owner",
+      "owner-exp",
+      "--project",
+      "proj-exp",
+    ];
+    const reviewJson = await execMcpCli([
+      "review",
+      "exp-demo",
+      "--url",
+      `http://127.0.0.1:${server.port}/mcp`,
+      ...common,
+      "--json",
+    ]);
+    const { review } = JSON.parse(reviewJson) as {
+      review: { review_id: string };
+    };
+    await execMcpCli([
+      "approve",
+      review.review_id,
+      "--ttl-ms",
+      "100",
+      ...common,
+    ]);
+
+    await Bun.sleep(150);
+
+    const listText = await execMcpCli(["list", ...common]);
+    expect(listText).toContain("exp-demo");
+    expect(listText).toContain("expired (grant=");
+    expect(listText).not.toContain("active (grant=");
+
+    const listJson = await execMcpCli(["list", ...common, "--json"]);
+    const parsed = JSON.parse(listJson) as {
+      servers: Array<{
+        id: string;
+        grants: Array<{ state: string; expired: boolean }>;
+      }>;
+    };
+    expect(parsed.servers[0]?.grants[0]?.state).toBe("approved");
+    expect(parsed.servers[0]?.grants[0]?.expired).toBe(true);
+  });
 });

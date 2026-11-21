@@ -58,7 +58,7 @@ Not protected or not implemented:
 - **Exclusive gate routing (`McpServerLoader`)**:
   - Every server admission goes through `gate.admit(ctx, { kind: "mcp", integration_id, action: "load" }, loader)`.
   - Every tool dispatch goes through `gate.invoke(ctx, { kind: "mcp", integration_id, tool_name, permissions, caller, target_origin, credential_ref }, callback)`.
-  - Runtime code receives only the `loader` (backed by `gate`), never `admin` or the host approval key.
+  - Consumers receive only the `loader` (backed by `gate`), never `admin` or the host approval key. Today `mars mcp test` is the only product path wired to invoke the loader; `packages/execution/src/runtime.ts` does not yet register MCP tools for agent sessions (future work, keeping ambient/agent MCP execution disabled until wired).
 - **Transports**:
   - **stdio**: Spawns only the explicitly registered command/args with `shell: false` and a minimal environment allowlist (plus `PATH` if configured) so ambient secrets never leak to child processes.
   - **Streamable HTTP**: Supports both JSON and `text/event-stream` (SSE) responses, `MCP-Protocol-Version` headers, `Mcp-Session-Id` tracking, and `redirect: "error"` so cross-origin redirects are rejected at transport level.
