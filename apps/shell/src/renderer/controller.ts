@@ -921,13 +921,21 @@ export function createController(
         : new Map<string, unknown>();
 
       const entryIds = new Set<string>();
+      const addEntryIds = (raw: unknown) => {
+        if (!Array.isArray(raw)) return;
+        for (const id of raw) {
+          if (typeof id === "string" && id.length > 0) entryIds.add(id);
+        }
+      };
       for (const payload of eventPayloads.values()) {
         if (payload && typeof payload === "object") {
-          const ids = (payload as { entry_ids?: unknown }).entry_ids;
-          if (Array.isArray(ids)) {
-            for (const id of ids) {
-              if (typeof id === "string" && id.length > 0) entryIds.add(id);
-            }
+          const obj = payload as {
+            entry_ids?: unknown;
+            upstream?: { entry_ids?: unknown };
+          };
+          addEntryIds(obj.entry_ids);
+          if (obj.upstream && typeof obj.upstream === "object") {
+            addEntryIds(obj.upstream.entry_ids);
           }
         }
       }
