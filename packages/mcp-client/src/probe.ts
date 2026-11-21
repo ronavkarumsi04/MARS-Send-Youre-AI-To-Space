@@ -18,10 +18,35 @@ import {
 } from "./schemas";
 import { createMcpTransport } from "./transports";
 
+export interface TrustedStdioBaseline {
+  evidence: SourceEvidence;
+}
+
 export interface McpEvidenceProbeOptions {
   registry: McpServerRegistry;
   clock?: () => Date;
   probeTimeoutMs?: number;
+  /**
+   * Look up the currently trusted baseline (approved grant or pending review
+   * undergoing host-signed approval) for `(ctx, identity)`. When provided,
+   * stdio servers are only spawned after verifying that either a trusted
+   * baseline exists with matching static artifact hashes (`config_sha256`,
+   * `dependency_sha256`), or `allowUnapprovedStdioProbe` was explicitly enabled.
+   */
+  getTrustedBaseline?: (
+    ctx: RequestContext,
+    identity: Identity,
+  ) => Promise<TrustedStdioBaseline | undefined>;
+  /**
+   * Explicit opt-in allowing unapproved stdio servers to be spawned for
+   * descriptor discovery. Defaults to `false` so untrusted local code is never
+   * executed implicitly before approval.
+   */
+  allowUnapprovedStdioProbe?: boolean;
+}
+
+export interface ObserveServerOptions {
+  allowUnapprovedStdioProbe?: boolean;
 }
 
 async function hashFileOrSpec(
@@ -36,7 +61,10 @@ async function hashFileOrSpec(
   return sha256(canonicalJSON(fallbackSpec));
 }
 
-function buildConfigHash(server: McpServerConfig): string {
+function buildConfigHash(
+  server: McpServerConfig,
+  entrypointSha?: string,
+): string {
   if (server.transport.type === "stdio") {
     return sha256(
       canonicalJSON({
@@ -45,6 +73,8 @@ function buildConfigHash(server: McpServerConfig): string {
         args: server.transport.args,
         cwd: server.transport.cwd ?? null,
         env_allowlist: [...server.transport.env_allowlist].sort(),
+        entrypoint: server.transport.entrypoint ?? null,
+        entrypoint_sha256: entrypointSha ?? null,
       }),
     );
   }
@@ -113,15 +143,22 @@ export class McpEvidenceProbe implements EvidenceProbe {
   private readonly registry: McpServerRegistry;
   private readonly clock: () => Date;
   private readonly probeTimeoutMs: number;
+  private readonly getTrustedBaseline?: (
+    ctx: RequestContext,
+    identity: Identity,
+  ) => Promise<TrustedStdioBaseline | undefined>;
+  private readonly allowUnapprovedStdioProbe: boolean;
 
   constructor(options: McpEvidenceProbeOptions) {
     this.registry = options.registry;
     this.clock = options.clock ?? (() => new Date());
     this.probeTimeoutMs = options.probeTimeoutMs ?? 4_000;
+    this.getTrustedBaseline = options.getTrustedBaseline;
+    this.allowUnapprovedStdioProbe = options.allowUnapprovedStdioProbe ?? false;
   }
 
   async observe(
-    _ctx: RequestContext,
+    ctx: RequestContext,
     identity: Identity,
   ): Promise<SourceEvidence> {
     if (identity.kind !== "mcp") {
@@ -131,17 +168,24 @@ export class McpEvidenceProbe implements EvidenceProbe {
     if (!server) {
       throw new IntegrationTrustError("evidence_unavailable");
     }
+    return this.observeServer(ctx, server);
+  }
 
-    const descriptor = await probeMcpServerDescriptor(
-      server,
-      this.probeTimeoutMs,
-    );
-    const tools = buildToolEvidence(descriptor);
-    const descriptorSha = buildDescriptorHash(descriptor);
-    const configSha = buildConfigHash(server);
+  async observeServer(
+    ctx: RequestContext,
+    server: McpServerConfig,
+    options?: ObserveServerOptions,
+  ): Promise<SourceEvidence> {
     const observedAt = this.clock().toISOString();
 
     if (server.transport.type === "streamable-http") {
+      const descriptor = await probeMcpServerDescriptor(
+        server,
+        this.probeTimeoutMs,
+      );
+      const tools = buildToolEvidence(descriptor);
+      const descriptorSha = buildDescriptorHash(descriptor);
+      const configSha = buildConfigHash(server);
       const canonicalOrigin = normalizeOrigin(
         new URL(server.transport.url).origin,
       );
@@ -172,15 +216,78 @@ export class McpEvidenceProbe implements EvidenceProbe {
     }
 
     const stdio: StdioTransportConfig = server.transport;
-    const contentSha = await hashFileOrSpec(stdio.entrypoint, {
-      command: stdio.command,
-      args: stdio.args,
-      descriptor_sha256: descriptorSha,
-    });
+    // Hash static local artifacts BEFORE spawning the stdio process so
+    // tampered or unapproved executables are never launched before trust checks.
+    const entrypointSha = stdio.entrypoint
+      ? await hashFileOrSpec(stdio.entrypoint, null)
+      : undefined;
+    const configSha = buildConfigHash(server, entrypointSha);
     const dependencySha = await hashFileOrSpec(stdio.dependency_manifest, {
       command: stdio.command,
-      serverInfo: descriptor.serverInfo,
+      args: stdio.args,
     });
+
+    const allowUnapproved =
+      options?.allowUnapprovedStdioProbe ?? this.allowUnapprovedStdioProbe;
+    const baseline = this.getTrustedBaseline
+      ? await this.getTrustedBaseline(ctx, {
+          kind: "mcp",
+          integration_id: server.id,
+        })
+      : undefined;
+
+    if (baseline) {
+      if (
+        configSha !== baseline.evidence.config_sha256 ||
+        dependencySha !== baseline.evidence.dependency_sha256
+      ) {
+        const driftedContentSha = sha256(
+          canonicalJSON({
+            artifact_sha256: entrypointSha ?? configSha,
+            descriptor_sha256: "unprobed-artifact-drift",
+          }),
+        );
+        return {
+          schema_version: 1,
+          kind: "mcp",
+          integration_id: server.id,
+          source: {
+            type: "local-artifact",
+            locator: stdio.entrypoint ?? stdio.command,
+            revision: deriveStdioRevision(driftedContentSha),
+            content_sha256: driftedContentSha,
+          },
+          dependency_sha256: dependencySha,
+          config_sha256: configSha,
+          endpoint: null,
+          tools: baseline.evidence.tools,
+          observed_at: observedAt,
+        };
+      }
+    } else if (!allowUnapproved) {
+      throw new IntegrationTrustError(
+        "evidence_unavailable",
+        new Error(
+          `Refusing to spawn unapproved stdio MCP server "${server.id}" before approval; pass allowUnapprovedStdioProbe (or --allow-stdio-probe) to explicitly authorize live discovery.`,
+        ),
+      );
+    }
+
+    const descriptor = await probeMcpServerDescriptor(
+      server,
+      this.probeTimeoutMs,
+    );
+    const tools = buildToolEvidence(descriptor);
+    const descriptorSha = buildDescriptorHash(descriptor);
+    const contentSha =
+      entrypointSha ??
+      sha256(
+        canonicalJSON({
+          command: stdio.command,
+          args: stdio.args,
+          descriptor_sha256: descriptorSha,
+        }),
+      );
     // Mix descriptorSha into content_sha256 so even if entrypoint bytes didn't
     // change (e.g. dynamic tool list), descriptor drift always changes the binding.
     const combinedContentSha = sha256(

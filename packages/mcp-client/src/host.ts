@@ -158,6 +158,27 @@ export async function createHostMcpControlPlane(
     registry,
     ...(options.clock ? { clock: options.clock } : {}),
     probeTimeoutMs,
+    getTrustedBaseline: async (ctx, identity) => {
+      const { state } = await store.load();
+      const grant = state.grants.findLast(
+        (g) =>
+          g.state === "approved" &&
+          g.kind === identity.kind &&
+          g.integration_id === identity.integration_id &&
+          g.scope.owner_id === ctx.scope.owner_id &&
+          g.scope.project_id === ctx.scope.project_id,
+      );
+      if (grant) return { evidence: grant.evidence };
+      const pending = state.reviews.findLast(
+        (r) =>
+          r.state === "pending" &&
+          r.kind === identity.kind &&
+          r.integration_id === identity.integration_id &&
+          r.scope.owner_id === ctx.scope.owner_id &&
+          r.scope.project_id === ctx.scope.project_id,
+      );
+      return pending ? { evidence: pending.evidence } : undefined;
+    },
   });
 
   const authorizer = createHmacApprovalAuthorizer({

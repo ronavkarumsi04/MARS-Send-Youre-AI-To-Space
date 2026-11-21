@@ -304,9 +304,8 @@ async function registerReviewApprove(
   ttlMs?: number,
 ) {
   await cp.registry.upsert(config);
-  const evidence = await cp.probe.observe(ctx, {
-    kind: "mcp",
-    integration_id: config.id,
+  const evidence = await cp.probe.observeServer(ctx, config, {
+    allowUnapprovedStdioProbe: true,
   });
   const review = await cp.admin.submitCandidate(ctx, {
     evidence,

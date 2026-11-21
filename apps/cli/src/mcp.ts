@@ -18,7 +18,7 @@ import { CliUsageError } from "./cli-errors";
 const MCP_USAGE = [
   "Usage: mars mcp <list|review|approve|revoke|test> [options]",
   "  mars mcp list [--state-dir <dir>] [--owner <id>] [--project <id>] [--json]",
-  "  mars mcp review <server-id> (--command <cmd> [--arg <arg>]... | --url <url>) [--permission <cap>:<res>]... [--credential <ref>@<origin>]... [--json]",
+  "  mars mcp review <server-id> (--command <cmd> --allow-stdio-probe [--arg <arg>]... | --url <url>) [--permission <cap>:<res>]... [--credential <ref>@<origin>]... [--json]",
   "  mars mcp approve <review-id> [--ttl-ms <ms>] [--approved-by <name>] [--json]",
   "  mars mcp revoke <grant-id> [--approved-by <name>] [--json]",
   "  mars mcp test <server-id> [--tool <name>] [--input <json>] [--permission <cap>:<res>]... [--credential-ref <ref>] [--target-origin <origin>] [--json]",
@@ -181,6 +181,7 @@ async function handleReview(
       "env-allow": { type: "string", multiple: true },
       entrypoint: { type: "string" },
       "dependency-manifest": { type: "string" },
+      "allow-stdio-probe": { type: "boolean", default: false },
       url: { type: "string" },
       "credential-header": { type: "string" },
       "credential-prefix": { type: "string" },
@@ -236,12 +237,17 @@ async function handleReview(
     registered_at: new Date().toISOString(),
   });
 
+  if (config.transport.type === "stdio" && !values["allow-stdio-probe"]) {
+    throw new CliUsageError(
+      'Reviewing a stdio MCP server spawns the configured executable to discover its tools. Pass --allow-stdio-probe to explicitly authorize running this unapproved command during review.',
+    );
+  }
+
   const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
   await cp.registry.upsert(config);
-  const evidence = await cp.probe.observe(ctx, {
-    kind: "mcp",
-    integration_id: serverId,
+  const evidence = await cp.probe.observeServer(ctx, config, {
+    allowUnapprovedStdioProbe: Boolean(values["allow-stdio-probe"]),
   });
 
   const defaultRemotePerms: Permission[] =

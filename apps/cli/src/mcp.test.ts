@@ -55,7 +55,7 @@ describe("mars mcp CLI flow", () => {
     const emptyOut = await execMcpCli(["list", ...common]);
     expect(emptyOut).toContain("No MCP servers registered (default-deny).");
 
-    // 2. Review candidate stdio server
+    // 2. Review candidate stdio server (requires explicit --allow-stdio-probe)
     const reviewJson = await execMcpCli([
       "review",
       "stdio-demo",
@@ -67,6 +67,7 @@ describe("mars mcp CLI flow", () => {
       STDIO_FIXTURE,
       "--entrypoint",
       STDIO_FIXTURE,
+      "--allow-stdio-probe",
       "--permission",
       "tool.invoke:echo",
       ...common,
