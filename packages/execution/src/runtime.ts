@@ -1442,11 +1442,13 @@ function readTool(
       )
         return toolResult(renderRead(path, content, {}, summary));
       const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
-      if (format !== "hashline" && !ranged) return toolResult(text);
+      if (format !== "hashline" && !ranged)
+        return {
+          ...toolResult(text),
+          details: { meta: { pagedSource: true } },
+        };
       return {
-        ...toolResult(
-          readRows(path, text, format === "hashline", offset ?? 1, limit),
-        ),
+        ...toolResult(readRows(path, text, format, offset ?? 1, limit)),
         details: { meta: { pagedSource: true } },
       };
     },
@@ -1459,10 +1461,11 @@ const MAX_EDIT_CONTENT_BYTES = 128 * 1024;
 function readRows(
   path: string,
   text: string,
-  hashed: boolean,
+  format: EditFormat,
   offset: number,
   limit?: number,
 ): string {
+  const hashed = format === "hashline";
   const { lines } = parseText(text);
   if (!lines.length)
     return `${path} · lines 0-0 of 0\nFile is empty; insert with anchor BOF.`;
@@ -1483,7 +1486,12 @@ function readRows(
       MAX_TOOL_OUTPUT_CHARS
     ) {
       if (n === offset) {
-        const truncated = `[line ${n} truncated; use ${hashed ? "mars_edit range replacement" : "mars_replace"} or mars_execute to inspect; continue with offset=${n + 1}]`;
+        const editHint = hashed
+          ? "mars_edit range replacement"
+          : format === "apply_patch"
+            ? "mars_apply_patch"
+            : "mars_replace";
+        const truncated = `[line ${n} truncated; use ${editHint} or mars_execute to inspect; continue with offset=${n + 1}]`;
         const encoded = Buffer.from(row, "utf8");
         let end = Math.max(
           0,
@@ -2120,8 +2128,13 @@ function applyPatchTool(
         .strict()
         .parse(params);
       // The patch is already persisted when the summary comes back, so an
-      // oversized summary is truncated instead of failing the call.
-      return toolResult(boundPatchSummary(await patch.apply(input.patch)));
+      // oversized summary is truncated instead of failing the call. Mark the
+      // bounded result with pagedSource so Oh My Pi does not middle-elide >50 KiB
+      // summaries into unreadable artifact:// references.
+      return {
+        ...toolResult(boundPatchSummary(await patch.apply(input.patch))),
+        details: { meta: { pagedSource: true } },
+      };
     },
   };
 }

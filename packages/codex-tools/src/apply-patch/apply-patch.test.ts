@@ -567,3 +567,38 @@ test("renderApplyPatchInstructions is short, MARS-authored text", () => {
   expect(text).toContain("*** Update File:");
   expect(text.length).toBeLessThan(2048);
 });
+
+test("applyPatch edits files over 50 KiB with multi-byte UTF-8 content cleanly", async () => {
+  const lines = Array.from(
+    { length: 1_500 },
+    (_, i) => `row-${i + 1}: 😀中文 padding to push file past fifty kibibytes`,
+  );
+  const original = `${lines.join("\n")}\n`;
+  expect(Buffer.byteLength(original, "utf8")).toBeGreaterThan(50 * 1024);
+  const fs = new MemoryFs({ "large-utf8.txt": original });
+  const result = await applyPatch(
+    [
+      "*** Begin Patch",
+      "*** Update File: large-utf8.txt",
+      "@@",
+      " row-749: 😀中文 padding to push file past fifty kibibytes",
+      "-row-750: 😀中文 padding to push file past fifty kibibytes",
+      "+row-750: 😀中文 updated cleanly past fifty kibibytes",
+      " row-751: 😀中文 padding to push file past fifty kibibytes",
+      "*** End Patch",
+    ].join("\n"),
+    fs,
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.summary).toBe(
+      "Success. Updated the following files:\nM large-utf8.txt\n",
+    );
+  }
+  const updated = fs.files.get("large-utf8.txt") ?? "";
+  expect(updated).toContain(
+    "row-750: 😀中文 updated cleanly past fifty kibibytes",
+  );
+  expect(updated).not.toContain("\uFFFD");
+  expect(updated.split("\n").length).toBe(original.split("\n").length);
+});

@@ -1478,9 +1478,89 @@ test("mars_apply_patch keeps a persisted patch successful when its summary excee
     const relayedTool = (
       requests[1]?.messages as Array<{ role: string; content: string }>
     ).find((m) => m.role === "tool");
+    expect(relayedTool?.content ?? "").not.toMatch(/\[…\d+ln elided/);
+    expect(relayedTool?.content ?? "").not.toContain("artifact://");
     expect(
       new TextEncoder().encode(relayedTool?.content ?? "").byteLength,
     ).toBeLessThanOrEqual(128 * 1024);
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test("mars_apply_patch relays >50 KiB summaries intact without omp middle-elision or artifact spill", async () => {
+  const f = await fixture(1_000_000, { editFormat: "apply_patch" });
+  const requests: Record<string, unknown>[] = [];
+  const summary = `Success. Updated the following files:\n${"A a/very/long/path/to/a/generated/file-😀中.txt\n".repeat(1_500)}`;
+  const summaryBytes = Buffer.byteLength(summary, "utf8");
+  expect(summaryBytes).toBeGreaterThan(50 * 1024);
+  expect(summaryBytes).toBeLessThan(128 * 1024);
+  try {
+    const session = await f.open({
+      task: { ...f.task, budget: { ...f.task.budget, max_tokens: 400_000 } },
+      patch: { apply: async () => summary },
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return requests.length === 1
+          ? sse(
+              {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_patch_big",
+                    type: "function",
+                    function: {
+                      name: "mars_apply_patch",
+                      arguments: JSON.stringify({
+                        patch:
+                          "*** Begin Patch\n*** Add File: a.txt\n+a\n*** End Patch",
+                      }),
+                    },
+                  },
+                ],
+              },
+              "tool_calls",
+            )
+          : sse({ content: "Applied." });
+      },
+    });
+    const outcome = await session.run(f.task.request);
+    expect(outcome.status).toBe("completed");
+    const relayedTool = (
+      requests[1]?.messages as Array<{ role: string; content: string }>
+    ).find((m) => m.role === "tool");
+    expect(relayedTool?.content).toBe(summary);
+    expect(relayedTool?.content ?? "").not.toMatch(/\[…\d+ln elided/);
+    expect(relayedTool?.content ?? "").not.toContain("artifact://");
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);
+
+test("mars_read unranged in apply_patch mode relays >50 KiB files intact when below thresholdBytes", async () => {
+  const f = await fixture(1_000_000, { editFormat: "apply_patch" });
+  const task = {
+    ...f.task,
+    budget: { ...f.task.budget, max_tokens: 400_000 },
+  };
+  const body = `${Array.from({ length: 1_200 }, (_, i) => `line ${i + 1}: 😀中 payload for apply_patch read`).join("\n")}\n`;
+  expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(50 * 1024);
+  expect(Buffer.byteLength(body, "utf8")).toBeLessThan(128 * 1024);
+  try {
+    await writeFile(join(f.cwd, "big.txt"), body);
+    const read = await callFileTool(
+      f,
+      "mars_read",
+      { path: "big.txt" },
+      {
+        task,
+        readSummary: { thresholdBytes: 128 * 1024 },
+        patch: { apply: async () => "Success. Updated the following files:\n" },
+      },
+    );
+    expect(read.relayed).toBe(body);
+    expect(read.relayed).not.toMatch(/\[…\d+ln elided/);
+    expect(read.relayed).not.toContain("artifact://");
   } finally {
     await f.cleanup();
   }
@@ -1844,7 +1924,7 @@ test.each(["replace", "apply_patch"] as const)(
   30000,
 );
 
-test.each(["hashline", "replace"] as const)(
+test.each(["hashline", "replace", "apply_patch"] as const)(
   "%s oversized first row is UTF-8-safe and advances; full-line anchors still edit",
   async (editFormat) => {
     const f = await fixture(2_000_000, { editFormat });
@@ -1859,12 +1939,28 @@ test.each(["hashline", "replace"] as const)(
         f,
         "mars_read",
         { path: "long.txt", offset: 1, limit: 1 },
-        { task },
+        {
+          task,
+          ...(editFormat === "apply_patch"
+            ? {
+                patch: {
+                  apply: async () => "Success. Updated the following files:\n",
+                },
+              }
+            : {}),
+        },
       );
       expect(Buffer.byteLength(first.relayed, "utf8")).toBeLessThanOrEqual(
         128 * 1024,
       );
       expect(first.relayed).toContain("line 1 truncated");
+      expect(first.relayed).toContain(
+        editFormat === "hashline"
+          ? "mars_edit range replacement"
+          : editFormat === "apply_patch"
+            ? "mars_apply_patch"
+            : "mars_replace",
+      );
       expect(first.relayed).toContain("continue with offset=2");
       expect(first.relayed).not.toContain("\uFFFD");
       const row = first.relayed.split("\n")[1] ?? "";

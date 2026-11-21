@@ -315,6 +315,55 @@ async function keepTranscript(
   }
 }
 
+const RETRYABLE_HTTP_STATUS = new Set([429, 502, 503, 504]);
+const MAX_TRANSIENT_RETRIES = 4;
+const BASE_RETRY_MS = 1_000;
+const MAX_RETRY_MS = 30_000;
+
+function retryDelayMs(response: Response, attempt: number): number | null {
+  const remaining = response.headers.get("x-ratelimit-remaining")?.trim();
+  const reset = response.headers.get("x-ratelimit-reset")?.trim();
+  if (remaining === "0" && reset) {
+    const parsed = Number(reset);
+    if (Number.isFinite(parsed)) {
+      const resetMs = parsed > 1e12 ? parsed : parsed * 1_000;
+      const waitMs = resetMs - Date.now();
+      if (waitMs > MAX_RETRY_MS) return null;
+      if (waitMs >= 0) return Math.round(waitMs);
+    }
+  }
+  const header = response.headers.get("retry-after")?.trim();
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(MAX_RETRY_MS, Math.max(0, Math.round(seconds * 1_000)));
+    }
+    const when = Date.parse(header);
+    if (Number.isFinite(when)) {
+      return Math.min(MAX_RETRY_MS, Math.max(0, when - Date.now()));
+    }
+  }
+  return Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** attempt);
+}
+
+function sleepAbortable(
+  ms: number,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /** Runs one task once in one arm inside a fresh throwaway copy of its tree. */
 export async function runEditTrial(input: TrialInput): Promise<TrialResult> {
   const scratch = join(input.workRoot, randomUUID());
@@ -322,11 +371,30 @@ export async function runEditTrial(input: TrialInput): Promise<TrialResult> {
   const stateDir = join(scratch, "state");
   const model = selectExecutionModel(input.registry, input.modelId, true);
   let turns = 0;
+  const started = Date.now();
   const countedFetch = async (url: string, init?: RequestInit) => {
     turns += 1;
-    return input.fetch(url, init);
+    let attempt = 0;
+    while (true) {
+      const response = await input.fetch(url, init);
+      if (
+        !RETRYABLE_HTTP_STATUS.has(response.status) ||
+        attempt >= MAX_TRANSIENT_RETRIES ||
+        init?.signal?.aborted
+      ) {
+        return response;
+      }
+      const remaining =
+        input.budget.max_duration_ms - (Date.now() - started) - 1_000;
+      const delay = retryDelayMs(response, attempt);
+      if (delay === null || remaining <= 0 || delay > remaining)
+        return response;
+      await response.body?.cancel().catch(() => undefined);
+      await sleepAbortable(delay, init?.signal);
+      if (init?.signal?.aborted) return response;
+      attempt += 1;
+    }
   };
-  const started = Date.now();
   try {
     const run =
       input.arm === OMP_STOCK_ARM

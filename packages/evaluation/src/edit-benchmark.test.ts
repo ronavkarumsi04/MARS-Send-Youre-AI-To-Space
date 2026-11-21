@@ -687,3 +687,103 @@ test("both arms keep the host workspace path out of every model request", async 
     }
   }
 }, 60_000);
+
+test("mars:apply_patch solves >50 KiB v2 files without omp middle-elision", async () => {
+  const largeTasks = suiteV2.tasks.filter(
+    (task) => task.task_id === "cobra-large-1" || task.task_id === "ky-large-1",
+  );
+  expect(largeTasks.length).toBe(2);
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: largeTasks,
+    profile: SCRIPTED_PROFILES.oracle as ScriptedModelProfile,
+  });
+  for (const task of largeTasks) {
+    const result = await runEditTrial({
+      arm: "mars:apply_patch",
+      task,
+      repeat: 0,
+      registry,
+      env,
+      modelId,
+      seed: 1,
+      budget,
+      fetch: model.fetch,
+      workRoot: join(root, `work-${task.task_id}`),
+      transcriptRoot: join(root, `tx-${task.task_id}`),
+    });
+    expect(result.solved).toBe(true);
+    expect(result.edit_failures).toBe(0);
+  }
+}, 60_000);
+
+test("transient HTTP 429/503 responses are retried cleanly without double-counting turns", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  const model = createScriptedEditModel({
+    tasks: suite.tasks,
+    profile: SCRIPTED_PROFILES.oracle as ScriptedModelProfile,
+  });
+  let transientLeft = 2;
+  let totalCalls = 0;
+  const result = await runEditTrial({
+    arm: "mars:apply_patch",
+    task: suite.tasks[0] as (typeof suite.tasks)[number],
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch: async (url, init) => {
+      totalCalls += 1;
+      if (transientLeft > 0) {
+        const status = transientLeft === 2 ? 429 : 503;
+        transientLeft -= 1;
+        return new Response("rate limited", {
+          status,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return model.fetch(url, init);
+    },
+    workRoot: join(root, "work-retry"),
+    transcriptRoot: join(root, "tx-retry"),
+  });
+  expect(result.solved).toBe(true);
+  expect(transientLeft).toBe(0);
+  expect(totalCalls).toBe(result.turns + 2);
+}, 60_000);
+
+test("daily quota 429 with far-future x-ratelimit-reset fails fast without retrying", async () => {
+  const root = await scratch();
+  const { registry, env, modelId } = await scriptedModelRegistry(root);
+  let totalCalls = 0;
+  const result = await runEditTrial({
+    arm: "mars:apply_patch",
+    task: suite.tasks[0] as (typeof suite.tasks)[number],
+    repeat: 0,
+    registry,
+    env,
+    modelId,
+    seed: 1,
+    budget,
+    fetch: async () => {
+      totalCalls += 1;
+      return new Response("Rate limit exceeded: free-models-per-day", {
+        status: 429,
+        headers: {
+          "x-ratelimit-limit": "50",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(Date.now() + 3_600_000),
+        },
+      });
+    },
+    workRoot: join(root, "work-quota"),
+    transcriptRoot: join(root, "tx-quota"),
+  });
+  expect(result.solved).toBe(false);
+  expect(result.failure).toBe("provider_error");
+  expect(totalCalls).toBe(1);
+}, 60_000);
