@@ -485,8 +485,10 @@ describe("interactive renderer controller flows", () => {
     const fixture = (await loadFixtureData()) as FixtureData;
     const detail = fixture.details["fixture-completed-verified"];
     const diff = detail?.diff;
+    const expectedPatchSha = detail?.verification?.patch_sha256;
     expect(diff).toBeDefined();
-    if (!diff) return;
+    expect(expectedPatchSha).toBeDefined();
+    if (!diff || !expectedPatchSha) return;
 
     const tamperedBridge: ShellBridge = {
       "workbench.describe": async () => ({
@@ -561,12 +563,12 @@ describe("interactive renderer controller flows", () => {
             provider: "local",
             revision: "fixture-r5",
           },
-          patch_sha256: diff.digest ?? "0".repeat(64),
+          patch_sha256: expectedPatchSha,
           artifact: {
             artifact_id: "art-tampered",
             media_type: "text/x-diff",
             byte_length: 19,
-            sha256: diff.digest ?? "0".repeat(64),
+            sha256: expectedPatchSha,
           },
           files: diff.files.length,
           verification: "verified",
@@ -595,5 +597,433 @@ describe("interactive renderer controller flows", () => {
       findByAttr(doc.root, "data-export-verified", "true"),
     ).toBeUndefined();
     expect(doc.root.textContent).not.toContain("tampered diff bytes");
+  });
+
+  test("regression: export rejects exported.verified=false and failed artifact fetches", async () => {
+    const fixture = (await loadFixtureData()) as FixtureData;
+    const detail = fixture.details["fixture-completed-verified"];
+    const diff = detail?.diff;
+    const expectedPatchSha = detail?.verification?.patch_sha256;
+    if (!diff || !expectedPatchSha) throw new Error("missing fixture diff");
+
+    let failArtifact = false;
+    let verifiedFlag = false;
+    let receivedExpectedSha: string | undefined;
+
+    const mockBridge: ShellBridge = {
+      "workbench.describe": async () => ({
+        ok: true,
+        result: fixture.describe,
+      }),
+      "tasks.list": async () => ({ ok: true, result: fixture.tasks }),
+      "tasks.inspect": async ({ task_id }) => {
+        const task = fixture.tasks.find((t) => t.task_id === task_id);
+        return task
+          ? { ok: true, result: task }
+          : { ok: false, error: { kind: "not_found", message: "Not found" } };
+      },
+      "tasks.events": async ({ task_id }) => ({
+        ok: true,
+        result: fixture.details[task_id]?.events ?? [],
+      }),
+      "tasks.artifact": async () =>
+        failArtifact
+          ? {
+              ok: false,
+              error: { kind: "not_found", message: "Artifact expired" },
+            }
+          : {
+              ok: true,
+              result: {
+                artifact_id: "art-ok",
+                media_type: "text/x-diff",
+                data_base64: Buffer.from("patch", "utf8").toString("base64"),
+              },
+            },
+      "tasks.diff": async ({ task_id }) => {
+        const d = fixture.details[task_id]?.diff;
+        return d
+          ? { ok: true, result: { ...d, digest: "a".repeat(64) } }
+          : { ok: false, error: { kind: "not_found", message: "Not found" } };
+      },
+      "tasks.verification": async ({ task_id }) => {
+        const v = fixture.details[task_id]?.verification;
+        return v
+          ? { ok: true, result: v }
+          : { ok: false, error: { kind: "not_found", message: "Not found" } };
+      },
+      "tasks.evidence": async ({ task_id }) => {
+        const e = fixture.details[task_id]?.evidence;
+        return e
+          ? { ok: true, result: e }
+          : { ok: false, error: { kind: "not_found", message: "Not found" } };
+      },
+      "tasks.journal": async () => ({ ok: true, result: [] }),
+      "tasks.create": async () => ({
+        ok: false,
+        error: { kind: "refused", message: "refused" },
+      }),
+      "tasks.start": async () => ({
+        ok: false,
+        error: { kind: "refused", message: "refused" },
+      }),
+      "tasks.resume": async () => ({
+        ok: false,
+        error: { kind: "refused", message: "refused" },
+      }),
+      "tasks.steer": async () => ({
+        ok: false,
+        error: { kind: "refused", message: "refused" },
+      }),
+      "tasks.cancel": async () => ({
+        ok: false,
+        error: { kind: "refused", message: "refused" },
+      }),
+      "tasks.export": async (params) => {
+        receivedExpectedSha = params.expected_patch_sha256;
+        return {
+          ok: true,
+          result: {
+            candidate: {
+              workspace_id: "ws-fixture",
+              provider: "local",
+              revision: "fixture-r5",
+            },
+            patch_sha256: expectedPatchSha,
+            artifact: {
+              artifact_id: "art-ok",
+              media_type: "text/x-diff",
+              byte_length: 5,
+              sha256: expectedPatchSha,
+            },
+            files: diff.files.length,
+            verification: "verified",
+            verified: verifiedFlag,
+            verdict_run_id: "ver-fixture-5",
+            round_trip: { status: "passed", reason: null },
+            unsupported: [],
+          },
+        };
+      },
+    };
+
+    const doc = new MiniDocument();
+    const controller = createController(mockBridge, doc, doc.root);
+    await controller.load();
+    findByAttr(doc.root, "data-task-id", "fixture-completed-verified")?.click();
+    await waitFor(
+      () => findByAttr(doc.root, "data-action", "export-patch") !== undefined,
+    );
+
+    // 1. exported.verified === false must fail and pass verification.patch_sha256 (not diff.digest)
+    findByAttr(doc.root, "data-action", "export-patch")?.click();
+    await waitFor(() =>
+      doc.root.textContent.includes(
+        "Exported patch was not confirmed as host-verified.",
+      ),
+    );
+    expect(receivedExpectedSha).toBe(expectedPatchSha);
+    expect(receivedExpectedSha).not.toBe("a".repeat(64));
+    expect(
+      findByAttr(doc.root, "data-export-verified", "true"),
+    ).toBeUndefined();
+
+    // 2. Artifact fetch failure must fail instead of displaying verified success
+    verifiedFlag = true;
+    failArtifact = true;
+    findByAttr(doc.root, "data-action", "export-patch")?.click();
+    await waitFor(() =>
+      doc.root.textContent.includes(
+        "Failed to fetch exported patch artifact for SHA-256 verification.",
+      ),
+    );
+    expect(
+      findByAttr(doc.root, "data-export-verified", "true"),
+    ).toBeUndefined();
+  });
+
+  test("regression: nested payload.upstream.entry_ids loads journal entries, custom paid model resets consent, and start failure preserves created task", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const requestedJournalIds: string[] = [];
+      let startCalls = 0;
+      let lastStartModelId: string | undefined;
+      const nestedPayloadJson = JSON.stringify({
+        upstream: { entry_ids: ["journal-nested-1"] },
+      });
+      const nestedPayloadBytes = Buffer.from(nestedPayloadJson, "utf8");
+      const nestedPayloadSha = createHash("sha256")
+        .update(nestedPayloadBytes)
+        .digest("hex");
+      const wrappedBridge: ShellBridge = {
+        ...bridge,
+        "tasks.events": async (params) => {
+          if (params.after_event_id === "evt-nested-journal") {
+            return { ok: true, result: [] };
+          }
+          const res = await bridge["tasks.events"](params);
+          if (!res.ok || params.after_event_id || res.result.length === 0)
+            return res;
+          const baseEvent = res.result[0];
+          if (!baseEvent) return res;
+          return {
+            ok: true,
+            result: [
+              ...res.result,
+              {
+                ...baseEvent,
+                event_id: "evt-nested-journal",
+                sequence: 999,
+                event_type: "execution.observed",
+                payload: {
+                  artifact_id: "art-nested-journal",
+                  media_type: "application/json",
+                  byte_length: nestedPayloadBytes.byteLength,
+                  sha256: nestedPayloadSha,
+                },
+              },
+            ],
+          };
+        },
+        "tasks.artifact": async (params) => {
+          if (params.artifact.artifact_id === "art-nested-journal") {
+            return {
+              ok: true,
+              result: {
+                artifact_id: "art-nested-journal",
+                media_type: "application/json",
+                byte_length: nestedPayloadBytes.byteLength,
+                sha256: nestedPayloadSha,
+                data_base64: nestedPayloadBytes.toString("base64"),
+              },
+            };
+          }
+          return bridge["tasks.artifact"](params);
+        },
+        "tasks.journal": async (params) => {
+          requestedJournalIds.push(...params.entry_ids);
+          return bridge["tasks.journal"](params);
+        },
+        "tasks.start": async (params) => {
+          startCalls += 1;
+          lastStartModelId = params.model_id;
+          if (startCalls === 1) {
+            return {
+              ok: false,
+              error: { kind: "conflict", message: "Start failed once" },
+            };
+          }
+          return bridge["tasks.start"](params);
+        },
+      };
+
+      const doc = new MiniDocument();
+      const controller = createController(wrappedBridge, doc, doc.root);
+      await controller.load();
+      findByAttr(
+        doc.root,
+        "data-task-id",
+        "fixture-completed-verified",
+      )?.click();
+      await waitFor(() => requestedJournalIds.includes("journal-nested-1"));
+
+      // Nested upstream.entry_ids must be requested from tasks.journal
+      expect(requestedJournalIds).toContain("journal-nested-1");
+
+      // Create & start with custom paid model ID: first start fails, task is preserved and composer resets
+      const reqInput = findByAttr(doc.root, "data-control", "composer-request");
+      if (reqInput) {
+        reqInput.value = "Verify start failure recovery";
+        reqInput.dispatch("input");
+      }
+      const startNow = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-start-now",
+      );
+      if (startNow) {
+        startNow.checked = true;
+        startNow.dispatch("change");
+      }
+      const composerModel = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-model",
+      );
+      if (composerModel) {
+        composerModel.value = "paid";
+        composerModel.dispatch("change");
+      }
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-control", "composer-paid-model-id") !==
+          undefined,
+      );
+      const paidModelInput = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-paid-model-id",
+      );
+      if (paidModelInput) {
+        paidModelInput.value = "openai/gpt-5.4-pro";
+        paidModelInput.dispatch("input");
+      }
+      const consent = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-paid-consent",
+      );
+      if (consent) {
+        consent.checked = true;
+        consent.dispatch("change");
+      }
+      // Editing paid model ID clears consent again
+      const paidModelInputAgain = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-paid-model-id",
+      );
+      if (paidModelInputAgain) {
+        paidModelInputAgain.value = "anthropic/claude-opus-4-5";
+        paidModelInputAgain.dispatch("input");
+      }
+      expect(
+        findByAttr(doc.root, "data-action", "create-task")?.attributes.has(
+          "disabled",
+        ),
+      ).toBe(true);
+      const consentAgain = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-paid-consent",
+      );
+      if (consentAgain) {
+        consentAgain.checked = true;
+        consentAgain.dispatch("change");
+      }
+      findByAttr(doc.root, "data-action", "create-task")?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes(
+          "Task created, but failed to start: Start failed once",
+        ),
+      );
+      expect(lastStartModelId).toBe("anthropic/claude-opus-4-5");
+      // Composer was cleared so user does not accidentally create duplicates
+      const clearedReq = findByAttr(
+        doc.root,
+        "data-control",
+        "composer-request",
+      );
+      expect(clearedReq?.value ?? "").toBe("");
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: Team Chat paginates older messages via older_cursor and clears draft on thread switch", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      const baseTeam = toShellTeamChat(createTeamChatBridge());
+      const openCalls: Array<{
+        conversation_id: string;
+        before?: string | null;
+      }> = [];
+      const paginatedTeam: TeamChatBridgeApi = {
+        ...baseTeam,
+        "team.open": async (params) => {
+          openCalls.push({
+            conversation_id: params.conversation_id,
+            ...(params.before !== undefined ? { before: params.before } : {}),
+          });
+          const res = await baseTeam["team.open"]({
+            conversation_id: params.conversation_id,
+          });
+          if (!res.ok) return res;
+          if (!params.before) {
+            return {
+              ok: true,
+              value: {
+                ...res.value,
+                older_cursor: "cursor-page-1",
+              },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              ...res.value,
+              messages: [
+                {
+                  ...(res.value.messages[0] ?? {
+                    conversation_id: params.conversation_id,
+                    author_id: "alice",
+                    author_name: "Alice",
+                    client_message_id: "client-older-1",
+                    created_at: "2026-01-01T00:00:00Z",
+                    reply_to: null,
+                    references: [],
+                    reactions: [],
+                    edited_at: null,
+                    deleted_at: null,
+                  }),
+                  message_id: "msg-older-1",
+                  sequence: 0,
+                  body: "Older history message from cursor-page-1",
+                },
+              ],
+              older_cursor: null,
+            },
+          };
+        },
+      };
+
+      const doc = new MiniDocument();
+      const controller = createController(bridge, doc, doc.root, paginatedTeam);
+      await controller.load();
+
+      findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-action", "team-load-older") !== undefined,
+      );
+
+      // Click "Load older messages" -> calls team.open with before=cursor-page-1
+      findByAttr(doc.root, "data-action", "team-load-older")?.click();
+      await waitFor(() =>
+        doc.root.textContent.includes(
+          "Older history message from cursor-page-1",
+        ),
+      );
+      expect(openCalls.some((c) => c.before === "cursor-page-1")).toBe(true);
+      expect(
+        findByAttr(doc.root, "data-action", "team-load-older"),
+      ).toBeUndefined();
+
+      // Type a draft, then switch conversations -> draft must reset to ""
+      const composer = findByAttr(doc.root, "data-focus-key", "team-composer");
+      if (composer) {
+        composer.value = "Sensitive draft for thread A";
+        composer.dispatch("input");
+      }
+      const convButtons = findAll(
+        doc.root,
+        (el) =>
+          el.tagName === "BUTTON" &&
+          el.attributes.get("data-conversation-id") !== undefined &&
+          el.attributes.get("aria-pressed") !== "true",
+      );
+      expect(convButtons.length).toBeGreaterThan(0);
+      convButtons[0]?.click();
+      await waitFor(
+        () =>
+          (findByAttr(doc.root, "data-focus-key", "team-composer")?.value ??
+            "") === "",
+      );
+      expect(
+        findByAttr(doc.root, "data-focus-key", "team-composer")?.value ?? "",
+      ).toBe("");
+    } finally {
+      close();
+    }
   });
 });
