@@ -403,6 +403,11 @@ describe("@MARS invocations", () => {
     ["@MARS.rate:10/10 ideas", "rate:10/10 ideas"],
     ["@MARS.Summarize:2,3 and 4", "Summarize:2,3 and 4"],
     ["@MARS.check:7-day window", "check:7-day window"],
+    ["@MARS.Review:20% discount proposal", "Review:20% discount proposal"],
+    ["@MARS.Compare:2× speedup", "Compare:2× speedup"],
+    ["@MARS.Sum:2+2 please", "Sum:2+2 please"],
+    ["@MARS.Estimate:$5 budget", "Estimate:$5 budget"],
+    ['@MARS.Quote:5" screens', 'Quote:5" screens'],
   ])("keeps %j a private agent command", (text, prompt) => {
     expect(parseMarsInvocation(text)).toEqual({ prompt });
     expect(parseMarsInvocation(text, { leadingOnly: true })).toEqual({

@@ -198,11 +198,12 @@ const USER_MENTION_RE = /(?:^|[\s(])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/g;
 const MARS_INVOCATION_RE = /(?:^|\s)@mars(?=$|[\s,.;:!?])/gi;
 /**
  * A dotted `@mars.<name>:<line>[-<line>]` token is a file-and-line mention, not a command.
- * The line number must end the token: `:2.0`, `:1-2x` and `:10/10` continue into a word, so
- * they stay agent prompts, while `:7,@other.css:8` and `:12, see` end at the punctuation.
+ * The line number must end the token: at whitespace or end of input, optionally after sentence
+ * punctuation, or at punctuation followed by another `@` token. Anything else (`:2.0`, `:20%`,
+ * `:1-2x`) continues an agent prompt, which must stay private.
  */
 const MARS_FILE_RANGE_RE =
-  /^\.[^\s:]+:\d+(?:-\d+)?(?![A-Za-z0-9_])(?![-,.;:!?)/]+[A-Za-z0-9_])/;
+  /^\.[^\s:]+:\d+(?:-\d+)?(?=[,.;:!?)]*(?:$|\s)|[,.;:!?)]+@)/;
 
 /** Extract distinct teammate `@handles` from a message body (excluding `@MARS`). */
 export function extractUserMentions(text: string): string[] {
