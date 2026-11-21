@@ -114,7 +114,7 @@ export class RpcTeamService implements TeamService {
   private readonly cachedDirHeads = new Map<string, string | null>();
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
-  private readonly workspaceRoots?: readonly string[];
+  private readonly workspaceRoots: readonly string[] | undefined;
 
   constructor(
     private readonly client: TeamClient,
