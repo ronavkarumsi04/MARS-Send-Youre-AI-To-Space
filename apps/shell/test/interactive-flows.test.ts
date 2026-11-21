@@ -11,7 +11,7 @@ import {
   MAX_SEARCH_QUERY_CHARS,
 } from "@mars/team-chat";
 import type { TranscriptProjection } from "@mars/ui-core";
-import { serveWorkbench } from "@mars/workbench";
+import { StartParamsSchema, serveWorkbench } from "@mars/workbench";
 import {
   canonicalPatchBytes,
   createFixtureOperations,
@@ -32,6 +32,7 @@ import {
   MAX_HYDRATED_EVENT_PAYLOADS,
 } from "../src/renderer/controller";
 import { renderTranscript } from "../src/renderer/transcript";
+import { MAX_REQUIRED_CHECKS } from "../src/renderer/view";
 import { BRIDGE_METHODS, type ShellBridge } from "../src/shared/methods";
 import {
   TEAM_CHAT_CHANNEL,
@@ -1845,24 +1846,180 @@ describe("interactive renderer controller flows", () => {
       expect(check.stderr).toBe("");
       expect(check.status).toBe(0);
 
+      const readme = (patch: string) =>
+        ({
+          files: [{ path: "README.md", status: "modified", patch }],
+        }) as unknown as Parameters<typeof patchRoundTrip>[0];
+      const baseline = { "README.md": "old sample\n" };
       expect(
-        patchRoundTrip({
-          files: [
-            {
-              path: "README.md",
-              status: "modified",
-              patch:
-                "--- a/README.md\n+++ b/README.md\n-old sample\n+new sample",
-            },
-          ],
-        } as unknown as Parameters<typeof patchRoundTrip>[0]),
-      ).toEqual({
-        status: "failed",
-        reason: "No applicable hunk for README.md.",
-      });
+        await patchRoundTrip(
+          readme("--- a/README.md\n+++ b/README.md\n-old sample\n+new sample"),
+          baseline,
+        ),
+      ).toMatchObject({ status: "failed" });
+      // A well-formed hunk whose context does not match the baseline is rejected too.
+      expect(
+        await patchRoundTrip(
+          readme(
+            "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-different line\n+new sample",
+          ),
+          baseline,
+        ),
+      ).toMatchObject({ status: "failed" });
+      expect(
+        await patchRoundTrip(
+          readme(
+            "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old sample\n+new sample",
+          ),
+          baseline,
+        ),
+      ).toEqual({ status: "passed", reason: null });
+      expect(
+        await patchRoundTrip(
+          readme(
+            "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old sample\n+new sample",
+          ),
+          undefined,
+        ),
+      ).toMatchObject({ status: "unavailable" });
     } finally {
       close();
       await rm(repo, { recursive: true, force: true });
+    }
+  });
+  test("regression: a rejected immediate launch keeps selected checks for the retry", async () => {
+    const { bridge, close } = await startTestWorkbench((fixture) => {
+      fixture.describe = {
+        ...fixture.describe,
+        capabilities: { ...fixture.describe.capabilities, execute: true },
+        checks: [{ id: "unit-tests", label: "Unit tests" }],
+      };
+    });
+    try {
+      const starts: Array<Parameters<ShellBridge["tasks.start"]>[0]> = [];
+      const wrapped: ShellBridge = {
+        ...bridge,
+        "tasks.start": async (params) => {
+          starts.push(params);
+          if (starts.length === 1)
+            return {
+              ok: false,
+              error: { kind: "refused", message: "model unavailable" },
+            };
+          return bridge["tasks.start"](params);
+        },
+      };
+      const doc = new MiniDocument();
+      const controller = createController(wrapped, doc, doc.root);
+      await controller.load();
+      const toggle = (key: string) => {
+        const box = findByAttr(doc.root, "data-control", key);
+        if (!box) throw new Error(`missing ${key}`);
+        box.checked = !box.checked;
+        box.dispatch("change");
+      };
+      const request = findByAttr(doc.root, "data-control", "composer-request");
+      if (!request) throw new Error("composer missing");
+      request.value = "Launch that the host rejects first";
+      request.dispatch("input");
+      toggle("composer-start-now");
+      toggle("composer-execute");
+      toggle("composer-check-unit-tests");
+      findByAttr(doc.root, "data-action", "create-task")?.click();
+      await waitFor(() => doc.root.textContent.includes("failed to start"));
+      await controller.settled();
+      expect(
+        findByAttr(doc.root, "data-control", "launch-check-unit-tests")
+          ?.checked,
+      ).toBe(true);
+      findByAttr(doc.root, "data-action", "start-task")?.click();
+      await waitFor(() => starts.length === 2);
+      await controller.settled();
+      expect(starts.map((params) => params.required_checks)).toEqual([
+        [{ kind: "host_test", check_id: "unit-tests" }],
+        [{ kind: "host_test", check_id: "unit-tests" }],
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  test("regression: launch forms cap host checks at the start schema limit", async () => {
+    const tooMany = Array.from({ length: MAX_REQUIRED_CHECKS + 1 }, (_, i) => ({
+      kind: "host_test" as const,
+      check_id: `check-${i}`,
+    }));
+    const params = {
+      task_id: "fixture-pending",
+      expected_revision: 0,
+      approvals: { read: true, write: true, execute: true },
+    };
+    expect(
+      StartParamsSchema.safeParse({ ...params, required_checks: tooMany })
+        .success,
+    ).toBe(false);
+    expect(
+      StartParamsSchema.safeParse({
+        ...params,
+        required_checks: tooMany.slice(0, MAX_REQUIRED_CHECKS),
+      }).success,
+    ).toBe(true);
+
+    const ids = Array.from(
+      { length: MAX_REQUIRED_CHECKS + 2 },
+      (_, i) => `check-${i}`,
+    );
+    const { bridge, close } = await startTestWorkbench((fixture) => {
+      fixture.describe = {
+        ...fixture.describe,
+        capabilities: { ...fixture.describe.capabilities, execute: true },
+        checks: ids.map((id) => ({ id, label: `Check ${id}` })),
+      };
+    });
+    try {
+      const starts: Array<Parameters<ShellBridge["tasks.start"]>[0]> = [];
+      const wrapped: ShellBridge = {
+        ...bridge,
+        "tasks.start": async (p) => {
+          starts.push(p);
+          return bridge["tasks.start"](p);
+        },
+      };
+      const doc = new MiniDocument();
+      const controller = createController(wrapped, doc, doc.root);
+      await controller.load();
+      findByAttr(doc.root, "data-task-id", "fixture-pending")?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-control", "launch-check-check-0") !==
+          undefined,
+      );
+      const box = (key: string) => findByAttr(doc.root, "data-control", key);
+      const toggle = (key: string) => {
+        const el = box(key);
+        if (!el) throw new Error(`missing ${key}`);
+        el.checked = !el.checked;
+        el.dispatch("change");
+      };
+      toggle("approval-execute");
+      for (const id of ids.slice(0, MAX_REQUIRED_CHECKS))
+        toggle(`launch-check-${id}`);
+      const extra = `launch-check-${ids[MAX_REQUIRED_CHECKS]}`;
+      expect(box(extra)?.getAttribute("disabled")).not.toBeNull();
+      expect(doc.root.textContent).toContain(
+        `At most ${MAX_REQUIRED_CHECKS} checks per launch; clear one to choose another.`,
+      );
+      // Clearing one re-enables the rest.
+      toggle("launch-check-check-0");
+      expect(box(extra)?.getAttribute("disabled")).toBeNull();
+      toggle(extra);
+      findByAttr(doc.root, "data-action", "start-task")?.click();
+      await waitFor(() => starts.length === 1);
+      await controller.settled();
+      expect(starts[0]?.required_checks?.length).toBe(MAX_REQUIRED_CHECKS);
+      expect(doc.root.textContent).not.toContain("failed to start");
+    } finally {
+      close();
     }
   });
 });

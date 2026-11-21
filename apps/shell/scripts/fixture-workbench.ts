@@ -1,6 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ArtifactRef,
@@ -33,6 +42,8 @@ type FixtureDetail = {
   evidence?: EvidenceResult;
   events: EventEnvelope[];
   model_tier?: InspectResult["model_tier"];
+  /** Pre-change file contents the diff applies to, for the export round trip. */
+  baseline?: Record<string, string>;
 };
 
 export type FixtureData = {
@@ -49,19 +60,56 @@ export function canonicalPatchBytes(diff: DiffResult): Buffer {
   return Buffer.from(joined, "utf8");
 }
 
-const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
-
-/** Structural round trip: every file patch must carry at least one unified-diff hunk. */
-export function patchRoundTrip(diff: DiffResult): {
+/**
+ * Round trip like the workspace exporter: write the baseline tree to a scratch
+ * directory and require `git apply --check` and `git apply` to accept the
+ * exact patch bytes.
+ */
+export async function patchRoundTrip(
+  diff: DiffResult,
+  baseline: Record<string, string> | undefined,
+): Promise<{
   status: "passed" | "failed" | "unavailable";
   reason: string | null;
-} {
+}> {
   if (diff.files.length === 0)
     return { status: "unavailable", reason: "No changed files in patch." };
-  const broken = diff.files.find((file) => !HUNK_HEADER.test(file.patch));
-  return broken
-    ? { status: "failed", reason: `No applicable hunk for ${broken.path}.` }
-    : { status: "passed", reason: null };
+  if (!baseline)
+    return {
+      status: "unavailable",
+      reason: "No baseline tree to apply the patch against.",
+    };
+  const scratch = await mkdtemp(join(tmpdir(), "mars-fixture-export-"));
+  try {
+    const tree = join(scratch, "tree");
+    await mkdir(tree, { recursive: true });
+    for (const [path, content] of Object.entries(baseline)) {
+      const target = join(tree, path);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    const patchFile = join(scratch, "candidate.patch");
+    await writeFile(patchFile, canonicalPatchBytes(diff));
+    for (const args of [["--check"], []]) {
+      const proc = spawnSync("git", ["apply", ...args, patchFile], {
+        cwd: tree,
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "" },
+      });
+      if (proc.error)
+        return { status: "unavailable", reason: "git is not available" };
+      if (proc.status !== 0)
+        return {
+          status: "failed",
+          reason: `git apply rejected the patch: ${
+            proc.stderr.trim().split("\n")[0] ?? "unknown error"
+          }`.slice(0, 1024),
+        };
+    }
+    return { status: "passed", reason: null };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 export function sha256Hex(bytes: Buffer): string {
@@ -385,7 +433,7 @@ export function createFixtureOperations(
         verification: detail.verification.state,
         verified,
         verdict_run_id: detail.verification.record?.run_id ?? null,
-        round_trip: patchRoundTrip(detail.diff),
+        round_trip: await patchRoundTrip(detail.diff, detail.baseline),
         unsupported: [],
       };
     },

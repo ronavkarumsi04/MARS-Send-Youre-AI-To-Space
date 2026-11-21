@@ -348,7 +348,10 @@
           "source_event_ids": [],
           "access": "project"
         }
-      ]
+      ],
+      "baseline": {
+        "README.md": "old sample\n"
+      }
     },
     "fixture-completed-unverified": {
       "model_tier": null,

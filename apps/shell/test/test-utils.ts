@@ -27,6 +27,7 @@ export type FixtureData = {
       evidence?: EvidenceResult;
       events: EventEnvelope[];
       model_tier?: InspectResult["model_tier"];
+      baseline?: Record<string, string>;
     }
   >;
   artifact_data: Record<string, ArtifactData>;

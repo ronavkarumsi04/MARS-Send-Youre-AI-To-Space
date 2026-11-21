@@ -21,6 +21,7 @@ import {
   type ExportViewState,
   HEADING_FOCUS_KEY,
   type LaunchCardState,
+  MAX_REQUIRED_CHECKS,
   renderShell,
   type ShellState,
 } from "./view";
@@ -78,7 +79,8 @@ function createInitialLaunch(): LaunchCardState {
 
 function toggleId(ids: readonly string[], id: string, on: boolean): string[] {
   const rest = ids.filter((existing) => existing !== id);
-  return on ? [...rest, id] : rest;
+  if (!on) return rest;
+  return rest.length >= MAX_REQUIRED_CHECKS ? [...ids] : [...rest, id];
 }
 
 type StartParams = Parameters<ShellBridge["tasks.start"]>[0];
@@ -761,6 +763,7 @@ export function createController(
         launch = {
           ...launch,
           approvals: { ...snapshot.approvals },
+          checkIds: [...snapshot.checkIds],
           modelChoice: "paid",
           paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
           paidModelConsent: false,
@@ -795,6 +798,7 @@ export function createController(
         launch = {
           ...launch,
           approvals: { ...snapshot.approvals },
+          checkIds: [...snapshot.checkIds],
           modelChoice: snapshot.modelChoice,
           paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
           paidModelConsent: snapshot.paidModelConsent,

@@ -46,7 +46,7 @@ Main-process hardening: `app.enableSandbox()`, every permission request/check de
 
 ## Run it
 
-Headless unit, security/CSP, static-scan, interactive-flow, and Electron/Xvfb checks (part of `bun run check`; the Electron/Xvfb test runs when Electron and `xvfb-run` are installed, and CI installs both and sets `MARS_REQUIRE_ELECTRON_XVFB=1` so a missing binary fails instead of skipping):
+Headless unit, security/CSP, static-scan, interactive-flow, and Electron/Xvfb checks (part of `bun run check`; the Electron/Xvfb test runs when Electron and `xvfb-run` are installed, and CI installs both, makes `chrome-sandbox` a setuid-root helper so the sandbox starts under Ubuntu 24.04's user-namespace restriction, and sets `MARS_REQUIRE_ELECTRON_XVFB=1` so a missing binary fails instead of skipping):
 
 ```sh
 bun test apps/shell

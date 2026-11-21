@@ -141,6 +141,9 @@ function status(doc: ShellDocument, task: Task): ShellElement {
   );
 }
 
+/** Mirrors the `required_checks` cap in the workbench `StartParamsSchema`. */
+export const MAX_REQUIRED_CHECKS = 32;
+
 function hostChecksField(
   doc: ShellDocument,
   state: ShellState,
@@ -169,6 +172,7 @@ function hostChecksField(
     );
   }
   const chosen = checks.filter((check) => options.selected.includes(check.id));
+  const atLimit = chosen.length >= MAX_REQUIRED_CHECKS;
   return h(
     doc,
     "fieldset",
@@ -178,7 +182,10 @@ function hostChecksField(
       checkboxField(doc, {
         label: check.label,
         checked: options.executeApproved && options.selected.includes(check.id),
-        disabled: Boolean(options.disabled) || !options.executeApproved,
+        disabled:
+          Boolean(options.disabled) ||
+          !options.executeApproved ||
+          (atLimit && !options.selected.includes(check.id)),
         dataKey: `${options.prefix}-check-${check.id}`,
         onChange: (checked) => options.onToggle(check.id, checked),
       }),
@@ -189,9 +196,11 @@ function hostChecksField(
       { class: "muted" },
       !options.executeApproved
         ? "Host checks run commands in the sandbox; approve Execute to select them."
-        : chosen.length === 0
-          ? "No checks selected · the host records no verdict, so the result cannot be exported."
-          : `The host verifies the result against: ${chosen.map((check) => check.label).join(", ")}.`,
+        : atLimit
+          ? `At most ${MAX_REQUIRED_CHECKS} checks per launch; clear one to choose another.`
+          : chosen.length === 0
+            ? "No checks selected · the host records no verdict, so the result cannot be exported."
+            : `The host verifies the result against: ${chosen.map((check) => check.label).join(", ")}.`,
     ),
   );
 }
