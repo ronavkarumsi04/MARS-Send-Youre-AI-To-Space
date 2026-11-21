@@ -457,6 +457,13 @@ async function runServe(
       `MARS_TEAM_GIT_AUTH_HEADER_${repoId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
     const envKeyOwners = new Map<string, string[]>();
     for (const remote of options.remoteRepos) {
+      let isHttps = false;
+      try {
+        isHttps = new URL(remote.url).protocol === "https:";
+      } catch {
+        // invalid URLs are rejected by mirror.registerRemote
+      }
+      if (!isHttps) continue;
       const key = repoEnvKeyOf(remote.repo_id);
       const owners = envKeyOwners.get(key) ?? [];
       owners.push(remote.repo_id);
