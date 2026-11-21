@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import type { Scope } from "@mars/contracts";
 import {
   type CredentialBinding,
   normalizePermission,
@@ -96,19 +97,19 @@ function resolveCliCredentialFromEnv(refId: string): string | undefined {
 async function openControlPlane(
   stateDir: string | undefined,
   workspaceRoots: string[] | undefined,
-  scope?: { ownerId?: string; projectId?: string; approverId?: string },
+  scope: Scope,
+  approvedBy?: string,
 ): Promise<HostMcpControlPlane> {
-  const ownerId = scope?.ownerId ?? process.env.USER ?? "local-operator";
-  const projectId = scope?.projectId ?? "default";
-  const approverId = scope?.approverId ?? ownerId;
+  const { owner_id, project_id } = scope;
   return createHostMcpControlPlane({
     ...(stateDir ? { stateDir } : {}),
     ...(workspaceRoots ? { workspaceRoots } : {}),
+    scope,
     approvers: [
       {
-        approver_id: approverId,
-        owner_id: ownerId,
-        project_ids: [projectId],
+        approver_id: approvedBy ?? owner_id,
+        owner_id,
+        project_ids: [project_id],
       },
     ],
     credentialResolver: {
@@ -122,8 +123,13 @@ async function openControlPlane(
 export async function openRuntimeMcp(
   stateDir: string,
   workspaceRoots: string[],
+  scope: Scope,
 ) {
-  const { loader, registry } = await openControlPlane(stateDir, workspaceRoots);
+  const { loader, registry } = await openControlPlane(
+    stateDir,
+    workspaceRoots,
+    scope,
+  );
   return {
     loader,
     async listServerIds() {
@@ -148,8 +154,12 @@ async function handleList(
     allowPositionals: false,
   });
 
-  const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
+  const cp = await openControlPlane(
+    values["state-dir"],
+    workspaceRoots,
+    ctx.scope,
+  );
   const servers = await cp.registry.list();
   const nowMs = Date.now();
   const items = await Promise.all(
@@ -195,12 +205,14 @@ async function handleList(
     return;
   }
   for (const item of items) {
-    const latestGrant = item.grants.findLast((g) => g.state === "approved");
+    const latestGrant = item.grants.findLast((g) => g.state !== "superseded");
     const pendingReview = item.reviews.findLast((r) => r.state === "pending");
     const status = latestGrant
-      ? latestGrant.expired
-        ? `expired (grant=${latestGrant.grant_id}, expired_at=${latestGrant.expires_at})`
-        : `active (grant=${latestGrant.grant_id}, expires=${latestGrant.expires_at})`
+      ? latestGrant.state === "revoked"
+        ? `revoked (grant=${latestGrant.grant_id})`
+        : latestGrant.expired
+          ? `expired (grant=${latestGrant.grant_id}, expired_at=${latestGrant.expires_at})`
+          : `active (grant=${latestGrant.grant_id}, expires=${latestGrant.expires_at})`
       : pendingReview
         ? `pending_review (review=${pendingReview.review_id})`
         : "unapproved";
@@ -287,8 +299,12 @@ async function handleReview(
     );
   }
 
-  const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
+  const cp = await openControlPlane(
+    values["state-dir"],
+    workspaceRoots,
+    ctx.scope,
+  );
   const evidence = await cp.probe.observeServer(ctx, config, {
     allowUnapprovedStdioProbe: Boolean(values["allow-stdio-probe"]),
   });
@@ -378,12 +394,13 @@ async function handleApprove(
   }
   const ttlMs = parsePositiveInt(values["ttl-ms"], "--ttl-ms");
 
-  const cp = await openControlPlane(values["state-dir"], workspaceRoots, {
-    ...(values.owner ? { ownerId: values.owner } : {}),
-    ...(values.project ? { projectId: values.project } : {}),
-    ...(values["approved-by"] ? { approverId: values["approved-by"] } : {}),
-  });
   const ctx = defaultRequestContext(values.owner, values.project);
+  const cp = await openControlPlane(
+    values["state-dir"],
+    workspaceRoots,
+    ctx.scope,
+    values["approved-by"],
+  );
   const { state } = await cp.readState();
   const review = state.reviews.find((r) => r.review_id === reviewId);
   if (!review) {
@@ -441,12 +458,13 @@ async function handleRevoke(
     );
   }
 
-  const cp = await openControlPlane(values["state-dir"], workspaceRoots, {
-    ...(values.owner ? { ownerId: values.owner } : {}),
-    ...(values.project ? { projectId: values.project } : {}),
-    ...(values["approved-by"] ? { approverId: values["approved-by"] } : {}),
-  });
   const ctx = defaultRequestContext(values.owner, values.project);
+  const cp = await openControlPlane(
+    values["state-dir"],
+    workspaceRoots,
+    ctx.scope,
+    values["approved-by"],
+  );
   const { state } = await cp.readState();
   const grant = state.grants.find((g) => g.grant_id === grantId);
   if (!grant) {
@@ -531,8 +549,12 @@ async function handleTest(
     );
   }
 
-  const cp = await openControlPlane(values["state-dir"], workspaceRoots);
   const ctx = defaultRequestContext(values.owner, values.project);
+  const cp = await openControlPlane(
+    values["state-dir"],
+    workspaceRoots,
+    ctx.scope,
+  );
 
   try {
     const admitted = await cp.loader.admitServer(ctx, serverId);
@@ -547,6 +569,7 @@ async function handleTest(
       return;
     }
 
+    const credentialRef = values["credential-ref"] ?? admitted.credential_ref;
     const result = await cp.loader.invokeTool(ctx, {
       server_id: serverId,
       tool: values.tool,
@@ -554,9 +577,7 @@ async function handleTest(
       ...(requestedPermissions
         ? { requested_permissions: requestedPermissions }
         : {}),
-      ...(values["credential-ref"]
-        ? { credential_ref: values["credential-ref"] }
-        : {}),
+      ...(credentialRef ? { credential_ref: credentialRef } : {}),
       ...(values["target-origin"]
         ? { target_origin: values["target-origin"] }
         : {}),

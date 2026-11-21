@@ -526,9 +526,50 @@ test("execution chooses free models automatically and rejects unpriced paid mode
   }
 });
 
+test("a text-only model completes a task with MCP configured and no tools", async () => {
+  const f = await fixture(32000, {
+    capabilities: { tools: false, vision: false, contextWindow: 32000 },
+  });
+  try {
+    const cp = await createHostMcpControlPlane({
+      stateDir: join(f.root, "mcp"),
+      workspaceRoots: [f.cwd],
+      scope: f.task.scope,
+    });
+    let requested = false;
+    const session = await f.open({
+      modelId: "fixture/free",
+      approvals: { read: false, write: false, execute: false },
+      mcp: async () => ({
+        loader: cp.loader,
+        async listServerIds() {
+          return (await cp.registry.list()).map(({ id }) => id);
+        },
+      }),
+      fetch: async (_url, init) => {
+        expect(JSON.parse(String(init?.body)).tools).toBeUndefined();
+        requested = true;
+        return sse({ content: "Done." });
+      },
+    });
+    expect((await session.run("Give a text response.")).status).toBe(
+      "completed",
+    );
+    expect(requested).toBe(true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("normal runtime registers only scope-approved MCP tools and checks revocation before each model call", async () => {
   const f = await fixture();
-  const http = startStatefulMcpServer(["ping", "unapproved"]);
+  const http = startStatefulMcpServer(["ping", "unapproved"], {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Untrusted server prose" },
+    },
+    required: ["query"],
+  });
   const origin = http.server.url.origin;
   try {
     const { owner_id, project_id } = f.task.scope;
@@ -540,6 +581,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     const cp = await createHostMcpControlPlane({
       stateDir: join(f.root, "mcp"),
       workspaceRoots: [f.cwd],
+      scope: f.task.scope,
       approvers: [
         { approver_id: owner_id, owner_id, project_ids: [project_id] },
       ],
@@ -597,18 +639,21 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
       }),
     });
     let modelCalls = 0;
+    let modelSchema: unknown;
     const session = await f.open({
       mcp,
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as {
-          tools: Array<{ function: { name: string } }>;
+          tools: Array<{ function: { name: string; parameters: unknown } }>;
           messages: unknown[];
         };
-        const name = body.tools.find(({ function: tool }) =>
+        const tool = body.tools.find(({ function: tool }) =>
           tool.name.startsWith("mars_mcp_ping_"),
-        )?.function.name;
+        )?.function;
+        const name = tool?.name;
         if (!name)
           throw new Error("Approved MCP tool was not offered to the model.");
+        modelSchema ??= tool?.parameters;
         modelCalls++;
         if (modelCalls === 2) {
           expect(JSON.stringify(body.messages)).toContain("pong");
@@ -641,7 +686,7 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
                 type: "function",
                 function: {
                   name,
-                  arguments: JSON.stringify({ arguments_json: "{}" }),
+                  arguments: JSON.stringify({ query: "ping" }),
                 },
               },
             ],
@@ -653,9 +698,14 @@ test("normal runtime registers only scope-approved MCP tools and checks revocati
     expect(
       session.toolNames.filter((name) => name.startsWith("mars_mcp_")),
     ).toHaveLength(1);
-    expect((await session.run("Call the approved MCP tool.")).status).toBe(
-      "completed",
-    );
+    const outcome = await session.run("Call the approved MCP tool.");
+    expect(modelSchema).toMatchObject({
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: expect.arrayContaining(["query"]),
+    });
+    expect(JSON.stringify(modelSchema)).not.toContain("Untrusted server prose");
+    expect(outcome).toMatchObject({ status: "completed" });
     expect(modelCalls).toBe(3);
     expect(http.calls.map(({ identity }) => identity)).toEqual([
       "Bearer runtime-test-token",

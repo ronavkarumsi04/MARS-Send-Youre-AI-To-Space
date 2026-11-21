@@ -6,6 +6,7 @@ import {
   exceedsUsd,
   type ModelConfig,
   type RequestContext,
+  type Scope,
   type Task,
   TaskSchema,
 } from "@mars/contracts";
@@ -835,7 +836,10 @@ export interface RuntimeSessionOptions {
   editFormat?: EditFormat;
 }
 
-export type RuntimeMcp = (cwd: string) => Promise<{
+export type RuntimeMcp = (
+  cwd: string,
+  scope: Scope,
+) => Promise<{
   loader: TrustedMcpLoader;
   listServerIds(): Promise<string[]>;
 }>;
@@ -880,9 +884,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const selected = selectExecutionModel(
     options.registry,
     options.modelId,
-    Object.values(approvals).some(Boolean) ||
-      options.teamContext !== undefined ||
-      options.mcp !== undefined,
+    Object.values(approvals).some(Boolean) || options.teamContext !== undefined,
   );
   const editFormat = resolveEditFormat(
     options.editFormat === undefined
@@ -1137,8 +1139,8 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     { once: true },
   );
   try {
-    if (options.mcp) {
-      mcp = await options.mcp(cwd);
+    if (options.mcp && selected.capabilities.tools) {
+      mcp = await options.mcp(cwd, task.scope);
       const context: RequestContext = {
         schema_version: 1,
         scope: task.scope,
@@ -1410,7 +1412,7 @@ async function admittedMcpTools(
       )
     )
       continue;
-    for (const { name: tool } of admitted.descriptor.tools) {
+    for (const { name: tool, inputSchema } of admitted.descriptor.tools) {
       if (
         !admitted.permissions.some(
           (p) => p.capability === "tool.invoke" && p.resource === tool,
@@ -1427,19 +1429,12 @@ async function admittedMcpTools(
         name,
         label: name,
         description: `Call approved MCP tool ${label} on server ${serverId}.`,
-        parameters: defineSchema({ arguments_json: "string" }),
+        parameters: mcpToolParameters(inputSchema),
         async execute(_id, params, _update, _ctx, signal) {
           await checkTool(null, signal);
-          const raw = z
-            .object({ arguments_json: z.string().max(MAX_TOOL_OUTPUT_CHARS) })
-            .strict()
-            .parse(params);
-          let input: Record<string, unknown>;
-          try {
-            input = z.record(z.unknown()).parse(JSON.parse(raw.arguments_json));
-          } catch {
-            throw new Error("MCP tool arguments must be a JSON object.");
-          }
+          const input = z.record(z.unknown()).parse(params);
+          if (JSON.stringify(input).length > MAX_TOOL_OUTPUT_CHARS)
+            throw new Error("MCP tool arguments exceed the input limit.");
           try {
             const result = await loader.invokeTool(context, {
               server_id: serverId,
@@ -1463,6 +1458,66 @@ async function admittedMcpTools(
   }
   sessionSignal.throwIfAborted();
   return tools;
+}
+
+function mcpToolParameters(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const types = new Set([
+    "object",
+    "array",
+    "string",
+    "number",
+    "integer",
+    "boolean",
+    "null",
+  ]);
+  let remaining = 256;
+  const project = (value: unknown, depth: number): Record<string, unknown> => {
+    if (
+      --remaining < 0 ||
+      depth > 8 ||
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value)
+    )
+      return {};
+    const node = value as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    if (typeof node.type === "string" && types.has(node.type))
+      result.type = node.type;
+    if (
+      node.properties &&
+      typeof node.properties === "object" &&
+      !Array.isArray(node.properties)
+    ) {
+      const props = Object.fromEntries(
+        Object.entries(node.properties)
+          .slice(0, Math.min(64, remaining))
+          .filter(
+            ([key]) =>
+              /^[a-zA-Z0-9_.-]{1,80}$/.test(key) &&
+              !["__proto__", "constructor", "prototype"].includes(key),
+          )
+          .map(([key, child]) => [key, project(child, depth + 1)]),
+      );
+      result.properties = props;
+      if (Array.isArray(node.required)) {
+        result.required = [
+          ...new Set(
+            node.required.filter(
+              (key): key is string =>
+                typeof key === "string" && Object.hasOwn(props, key),
+            ),
+          ),
+        ];
+      }
+    }
+    if (node.items && typeof node.items === "object")
+      result.items = project(node.items, depth + 1);
+    return result;
+  };
+  return { ...project(schema, 0), type: "object" };
 }
 
 const toolResult = (text: string) => ({

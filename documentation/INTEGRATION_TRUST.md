@@ -69,9 +69,11 @@ Not protected or not implemented:
 
 ## Host-owned CLI approval flow (`mars mcp`)
 
-To expose approved tools in agent sessions, start `mars serve --mcp-state-dir <dir> --owner <id> --project <id>` with the same host-private state directory and scope used for `mars mcp review` and `mars mcp approve`. Without this flag, agent sessions expose no MCP tools. Each session closes its own connections on shutdown.
+To expose approved tools in agent sessions, start `mars serve --mcp-state-dir <dir> --owner <id> --project <id>` with the same host-private state directory and scope used for `mars mcp review` and `mars mcp approve`. Without this flag, agent sessions expose no MCP tools. Text-only models can run without MCP tools. Each session closes its own connections on shutdown.
 
 `mars mcp` provides a host-owned CLI backed by `createHostMcpControlPlane` (storing the trust store, server registry, and 32-byte HMAC approval key in a host-owned state directory outside workspaces, defaulting to `$XDG_STATE_HOME/mars/integration-trust` or `~/.local/state/mars/integration-trust`):
+
+Server registrations are isolated by scope. If upgrading from a build with a shared registry, run review and approval again in each intended scope; unscoped registrations are not imported automatically. New stdio reviews bind both the resolved executable and the optional entrypoint.
 
 ```sh
 # List registered servers, pending reviews, and active grants (empty by default)

@@ -53,7 +53,18 @@ export interface McpTransportConnection {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+export class McpConnectionLostError extends Error {}
 const BASELINE_SAFE_ENV_KEYS = ["PATH", "HOME", "TMPDIR", "LANG", "TERM"];
+
+export function resolveStdioExecutable(config: StdioTransportConfig): string {
+  const path = Bun.which(config.command, {
+    cwd: config.cwd ?? process.cwd(),
+    PATH:
+      process.env.PATH ?? (process.platform === "win32" ? "" : "/usr/bin:/bin"),
+  });
+  if (!path) throw new Error("MCP stdio executable could not be resolved");
+  return path;
+}
 
 function buildSanitizedEnv(allowlist: readonly string[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -233,37 +244,49 @@ export class StdioMcpTransport implements McpTransportConnection {
     this.config = config;
   }
 
-  private ensureStarted(): ChildProcessWithoutNullStreams {
+  get isRunning(): boolean {
+    const proc = this.child;
+    return Boolean(
+      proc &&
+        !proc.killed &&
+        proc.exitCode === null &&
+        proc.signalCode === null,
+    );
+  }
+
+  private start(): void {
     if (this.closed) {
       throw new Error("MCP stdio transport is closed");
     }
-    if (this.child && !this.child.killed && this.child.exitCode === null) {
-      return this.child;
-    }
-    const proc = spawn(this.config.command, this.config.args, {
+    if (this.child) throw new Error("MCP stdio transport already started");
+    const proc = spawn(resolveStdioExecutable(this.config), this.config.args, {
       ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       env: buildSanitizedEnv(this.config.env_allowlist),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = proc;
+    proc.stdin.on("error", (error) => {
+      this.rejectAllPending(
+        new McpConnectionLostError("MCP stdio stdin failed", { cause: error }),
+      );
+    });
+    proc.stderr.resume();
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk: string) => {
       this.onStdoutData(chunk);
     });
     proc.on("error", (err) => {
       this.rejectAllPending(
-        new Error(`MCP stdio process error: ${err.message}`),
+        new McpConnectionLostError(`MCP stdio process error: ${err.message}`),
       );
     });
     proc.on("exit", (code, signal) => {
-      this.child = null;
       this.rejectAllPending(
-        new Error(
+        new McpConnectionLostError(
           `MCP stdio process exited (code=${String(code)}, signal=${String(signal)})`,
         ),
       );
     });
-    return proc;
   }
 
   private onStdoutData(chunk: string): void {
@@ -315,7 +338,12 @@ export class StdioMcpTransport implements McpTransportConnection {
     if (options?.signal?.aborted) {
       return Promise.reject(new Error("MCP request aborted"));
     }
-    const proc = this.ensureStarted();
+    const proc = this.child;
+    if (!proc || !this.isRunning) {
+      return Promise.reject(
+        new McpConnectionLostError("MCP stdio process is not running"),
+      );
+    }
     const id = this.nextId++;
     const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const payload: JsonRpcRequest = {
@@ -356,7 +384,12 @@ export class StdioMcpTransport implements McpTransportConnection {
             this.pending.delete(id);
             clearTimeout(entry.timer);
             entry.cleanupAbort?.();
-            entry.reject(err);
+            entry.reject(
+              new McpConnectionLostError(
+                "MCP stdio request could not be written",
+                { cause: err },
+              ),
+            );
           }
         }
       });
@@ -379,6 +412,8 @@ export class StdioMcpTransport implements McpTransportConnection {
   }
 
   async initialize(options?: McpRequestOptions): Promise<McpServerDescriptor> {
+    options?.signal?.throwIfAborted();
+    this.start();
     const deadlineMs =
       options?.timeoutMs !== undefined
         ? Date.now() + options.timeoutMs
@@ -430,7 +465,13 @@ export class StdioMcpTransport implements McpTransportConnection {
     this.rejectAllPending(new Error("MCP stdio transport closed"));
     const proc = this.child;
     this.child = null;
-    if (!proc || proc.killed || proc.exitCode !== null) return;
+    if (
+      !proc ||
+      proc.killed ||
+      proc.exitCode !== null ||
+      proc.signalCode !== null
+    )
+      return;
     await new Promise<void>((resolve) => {
       const killTimer = setTimeout(() => {
         try {
@@ -571,12 +612,13 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       throw new Error("MCP Streamable HTTP origin mismatch");
     }
 
+    const sessionId = this.sessionId;
     const headers: Record<string, string> = {
       ...this.sessionHeaders,
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
-      ...(this.sessionId ? { "Mcp-Session-Id": this.sessionId } : {}),
+      ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
     };
 
     const controller = new AbortController();
@@ -609,6 +651,10 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
         );
       }
 
+      if (response.status === 404 && sessionId) {
+        await response.body?.cancel().catch(() => {});
+        throw new McpConnectionLostError("MCP HTTP session expired");
+      }
       const nextSessionId = response.headers.get("mcp-session-id");
       if (nextSessionId) {
         this.sessionId = nextSessionId;

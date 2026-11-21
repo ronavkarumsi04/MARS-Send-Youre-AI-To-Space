@@ -254,6 +254,21 @@ describe("mars mcp CLI flow", () => {
     expect(result.content[0]?.text).toBe("ok-http");
     expect(result.stripped_steering_fields).toContain("_instructions");
 
+    const otherProject = [...common.slice(0, -1), "other-project"];
+    const otherUrl = new URL("/other", url).href;
+    await execMcpCli([
+      "review",
+      "http-demo",
+      "--url",
+      otherUrl,
+      ...otherProject,
+    ]);
+    expect(await execMcpCli(["list", ...common])).not.toContain(otherUrl);
+    expect(await execMcpCli(["list", ...otherProject])).toContain(otherUrl);
+    await expect(
+      execMcpCli(["review", "UpperCase", "--url", url, ...common]),
+    ).rejects.toThrow("server id must be lowercase");
+
     // Failed replacement review must NOT overwrite the working registered server
     await expect(
       execMcpCli([
@@ -389,6 +404,11 @@ describe("mars mcp CLI flow", () => {
       };
       expect(result.content[0]?.text).toBe("authed");
       expect(authHeaders).toEqual(["Bearer cli-secret-xyz"]);
+      await execMcpCli(["test", "cred-demo", "--tool", "whoami", ...common]);
+      expect(authHeaders).toEqual([
+        "Bearer cli-secret-xyz",
+        "Bearer cli-secret-xyz",
+      ]);
 
       // Credential refs with punctuation (hyphens/periods) must be rejected at
       // review time so they cannot be approved without a 1-to-1 env mapping or
@@ -613,5 +633,15 @@ describe("mars mcp CLI flow", () => {
       { grant_id: older, state: "approved", expired: false },
       { grant_id: newer, state: "approved", expired: true },
     ]);
+    const active = await approve("60000");
+    await execMcpCli(["revoke", active, ...common]);
+    expect(await execMcpCli(["list", ...common])).toContain(
+      `revoked (grant=${active})`,
+    );
+    await expect(
+      execMcpCli(["test", "exp-demo", ...common]),
+    ).rejects.toMatchObject({
+      code: "revoked",
+    });
   });
 });

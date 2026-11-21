@@ -556,9 +556,8 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
       const grants = l.state.grants.filter((g) =>
         matches(ctx as RequestContext, id.data, g),
       );
-      r = grants.findLast((g) => g.state === "approved");
+      r = grants.findLast((g) => g.state !== "superseded");
       if (!r) {
-        if (grants.some((g) => g.state === "revoked")) fail("revoked");
         if (
           !l.state.reviews.some((v) =>
             matches(ctx as RequestContext, id.data, v),
@@ -567,6 +566,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           fail("unknown_integration");
         fail("no_grant");
       }
+      if (r.state === "revoked") fail("revoked");
       if (clock().getTime() >= Date.parse(r.expires_at)) fail("expired");
       const evidence = await observe(
         ctx,

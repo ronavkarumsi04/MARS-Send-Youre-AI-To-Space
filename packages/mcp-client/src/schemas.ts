@@ -27,8 +27,8 @@ const ServerIdSchema = z
   .min(1)
   .max(128)
   .regex(
-    /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
-    "server id must be ASCII alphanumeric with ., _, or -",
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "server id must be lowercase ASCII alphanumeric with ., _, or -",
   );
 
 const EnvKeySchema = z

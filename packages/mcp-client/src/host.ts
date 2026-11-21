@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -13,6 +13,7 @@ import {
   type IntegrationTrustAdmin,
   IntegrationTrustError,
   type IntegrationTrustOptions,
+  scopeKey,
   signApproval,
   type TrustState,
 } from "@mars/integration-trust";
@@ -29,6 +30,7 @@ export interface HostMcpControlPlaneOptions {
   stateDir?: string;
   /** Agent-writable workspace roots that stateDir must NOT be inside. */
   workspaceRoots?: string[];
+  scope?: Scope;
   /** Host approvers authorized to sign approval/denial/revocation proofs. */
   approvers?: ReadonlyArray<{
     approver_id: string;
@@ -135,8 +137,20 @@ export async function createHostMcpControlPlane(
 ): Promise<HostMcpControlPlane> {
   const stateDir = resolve(options.stateDir ?? defaultHostMcpStateDir());
   const workspaceRoots = options.workspaceRoots ?? [process.cwd()];
+  const firstApprover = options.approvers?.[0];
+  const scope =
+    options.scope ??
+    defaultRequestContext(
+      firstApprover?.owner_id,
+      firstApprover?.project_ids[0],
+    ).scope;
+  const registryScope = scopeKey(scope);
   const trustDir = resolve(stateDir, "trust");
-  const registryDir = resolve(stateDir, "registry");
+  const registryDir = resolve(
+    stateDir,
+    "registry",
+    createHash("sha256").update(registryScope).digest("hex"),
+  );
   const keyDir = resolve(stateDir, "keys");
 
   const registry = new FileMcpRegistry({ dir: registryDir, workspaceRoots });
@@ -162,12 +176,14 @@ export async function createHostMcpControlPlane(
   const approvalProbeContext = new AsyncLocalStorage<string>();
   const probe = new McpEvidenceProbe({
     registry,
+    scope,
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.credentialResolver
       ? { credentialResolver: options.credentialResolver }
       : {}),
     probeTimeoutMs,
     getTrustedBaseline: async (ctx, identity) => {
+      const requestScope = scopeKey(ctx.scope);
       const { state } = await store.load();
       const baselines: Array<{
         evidence: (typeof state.grants)[number]["evidence"];
@@ -177,8 +193,7 @@ export async function createHostMcpControlPlane(
           g.state === "approved" &&
           g.kind === identity.kind &&
           g.integration_id === identity.integration_id &&
-          g.scope.owner_id === ctx.scope.owner_id &&
-          g.scope.project_id === ctx.scope.project_id,
+          scopeKey(g.scope) === requestScope,
       );
       if (grant) baselines.push({ evidence: grant.evidence });
       const approvingReviewId = approvalProbeContext.getStore();
@@ -189,8 +204,7 @@ export async function createHostMcpControlPlane(
             r.state === "pending" &&
             r.kind === identity.kind &&
             r.integration_id === identity.integration_id &&
-            r.scope.owner_id === ctx.scope.owner_id &&
-            r.scope.project_id === ctx.scope.project_id,
+            scopeKey(r.scope) === requestScope,
         );
         if (pending) baselines.push({ evidence: pending.evidence });
       }
@@ -232,7 +246,11 @@ export async function createHostMcpControlPlane(
     isGrantActive: async (grantId) => {
       const { state } = await store.load();
       const grant = state.grants.find((g) => g.grant_id === grantId);
-      return grant?.state === "approved";
+      return (
+        grant?.state === "approved" &&
+        (options.clock?.().getTime() ?? Date.now()) <
+          Date.parse(grant.expires_at)
+      );
     },
   });
 

@@ -9,7 +9,11 @@ import {
   type Permission,
 } from "@mars/integration-trust";
 import { type McpAuthentication, selectMcpAuthentication } from "./credentials";
-import { buildDescriptorHash } from "./probe";
+import {
+  buildDescriptorHash,
+  matchesMcpToolEvidence,
+  verifyMcpConfig,
+} from "./probe";
 import type { McpServerRegistry } from "./registry";
 import { sanitizeToolOutput } from "./sanitize";
 import {
@@ -19,7 +23,12 @@ import {
   normalizeOrigin,
   type UntrustedToolOutput,
 } from "./schemas";
-import { createMcpTransport, type McpTransportConnection } from "./transports";
+import {
+  createMcpTransport,
+  McpConnectionLostError,
+  type McpTransportConnection,
+  StdioMcpTransport,
+} from "./transports";
 
 export interface AdmittedMcpServer {
   readonly server_id: string;
@@ -67,6 +76,7 @@ interface ActiveConnection {
   transport: McpTransportConnection;
   descriptor: McpServerDescriptor;
   inFlight: Set<AbortController>;
+  evict(): Promise<void>;
 }
 
 export interface TrustedMcpLoader {
@@ -111,11 +121,15 @@ export function createTrustedMcpLoader(
     await Promise.allSettled(
       [...server.contexts.values()].map(async (connection) => {
         const active = await connection;
-        for (const controller of active.inFlight) controller.abort();
-        active.inFlight.clear();
-        await active.transport.close();
+        await closeConnection(active);
       }),
     );
+  }
+
+  async function closeConnection(active: ActiveConnection) {
+    for (const controller of active.inFlight) controller.abort();
+    active.inFlight.clear();
+    await active.transport.close().catch(() => {});
   }
 
   async function openConnection(
@@ -124,6 +138,7 @@ export function createTrustedMcpLoader(
     timeoutMs: number,
     authentication?: McpAuthentication,
   ): Promise<ActiveConnection> {
+    const executable = await verifyMcpConfig(server, artifact.evidence);
     let current = connections.get(server.id);
     if (
       current &&
@@ -147,9 +162,27 @@ export function createTrustedMcpLoader(
           .update(JSON.stringify([authentication.ref, authentication.headers]))
           .digest("hex")
       : "anonymous";
-    const existing = contexts.get(key);
-    if (existing) return existing;
-    const transport = createMcpTransport(server.transport);
+    for (
+      let existing = contexts.get(key);
+      existing;
+      existing = contexts.get(key)
+    ) {
+      const active = await existing;
+      if (
+        !(active.transport instanceof StdioMcpTransport) ||
+        active.transport.isRunning
+      )
+        return active;
+      await active.evict();
+      if (connections.get(server.id) !== current) {
+        throw new McpConnectionLostError("MCP connection was closed");
+      }
+    }
+    const transport = createMcpTransport(
+      server.transport.type === "stdio" && executable
+        ? { ...server.transport, command: executable }
+        : server.transport,
+    );
     const pending = (async (): Promise<ActiveConnection> => {
       try {
         const descriptor = await transport.initialize({
@@ -157,13 +190,23 @@ export function createTrustedMcpLoader(
           ...(authentication ? { extraHeaders: authentication.headers } : {}),
         });
         if (
-          transport.transportType === "streamable-http" &&
-          buildDescriptorHash(descriptor) !==
-            artifact.evidence.endpoint?.descriptor_sha256
+          transport.transportType === "streamable-http"
+            ? buildDescriptorHash(descriptor) !==
+              artifact.evidence.endpoint?.descriptor_sha256
+            : !matchesMcpToolEvidence(descriptor, artifact.evidence)
         ) {
           throw new IntegrationTrustError("drift");
         }
-        return { transport, descriptor, inFlight: new Set() };
+        const active: ActiveConnection = {
+          transport,
+          descriptor,
+          inFlight: new Set(),
+          async evict() {
+            if (contexts.get(key) === pending) contexts.delete(key);
+            await closeConnection(active);
+          },
+        };
+        return active;
       } catch (error) {
         contexts.delete(key);
         await transport.close().catch(() => {});
@@ -397,6 +440,9 @@ export function createTrustedMcpLoader(
               if (revokedMidFlight) {
                 await teardownServer(currentServer.id);
                 throw new IntegrationTrustError("revoked", { cause: error });
+              }
+              if (error instanceof McpConnectionLostError) {
+                await active.evict();
               }
               throw error;
             } finally {

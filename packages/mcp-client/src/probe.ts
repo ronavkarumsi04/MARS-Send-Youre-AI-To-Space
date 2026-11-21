@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { resolve } from "node:path";
-import type { RequestContext } from "@mars/contracts";
+import type { RequestContext, Scope } from "@mars/contracts";
 import {
   type AuthorizedArtifact,
   canonicalJSON,
@@ -8,6 +8,7 @@ import {
   type Identity,
   IntegrationTrustError,
   type SourceEvidence,
+  scopeKey,
   sha256,
 } from "@mars/integration-trust";
 import { selectMcpAuthentication } from "./credentials";
@@ -19,7 +20,7 @@ import {
   normalizeOrigin,
   type StdioTransportConfig,
 } from "./schemas";
-import { createMcpTransport } from "./transports";
+import { createMcpTransport, resolveStdioExecutable } from "./transports";
 
 export interface TrustedStdioBaseline {
   evidence: SourceEvidence;
@@ -27,6 +28,7 @@ export interface TrustedStdioBaseline {
 
 export interface McpEvidenceProbeOptions {
   registry: McpServerRegistry;
+  scope?: Scope;
   clock?: () => Date;
   probeTimeoutMs?: number;
   /**
@@ -69,15 +71,16 @@ async function hashFileOrSpec(
 ): Promise<string> {
   if (filePath) {
     const abs = resolve(filePath);
-    const bytes = await readFile(abs);
-    return sha256(bytes.toString("base64"));
+    const hasher = new Bun.CryptoHasher("sha256");
+    for await (const chunk of createReadStream(abs)) hasher.update(chunk);
+    return hasher.digest("hex");
   }
   return sha256(canonicalJSON(fallbackSpec));
 }
 
 function buildConfigHash(
   server: McpServerConfig,
-  entrypointSha?: string,
+  artifactSha?: string,
 ): string {
   if (server.transport.type === "stdio") {
     return sha256(
@@ -88,7 +91,7 @@ function buildConfigHash(
         cwd: server.transport.cwd ?? null,
         env_allowlist: [...server.transport.env_allowlist].sort(),
         entrypoint: server.transport.entrypoint ?? null,
-        entrypoint_sha256: entrypointSha ?? null,
+        artifact_sha256: artifactSha ?? null,
       }),
     );
   }
@@ -100,6 +103,45 @@ function buildConfigHash(
       credential_prefix: server.transport.credential_prefix ?? null,
     }),
   );
+}
+
+async function readStdioArtifact(config: StdioTransportConfig) {
+  const executable = resolveStdioExecutable(config);
+  const executableSha = await hashFileOrSpec(executable, null);
+  const entrypointSha = config.entrypoint
+    ? await hashFileOrSpec(config.entrypoint, null)
+    : null;
+  return {
+    executable,
+    sha: sha256(canonicalJSON({ executable, executableSha, entrypointSha })),
+  };
+}
+
+export async function verifyMcpConfig(
+  server: McpServerConfig,
+  expected: SourceEvidence,
+) {
+  const artifact =
+    server.transport.type === "stdio"
+      ? await readStdioArtifact(server.transport)
+      : undefined;
+  if (buildConfigHash(server, artifact?.sha) !== expected.config_sha256) {
+    throw new IntegrationTrustError("drift");
+  }
+  if (
+    server.transport.type === "stdio" &&
+    (await stdioDependencyHash(server.transport)) !== expected.dependency_sha256
+  ) {
+    throw new IntegrationTrustError("drift");
+  }
+  return artifact?.executable;
+}
+
+function stdioDependencyHash(config: StdioTransportConfig) {
+  return hashFileOrSpec(config.dependency_manifest, {
+    command: config.command,
+    args: config.args,
+  });
 }
 
 function buildToolEvidence(descriptor: McpServerDescriptor) {
@@ -115,6 +157,22 @@ function buildToolEvidence(descriptor: McpServerDescriptor) {
       ? sha256(canonicalJSON(tool.outputSchema))
       : null,
   }));
+}
+
+export function matchesMcpToolEvidence(
+  descriptor: McpServerDescriptor,
+  evidence: SourceEvidence,
+): boolean {
+  return (
+    canonicalJSON(
+      buildToolEvidence(descriptor).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+    ) ===
+    canonicalJSON(
+      [...evidence.tools].sort((a, b) => a.name.localeCompare(b.name)),
+    )
+  );
 }
 
 export function buildDescriptorHash(descriptor: McpServerDescriptor): string {
@@ -161,6 +219,7 @@ export async function probeMcpServerDescriptor(
  */
 export class McpEvidenceProbe implements EvidenceProbe {
   private readonly registry: McpServerRegistry;
+  private readonly registryScope: string | undefined;
   private readonly clock: () => Date;
   private readonly probeTimeoutMs: number;
   private readonly getTrustedBaseline:
@@ -174,6 +233,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
 
   constructor(options: McpEvidenceProbeOptions) {
     this.registry = options.registry;
+    this.registryScope = options.scope ? scopeKey(options.scope) : undefined;
     this.clock = options.clock ?? (() => new Date());
     this.probeTimeoutMs = options.probeTimeoutMs ?? 4_000;
     this.getTrustedBaseline = options.getTrustedBaseline;
@@ -186,6 +246,12 @@ export class McpEvidenceProbe implements EvidenceProbe {
     identity: Identity,
     authorization?: ObserveServerOptions["authorization"],
   ): Promise<SourceEvidence> {
+    if (
+      this.registryScope !== undefined &&
+      this.registryScope !== scopeKey(ctx.scope)
+    ) {
+      throw new IntegrationTrustError("scope_mismatch");
+    }
     if (identity.kind !== "mcp") {
       throw new IntegrationTrustError("evidence_unavailable");
     }
@@ -205,6 +271,12 @@ export class McpEvidenceProbe implements EvidenceProbe {
     server: McpServerConfig,
     options?: ObserveServerOptions,
   ): Promise<SourceEvidence> {
+    if (
+      this.registryScope !== undefined &&
+      this.registryScope !== scopeKey(ctx.scope)
+    ) {
+      throw new IntegrationTrustError("scope_mismatch");
+    }
     const observedAt = this.clock().toISOString();
 
     if (server.transport.type === "streamable-http") {
@@ -254,14 +326,9 @@ export class McpEvidenceProbe implements EvidenceProbe {
     const stdio: StdioTransportConfig = server.transport;
     // Hash static local artifacts BEFORE spawning the stdio process so
     // tampered or unapproved executables are never launched before trust checks.
-    const entrypointSha = stdio.entrypoint
-      ? await hashFileOrSpec(stdio.entrypoint, null)
-      : undefined;
-    const configSha = buildConfigHash(server, entrypointSha);
-    const dependencySha = await hashFileOrSpec(stdio.dependency_manifest, {
-      command: stdio.command,
-      args: stdio.args,
-    });
+    const { executable, sha: artifactSha } = await readStdioArtifact(stdio);
+    const configSha = buildConfigHash(server, artifactSha);
+    const dependencySha = await stdioDependencyHash(stdio);
 
     const allowUnapproved =
       options?.allowUnapprovedStdioProbe ?? this.allowUnapprovedStdioProbe;
@@ -295,7 +362,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
       if (!matched) {
         const driftedContentSha = sha256(
           canonicalJSON({
-            artifact_sha256: entrypointSha ?? configSha,
+            artifact_sha256: artifactSha,
             descriptor_sha256: "unprobed-artifact-drift",
           }),
         );
@@ -305,7 +372,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
           integration_id: server.id,
           source: {
             type: "local-artifact",
-            locator: stdio.entrypoint ?? stdio.command,
+            locator: stdio.entrypoint ?? executable,
             revision: deriveStdioRevision(driftedContentSha),
             content_sha256: driftedContentSha,
           },
@@ -319,25 +386,16 @@ export class McpEvidenceProbe implements EvidenceProbe {
     }
 
     const descriptor = await probeMcpServerDescriptor(
-      server,
+      { ...server, transport: { ...stdio, command: executable } },
       this.probeTimeoutMs,
     );
     const tools = buildToolEvidence(descriptor);
     const descriptorSha = buildDescriptorHash(descriptor);
-    const contentSha =
-      entrypointSha ??
-      sha256(
-        canonicalJSON({
-          command: stdio.command,
-          args: stdio.args,
-          descriptor_sha256: descriptorSha,
-        }),
-      );
     // Mix descriptorSha into content_sha256 so even if entrypoint bytes didn't
     // change (e.g. dynamic tool list), descriptor drift always changes the binding.
     const combinedContentSha = sha256(
       canonicalJSON({
-        artifact_sha256: contentSha,
+        artifact_sha256: artifactSha,
         descriptor_sha256: descriptorSha,
       }),
     );
@@ -348,7 +406,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
       integration_id: server.id,
       source: {
         type: "local-artifact",
-        locator: stdio.entrypoint ?? stdio.command,
+        locator: stdio.entrypoint ?? executable,
         revision: deriveStdioRevision(combinedContentSha),
         content_sha256: combinedContentSha,
       },

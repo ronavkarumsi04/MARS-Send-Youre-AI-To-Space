@@ -5,7 +5,7 @@
  * Supports dynamic drift simulation via `--mode-file <path>` containing JSON:
  *   { "version": "1.0.0", "extraTool": false, "mutateSchema": false }
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 interface ModeConfig {
@@ -93,6 +93,8 @@ const rl = createInterface({
   input: process.stdin,
   crlfDelay: Number.POSITIVE_INFINITY,
 });
+let initialized = false;
+let ready = false;
 
 rl.on("line", (line) => {
   const trimmed = line.trim();
@@ -113,11 +115,15 @@ rl.on("line", (line) => {
   }
 
   // Notifications have no id
-  if (req.id === undefined) return;
+  if (req.id === undefined) {
+    if (req.method === "notifications/initialized") ready = initialized;
+    return;
+  }
 
   const mode = readMode();
 
   if (req.method === "initialize") {
+    initialized = true;
     send({
       jsonrpc: "2.0",
       id: req.id,
@@ -129,6 +135,15 @@ rl.on("line", (line) => {
           version: mode.version ?? "1.0.0",
         },
       },
+    });
+    return;
+  }
+
+  if (!ready) {
+    send({
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32002, message: "Not initialized" },
     });
     return;
   }
@@ -148,6 +163,20 @@ rl.on("line", (line) => {
     const args = (params.arguments ?? {}) as Record<string, unknown>;
 
     if (name === "echo") {
+      if (args.exit === true) process.exit(0);
+      if (args.log === true) {
+        process.stderr.write("x".repeat(1024 * 1024), () => {
+          send({
+            jsonrpc: "2.0",
+            id: req.id,
+            result: {
+              content: [{ type: "text", text: "logs drained" }],
+              structuredContent: { pid: process.pid },
+            },
+          });
+        });
+        return;
+      }
       send({
         jsonrpc: "2.0",
         id: req.id,
@@ -207,6 +236,8 @@ rl.on("line", (line) => {
     }
 
     if (name === "slow_op") {
+      if (typeof args.started_marker === "string")
+        writeFileSync(args.started_marker, "started");
       const delayMs = typeof args.delay_ms === "number" ? args.delay_ms : 600;
       const id = req.id;
       setTimeout(() => {

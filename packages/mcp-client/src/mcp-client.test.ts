@@ -277,6 +277,7 @@ async function createControlPlane(options?: {
   credentialResolver?: McpCredentialResolver;
   workspaceRoots?: string[];
   stateDir?: string;
+  clock?: () => Date;
 }) {
   const owner = options?.owner ?? "operator-a";
   const project = options?.project ?? "proj-1";
@@ -284,6 +285,7 @@ async function createControlPlane(options?: {
   const cp = await createHostMcpControlPlane({
     stateDir,
     workspaceRoots: options?.workspaceRoots ?? [],
+    ...(options?.clock ? { clock: options.clock } : {}),
     approvers: [
       {
         approver_id: owner,
@@ -345,6 +347,8 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     const cp = await createControlPlane({ workspaceRoots: [workspaceDir] });
     const ctx = makeCtx();
     expect(await cp.registry.list()).toEqual([]);
+    expect(await cp.registry.get("constructor")).toBeUndefined();
+    expect(await cp.registry.remove("constructor")).toBe(false);
 
     await expect(
       cp.loader.admitServer(ctx, "unregistered"),
@@ -424,6 +428,84 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       delete process.env.MARS_TEST_ALLOWED_VAR;
       delete process.env.MARS_TEST_AMBIENT_SECRET;
     }
+  });
+
+  it("reinitializes a new stdio child after exit and drains stderr without blocking the response", async () => {
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "stdio-recovery",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        args: ["run", STDIO_FIXTURE],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const invoke = (input: Record<string, unknown>) =>
+      cp.loader.invokeTool(ctx, {
+        server_id: config.id,
+        tool: "echo",
+        input,
+        timeout_ms: 2000,
+      });
+    await expect(invoke({ exit: true })).rejects.toThrow(
+      "MCP stdio process exited",
+    );
+    const result = await invoke({ log: true });
+    expect(result.content[0]?.text).toBe("logs drained");
+    const { pid } = result.structured_content as { pid: number };
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, "SIGTERM");
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        expect(error).toMatchObject({ code: "ESRCH" });
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    expect((await invoke({ message: "new child" })).content[0]?.text).toBe(
+      "echo:new child",
+    );
+  });
+
+  it("detects replacement of the command itself without spawning it or requiring an entrypoint", async () => {
+    const dir = await makeTempDir("mars-stdio-executable-");
+    const executable = join(dir, "mcp");
+    const marker = join(dir, "spawned");
+    await writeFile(
+      executable,
+      `#!/bin/sh\nexec "${BUN_BIN}" run "${STDIO_FIXTURE}"\n`,
+      { mode: 0o700 },
+    );
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "replaced-executable",
+      transport: {
+        type: "stdio",
+        command: "./mcp",
+        cwd: dir,
+        args: [],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    await writeFile(
+      executable,
+      `#!/bin/sh\ntouch "${marker}"\nexec "${BUN_BIN}" run "${STDIO_FIXTURE}"\n`,
+    );
+    await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
+      code: "drift",
+    });
+    expect(await Bun.file(marker).exists()).toBe(false);
   });
 
   it("detects stdio descriptor drift on per-dispatch re-probe, supersedes grant, and requires re-approval", async () => {
@@ -531,6 +613,9 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
   it("aborts in-flight stdio tool invocation on mid-flight revocation", async () => {
     const cp = await createControlPlane();
     const ctx = makeCtx();
+    const marker = Bun.file(
+      join(await makeTempDir("mars-mcp-slow-"), "started"),
+    );
     const config = makeConfig({
       id: "slow-stdio",
       transport: {
@@ -549,11 +634,17 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     const inflight = cp.loader.invokeTool(ctx, {
       server_id: "slow-stdio",
       tool: "slow_op",
-      input: { delay_ms: 800 },
+      input: { delay_ms: 800, started_marker: marker.name },
     });
 
-    // Wait briefly so the tool call is mid-flight, then revoke the grant
-    await new Promise((r) => setTimeout(r, 120));
+    for (
+      let attempt = 0;
+      attempt < 200 && !(await marker.exists());
+      attempt++
+    ) {
+      await Bun.sleep(10);
+    }
+    expect(await marker.exists()).toBe(true);
     const revokeProof = cp.signHostProof({
       review_id: grant.review_id,
       review_revision: grant.revision,
@@ -579,6 +670,35 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         input: { delay_ms: 50 },
       }),
     ).rejects.toMatchObject({ code: "revoked" });
+  });
+
+  it("withholds a tool result if the grant expires in flight", async () => {
+    let now = Date.now();
+    const fixture = startStatefulMcpServer(["ping"], { type: "object" }, () => {
+      now += 11000;
+    });
+    activeServers.push(fixture.server);
+    const origin = fixture.server.url.origin;
+    const cp = await createControlPlane({ clock: () => new Date(now) });
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "expires-in-flight",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+      ],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config, 10000);
+    await expect(
+      cp.loader.invokeTool(ctx, {
+        server_id: config.id,
+        tool: "ping",
+        input: {},
+      }),
+    ).rejects.toMatchObject({ code: "revoked" });
+    expect(fixture.calls).toHaveLength(1);
   });
 
   it("supports Streamable HTTP (JSON + SSE), caps remote grant lifetime, enforces origin-bound credentials, and detects drift", async () => {
@@ -1457,5 +1577,51 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     });
     expect(fixture.sessions.size).toBe(0);
     expect(fixture.calls).toHaveLength(4);
+  });
+
+  it("reinitializes only the expired HTTP authentication context without replaying the tool call", async () => {
+    const fixture = startStatefulMcpServer();
+    activeServers.push(fixture.server);
+    const origin = fixture.server.url.origin;
+    const cp = await createControlPlane({
+      credentialResolver: {
+        async resolve({ ref_id }) {
+          return ref_id;
+        },
+      },
+    });
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "expires-session",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+        { capability: "credential.use", resource: "primary" },
+      ],
+      credential_bindings: [{ ref_id: "primary", allowed_origin: origin }],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const invoke = (credential_ref?: string) =>
+      cp.loader.invokeTool(ctx, {
+        server_id: config.id,
+        tool: "ping",
+        input: {},
+        ...(credential_ref ? { credential_ref } : {}),
+      });
+    await invoke("primary");
+    await invoke();
+    const expiredId = fixture.calls[0]?.id;
+    const anonymousId = fixture.calls[1]?.id;
+    if (!expiredId || !anonymousId)
+      throw new Error("Missing invocation sessions");
+    fixture.expireSession(expiredId);
+    await expect(invoke("primary")).rejects.toThrow("MCP HTTP session expired");
+    expect(fixture.expiredCalls).toEqual([expiredId]);
+    expect(fixture.calls).toHaveLength(2);
+    await invoke();
+    expect(fixture.calls.at(-1)?.id).toBe(anonymousId);
+    expect((await invoke("primary")).content[0]?.text).toBe("pong");
+    expect(fixture.calls.at(-1)?.id).not.toBe(expiredId);
   });
 });

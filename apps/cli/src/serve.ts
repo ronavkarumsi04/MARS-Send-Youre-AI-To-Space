@@ -516,7 +516,10 @@ export async function runServer(
     ...(specialists ? { specialists } : {}),
     ...(editFormats ? { editFormats } : {}),
     ...(mcpStateDir
-      ? { mcp: (cwd: string) => openRuntimeMcp(mcpStateDir, [source, cwd]) }
+      ? {
+          mcp: (cwd, scope) =>
+            openRuntimeMcp(mcpStateDir, [source, cwd], scope),
+        }
       : {}),
     trustProjectConfig: trustProject,
   });

@@ -235,7 +235,9 @@ export class FileMcpRegistry implements McpServerRegistry {
 
   async get(serverId: string): Promise<McpServerConfig | undefined> {
     const state = await this.readState();
-    return state.servers[serverId];
+    return Object.hasOwn(state.servers, serverId)
+      ? state.servers[serverId]
+      : undefined;
   }
 
   async upsert(config: McpServerConfig): Promise<void> {
@@ -250,7 +252,7 @@ export class FileMcpRegistry implements McpServerRegistry {
   async remove(serverId: string): Promise<boolean> {
     return this.withLock(async () => {
       const state = await this.readState();
-      if (!(serverId in state.servers)) return false;
+      if (!Object.hasOwn(state.servers, serverId)) return false;
       delete state.servers[serverId];
       await this.writeState(state);
       return true;
