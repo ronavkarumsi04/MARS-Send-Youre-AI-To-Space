@@ -524,9 +524,7 @@ async function runServe(
   // removed across restarts until explicitly re-added.
   const ensureMember = (user_id: string, isFirst: boolean) => {
     provisionedUsers.add(user_id);
-    if (
-      opened.teamMemberState({ team_id: options.team, user_id }) === null
-    ) {
+    if (opened.teamMemberState({ team_id: options.team, user_id }) === null) {
       opened.setTeamMember({
         team_id: options.team,
         user_id,
