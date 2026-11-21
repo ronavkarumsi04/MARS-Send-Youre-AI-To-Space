@@ -6,6 +6,8 @@
  * an external runtime: nothing here owns a session, a model or a tool loop.
  */
 
+import { join, resolve } from "node:path";
+
 export interface GraphifyInvocation {
   args: string[];
   cwd: string;
@@ -50,6 +52,7 @@ const INHERITED_ENV = [
 export function sandboxEnvironment(
   options: Pick<GraphifyRunnerOptions, "env" | "processEnv"> & {
     dataRoot: string;
+    outRoot?: string;
   },
 ): Record<string, string> {
   const source = options.processEnv ?? process.env;
@@ -61,7 +64,11 @@ export function sandboxEnvironment(
   env.HOME = options.dataRoot;
   env.XDG_CACHE_HOME = options.dataRoot;
   env.XDG_CONFIG_HOME = options.dataRoot;
-  env.GRAPHIFY_OUT = options.dataRoot;
+  /* Graphify joins --out with GRAPHIFY_OUT; an absolute value must include --out. */
+  env.GRAPHIFY_OUT = join(
+    options.outRoot ?? join(options.dataRoot, "out"),
+    "graphify-out",
+  );
   env.PYTHONIOENCODING = "utf-8";
   env.PYTHONUNBUFFERED = "1";
   env.PYTHONDONTWRITEBYTECODE = "1";
@@ -110,6 +117,37 @@ async function readCapped(
   };
 }
 
+function extractionOutput(args: readonly string[]): string | undefined {
+  if (args[0] !== "extract") return undefined;
+  let out: string | undefined;
+  // graphifyy 0.9.101 uses a manual scanner, not argparse abbreviation rules.
+  const valueFlags = new Set([
+    "--backend",
+    "--model",
+    "--mode",
+    "--as",
+    "--max-workers",
+    "--token-budget",
+    "--max-concurrency",
+    "--api-timeout",
+    "--resolution",
+    "--exclude-hubs",
+    "--exclude",
+    "--postgres",
+  ]);
+  for (let i = args[1]?.startsWith("-") ? 1 : 2; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if ((arg === "--out" || arg === "--output") && i + 1 < args.length) {
+      out = args[++i];
+    } else if (arg.startsWith("--out=") || arg.startsWith("--output=")) {
+      out = arg.slice(arg.indexOf("=") + 1);
+    } else if (valueFlags.has(arg) && i + 1 < args.length) {
+      i++;
+    }
+  }
+  return out;
+}
+
 export function createGraphifyRunner(
   options: GraphifyRunnerOptions,
 ): GraphifyRunner {
@@ -118,6 +156,7 @@ export function createGraphifyRunner(
   return {
     async run(invocation) {
       const started = Date.now();
+      const requestedOut = extractionOutput(invocation.args);
       let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
         child = Bun.spawn([executable, ...prefix, ...invocation.args], {
@@ -128,6 +167,9 @@ export function createGraphifyRunner(
           env: sandboxEnvironment({
             ...options,
             dataRoot: invocation.dataRoot,
+            ...(requestedOut !== undefined
+              ? { outRoot: resolve(invocation.cwd, requestedOut) }
+              : {}),
           }),
         });
       } catch (error) {

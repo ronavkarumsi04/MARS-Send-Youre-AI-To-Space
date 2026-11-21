@@ -578,6 +578,57 @@ test("failure logs name the cause: provider errors and failed withdrawals", asyn
   ]);
 });
 
+test("the registry gateway sends a custom free OpenRouter model ID unchanged", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mars-review-gateway-"));
+  roots.push(dir);
+  const { loadModelRegistry } = await import("@mars/providers");
+  const { createRegistryReviewGateway } = await import("./model");
+  const env = { OPENROUTER_API_KEY: "dummy-not-live" };
+  const registry = await loadModelRegistry({ cwd: dir, home: dir, env });
+  const model = "fixture/custom-review-model:free";
+  expect(registry.getModel(model)).toBeUndefined();
+  expect(registry.routes.default).not.toContain(model);
+  await registry.addModel({
+    id: model,
+    providerId: "openrouter",
+    model,
+    capabilities: { tools: true, vision: false, contextWindow: 32768 },
+    pricing: { free: true },
+  });
+  const requests: { url: string; body: unknown }[] = [];
+  const gateway = createRegistryReviewGateway({
+    registry,
+    model,
+    env,
+    fetch: async (url, init) => {
+      requests.push({ url, body: JSON.parse(String(init?.body)) });
+      return Response.json({
+        model,
+        choices: [
+          {
+            message: { role: "assistant", content: "reviewed" },
+            finish_reason: "stop",
+          },
+        ],
+      });
+    },
+  });
+  const reply = await gateway.complete({
+    system: "s",
+    user: "u",
+    maxTokens: 16,
+    timeoutMs: 1_000,
+    signal: new AbortController().signal,
+  });
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.url).toBe(
+    "https://openrouter.ai/api/v1/chat/completions",
+  );
+  expect(requests[0]?.body).toMatchObject({ model });
+  expect(reply.text).toBe("reviewed");
+  expect(reply.model).toBe(model);
+});
+
 test("the registry gateway maps an exhausted 429 route to ReviewRateLimit", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mars-review-gateway-"));
   roots.push(dir);
