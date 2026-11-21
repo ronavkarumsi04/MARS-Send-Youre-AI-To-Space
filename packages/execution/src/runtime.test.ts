@@ -10,10 +10,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelConfig, Task } from "@mars/contracts";
+import type { ModelConfig, RequestContext, Task } from "@mars/contracts";
+import {
+  createHostMcpControlPlane,
+  type McpServerConfig,
+} from "@mars/mcp-client";
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { AgentSession, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { startStatefulMcpServer } from "../../mcp-client/src/__fixtures__/stateful-http";
 import { anchorOf } from "./anchored-edit";
 import type { EditFormat } from "./edit-format";
 import {
@@ -520,6 +525,147 @@ test("execution chooses free models automatically and rejects unpriced paid mode
     await f.cleanup();
   }
 });
+
+test("normal runtime registers only scope-approved MCP tools and checks revocation before each model call", async () => {
+  const f = await fixture();
+  const http = startStatefulMcpServer(["ping", "unapproved"]);
+  const origin = http.server.url.origin;
+  try {
+    const { owner_id, project_id } = f.task.scope;
+    const context: RequestContext = {
+      schema_version: 1,
+      scope: f.task.scope,
+      request_id: f.task.task_id,
+    };
+    const cp = await createHostMcpControlPlane({
+      stateDir: join(f.root, "mcp"),
+      workspaceRoots: [f.cwd],
+      approvers: [
+        { approver_id: owner_id, owner_id, project_ids: [project_id] },
+      ],
+      credentialResolver: {
+        async resolve(request) {
+          expect(request.target_origin).toBe(origin);
+          expect(request.ref_id).toBe("runtime_token");
+          return "runtime-test-token";
+        },
+      },
+    });
+    const config: McpServerConfig = {
+      schema_version: 1,
+      id: "runtime-demo",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      registered_at: new Date().toISOString(),
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+        { capability: "credential.use", resource: "runtime_token" },
+      ],
+      credential_bindings: [
+        { ref_id: "runtime_token", allowed_origin: origin },
+      ],
+    };
+    await cp.registry.upsert(config);
+    const mcp = async () => ({
+      loader: cp.loader,
+      async listServerIds() {
+        return (await cp.registry.list()).map(({ id }) => id);
+      },
+    });
+    const denied = await f.open({ mcp });
+    expect(denied.toolNames.some((name) => name.startsWith("mars_mcp_"))).toBe(
+      false,
+    );
+    expect(http.deleted).toHaveLength(0);
+    await denied.dispose();
+
+    const review = await cp.admin.submitCandidate(context, {
+      evidence: await cp.probe.observeServer(context, config),
+      permissions: config.permissions,
+      credential_bindings: config.credential_bindings,
+    });
+    const grant = await cp.admin.approve(context, {
+      review_id: review.review_id,
+      expected_revision: review.revision,
+      proof: cp.signHostProof({
+        review_id: review.review_id,
+        review_revision: review.revision,
+        binding_sha256: review.binding_sha256,
+        scope: review.scope,
+        expires_at: review.expires_at,
+        decision: "approve",
+      }),
+    });
+    let modelCalls = 0;
+    const session = await f.open({
+      mcp,
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ function: { name: string } }>;
+          messages: unknown[];
+        };
+        const name = body.tools.find(({ function: tool }) =>
+          tool.name.startsWith("mars_mcp_ping_"),
+        )?.function.name;
+        if (!name)
+          throw new Error("Approved MCP tool was not offered to the model.");
+        modelCalls++;
+        if (modelCalls === 2) {
+          expect(JSON.stringify(body.messages)).toContain("pong");
+          expect(JSON.stringify(body.messages)).toContain("untrusted");
+          await cp.admin.revoke(context, {
+            grant_id: grant.grant_id,
+            expected_revision: grant.revision,
+            proof: cp.signHostProof({
+              review_id: grant.review_id,
+              review_revision: grant.revision,
+              binding_sha256: grant.binding_sha256,
+              scope: grant.scope,
+              expires_at: grant.expires_at,
+              decision: "revoke",
+            }),
+          });
+        }
+        if (modelCalls === 3) {
+          expect(JSON.stringify(body.messages)).toContain(
+            "MCP tool invocation was denied or failed",
+          );
+          return sse({ content: "Done." });
+        }
+        return sse(
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: `mcp_${modelCalls}`,
+                type: "function",
+                function: {
+                  name,
+                  arguments: JSON.stringify({ arguments_json: "{}" }),
+                },
+              },
+            ],
+          },
+          "tool_calls",
+        );
+      },
+    });
+    expect(
+      session.toolNames.filter((name) => name.startsWith("mars_mcp_")),
+    ).toHaveLength(1);
+    expect((await session.run("Call the approved MCP tool.")).status).toBe(
+      "completed",
+    );
+    expect(modelCalls).toBe(3);
+    expect(http.calls.map(({ identity }) => identity)).toEqual([
+      "Bearer runtime-test-token",
+    ]);
+    expect(http.sessions.size).toBe(0);
+  } finally {
+    await f.cleanup();
+    http.server.stop(true);
+  }
+}, 30000);
 
 test("bridge preserves tool call identities and tool results without inventing another agent loop", () => {
   const request = toChatRequest({

@@ -2,7 +2,7 @@
 
 Default-deny admission and dispatch control for MCP servers, connectors, plugins and skills. This document covers the trust boundary, what this increment actually protects, host setup, and the read-only audit of `m8ven/is-it-legit-mcp`.
 
-Oh My Pi remains the sole live session/model/tool execution owner. This package does not discover integrations, load SDKs, open MCP connections, or run an agent loop. Ambient integrations stay disabled in the MARS runtime; this package is the gate future enablement paths must call.
+Oh My Pi remains the sole live session/model/tool execution owner. The trust package does not discover integrations, load SDKs, open MCP connections, or run an agent loop. Ambient integrations stay disabled; the MARS runtime exposes only MCP tools admitted by the host-configured trust gate.
 
 ## Trust boundary
 
@@ -58,16 +58,18 @@ Not protected or not implemented:
 - **Exclusive gate routing (`McpServerLoader`)**:
   - Every server admission goes through `gate.admit(ctx, { kind: "mcp", integration_id, action: "load" }, loader)`.
   - Every tool dispatch goes through `gate.invoke(ctx, { kind: "mcp", integration_id, tool_name, permissions, caller, target_origin, credential_ref }, callback)`.
-  - Consumers receive only the `loader` (backed by `gate`), never `admin` or the host approval key. Today `mars mcp test` is the only product path wired to invoke the loader; `packages/execution/src/runtime.ts` does not yet register MCP tools for agent sessions (future work, keeping ambient/agent MCP execution disabled until wired).
+  - `mars mcp test` and normal agent sessions use the same loader. The runtime gets the loader and registered server IDs, never `admin` or the signing key. It admits each server and exposes only tools with approved `tool.invoke` permissions, then rechecks through the gate on every call.
 - **Transports**:
   - **stdio**: Spawns only the explicitly registered command/args with `shell: false` and a minimal environment allowlist (plus `PATH` if configured) so ambient secrets never leak to child processes.
-  - **Streamable HTTP**: Supports both JSON and `text/event-stream` (SSE) responses, `MCP-Protocol-Version` headers, `Mcp-Session-Id` tracking, and `redirect: "error"` so cross-origin redirects are rejected at transport level.
+  - **Streamable HTTP**: Supports both JSON and `text/event-stream` (SSE) responses and tracks sessions separately for each authentication context (including anonymous). Session cleanup uses the credentials that initialized the session. Redirects are not followed.
 - **Per-dispatch descriptor re-probing and drift**: `McpEvidenceProbe` performs live `initialize` + `tools/list` probes (and hashes local stdio entrypoints). Any schema, tool-list, or server-version change changes `binding_sha256`, causing `@mars/integration-trust` to supersede the grant into a new pending review and deny dispatch until re-approved.
 - **Origin-bound credentials**: Credentials are resolved only after `gate.invoke` verifies the host-selected `credential_bindings` entry matches the exact normalized target origin; mismatched origins fail closed with `endpoint_mismatch`.
 - **Mid-flight revocation**: Active invocations poll grant status on the trust store and re-check before returning, aborting the transport and tearing down the connection if the grant is revoked mid-flight.
 - **Untrusted output handling (`sanitizeToolOutput`)**: Every MCP tool result is returned as a deeply frozen `UntrustedToolOutput` (`untrusted: true`) after recursively stripping prompt-steering keys (`_instructions`, `instructions`, `system_prompt`, etc.) and XML-style steering tags (`<system>`, `<instructions>`, etc.) from content and structured output.
 
 ## Host-owned CLI approval flow (`mars mcp`)
+
+To expose approved tools in agent sessions, start `mars serve --mcp-state-dir <dir> --owner <id> --project <id>` with the same host-private state directory and scope used for `mars mcp review` and `mars mcp approve`. Without this flag, agent sessions expose no MCP tools. Each session closes its own connections on shutdown.
 
 `mars mcp` provides a host-owned CLI backed by `createHostMcpControlPlane` (storing the trust store, server registry, and 32-byte HMAC approval key in a host-owned state directory outside workspaces, defaulting to `$XDG_STATE_HOME/mars/integration-trust` or `~/.local/state/mars/integration-trust`):
 

@@ -173,6 +173,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@mars/contracts": "workspace:*",
+        "@mars/mcp-client": "workspace:*",
         "@mars/output-format": "workspace:*",
         "@mars/providers": "workspace:*",
         "@mars/workspaces": "workspace:*",

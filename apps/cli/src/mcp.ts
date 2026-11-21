@@ -119,6 +119,19 @@ async function openControlPlane(
   });
 }
 
+export async function openRuntimeMcp(
+  stateDir: string,
+  workspaceRoots: string[],
+) {
+  const { loader, registry } = await openControlPlane(stateDir, workspaceRoots);
+  return {
+    loader,
+    async listServerIds() {
+      return (await registry.list()).map(({ id }) => id);
+    },
+  };
+}
+
 async function handleList(
   args: string[],
   out: (line: string) => void,

@@ -5,10 +5,12 @@ import {
   type Budget,
   exceedsUsd,
   type ModelConfig,
+  type RequestContext,
   type Task,
   TaskSchema,
 } from "@mars/contracts";
 import { isStrictlyInside } from "@mars/contracts/path-containment";
+import type { TrustedMcpLoader } from "@mars/mcp-client";
 import { OUTPUT_FORMAT_PROMPT } from "@mars/output-format";
 import type { ModelProviderRegistry } from "@mars/providers";
 import {
@@ -799,6 +801,7 @@ export interface RuntimeSessionOptions {
   rebindFromModelIds?: readonly string[];
   approvals: { read: boolean; write: boolean; execute: boolean };
   tools: RuntimeTools;
+  mcp?: RuntimeMcp;
   recall?(query: string): Promise<string>;
   collaboration?: RuntimeCollaboration;
   research?: RuntimeResearch;
@@ -831,6 +834,11 @@ export interface RuntimeSessionOptions {
    */
   editFormat?: EditFormat;
 }
+
+export type RuntimeMcp = (cwd: string) => Promise<{
+  loader: TrustedMcpLoader;
+  listServerIds(): Promise<string[]>;
+}>;
 
 export const MAX_SYSTEM_PROMPT_CHARS = 16_000;
 
@@ -872,7 +880,9 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   const selected = selectExecutionModel(
     options.registry,
     options.modelId,
-    Object.values(approvals).some(Boolean) || options.teamContext !== undefined,
+    Object.values(approvals).some(Boolean) ||
+      options.teamContext !== undefined ||
+      options.mcp !== undefined,
   );
   const editFormat = resolveEditFormat(
     options.editFormat === undefined
@@ -1113,7 +1123,31 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     ...(approvals.execute ? [executeTool(deps, options.tools)] : []),
   ];
   let created: Awaited<ReturnType<typeof createAgentSession>>;
+  let mcp: Awaited<ReturnType<RuntimeMcp>> | undefined;
+  let mcpClose: Promise<void> | undefined;
+  const closeMcp = () => {
+    mcpClose ??= mcp?.loader.closeAll();
+    return mcpClose;
+  };
+  controller.signal.addEventListener(
+    "abort",
+    () => {
+      void closeMcp()?.catch(() => undefined);
+    },
+    { once: true },
+  );
   try {
+    if (options.mcp) {
+      mcp = await options.mcp(cwd);
+      const context: RequestContext = {
+        schema_version: 1,
+        scope: task.scope,
+        request_id: task.task_id,
+      };
+      customTools.push(
+        ...(await admittedMcpTools(deps, mcp, context, controller.signal)),
+      );
+    }
     await persistLedger(ledger);
     const model = models.find(providerId, selected.id);
     if (!model)
@@ -1159,6 +1193,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       systemPrompt: systemPrompt,
     });
   } catch (error) {
+    await closeMcp();
     models.unregisterProvider(providerId);
     await manager.close();
     await authStorage.close();
@@ -1168,6 +1203,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   manager.appendCustomEntry("mars.edit_format", editFormat);
   const journalPath = manager.getSessionFile();
   if (!journalPath) {
+    await closeMcp();
     await session.dispose();
     await authStorage.close();
     throw new Error("Missing execution journal.");
@@ -1197,6 +1233,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     JSON.stringify(session.getActiveToolNames().sort()) !==
     JSON.stringify(expectedTools)
   ) {
+    await closeMcp();
     await session.dispose();
     models.unregisterProvider(providerId);
     await authStorage.close();
@@ -1302,6 +1339,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       userCancelled = true;
       controller.abort();
       const stopped = await Promise.allSettled([
+        Promise.resolve().then(closeMcp),
         Promise.resolve().then(() => session.abort()),
         Promise.resolve().then(() => options.tools.stop()),
       ]);
@@ -1322,6 +1360,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       clearTimeout(deadlineTimer);
       unsubscribe();
       const stopped = await Promise.allSettled([
+        Promise.resolve().then(closeMcp),
         Promise.resolve().then(() => options.tools.stop()),
         Promise.resolve().then(() => session.dispose()),
       ]);
@@ -1346,6 +1385,84 @@ interface ToolDeps {
     permission: ToolPermission | null,
     signal?: AbortSignal,
   ): Promise<void>;
+}
+
+async function admittedMcpTools(
+  { checkTool }: ToolDeps,
+  { loader, listServerIds }: Awaited<ReturnType<RuntimeMcp>>,
+  context: RequestContext,
+  sessionSignal: AbortSignal,
+): Promise<CustomTool[]> {
+  const tools: CustomTool[] = [];
+  for (const serverId of await listServerIds()) {
+    sessionSignal.throwIfAborted();
+    let admitted: Awaited<ReturnType<TrustedMcpLoader["admitServer"]>>;
+    try {
+      admitted = await loader.admitServer(context, serverId);
+    } catch {
+      continue;
+    }
+    if (
+      admitted.origin &&
+      !admitted.permissions.some(
+        (p) =>
+          p.capability === "network.connect" && p.resource === admitted.origin,
+      )
+    )
+      continue;
+    for (const { name: tool } of admitted.descriptor.tools) {
+      if (
+        !admitted.permissions.some(
+          (p) => p.capability === "tool.invoke" && p.resource === tool,
+        )
+      )
+        continue;
+      const digest = createHash("sha256")
+        .update(JSON.stringify([serverId, tool]))
+        .digest("hex")
+        .slice(0, 16);
+      const label = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32);
+      const name = `mars_mcp_${label}_${digest}`;
+      tools.push({
+        name,
+        label: name,
+        description: `Call approved MCP tool ${label} on server ${serverId}.`,
+        parameters: defineSchema({ arguments_json: "string" }),
+        async execute(_id, params, _update, _ctx, signal) {
+          await checkTool(null, signal);
+          const raw = z
+            .object({ arguments_json: z.string().max(MAX_TOOL_OUTPUT_CHARS) })
+            .strict()
+            .parse(params);
+          let input: Record<string, unknown>;
+          try {
+            input = z.record(z.unknown()).parse(JSON.parse(raw.arguments_json));
+          } catch {
+            throw new Error("MCP tool arguments must be a JSON object.");
+          }
+          try {
+            const result = await loader.invokeTool(context, {
+              server_id: serverId,
+              tool,
+              input,
+              ...(admitted.origin ? { target_origin: admitted.origin } : {}),
+              ...(admitted.credential_ref
+                ? { credential_ref: admitted.credential_ref }
+                : {}),
+              signal: signal
+                ? AbortSignal.any([sessionSignal, signal])
+                : sessionSignal,
+            });
+            return boundedText("MCP tool")(JSON.stringify(result));
+          } catch {
+            throw new Error("MCP tool invocation was denied or failed.");
+          }
+        },
+      });
+    }
+  }
+  sessionSignal.throwIfAborted();
+  return tools;
 }
 
 const toolResult = (text: string) => ({
