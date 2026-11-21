@@ -138,6 +138,13 @@ export interface ModelProposerClient {
   >;
 }
 
+export class ProposalNotGeneratedError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "ProposalNotGeneratedError";
+  }
+}
+
 export interface ModelProposerOptions {
   /** MARS ModelRouter or compatible chat-completion bridge. */
   client: ModelProposerClient;
@@ -297,10 +304,7 @@ export async function buildProposalMessages(
   const append = <T>(target: T[], items: readonly T[], limit: number) => {
     for (const item of items) {
       target.push(item);
-      if (size() > limit) {
-        target.pop();
-        break;
-      }
+      if (size() > limit) target.pop();
     }
   };
   for (const [key, value] of Object.entries(context.parent.manifest.prompts)) {
@@ -415,15 +419,12 @@ export function createModelProposer(
       const outputLimit =
         accounting?.reserve(inputTokens, maxTokens) ?? maxTokens;
       const startedAt = Date.now();
-      const completePromise = options.client.complete(
-        {
-          messages,
-          maxTokens: outputLimit,
-          temperature,
-        },
-        selection,
-        signal,
-      );
+      const completePromise = (async () =>
+        options.client.complete(
+          { messages, maxTokens: outputLimit, temperature },
+          selection,
+          signal,
+        ))();
       const response = await new Promise<Awaited<typeof completePromise>>(
         (resolvePromise, rejectPromise) => {
           const onAbort = () => {
@@ -447,7 +448,15 @@ export function createModelProposer(
             },
           );
         },
-      );
+      ).catch((error: unknown) => {
+        if (error instanceof ProposalNotGeneratedError)
+          accounting?.settle({
+            tokens: 0,
+            usd: 0,
+            ms: Math.max(0, Math.round(Date.now() - startedAt)),
+          });
+        throw error;
+      });
       const rawTokens =
         response.usage?.totalTokens ??
         (response.usage?.inputTokens ?? inputTokens) +
@@ -552,6 +561,10 @@ export function createOpenRouterProposerClient(
       });
       if (!response.ok) {
         const body = bounded(scrubSecrets(await response.text()), 400);
+        if (response.status === 429)
+          throw new ProposalNotGeneratedError(
+            `OpenRouter proposer HTTP 429: ${body}`,
+          );
         fail(
           "invalid_state",
           `OpenRouter proposer HTTP ${response.status}: ${body}`,

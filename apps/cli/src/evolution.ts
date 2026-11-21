@@ -15,10 +15,16 @@ import {
   EvolutionError,
   EvolutionService,
   isFreeOpenRouterModel,
+  type ModelProposerClient,
   type PromotionDecision,
+  ProposalNotGeneratedError,
   runOfflineDemo,
 } from "@mars/evolution";
-import { loadModelRegistry, ModelRouter } from "@mars/providers";
+import {
+  loadModelRegistry,
+  ModelRouter,
+  NoModelAvailableError,
+} from "@mars/providers";
 import { CliUsageError } from "./cli-errors";
 
 export const EVOLUTION_USAGE = [
@@ -255,6 +261,29 @@ export function rollbackSmokePromotion(
   return true;
 }
 
+export function createSmokeProposerClient(
+  router: ModelRouter,
+  stats: { requests: number; routedModel: string | null },
+): ModelProposerClient {
+  return {
+    async complete(request, selection, signal) {
+      stats.requests += 1;
+      try {
+        const reply = await router.complete(request, selection, signal);
+        stats.routedModel = reply.model ?? selection?.model ?? null;
+        return reply;
+      } catch (error) {
+        if (
+          error instanceof NoModelAvailableError &&
+          error.definitelyNoGeneration
+        )
+          throw new ProposalNotGeneratedError(error.message, error);
+        throw error;
+      }
+    },
+  };
+}
+
 async function runLiveSmoke(options: {
   state: string;
   model: string;
@@ -296,20 +325,8 @@ async function runLiveSmoke(options: {
     adapterOptions: { env: providerEnv, timeoutMs: 90_000 },
   });
 
-  let routedModel: string | null = null;
-  let proposerRequests = 0;
-  const instrumentedClient = {
-    async complete(
-      request: Parameters<ModelRouter["complete"]>[0],
-      selection?: { model?: string; route?: string },
-      signal?: AbortSignal,
-    ) {
-      proposerRequests += 1;
-      const reply = await router.complete(request, selection, signal);
-      routedModel = reply.model ?? options.model;
-      return reply;
-    },
-  };
+  const proposerStats = { requests: 0, routedModel: null };
+  const instrumentedClient = createSmokeProposerClient(router, proposerStats);
 
   const baseDir = join(options.state, "base");
   await seedLiveSmokeBase(baseDir);
@@ -414,9 +431,10 @@ async function runLiveSmoke(options: {
       return {
         schema: "mars.evolution-live-smoke/v1",
         run_id: options.runId,
+        scope_key: options.scopeKey,
         proposer_model_requested: options.model,
-        proposer_model_routed: routedModel,
-        proposer_requests: proposerRequests,
+        proposer_model_routed: proposerStats.routedModel,
+        proposer_requests: proposerStats.requests,
         build_isolation: "docker-network-none",
         docker_image: options.image,
         status: status.status,
@@ -508,12 +526,21 @@ export async function runEvolution(
         "--generations and --children must be positive integers",
       );
     }
+    const model = values.model ?? DEFAULT_FREE_PROPOSER_MODEL;
+    const scopeKey =
+      values.scope ??
+      (model === DEFAULT_FREE_PROPOSER_MODEL
+        ? "live-smoke"
+        : `live-smoke-${digestOf(model).slice(0, 16)}`);
+    const runId = values.run ?? `live-smoke-${randomUUID()}`;
+    if (values.run === undefined)
+      console.error(`Starting live-smoke run ${runId} (scope ${scopeKey})`);
     const summary = await smoke({
       state,
-      model: values.model ?? DEFAULT_FREE_PROPOSER_MODEL,
+      model,
       image: values.image ?? DEFAULT_EVOLUTION_DOCKER_IMAGE,
-      runId: values.run ?? `live-smoke-${randomUUID()}`,
-      scopeKey: values.scope ?? "live-smoke",
+      runId,
+      scopeKey,
       generations,
       children,
     });

@@ -166,8 +166,10 @@ mars evolution champion|history --state DIR --scope KEY
 mars evolution rollback --state DIR --scope KEY --to SEQ --expect-version N
 ```
 
-Each live-smoke invocation starts a fresh run by default and reports its
-`run_id`. Pass `--run ID` to create a named run or resume that exact run;
+Each live-smoke invocation starts a fresh run by default and prints its
+`run_id` to stderr before starting. Stdout is reserved for the JSON summary.
+Default champion scopes are separated by proposer model. Pass `--run ID` with
+the original `--model` and, if supplied, `--scope` to resume that exact run;
 resuming does not repeat completed generations, even if their proposals were
 rate-limited. Opt-in Harbor acceptance requires a separate `OPENROUTER_API_KEY`
 for proposing; `MARS_EVAL_API_KEY` is used only by the Harbor evaluator.

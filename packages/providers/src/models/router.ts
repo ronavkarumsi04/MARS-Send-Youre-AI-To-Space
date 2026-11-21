@@ -197,6 +197,7 @@ export class ModelRouter {
     skipped: SkippedModel[],
     attempts: RoutingAttempt[],
     timedOut = false,
+    definitelyNoGeneration = attempts.length === 0,
   ): NoModelAvailableError {
     return new NoModelAvailableError(
       [
@@ -208,6 +209,7 @@ export class ModelRouter {
       ],
       attempts,
       timedOut,
+      definitelyNoGeneration,
     );
   }
 
@@ -222,6 +224,7 @@ export class ModelRouter {
 
     const attempts: RoutingAttempt[] = [];
     let timedOut = false;
+    let definitelyNoGeneration = true;
     for (const model of models) {
       const cooling = this.cooldownSkip(model);
       if (cooling) {
@@ -242,10 +245,16 @@ export class ModelRouter {
         signal?.throwIfAborted();
         const providerError = this.handleProviderError(model, error, attempts);
         timedOut = providerError.timedOut;
+        definitelyNoGeneration &&= providerError.definitelyNoGeneration;
         if (!providerError.retryable) throw providerError;
       }
     }
-    throw this.noModelAvailable(skipped, attempts, timedOut);
+    throw this.noModelAvailable(
+      skipped,
+      attempts,
+      timedOut,
+      definitelyNoGeneration,
+    );
   }
 
   async *stream(

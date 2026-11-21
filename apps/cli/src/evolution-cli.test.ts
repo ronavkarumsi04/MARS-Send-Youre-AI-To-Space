@@ -1,14 +1,22 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProcessSandbox, runOfflineDemo } from "@mars/evolution";
+import {
+  createFixtureEvaluator,
+  createModelProposer,
+  createProcessSandbox,
+  EvolutionService,
+  runOfflineDemo,
+} from "@mars/evolution";
+import { loadModelRegistry, ModelRouter } from "@mars/providers";
 import {
   createFixture,
   runConfig,
 } from "../../../packages/evolution/src/test-support";
 import {
   createLiveSmokeEvaluator,
+  createSmokeProposerClient,
   EvolutionUsageError,
   rollbackSmokePromotion,
   runEvolution,
@@ -192,4 +200,145 @@ test("live-smoke evaluator identity binds the image and applies only harness pat
   expect(createLiveSmokeEvaluator(sandbox, "image-two").digest).not.toBe(
     first.digest,
   );
+});
+
+test("live-smoke settles HTTP 429 and cooldown skips without charging estimated tokens", async () => {
+  const fixture = await createFixture(() => ({ hypothesis: "unused" }));
+  roots.push(fixture.root);
+  const env = { OPENROUTER_API_KEY: "test-openrouter-key" };
+  const registry = await loadModelRegistry({
+    cwd: fixture.root,
+    home: fixture.root,
+    env,
+    trustProjectConfig: false,
+  });
+  let networkCalls = 0;
+  const router = new ModelRouter(registry, {
+    adapterOptions: {
+      env,
+      fetch: async () => {
+        networkCalls += 1;
+        return new Response(null, {
+          status: 429,
+          headers: { "retry-after": "60" },
+        });
+      },
+    },
+  });
+  const stats = { requests: 0, routedModel: null };
+  const service = await EvolutionService.open({
+    storeDir: fixture.storeDir,
+    workDir: fixture.workDir,
+    evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+    sandbox: createProcessSandbox(),
+    proposer: createModelProposer({
+      client: createSmokeProposerClient(router, stats),
+      maxTokens: 20_000,
+    }),
+  });
+  try {
+    const config = runConfig();
+    await fixture.start(service, {
+      ...config,
+      budget: { ...config.budget, max_tokens: 6_000 },
+      children_per_generation: 3,
+    });
+    expect((await service.run("run-1")).status).toBe("completed");
+    expect(networkCalls).toBe(1);
+    expect(stats.requests).toBe(3);
+    expect(service.lineage("run-1")[1]?.reason).toContain("HTTP 429");
+    expect(service.lineage("run-1")[2]?.reason).toContain("cooling down");
+    const entries = service.store
+      .ledger("run-1")
+      .filter((row) => row.key.endsWith("/proposal"));
+    expect(
+      entries.filter((row) => row.kind === "reserve").map((row) => row.tokens),
+    ).toEqual([6_000, 6_000, 6_000]);
+    expect(
+      entries
+        .filter((row) => row.kind === "settle")
+        .map((row) => [row.key, row.tokens, row.usd]),
+    ).toEqual([
+      ["g1-c0/proposal", 0, 0],
+      ["g1-c1/proposal", 0, 0],
+      ["g1-c2/proposal", 0, 0],
+    ]);
+    expect((await service.verify("run-1")).ok).toBe(true);
+  } finally {
+    service.close();
+  }
+});
+
+test("live-smoke prints the generated run ID before an interrupted run can return JSON", async () => {
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const stdout = spyOn(console, "log").mockImplementation(() => {});
+  let id = "";
+  try {
+    await expect(
+      runEvolution(
+        ["live-smoke", "--state", "/tmp/x"],
+        async ({ runId, scopeKey }) => {
+          id = runId;
+          expect(stderr).toHaveBeenCalledWith(
+            `Starting live-smoke run ${runId} (scope ${scopeKey})`,
+          );
+          throw new Error("interrupted");
+        },
+      ),
+    ).rejects.toThrow("interrupted");
+    expect(id).toMatch(/^live-smoke-/);
+    expect(stdout).not.toHaveBeenCalled();
+  } finally {
+    stderr.mockRestore();
+    stdout.mockRestore();
+  }
+});
+
+test("fresh smoke runs with different proposer models can share a state directory", async () => {
+  const fixture = await createFixture(() => ({ hypothesis: "unused" }));
+  roots.push(fixture.root);
+  const service = await fixture.open();
+  try {
+    const scopes: string[] = [];
+    const smoke: NonNullable<Parameters<typeof runEvolution>[1]> = async ({
+      state,
+      scopeKey,
+      model,
+      runId,
+    }) => {
+      expect(state).toBe(fixture.root);
+      await service.startRun({
+        config: runConfig({ run_id: runId }),
+        scope_key: scopeKey,
+        base_dir: fixture.baseDir,
+        base_ref: "base",
+        model: { id: model, provider: "openrouter", revision: "free-tier" },
+        prompts: { system: "baseline" },
+        skills: { store_revision: "1" },
+        tools: [],
+        retrieval: {
+          repo_map_tokens: 0,
+          memory_top_k: 0,
+          context_window_tokens: 8192,
+          research: false,
+        },
+      });
+      scopes.push(scopeKey);
+      expect(service.champion(scopeKey)?.manifest.model.id).toBe(model);
+      return { run_id: runId };
+    };
+    const args = ["live-smoke", "--state", fixture.root];
+    await runEvolution(args, smoke);
+    await runEvolution([...args, "--model", "example/other:free"], smoke);
+    expect(scopes).toHaveLength(2);
+    expect(scopes[0]).not.toBe(scopes[1]);
+    await expect(
+      runEvolution(
+        [...args, "--model", "example/other:free", "--scope", "live-smoke"],
+        smoke,
+      ),
+    ).rejects.toThrow("frozen model differs");
+  } finally {
+    service.close();
+  }
 });

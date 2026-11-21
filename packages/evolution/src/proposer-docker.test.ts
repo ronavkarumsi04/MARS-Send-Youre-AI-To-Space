@@ -279,7 +279,7 @@ describe("model proposer unit tests", () => {
       expect(user).not.toContain("protected/secret.txt");
       expect(user).not.toContain("do-not-expose-or-edit");
 
-      const capped = 1_500;
+      const capped = 1_800;
       const boundedRequest = await buildProposalMessages(
         {
           ...context,
@@ -300,6 +300,11 @@ describe("model proposer unit tests", () => {
               candidate_id: "rejected",
               notes: ["雪".repeat(1_000)],
             },
+            {
+              source: "rejected_child",
+              candidate_id: "recent",
+              notes: ["short rejection"],
+            },
           ],
         },
         capped,
@@ -310,7 +315,13 @@ describe("model proposer unit tests", () => {
         capped,
       );
       expect(JSON.parse(json).archive.length).toBeLessThan(1_000);
-      expect(JSON.parse(json).failure_traces).toEqual([]);
+      expect(JSON.parse(json).failure_traces).toEqual([
+        {
+          source: "rejected_child",
+          candidate_id: "recent",
+          notes: ["short rejection"],
+        },
+      ]);
       expect(json).toContain(`harness/${FIXTURE_POLICY_FILE}`);
     });
   });
