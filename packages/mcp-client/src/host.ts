@@ -160,6 +160,7 @@ export async function createHostMcpControlPlane(
     probeTimeoutMs,
     getTrustedBaseline: async (ctx, identity) => {
       const { state } = await store.load();
+      const baselines: Array<{ evidence: typeof state.grants[number]["evidence"] }> = [];
       const grant = state.grants.findLast(
         (g) =>
           g.state === "approved" &&
@@ -168,7 +169,7 @@ export async function createHostMcpControlPlane(
           g.scope.owner_id === ctx.scope.owner_id &&
           g.scope.project_id === ctx.scope.project_id,
       );
-      if (grant) return { evidence: grant.evidence };
+      if (grant) baselines.push({ evidence: grant.evidence });
       const pending = state.reviews.findLast(
         (r) =>
           r.state === "pending" &&
@@ -177,7 +178,8 @@ export async function createHostMcpControlPlane(
           r.scope.owner_id === ctx.scope.owner_id &&
           r.scope.project_id === ctx.scope.project_id,
       );
-      return pending ? { evidence: pending.evidence } : undefined;
+      if (pending) baselines.push({ evidence: pending.evidence });
+      return baselines.length > 0 ? baselines : undefined;
     },
   });
 

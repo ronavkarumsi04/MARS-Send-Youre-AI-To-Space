@@ -36,7 +36,7 @@ export interface McpEvidenceProbeOptions {
   getTrustedBaseline?: (
     ctx: RequestContext,
     identity: Identity,
-  ) => Promise<TrustedStdioBaseline | undefined>;
+  ) => Promise<TrustedStdioBaseline | TrustedStdioBaseline[] | undefined>;
   /**
    * Explicit opt-in allowing unapproved stdio servers to be spawned for
    * descriptor discovery. Defaults to `false` so untrusted local code is never
@@ -147,7 +147,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
     | ((
         ctx: RequestContext,
         identity: Identity,
-      ) => Promise<TrustedStdioBaseline | undefined>)
+      ) => Promise<TrustedStdioBaseline | TrustedStdioBaseline[] | undefined>)
     | undefined;
   private readonly allowUnapprovedStdioProbe: boolean;
 
@@ -231,18 +231,34 @@ export class McpEvidenceProbe implements EvidenceProbe {
 
     const allowUnapproved =
       options?.allowUnapprovedStdioProbe ?? this.allowUnapprovedStdioProbe;
-    const baseline = this.getTrustedBaseline
-      ? await this.getTrustedBaseline(ctx, {
-          kind: "mcp",
-          integration_id: server.id,
-        })
-      : undefined;
+    if (!allowUnapproved) {
+      const rawBaseline = this.getTrustedBaseline
+        ? await this.getTrustedBaseline(ctx, {
+            kind: "mcp",
+            integration_id: server.id,
+          })
+        : undefined;
+      const baselines = rawBaseline
+        ? Array.isArray(rawBaseline)
+          ? rawBaseline
+          : [rawBaseline]
+        : [];
 
-    if (baseline) {
-      if (
-        configSha !== baseline.evidence.config_sha256 ||
-        dependencySha !== baseline.evidence.dependency_sha256
-      ) {
+      if (baselines.length === 0) {
+        throw new IntegrationTrustError("evidence_unavailable", {
+          cause: new Error(
+            `Refusing to spawn unapproved stdio MCP server "${server.id}" before approval; pass allowUnapprovedStdioProbe (or --allow-stdio-probe) to explicitly authorize live discovery.`,
+          ),
+        });
+      }
+
+      const matched = baselines.some(
+        (b) =>
+          configSha === b.evidence.config_sha256 &&
+          dependencySha === b.evidence.dependency_sha256,
+      );
+      if (!matched) {
+        const primary = baselines[0]!;
         const driftedContentSha = sha256(
           canonicalJSON({
             artifact_sha256: entrypointSha ?? configSha,
@@ -262,16 +278,10 @@ export class McpEvidenceProbe implements EvidenceProbe {
           dependency_sha256: dependencySha,
           config_sha256: configSha,
           endpoint: null,
-          tools: baseline.evidence.tools,
+          tools: primary.evidence.tools,
           observed_at: observedAt,
         };
       }
-    } else if (!allowUnapproved) {
-      throw new IntegrationTrustError("evidence_unavailable", {
-        cause: new Error(
-          `Refusing to spawn unapproved stdio MCP server "${server.id}" before approval; pass allowUnapprovedStdioProbe (or --allow-stdio-probe) to explicitly authorize live discovery.`,
-        ),
-      });
     }
 
     const descriptor = await probeMcpServerDescriptor(
