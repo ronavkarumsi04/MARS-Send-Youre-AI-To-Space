@@ -9,6 +9,7 @@ import {
   type GraphBuildRecord,
   KNOWLEDGE_GRAPH_ARTIFACT_KIND,
   KnowledgeGraphArtifactSchema,
+  normalizeGraph,
 } from "../src";
 
 const FAKE = join(import.meta.dir, "fake-graphify.ts");
@@ -489,5 +490,71 @@ describe("knowledge graph service", () => {
     });
     expect(outcome.status).toBe("refused");
     expect(await f.calls()).toEqual([]);
+  });
+
+  test("redacts Unicode host-path slugs without dropping workspace files containing ancestor slugs", () => {
+    const root = "/home/üser/repos/demo";
+    const dataRoot = "/home/üser/.mars/knowledge-graph";
+    const artifact = normalizeGraph({
+      raw: {
+        nodes: [
+          {
+            id: "home_üser_sibling_helper",
+            label: "../../sibling/helper",
+            file_type: "code",
+          },
+          {
+            id: "home_üser_repos_demo_src_leak",
+            label: "in_root_unremapped",
+            source_file: `${root}/src/leak.ts`,
+            file_type: "code",
+          },
+          {
+            id: "src_home_üser_notes",
+            label: "home_üser_notes",
+            source_file: `${root}/src/home_üser_notes.ts`,
+            file_type: "code",
+          },
+          {
+            id: "home_üser",
+            label: "home_üser",
+            source_file: `${root}/home_üser.ts`,
+            file_type: "code",
+          },
+        ],
+        links: [
+          {
+            source: "src_home_üser_notes",
+            target: "home_üser",
+            relation: "imports",
+            confidence: "EXTRACTED",
+            source_file: `${root}/src/home_üser_notes.ts`,
+          },
+          {
+            source: "src_home_üser_notes",
+            target: "home_üser_sibling_helper",
+            relation: "imports",
+            confidence: "EXTRACTED",
+            source_file: `${root}/src/home_üser_notes.ts`,
+          },
+        ],
+      },
+      analysis: {},
+      root,
+      dataRoot,
+      workspace: { workspace_id: "ws-unicode", revision: "rev-1" },
+      graphifyVersion: "0.9.101",
+      builtAt: "2026-11-21T00:00:00.000Z",
+      files: 2,
+      complete: true,
+    });
+
+    expect(artifact.nodes.map((n) => n.id)).toEqual([
+      "home_üser",
+      "src_home_üser_notes",
+    ]);
+    expect(artifact.edges).toHaveLength(1);
+    expect(artifact.stats.dropped_nodes).toBe(2);
+    expect(artifact.stats.dropped_edges).toBe(1);
   });
 });

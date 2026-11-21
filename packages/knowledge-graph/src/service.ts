@@ -159,36 +159,65 @@ function workspaceRelative(
 }
 
 function slugifyHostPath(path: string): string {
-  return path
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
+  let cur = path;
+  for (let i = 0; i < 6; i++) {
+    const next = cur.toLowerCase().normalize("NFKC");
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur
+    .replace(/[^\p{L}\p{N}_]+/gu, "_")
+    .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
 }
 
-function hostPathNeedles(root: string, dataRoot: string): string[] {
-  const needles = new Set<string>();
+function slugMatchesPrefix(candidate: string, slug: string): boolean {
+  if (!slug) return false;
+  return candidate === slug || candidate.startsWith(`${slug}_`);
+}
+
+function hostPathSlugs(
+  root: string,
+  dataRoot: string,
+  includeAncestors: boolean,
+): string[] {
+  const slugs = new Set<string>();
   for (const base of [root, dataRoot]) {
     if (!base) continue;
-    needles.add(base);
+    const fullSlug = slugifyHostPath(base);
+    if (fullSlug) slugs.add(fullSlug);
+    if (!includeAncestors) continue;
     const parts = base.split(/[\\/]+/).filter(Boolean);
-    // Include slugified root, dataRoot, and non-trivial (>= 2 segment) ancestors
-    // because graphify slugifies absolute external-import paths into node IDs.
-    for (let len = 2; len <= parts.length; len++) {
+    for (let len = 2; len < parts.length; len++) {
       const slug = slugifyHostPath(parts.slice(0, len).join("/"));
-      if (slug.length >= 10) needles.add(slug);
+      if (slug) slugs.add(slug);
     }
   }
-  return [...needles];
+  return [...slugs];
 }
 
 function containsHostPath(
   root: string,
   dataRoot: string,
-  text: string,
+  id: string,
+  label: string,
+  hasWorkspaceSourceFile: boolean,
 ): boolean {
-  const lower = text.toLowerCase();
-  for (const needle of hostPathNeedles(root, dataRoot)) {
-    if (text.includes(needle) || lower.includes(needle)) return true;
+  if (
+    (root && (id.includes(root) || label.includes(root))) ||
+    (dataRoot && (id.includes(dataRoot) || label.includes(dataRoot)))
+  ) {
+    return true;
+  }
+  const normalizedId = slugifyHostPath(id);
+  const normalizedLabel = slugifyHostPath(label);
+  for (const slug of hostPathSlugs(root, dataRoot, !hasWorkspaceSourceFile)) {
+    if (
+      slugMatchesPrefix(normalizedId, slug) ||
+      slugMatchesPrefix(normalizedLabel, slug)
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -223,7 +252,13 @@ export function normalizeGraph(input: {
     const id = node.id.slice(0, GRAPH_LIMITS.max_id_length);
     if (
       seen.has(id) ||
-      containsHostPath(input.root, input.dataRoot, `${id}\u0000${label}`) ||
+      containsHostPath(
+        input.root,
+        input.dataRoot,
+        id,
+        label,
+        sourceFile !== null,
+      ) ||
       (sourceFile === null && node.source_file) ||
       nodes.length >= GRAPH_LIMITS.max_nodes
     ) {
@@ -308,7 +343,8 @@ export function normalizeGraph(input: {
       return {
         id,
         label:
-          label && !containsHostPath(input.root, input.dataRoot, label)
+          label &&
+          !containsHostPath(input.root, input.dataRoot, "", label, true)
             ? label.slice(0, GRAPH_LIMITS.max_label_length)
             : null,
         cohesion:
