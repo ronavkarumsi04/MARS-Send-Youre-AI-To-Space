@@ -843,30 +843,30 @@ export class RpcTeamService implements TeamService {
     }
   }
 
-  private workspaceHeadForRepo(repoId: string, label: string): string | null {
+  private matchedWorkspaceDir(repoId: string, label: string): string | null {
     const dirs = this.openWorkspaceDirs();
     const candidates = new Set(
       [label, repoId]
         .map((v) => v.trim().toLowerCase())
         .filter((v) => v.length > 0),
     );
-    // Prefer a workspace folder whose directory name or origin remote matches the repository.
     const matchedByDir = dirs.find((dir) =>
       candidates.has(basename(dir).trim().toLowerCase()),
     );
-    if (matchedByDir) {
-      const sha = this.gitHeadIn(matchedByDir);
-      if (sha) return sha;
-    }
+    if (matchedByDir) return matchedByDir;
     const matchedByRemote = dirs.find((dir) => {
       const remoteName = this.gitRemoteNameIn(dir);
       return remoteName !== null && candidates.has(remoteName);
     });
-    if (matchedByRemote) {
-      const sha = this.gitHeadIn(matchedByRemote);
-      if (sha) return sha;
-    }
-    for (const dir of dirs) {
+    return matchedByRemote ?? null;
+  }
+
+  private workspaceHeadForRepo(repoId: string, label: string): string | null {
+    const matched = this.matchedWorkspaceDir(repoId, label);
+    if (matched) return this.gitHeadIn(matched);
+    const pinned = this.repoCommits.get(repoId);
+    if (pinned) return pinned;
+    for (const dir of this.openWorkspaceDirs()) {
       const sha = this.gitHeadIn(dir);
       if (sha) return sha;
     }
@@ -880,9 +880,7 @@ export class RpcTeamService implements TeamService {
     }
     if (this.serverCapabilities.references) {
       for (const repo of this.repos.values()) {
-        const commitSha =
-          this.repoCommits.get(repo.repo_id) ??
-          this.workspaceHeadForRepo(repo.repo_id, repo.label);
+        const commitSha = this.workspaceHeadForRepo(repo.repo_id, repo.label);
         if (commitSha) {
           repos.push({
             repo_id: repo.repo_id,
@@ -915,7 +913,6 @@ export class RpcTeamService implements TeamService {
       await this.identity();
       const first = await this.client.searchPaths(input);
       if (first.state === "ok") {
-        this.repoCommits.set(input.repo_id, input.commit_sha);
         return first.matches.map((m) => ({
           repo_id: input.repo_id,
           commit_sha: input.commit_sha,
@@ -923,8 +920,13 @@ export class RpcTeamService implements TeamService {
           rank: m.rank,
         }));
       }
-      // If the initial commit did not belong to this repository (e.g. aliased checkout in a
-      // multi-root workspace), probe the remaining open workspace HEADs and cache the match.
+      // Only probe other workspace folders when no open folder matched this repo by name or remote
+      // (an aliased checkout); never substitute another checkout when a matching checkout is on an
+      // unpushed commit.
+      const repo = this.repos.get(input.repo_id);
+      if (repo && this.matchedWorkspaceDir(repo.repo_id, repo.label) !== null) {
+        return [];
+      }
       const tried = new Set<string>([input.commit_sha]);
       for (const dir of this.openWorkspaceDirs()) {
         const candidateSha = this.gitHeadIn(dir);
@@ -935,7 +937,6 @@ export class RpcTeamService implements TeamService {
           commit_sha: candidateSha,
         });
         if (fallback.state === "ok") {
-          this.repoCommits.set(input.repo_id, candidateSha);
           return fallback.matches.map((m) => ({
             repo_id: input.repo_id,
             commit_sha: candidateSha,
