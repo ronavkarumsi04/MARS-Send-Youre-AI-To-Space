@@ -32,6 +32,10 @@ import {
   type WorkspaceHost,
 } from "../../workbench/src/index";
 import {
+  freezeMemory,
+  withFrozenMemory,
+} from "../../workbench/src/memory-context";
+import {
   type ExportReport,
   type ImportReport,
   parseNote,
@@ -56,6 +60,73 @@ function assertFreeOpenRouterModel(modelId: string): void {
       `Refusing non-free OpenRouter model "${modelId}" on $0.00 budget; use "openrouter/free" or a ":free" model ID.`,
     );
   }
+}
+
+async function loadIsolatedFreeOpenRouterRegistry(options: {
+  cwd: string;
+  home: string;
+  apiKey: string;
+  modelId: string;
+}) {
+  assertFreeOpenRouterModel(options.modelId);
+  let registry = await loadModelRegistry({
+    cwd: options.cwd,
+    home: options.home,
+    trustProjectConfig: false,
+    env: { OPENROUTER_API_KEY: options.apiKey },
+  });
+  let resolvedModel = registry.getModel(options.modelId);
+  if (!resolvedModel) {
+    registry = registry.extend({
+      models: [
+        {
+          id: options.modelId,
+          providerId: "openrouter",
+          model: options.modelId,
+          capabilities: { tools: true, vision: false, contextWindow: 128_000 },
+          pricing: { free: true },
+          tags: ["free"],
+        },
+      ],
+    });
+    resolvedModel = registry.getModel(options.modelId);
+  }
+  if (
+    !resolvedModel ||
+    resolvedModel.providerId !== "openrouter" ||
+    resolvedModel.pricing?.free !== true
+  ) {
+    throw new Error(
+      `Refusing non-free or overridden model "${options.modelId}" on $0.00 budget.`,
+    );
+  }
+  assertFreeOpenRouterModel(resolvedModel.model);
+  return { registry, resolvedModel };
+}
+
+function parseFrozenMemoryFacts(frozenText: string | undefined): string[] {
+  if (!frozenText) return [];
+  const parsed = JSON.parse(frozenText) as unknown;
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((entry) =>
+      entry && typeof entry === "object" && "fact" in entry
+        ? (entry as { fact?: unknown }).fact
+        : undefined,
+    )
+    .filter((fact): fact is string => typeof fact === "string");
+}
+
+function hasFrozenMemoryLesson(
+  launch: {
+    frozen?: { text?: string | undefined } | undefined;
+    instruction: string;
+  },
+  lesson: string,
+): boolean {
+  const facts = parseFrozenMemoryFacts(launch.frozen?.text);
+  const encodedLesson = JSON.stringify(lesson);
+  return facts.includes(lesson) && launch.instruction.includes(encodedLesson);
 }
 
 async function listMarkdownFiles(dir: string): Promise<string[]> {
@@ -465,24 +536,14 @@ async function runMemoryGraphVaultE2E(options: {
     let gateway: ReviewModelGateway;
     if (options.mode === "live") {
       // Configure OpenRouter :free provider via built-in ModelProviderRegistry ($0.00 only),
-      // isolated from any local ~/.mars or project models.json overrides.
-      const registry = await loadModelRegistry({
+      // isolated from any local ~/.mars or project models.json overrides, while allowing
+      // arbitrary valid `:free` OpenRouter model IDs via MARS_LIVE_MODEL.
+      const { registry } = await loadIsolatedFreeOpenRouterRegistry({
         cwd: sourceDir,
         home: base,
-        trustProjectConfig: false,
-        env: { OPENROUTER_API_KEY: OPENROUTER_KEY },
+        apiKey: OPENROUTER_KEY as string,
+        modelId: REQUESTED_MODEL,
       });
-      const resolvedModel = registry.getModel(REQUESTED_MODEL);
-      if (
-        !resolvedModel ||
-        resolvedModel.providerId !== "openrouter" ||
-        resolvedModel.pricing?.free !== true
-      ) {
-        throw new Error(
-          `Refusing non-free or overridden model "${REQUESTED_MODEL}" on $0.00 budget.`,
-        );
-      }
-      assertFreeOpenRouterModel(resolvedModel.model);
       const trackedFetch = async (
         input: string,
         init?: RequestInit,
@@ -646,8 +707,12 @@ async function runMemoryGraphVaultE2E(options: {
       "followup-after-accept",
     );
     expect(followUpAfterAccept.frozen?.revision).toBe(1);
-    expect(followUpAfterAccept.frozen?.text).toContain(liveLesson);
-    expect(followUpAfterAccept.instruction).toContain(liveLesson);
+    expect(parseFrozenMemoryFacts(followUpAfterAccept.frozen?.text)).toContain(
+      liveLesson,
+    );
+    expect(followUpAfterAccept.instruction).toContain(
+      JSON.stringify(liveLesson),
+    );
 
     // ---------------------------------------------------------------------
     // 3. Obsidian-compatible vault export -> validate YAML & wikilinks -> edit/add -> import -> status
@@ -816,8 +881,12 @@ async function runMemoryGraphVaultE2E(options: {
     expect(followUpAfterRevert.frozen?.revision).toBe(
       frozenAfterRevert.revision,
     );
-    expect(followUpAfterRevert.frozen?.text ?? "").not.toContain(liveLesson);
-    expect(followUpAfterRevert.instruction).not.toContain(liveLesson);
+    expect(
+      parseFrozenMemoryFacts(followUpAfterRevert.frozen?.text),
+    ).not.toContain(liveLesson);
+    expect(followUpAfterRevert.instruction).not.toContain(
+      JSON.stringify(liveLesson),
+    );
 
     if (options.evidenceOut) {
       const receipt = {
@@ -846,12 +915,16 @@ async function runMemoryGraphVaultE2E(options: {
           live_proposal_id: liveProposal.proposal_id,
           live_lesson: liveLesson,
           accepted_revision: acceptedProposal.applied_revision,
-          present_in_followup_frozen_context:
-            followUpAfterAccept.instruction.includes(liveLesson),
+          present_in_followup_frozen_context: hasFrozenMemoryLesson(
+            followUpAfterAccept,
+            liveLesson,
+          ),
           reverted_status: reverted.status,
           revision_after_revert: frozenAfterRevert.revision,
-          present_after_revert:
-            followUpAfterRevert.instruction.includes(liveLesson),
+          present_after_revert: hasFrozenMemoryLesson(
+            followUpAfterRevert,
+            liveLesson,
+          ),
         },
         obsidian_vault: {
           exported_files: exportedMdFiles.length,
@@ -879,6 +952,125 @@ async function runMemoryGraphVaultE2E(options: {
     await memory.close();
   }
 }
+
+describe("live E2E helper guards", () => {
+  test("resolves arbitrary :free OpenRouter models not in built-in presets while rejecting paid models and project overrides", async () => {
+    const base = await mkdtemp(join(tmpdir(), "mars-live-registry-"));
+    dirs.push(base);
+    const projectDir = join(base, "project");
+    await mkdir(join(projectDir, ".mars"), { recursive: true });
+    // Project override attempting to remap openrouter/free to a paid model.
+    await writeFile(
+      join(projectDir, ".mars", "models.json"),
+      JSON.stringify({
+        version: 1,
+        models: [
+          {
+            id: "openrouter/free",
+            providerId: "openrouter",
+            model: "openai/gpt-4o",
+            capabilities: { tools: true, vision: false, contextWindow: 128000 },
+            pricing: { free: true },
+            tags: ["free"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const customFreeId = "qwen/qwen3-coder:free";
+    const { resolvedModel: customResolved } =
+      await loadIsolatedFreeOpenRouterRegistry({
+        cwd: projectDir,
+        home: base,
+        apiKey: "test-key",
+        modelId: customFreeId,
+      });
+    expect(customResolved.providerId).toBe("openrouter");
+    expect(customResolved.model).toBe(customFreeId);
+    expect(customResolved.pricing?.free).toBe(true);
+
+    const { resolvedModel: defaultResolved } =
+      await loadIsolatedFreeOpenRouterRegistry({
+        cwd: projectDir,
+        home: base,
+        apiKey: "test-key",
+        modelId: "openrouter/free",
+      });
+    expect(defaultResolved.model).toBe("openrouter/free");
+
+    await expect(
+      loadIsolatedFreeOpenRouterRegistry({
+        cwd: projectDir,
+        home: base,
+        apiKey: "test-key",
+        modelId: "openai/gpt-4o",
+      }),
+    ).rejects.toThrow(/Refusing non-free OpenRouter model/);
+  });
+
+  test("matches double-quoted lessons in JSON-encoded frozen memory context", async () => {
+    const base = await mkdtemp(join(tmpdir(), "mars-live-quoted-lesson-"));
+    dirs.push(base);
+    const memory = createMemoryStore({ rootDir: join(base, "memory") });
+
+    const ctx: RequestContext = {
+      schema_version: 1,
+      scope: {
+        owner_id: "local",
+        project_id: "mars-quoted-lesson",
+        workspace_id: "ws-quoted",
+      },
+      request_id: "quoted-lesson-request",
+    };
+
+    try {
+      const quotedLesson =
+        'Always pin "GRAPHIFY_OUT" to join(dataRoot, "out", "graphify-out") so graphify writes inside dataRoot.';
+      const proposal = await memory.submitProposal(ctx, {
+        source: "review:quoted-task",
+        rationale: "Regression test for double-quoted lessons in frozen memory",
+        expected_revision: 0,
+        operations: [
+          {
+            operation: "add",
+            entry: {
+              entry_id: "quoted-lesson-1",
+              scope: ctx.scope,
+              target: "project",
+              fact: quotedLesson,
+              revision: 0,
+              source_event_ids: ["quoted-task:1"],
+              observed_at: new Date().toISOString(),
+              verified_at: null,
+              supersedes: null,
+              deleted: false,
+            },
+          },
+        ],
+      });
+      await memory.acceptProposal(ctx, proposal.proposal_id, {
+        resolved_by: "test",
+      });
+
+      const snapshot = await memory.snapshot(ctx);
+      const baseInstruction = "Verify quoted lesson freezing.";
+      const frozen = freezeMemory(ctx, snapshot, baseInstruction, 64_000);
+      const instruction = withFrozenMemory(baseInstruction, frozen);
+      const launch = { frozen, instruction };
+
+      expect(frozen.revision).toBe(1);
+      // Confirm raw unescaped quotes would not match directly, while JSON-aware check succeeds.
+      expect(frozen.text).not.toContain(quotedLesson);
+      expect(instruction).not.toContain(quotedLesson);
+      expect(hasFrozenMemoryLesson(launch, quotedLesson)).toBe(true);
+      expect(parseFrozenMemoryFacts(frozen.text)).toContain(quotedLesson);
+      expect(instruction).toContain(JSON.stringify(quotedLesson));
+    } finally {
+      await memory.close();
+    }
+  });
+});
 
 describe.skipIf(!GRAPHIFY_BIN)(
   "E2E: Hermes memory + real graphifyy==0.9.101 + Obsidian vault round-trip (deterministic review gateway)",
