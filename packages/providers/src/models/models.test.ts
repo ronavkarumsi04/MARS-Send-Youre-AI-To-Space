@@ -1811,7 +1811,7 @@ test("both adapters report malformed tool-argument JSON with the same error in b
   }
 });
 
-test("all four adapter paths report usage only for integer token counts", async () => {
+test("all four adapter paths report usage only for non-negative integer token counts", async () => {
   const openai = (usage: unknown, stream: boolean) => {
     const adapter = createOpenAICompatibleAdapter(
       provider("stub", "https://models.example/v1"),
@@ -1882,6 +1882,27 @@ test("all four adapter paths report usage only for integer token counts", async 
       outputTokens: 2,
     });
     expect((await anthropic(3, 2.5, stream)).usage).toBeUndefined();
+    for (const [input, output] of [
+      [-1, 2],
+      [3, -1],
+    ]) {
+      expect(
+        (
+          await openai(
+            { prompt_tokens: input, completion_tokens: output },
+            stream,
+          )
+        ).usage,
+      ).toBeUndefined();
+      expect((await anthropic(input, output, stream)).usage).toBeUndefined();
+    }
+    expect(
+      (await openai({ prompt_tokens: 0, completion_tokens: 0 }, stream)).usage,
+    ).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect((await anthropic(0, 0, stream)).usage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+    });
   }
 });
 
