@@ -40,6 +40,7 @@ export interface TeamChatViewState {
   onResolveReference?: (messageId: string, referenceId: string) => void;
   onSearch?: (query: string) => void;
   onSwitchViewer?: (viewer: string) => void;
+  onLoadOlder?: () => void;
 }
 
 const QUICK_REACTIONS: ReactionEmoji[] = ["👍", "✅", "👀", "🎉"];
@@ -312,6 +313,25 @@ export function renderTeamChatPane(
   }
 
   const activeMessages = state.activeView?.messages ?? [];
+  const loadOlderBtn =
+    !state.searchHits && state.activeView?.older_cursor
+      ? (() => {
+          const btn = h(
+            doc,
+            "button",
+            {
+              type: "button",
+              class: "team-load-older-btn",
+              disabled: Boolean(state.loading),
+              "data-action": "team-load-older",
+            },
+            state.loading ? "Loading older…" : "Load older messages",
+          );
+          btn.disabled = Boolean(state.loading);
+          btn.addEventListener("click", () => state.onLoadOlder?.());
+          return btn;
+        })()
+      : null;
   const messageFeed = h(
     doc,
     "div",
@@ -327,7 +347,10 @@ export function renderTeamChatPane(
           ...state.searchHits.map((msg) => renderMessage(doc, msg, state)),
         ]
       : activeMessages.length > 0
-        ? activeMessages.map((msg) => renderMessage(doc, msg, state))
+        ? [
+            ...(loadOlderBtn ? [loadOlderBtn] : []),
+            ...activeMessages.map((msg) => renderMessage(doc, msg, state)),
+          ]
         : [
             h(
               doc,

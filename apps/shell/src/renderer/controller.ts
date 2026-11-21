@@ -114,6 +114,7 @@ export function createController(
           void resolveTeamReference(messageId, referenceId),
         onSearch: (query) => void searchTeamMessages(query),
         onSwitchViewer: (viewer) => void switchTeamViewer(viewer),
+        onLoadOlder: () => void loadOlderTeamMessages(),
       },
       onOpenTeamChat: () => void openTeamChatPane(),
       onComposerChange: (patch) => {
@@ -284,6 +285,58 @@ export function createController(
         ...teamState,
         loading: false,
         error: "Unable to open conversation.",
+      };
+      render();
+    }
+  };
+
+  const loadOlderTeamMessages = async () => {
+    const convId = teamState.activeConversationId;
+    const currentView = teamState.activeView;
+    const cursor = currentView?.older_cursor;
+    if (!teamChat || !convId || !currentView || !cursor || teamState.loading) {
+      return;
+    }
+    teamState = { ...teamState, loading: true };
+    render();
+    try {
+      const res = await teamChat["team.open"]({
+        conversation_id: convId,
+        before: cursor,
+      });
+      if (!res.ok) {
+        teamState = {
+          ...teamState,
+          loading: false,
+          error: `Team chat error: ${res.code}`,
+        };
+        render();
+        return;
+      }
+      if (teamState.activeConversationId !== convId) {
+        return;
+      }
+      const existingIds = new Set(
+        currentView.messages.map((m) => m.message_id),
+      );
+      const olderUnique = res.value.messages.filter(
+        (m) => !existingIds.has(m.message_id),
+      );
+      teamState = {
+        ...teamState,
+        loading: false,
+        activeView: {
+          ...currentView,
+          messages: [...olderUnique, ...currentView.messages],
+          older_cursor: res.value.older_cursor,
+        },
+      };
+      render();
+    } catch {
+      teamState = {
+        ...teamState,
+        loading: false,
+        error: "Unable to load older messages.",
       };
       render();
     }
