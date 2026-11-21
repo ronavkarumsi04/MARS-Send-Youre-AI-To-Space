@@ -354,6 +354,7 @@ async function runLiveSmoke(options: {
       },
     });
     const status = await service.run(options.runId);
+    const preSmokeChampion = service.champion(options.scopeKey);
     const lineageBeforePromote = service.lineage(options.runId);
     const hasEvaluatedChild = lineageBeforePromote.some(
       (c) => c.parent_id !== null && c.state === "evaluated",
@@ -366,11 +367,11 @@ async function runLiveSmoke(options: {
       : null;
     const verifyBeforeReopen = await service.verify(options.runId);
     let rolledBack = false;
-    if (decision?.verdict === "accepted") {
+    if (decision?.verdict === "accepted" && preSmokeChampion) {
       const champion = service.champion(options.scopeKey);
       service.rollback({
         scope_key: options.scopeKey,
-        to_entry_seq: 1,
+        to_entry_seq: preSmokeChampion.entry_seq,
         expected_pointer_version: champion?.pointer_version ?? 0,
       });
       rolledBack = true;
