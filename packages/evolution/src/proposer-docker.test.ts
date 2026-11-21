@@ -695,6 +695,142 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
+  test("resumed proposal after crash between ledger settlement and candidate insertion charges retry usage", async () => {
+    await withTempDir(async (dir) => {
+      const baseDir = join(dir, "base");
+      await seedHarness(baseDir);
+      const client: ModelProposerClient = {
+        async complete() {
+          return {
+            content: JSON.stringify({
+              hypothesis: "retry proposal after simulated crash",
+              patch: [
+                `diff --git a/harness/${FIXTURE_POLICY_FILE} b/harness/${FIXTURE_POLICY_FILE}`,
+                `--- a/harness/${FIXTURE_POLICY_FILE}`,
+                `+++ b/harness/${FIXTURE_POLICY_FILE}`,
+                "@@ -1,5 +1,5 @@",
+                " {",
+                '-  "default": 0,',
+                '+  "default": 1,',
+                '   "effort": 1,',
+                '   "solve": {}',
+                " }",
+                "",
+              ].join("\n"),
+            }),
+            model: "openrouter/free",
+            usage: {
+              inputTokens: 120,
+              outputTokens: 30,
+              totalTokens: 150,
+              costUsd: 0,
+            },
+          };
+        },
+      };
+
+      const service = await EvolutionService.open({
+        storeDir: join(dir, "store"),
+        workDir: join(dir, "work"),
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        proposer: createModelProposer({ client }),
+        sandbox: createProcessSandbox(),
+      });
+      try {
+        await service.startRun({
+          config: {
+            schema: "mars.evolution-run/v1",
+            run_id: "proposal-retry-charge-run",
+            seed: "proposal-retry-seed",
+            generations: 1,
+            children_per_generation: 1,
+            selection: { stages: [{ tasks: ["sel-1"] }], repeats: 1 },
+            final_test: {
+              tasks: ["fin-1", "fin-2"],
+              repeats: 2,
+              bootstrap_samples: 200,
+              max_uses: 1,
+            },
+            regression_families: [],
+            budget: {
+              max_tokens: 100_000,
+              max_usd: 0,
+              max_duration_ms: 120_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            evaluation_budget: {
+              max_tokens: 10_000,
+              max_usd: 0,
+              max_duration_ms: 30_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            harness: {
+              mutable_paths: ["harness/**"],
+              protected_paths: ["build.sh"],
+              max_patch_bytes: 16_384,
+              build: {
+                argv: ["/bin/sh", "build.sh"],
+                timeout_ms: 30_000,
+                bundle_dir: "dist",
+              },
+            },
+          },
+          scope_key: "proposal-retry-scope",
+          base_dir: baseDir,
+          base_ref: "base",
+          model: {
+            id: "openrouter/free",
+            provider: "openrouter",
+            revision: "1",
+          },
+          prompts: { system_prompt: "baseline" },
+          skills: { store_revision: "1" },
+          tools: [],
+          retrieval: {
+            repo_map_tokens: 0,
+            memory_top_k: 0,
+            context_window_tokens: 8192,
+            research: false,
+          },
+        });
+        // Simulate a crash after proposal ledger settlement but before g1-c0 insertion.
+        const at = new Date().toISOString();
+        service.store.appendLedger(
+          "proposal-retry-charge-run",
+          "reserve",
+          "g1-c0/proposal",
+          { tokens: 100, usd: 0, ms: 50 },
+          at,
+        );
+        service.store.appendLedger(
+          "proposal-retry-charge-run",
+          "settle",
+          "g1-c0/proposal",
+          { tokens: 100, usd: 0, ms: 50 },
+          at,
+        );
+
+        const status = await service.run("proposal-retry-charge-run");
+        expect(status.status).toBe("completed");
+        const proposalRows = service.store
+          .ledger("proposal-retry-charge-run")
+          .filter((row) => row.key.startsWith("g1-c0/proposal"));
+        expect(proposalRows.length).toBe(4);
+        expect(proposalRows.some((row) => row.key === "g1-c0/proposal#1")).toBe(
+          true,
+        );
+        const metrics = service.metrics("proposal-retry-charge-run");
+        expect(metrics.search_process.spend.tokens).toBeGreaterThanOrEqual(250);
+        const verify = await service.verify("proposal-retry-charge-run");
+        expect(verify.ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
   test.skipIf(!hasPinnedDockerImage)(
     "Docker-sandboxed candidate build (--network=none) runs end-to-end with promotion and rollback",
     async () => {

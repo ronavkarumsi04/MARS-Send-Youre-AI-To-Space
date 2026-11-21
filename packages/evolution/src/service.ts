@@ -1199,7 +1199,6 @@ export class EvolutionService {
       const proposal = MutationProposalSchema.parse(raw);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
       if (proposal.usage !== undefined) {
-        const proposalLedgerKey = `${candidateId}/proposal`;
         const usage = {
           tokens: proposal.usage.tokens,
           usd: proposal.usage.usd,
@@ -1207,6 +1206,16 @@ export class EvolutionService {
         };
         this.store.transaction(() => {
           this.store.assertLease(runId, lease, this.now());
+          const prefix = `${candidateId}/proposal`;
+          const attempt = this.store
+            .ledger(runId)
+            .filter(
+              (row) =>
+                row.kind === "reserve" &&
+                (row.key === prefix || row.key.startsWith(`${prefix}#`)),
+            ).length;
+          const proposalLedgerKey =
+            attempt === 0 ? prefix : `${prefix}#${attempt}`;
           const atProposal = nowIso(this.now());
           this.store.appendLedger(
             runId,
