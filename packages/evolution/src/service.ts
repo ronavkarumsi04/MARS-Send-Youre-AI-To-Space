@@ -1029,39 +1029,33 @@ export class EvolutionService {
     }
   }
 
+  private proposalLedgerKey(runId: string, candidateId: string): string {
+    const prefix = `${candidateId}/proposal`;
+    const attempt = this.store
+      .ledger(runId)
+      .filter(
+        (row) =>
+          row.kind === "reserve" &&
+          (row.key === prefix || row.key.startsWith(`${prefix}#`)),
+      ).length;
+    return attempt === 0 ? prefix : `${prefix}#${attempt}`;
+  }
+
   private settleProposalUsage(
     runId: string,
     lease: number,
     candidateId: string,
     usage: NonNullable<MutationProposal["usage"]>,
     budget: RunConfig["budget"],
+    reservedKey?: string,
   ): void {
     this.store.transaction(() => {
       this.store.assertLease(runId, lease, this.now());
-      const prefix = `${candidateId}/proposal`;
-      const attempt = this.store
-        .ledger(runId)
-        .filter(
-          (row) =>
-            row.kind === "reserve" &&
-            (row.key === prefix || row.key.startsWith(`${prefix}#`)),
-        ).length;
-      const proposalLedgerKey = attempt === 0 ? prefix : `${prefix}#${attempt}`;
+      const key = reservedKey ?? this.proposalLedgerKey(runId, candidateId);
       const atProposal = nowIso(this.now());
-      this.store.appendLedger(
-        runId,
-        "reserve",
-        proposalLedgerKey,
-        usage,
-        atProposal,
-      );
-      this.store.appendLedger(
-        runId,
-        "settle",
-        proposalLedgerKey,
-        usage,
-        atProposal,
-      );
+      if (reservedKey === undefined)
+        this.store.appendLedger(runId, "reserve", key, usage, atProposal);
+      this.store.appendLedger(runId, "settle", key, usage, atProposal);
     });
     const spent = this.spent(runId);
     if (
@@ -1085,6 +1079,7 @@ export class EvolutionService {
     entry: Plan["entries"][number],
     config: RunConfig,
     control: Control,
+    deadlineMs: number,
   ) {
     const candidateId = `g${generation}-c${index}`;
     if (this.store.getCandidate(runId, candidateId)) return candidateId;
@@ -1214,7 +1209,20 @@ export class EvolutionService {
         this.entriesOf(parentManifest.harness.tree_sha256),
         (digest) => this.store.getBlob(digest),
       );
-      let reportedUsage = false;
+      const now = this.now();
+      const proposalDeadline = Math.min(
+        deadlineMs,
+        now + config.evaluation_budget.max_duration_ms,
+        now + config.budget.max_duration_ms - spentBeforeProposal.ms,
+      );
+      if (proposalDeadline <= now)
+        fail(
+          "deadline_exceeded",
+          `run ${runId} passed its deadline before proposal`,
+        );
+      const signal = AbortSignal.timeout(proposalDeadline - now);
+      let reservedKey: string | undefined;
+      let settled = false;
       const raw = await this.options.proposer.propose(
         {
           run_id: runId,
@@ -1242,28 +1250,65 @@ export class EvolutionService {
           },
           applied_components: this.options.evaluator.appliedComponents,
         },
-        AbortSignal.timeout(config.evaluation_budget.max_duration_ms),
-        (usage) => {
-          this.settleProposalUsage(
-            runId,
-            lease,
-            candidateId,
-            usage,
-            config.budget,
-          );
-          reportedUsage = true;
+        signal,
+        {
+          reserve: (inputTokens, maxOutputTokens) =>
+            this.store.transaction(() => {
+              const at = this.now();
+              this.store.assertLease(runId, lease, at);
+              if (signal.aborted || at >= proposalDeadline)
+                fail(
+                  "deadline_exceeded",
+                  `run ${runId} passed its deadline before proposal dispatch`,
+                );
+              const remaining =
+                config.budget.max_tokens - this.spent(runId).tokens;
+              const outputLimit = Math.min(
+                maxOutputTokens,
+                remaining - inputTokens,
+              );
+              if (
+                outputLimit < Math.min(maxOutputTokens, 64) ||
+                outputLimit < 1
+              )
+                fail(
+                  "budget_exhausted",
+                  `run ${runId} cannot reserve enough tokens for a proposal`,
+                );
+              reservedKey = this.proposalLedgerKey(runId, candidateId);
+              this.store.appendLedger(
+                runId,
+                "reserve",
+                reservedKey,
+                { tokens: inputTokens + outputLimit, usd: 0, ms: 0 },
+                nowIso(at),
+              );
+              return outputLimit;
+            }),
+          settle: (usage) => {
+            this.settleProposalUsage(
+              runId,
+              lease,
+              candidateId,
+              usage,
+              config.budget,
+              reservedKey,
+            );
+            settled = true;
+          },
         },
       );
       await verifyControlDigests(control.control_digests, "after proposal");
       const proposal = MutationProposalSchema.parse(raw);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
-      if (!reportedUsage && proposal.usage !== undefined) {
+      if (!settled && proposal.usage !== undefined) {
         this.settleProposalUsage(
           runId,
           lease,
           candidateId,
           proposal.usage,
           config.budget,
+          reservedKey,
         );
       }
       proposalJson = canonicalJson(proposal);
@@ -1390,7 +1435,7 @@ export class EvolutionService {
     runId: string,
     options: { maxGenerations?: number } = {},
   ): Promise<{ status: string; generations_completed: number }> {
-    const { config, control } = this.config(runId);
+    const { config, control, deadline_ms } = this.config(runId);
     const lease = this.store.acquireLease(
       runId,
       this.options.holder,
@@ -1486,6 +1531,7 @@ export class EvolutionService {
             plan.entries[index] as Plan["entries"][number],
             config,
             control,
+            deadline_ms,
           );
           children.push(id);
           await this.process(runId, lease, id, config, control);

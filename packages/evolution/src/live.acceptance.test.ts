@@ -34,6 +34,24 @@ import { EvolutionService } from "./service";
  */
 const live = process.env.MARS_EVOLUTION_LIVE === "1";
 
+function proposerKey(env: Record<string, string | undefined>): string {
+  if (!env.OPENROUTER_API_KEY)
+    throw new Error("OPENROUTER_API_KEY is required for live acceptance");
+  return env.OPENROUTER_API_KEY;
+}
+
+test("live acceptance never uses the Harbor credential for OpenRouter", () => {
+  expect(() =>
+    proposerKey({ MARS_EVAL_API_KEY: "harbor", OPENAI_API_KEY: "openai" }),
+  ).toThrow("OPENROUTER_API_KEY is required");
+  expect(
+    proposerKey({
+      MARS_EVAL_API_KEY: "harbor",
+      OPENROUTER_API_KEY: "openrouter",
+    }),
+  ).toBe("openrouter");
+});
+
 class Artifacts {
   readonly items = new Map<string, Uint8Array>();
   async put(
@@ -71,6 +89,7 @@ test.skipIf(!live)(
     let verifiedAfterReopen = false;
     let failure: unknown;
     try {
+      const proposerApiKey = proposerKey(process.env);
       const template = parseComparisonManifest(
         JSON.parse(
           await readFile(resolve(env("MARS_EVOLUTION_TEMPLATE")), "utf8"),
@@ -108,10 +127,6 @@ test.skipIf(!live)(
         context,
         template,
       });
-      const proposerApiKey =
-        process.env.OPENROUTER_API_KEY ??
-        process.env.OPENAI_API_KEY ??
-        env("MARS_EVAL_API_KEY");
       const proposerModel =
         process.env.MARS_EVOLUTION_PROPOSER_MODEL ??
         DEFAULT_FREE_PROPOSER_MODEL;

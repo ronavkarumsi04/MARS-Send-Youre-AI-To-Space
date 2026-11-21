@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EvolutionError } from "./errors";
 import { createFixtureEvaluator, FIXTURE_POLICY_FILE } from "./evaluators";
 import {
   buildProposalMessages,
@@ -18,6 +19,7 @@ import {
   DEFAULT_EVOLUTION_DOCKER_IMAGE,
 } from "./sandbox";
 import { EvolutionService } from "./service";
+import { createFixture, runConfig } from "./test-support";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "mars-evo-m5b-"));
@@ -51,6 +53,22 @@ async function seedHarness(baseDir: string): Promise<void> {
     { mode: 0o755 },
   );
 }
+
+test("offline proposer tests load without Docker on PATH", async () => {
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      "test",
+      import.meta.path,
+      "--test-name-pattern",
+      "enforces free-tier OpenRouter models by default",
+    ],
+    { env: { ...process.env, PATH: "" }, stdout: "pipe", stderr: "pipe" },
+  );
+  const output = new TextDecoder().decode(result.stderr);
+  expect(result.exitCode).toBe(0);
+  expect(output).toContain("1 pass");
+});
 
 describe("model proposer unit tests", () => {
   test("enforces free-tier OpenRouter models by default", () => {
@@ -260,6 +278,40 @@ describe("model proposer unit tests", () => {
       expect(user).toContain('"selection_score": 0.25');
       expect(user).not.toContain("protected/secret.txt");
       expect(user).not.toContain("do-not-expose-or-edit");
+
+      const capped = 1_500;
+      const boundedRequest = await buildProposalMessages(
+        {
+          ...context,
+          applied_components: [],
+          archive: Array.from({ length: 1_000 }, () => ({
+            candidate_id: "c0",
+            parent_id: null,
+            generation: 0,
+            depth: 0,
+            selection_score: 0.25,
+            eligible: true,
+            unresolved: ["sel-1"],
+            unstable: [],
+          })),
+          failure_traces: [
+            {
+              source: "rejected_child",
+              candidate_id: "rejected",
+              notes: ["雪".repeat(1_000)],
+            },
+          ],
+        },
+        capped,
+      );
+      expect(boundedRequest.system).toContain("only applies harness patches");
+      const json = boundedRequest.user.slice(boundedRequest.user.indexOf("{"));
+      expect(new TextEncoder().encode(json).byteLength).toBeLessThanOrEqual(
+        capped,
+      );
+      expect(JSON.parse(json).archive.length).toBeLessThan(1_000);
+      expect(JSON.parse(json).failure_traces).toEqual([]);
+      expect(json).toContain(`harness/${FIXTURE_POLICY_FILE}`);
     });
   });
 
@@ -456,9 +508,11 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
+  const docker = Bun.which("docker");
   const hasPinnedDockerImage =
+    docker !== null &&
     Bun.spawnSync(
-      ["docker", "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE],
+      [docker, "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE],
       { stdout: "ignore", stderr: "ignore" },
     ).exitCode === 0;
 
@@ -570,7 +624,9 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
           .ledger("proposal-usage-run")
           .filter((row) => row.key.endsWith("/proposal"));
         expect(proposalRows.length).toBe(2);
-        expect(proposalRows[0]?.tokens).toBe(150);
+        expect(proposalRows.find((row) => row.kind === "settle")?.tokens).toBe(
+          150,
+        );
         const metrics = service.metrics("proposal-usage-run");
         expect(metrics.search_process.spend.tokens).toBeGreaterThanOrEqual(150);
         const verify = await service.verify("proposal-usage-run");
@@ -606,9 +662,9 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
             }),
             model: "openrouter/free",
             usage: {
-              inputTokens: 800,
-              outputTokens: 400,
-              totalTokens: 1200,
+              inputTokens: 5000,
+              outputTokens: 1000,
+              totalTokens: 6000,
               costUsd: 0,
             },
           };
@@ -639,7 +695,7 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
             },
             regression_families: [],
             budget: {
-              max_tokens: 500,
+              max_tokens: 5000,
               max_usd: 0,
               max_duration_ms: 120_000,
               max_depth: 2,
@@ -685,7 +741,7 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
         expect(status.status).toBe("budget_exhausted");
         const metrics = service.metrics("proposal-budget-exhausted-run");
         expect(metrics.search_process.spend.tokens).toBeGreaterThanOrEqual(
-          1200,
+          6000,
         );
         const verify = await service.verify("proposal-budget-exhausted-run");
         expect(verify.ok).toBe(true);
@@ -722,7 +778,7 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
                     patch: protectedPatch,
                   }),
             model: "openrouter/free",
-            usage: { inputTokens: 120, outputTokens: 30, costUsd: 0.01 },
+            usage: { inputTokens: 4500, outputTokens: 1500, costUsd: 0.01 },
           };
         },
       };
@@ -750,7 +806,7 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
             },
             regression_families: [],
             budget: {
-              max_tokens: 300,
+              max_tokens: 12000,
               max_usd: 1,
               max_duration_ms: 120_000,
               max_depth: 2,
@@ -811,13 +867,13 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
         expect(settled).toEqual([
           {
             key: "g1-c0/proposal",
-            tokens: 150,
+            tokens: 6000,
             usd: 0.01,
             ms: expect.any(Number),
           },
           {
             key: "g1-c1/proposal",
-            tokens: 150,
+            tokens: 6000,
             usd: 0.01,
             ms: expect.any(Number),
           },
@@ -830,6 +886,130 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
       }
     });
   });
+
+  test("reserves prompt and clamped output before dispatch and keeps the reservation after an interrupted proposal", async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await createFixture(
+        () => ({ hypothesis: "unused" }),
+        dir,
+      );
+      const cfg = runConfig();
+      let calls = 0;
+      const service = await EvolutionService.open({
+        storeDir: fixture.storeDir,
+        workDir: fixture.workDir,
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        sandbox: createProcessSandbox(),
+        proposer: createModelProposer({
+          maxTokens: 20_000,
+          client: {
+            async complete(request) {
+              calls += 1;
+              const reserve = service.store
+                .ledger("run-1")
+                .find(
+                  (row) =>
+                    row.kind === "reserve" && row.key === "g1-c0/proposal",
+                );
+              expect(reserve?.tokens).toBe(6_000);
+              expect(request.maxTokens).toBeGreaterThan(0);
+              expect(request.maxTokens).toBeLessThan(6_000);
+              const promptBytes = new TextEncoder().encode(
+                JSON.stringify(request.messages),
+              ).byteLength;
+              expect(
+                (request.maxTokens ?? 0) + promptBytes,
+              ).toBeLessThanOrEqual(6_000);
+              throw new EvolutionError(
+                "deadline_exceeded",
+                "interrupted before usage arrived",
+              );
+            },
+          },
+        }),
+      });
+      try {
+        await fixture.start(service, {
+          ...cfg,
+          budget: { ...cfg.budget, max_tokens: 6_000 },
+        });
+        expect((await service.run("run-1")).status).toBe("deadline_exceeded");
+        expect(service.store.getCandidate("run-1", "g1-c0")).toBeNull();
+        expect((await service.run("run-1")).status).toBe("budget_exhausted");
+        expect(calls).toBe(1);
+        expect(
+          service.store
+            .ledger("run-1")
+            .filter((row) => row.key.endsWith("/proposal")),
+        ).toMatchObject([{ kind: "reserve", tokens: 6_000 }]);
+        expect((await service.verify("run-1")).ok).toBe(true);
+
+        await fixture.start(service, {
+          ...cfg,
+          run_id: "prompt-does-not-fit",
+          budget: { ...cfg.budget, max_tokens: 1_000 },
+        });
+        expect((await service.run("prompt-does-not-fit")).status).toBe(
+          "budget_exhausted",
+        );
+        expect(calls).toBe(1);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
+  test("caps model cancellation to the remaining wall-clock run deadline", async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await createFixture(
+        () => ({ hypothesis: "unused" }),
+        dir,
+      );
+      const cfg = runConfig();
+      const base = createFixtureEvaluator({ usdPerTrialPerEffort: 0 });
+      const runDuration = 120_000;
+      let clock = 1_000;
+      let signalAtProvider: AbortSignal | undefined;
+      const service = await EvolutionService.open({
+        storeDir: fixture.storeDir,
+        workDir: fixture.workDir,
+        now: () => clock,
+        evaluator: {
+          ...base,
+          async evaluate(request, signal) {
+            const outcome = await base.evaluate(request, signal);
+            clock = 1_000 + runDuration - 80;
+            return outcome;
+          },
+        },
+        sandbox: createProcessSandbox(),
+        proposer: createModelProposer({
+          client: {
+            async complete(_request, _selection, signal) {
+              signalAtProvider = signal;
+              return new Promise((_resolve, reject) => {
+                signal?.addEventListener("abort", () => reject(signal.reason), {
+                  once: true,
+                });
+              });
+            },
+          },
+        }),
+      });
+      try {
+        await fixture.start(service, {
+          ...cfg,
+          selection: { stages: [{ tasks: ["s1"] }], repeats: 1 },
+          budget: { ...cfg.budget, max_duration_ms: runDuration },
+        });
+        expect((await service.run("run-1")).status).toBe("deadline_exceeded");
+        expect(signalAtProvider?.aborted).toBe(true);
+        expect((await service.verify("run-1")).ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  }, 2_000);
 
   test("resumed proposal after crash between ledger settlement and candidate insertion charges retry usage", async () => {
     await withTempDir(async (dir) => {

@@ -148,13 +148,24 @@ export class ModelRouter {
     };
   }
 
-  private adapterFor(model: ModelConfig) {
+  private adapterFor(model: ModelConfig, signal?: AbortSignal) {
     const provider = this.registry.getProvider(model.providerId);
     if (!provider)
       throw new Error(`Provider "${model.providerId}" is not configured.`);
     return this.adapterFactory(provider, {
       env: this.registry.getProviderEnvironment(provider.id),
       ...this.adapterOptions,
+      ...(signal
+        ? {
+            fetch: (url, init) =>
+              (this.adapterOptions.fetch ?? fetch)(url, {
+                ...init,
+                signal: init?.signal
+                  ? AbortSignal.any([init.signal, signal])
+                  : signal,
+              }),
+          }
+        : {}),
     });
   }
 
@@ -203,7 +214,9 @@ export class ModelRouter {
   async complete(
     request: ChatRequest,
     selection: ModelSelection = {},
+    signal?: AbortSignal,
   ): Promise<RoutedChatResponse> {
+    signal?.throwIfAborted();
     const { models, skipped } = this.candidates(selection);
     if (!models.length) throw this.noModelAvailable(skipped, []);
 
@@ -216,12 +229,17 @@ export class ModelRouter {
         continue;
       }
       try {
-        const response = await this.adapterFor(model).complete(request, model);
+        const response = await this.adapterFor(model, signal).complete(
+          request,
+          model,
+        );
+        signal?.throwIfAborted();
         return {
           ...response,
           routing: this.routingInfo(selection, model, attempts),
         };
       } catch (error) {
+        signal?.throwIfAborted();
         const providerError = this.handleProviderError(model, error, attempts);
         timedOut = providerError.timedOut;
         if (!providerError.retryable) throw providerError;

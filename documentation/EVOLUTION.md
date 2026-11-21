@@ -160,11 +160,17 @@ set and comparing `task_solving` blocks; this has **not** been done.
 
 ```
 mars evolution demo --state DIR                 # offline FAKE run (model_requests: 0)
-mars evolution live-smoke --state DIR [--model ID] [--image REF] [--generations N] [--children N]
+mars evolution live-smoke --state DIR [--run ID] [--model ID] [--image REF] [--generations N] [--children N]
 mars evolution status|lineage|metrics|verify --state DIR --run ID
 mars evolution champion|history --state DIR --scope KEY
 mars evolution rollback --state DIR --scope KEY --to SEQ --expect-version N
 ```
+
+Each live-smoke invocation starts a fresh run by default and reports its
+`run_id`. Pass `--run ID` to create a named run or resume that exact run;
+resuming does not repeat completed generations, even if their proposals were
+rate-limited. Opt-in Harbor acceptance requires a separate `OPENROUTER_API_KEY`
+for proposing; `MARS_EVAL_API_KEY` is used only by the Harbor evaluator.
 
 ## Isolation caveat
 
@@ -176,6 +182,10 @@ covered by a test). For prevention, pass `createDockerSandbox` from
 `@mars/workspaces`, which mounts only the candidate workspace. The acceptance
 evaluator always runs in the host process or behind `@mars/evaluation`, never in
 a candidate workspace, and reads a host-owned copy of the bundle.
+
+The CLI live smoke's toy evaluator reads the solver process's stdout as its
+answer. Treat its scores as smoke diagnostics, not as a trusted promotion
+signal for adversarial candidates.
 
 ## Not verified
 

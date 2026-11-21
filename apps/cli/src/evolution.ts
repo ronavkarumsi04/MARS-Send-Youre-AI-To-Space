@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -14,6 +15,7 @@ import {
   EvolutionError,
   EvolutionService,
   isFreeOpenRouterModel,
+  type PromotionDecision,
   runOfflineDemo,
 } from "@mars/evolution";
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
@@ -22,7 +24,7 @@ import { CliUsageError } from "./cli-errors";
 export const EVOLUTION_USAGE = [
   "Usage: mars evolution <command> --state DIR [options]",
   "  demo                                  offline FAKE end-to-end run (no model requests)",
-  "  live-smoke [--model ID] [--image REF] live OpenRouter :free proposer + Docker (--network=none) build + held-out gate",
+  "  live-smoke [--run ID] [--model ID] [--image REF] live OpenRouter :free proposer + Docker (--network=none) build + held-out gate",
   "  status|lineage|metrics|verify --run ID",
   "  champion|history --scope KEY",
   "  rollback --scope KEY --to SEQ --expect-version N",
@@ -78,17 +80,19 @@ const SMOKE_FINAL_TASKS: readonly SmokeTaskSpec[] = [
   },
 ];
 
-function createLiveSmokeEvaluator(
+export function createLiveSmokeEvaluator(
   sandbox: ReturnType<typeof createEvolutionDockerSandbox>,
+  image: string,
 ): CandidateEvaluator {
   const allTasks = new Map(
     [...SMOKE_SELECTION_TASKS, ...SMOKE_FINAL_TASKS].map((t) => [t.id, t]),
   );
-  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v2"]);
+  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v3", image]);
   const decoder = new TextDecoder("utf-8", { fatal: false });
   return {
     digest,
     simulated: false,
+    appliedComponents: [],
     async evaluate(request, signal) {
       const started = Date.now();
       const per_task: {
@@ -219,6 +223,38 @@ async function seedLiveSmokeBase(baseDir: string): Promise<void> {
   );
 }
 
+export function rollbackSmokePromotion(
+  service: EvolutionService,
+  scopeKey: string,
+  decision: PromotionDecision,
+): boolean {
+  if (decision.verdict !== "accepted") return false;
+  const history = service.history(scopeKey);
+  const deployment = history.find(
+    (entry) =>
+      entry.action === "deploy" && entry.decision_id === decision.decision_id,
+  );
+  if (!deployment) return false;
+  const target = decision.champion.entry_seq;
+  if (
+    history.some(
+      (entry) =>
+        entry.action === "rollback" &&
+        entry.seq > deployment.seq &&
+        entry.target_seq === target,
+    )
+  )
+    return true;
+  const champion = service.champion(scopeKey);
+  if (champion?.entry_seq !== deployment.seq) return false;
+  service.rollback({
+    scope_key: scopeKey,
+    to_entry_seq: target,
+    expected_pointer_version: champion.pointer_version,
+  });
+  return true;
+}
+
 async function runLiveSmoke(options: {
   state: string;
   model: string;
@@ -266,9 +302,10 @@ async function runLiveSmoke(options: {
     async complete(
       request: Parameters<ModelRouter["complete"]>[0],
       selection?: { model?: string; route?: string },
+      signal?: AbortSignal,
     ) {
       proposerRequests += 1;
-      const reply = await router.complete(request, selection);
+      const reply = await router.complete(request, selection, signal);
       routedModel = reply.model ?? options.model;
       return reply;
     },
@@ -282,7 +319,7 @@ async function runLiveSmoke(options: {
     EvolutionService.open({
       storeDir: join(options.state, "store"),
       workDir: join(options.state, "work"),
-      evaluator: createLiveSmokeEvaluator(sandbox),
+      evaluator: createLiveSmokeEvaluator(sandbox, options.image),
       proposer: createModelProposer({
         client: instrumentedClient,
         model: options.model,
@@ -354,7 +391,6 @@ async function runLiveSmoke(options: {
       },
     });
     const status = await service.run(options.runId);
-    const preSmokeChampion = service.champion(options.scopeKey);
     const lineageBeforePromote = service.lineage(options.runId);
     const hasEvaluatedChild = lineageBeforePromote.some(
       (c) => c.parent_id !== null && c.state === "evaluated",
@@ -366,16 +402,9 @@ async function runLiveSmoke(options: {
         })
       : null;
     const verifyBeforeReopen = await service.verify(options.runId);
-    let rolledBack = false;
-    if (decision?.verdict === "accepted" && preSmokeChampion) {
-      const champion = service.champion(options.scopeKey);
-      service.rollback({
-        scope_key: options.scopeKey,
-        to_entry_seq: preSmokeChampion.entry_seq,
-        expected_pointer_version: champion?.pointer_version ?? 0,
-      });
-      rolledBack = true;
-    }
+    const rolledBack =
+      decision !== null &&
+      rollbackSmokePromotion(service, options.scopeKey, decision);
     const lineage = service.lineage(options.runId);
     service.close();
 
@@ -438,7 +467,10 @@ async function runLiveSmoke(options: {
   }
 }
 
-export async function runEvolution(args: string[]): Promise<void> {
+export async function runEvolution(
+  args: string[],
+  smoke = runLiveSmoke,
+): Promise<void> {
   const [command, ...rest] = args;
   const { values } = parseArgs({
     args: rest,
@@ -476,11 +508,11 @@ export async function runEvolution(args: string[]): Promise<void> {
         "--generations and --children must be positive integers",
       );
     }
-    const summary = await runLiveSmoke({
+    const summary = await smoke({
       state,
       model: values.model ?? DEFAULT_FREE_PROPOSER_MODEL,
       image: values.image ?? DEFAULT_EVOLUTION_DOCKER_IMAGE,
-      runId: values.run ?? "live-smoke",
+      runId: values.run ?? `live-smoke-${randomUUID()}`,
       scopeKey: values.scope ?? "live-smoke",
       generations,
       children,

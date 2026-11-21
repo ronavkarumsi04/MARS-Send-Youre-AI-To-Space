@@ -78,6 +78,11 @@ export interface ProposalContext {
   applied_components?: readonly string[] | undefined;
 }
 
+export interface ProposalAccounting {
+  reserve(inputTokens: number, maxOutputTokens: number): number;
+  settle(usage: NonNullable<MutationProposal["usage"]>): void;
+}
+
 /**
  * Produces one mutation. Its output is untrusted: the host validates the
  * schema, refuses protected/out-of-allowlist paths, applies the patch in a
@@ -88,7 +93,7 @@ export interface MutationProposer {
   propose(
     context: ProposalContext,
     signal: AbortSignal,
-    reportUsage?: (usage: NonNullable<MutationProposal["usage"]>) => void,
+    accounting?: ProposalAccounting,
   ): Promise<MutationProposal>;
 }
 
@@ -149,7 +154,7 @@ export interface ModelProposerOptions {
   maxTokens?: number;
   /** Sampling temperature (default 0.2). */
   temperature?: number;
-  /** Maximum total bytes of mutable harness files included in the prompt (default 24000). */
+  /** Maximum UTF-8 bytes of serialized proposal context (default 24000). */
   maxContextBytes?: number;
   /** Optional proposer identifier override. */
   id?: string;
@@ -256,9 +261,11 @@ export async function buildProposalMessages(
     "3. At least one of patch, prompts, or retrieval must change compared to the parent manifest.",
     '4. If proposing a patch in "patch", you MUST use exact git diff format starting with `diff --git a/<path> b/<path>`, followed by `--- a/<path>`, `+++ b/<path>`, and `@@ -oldStart,oldCount +newStart,newCount @@` hunks with exact matching lines from the mutable files below, ending with a trailing newline.',
     "5. NEVER touch protected paths or any path outside mutable_paths. Keep patch bytes strictly within max_patch_bytes.",
-    applied && applied.length > 0
-      ? `6. The evaluator only applies these components: ${applied.join(", ")}. Make sure your mutation modifies an applied component (for example, prompts.system_prompt if system_prompt is listed).`
-      : "6. Prefer a minimal, targeted harness patch or prompt/parameter change that directly addresses the unresolved or unstable selection tasks.",
+    applied === undefined
+      ? "6. Prefer a minimal, targeted harness patch or prompt/parameter change that directly addresses the unresolved or unstable selection tasks."
+      : applied.length === 0
+        ? "6. The evaluator only applies harness patches. Return a patch and do not change prompts, skills, tools, or retrieval settings."
+        : `6. The evaluator only applies harness patches and these components: ${applied.join(", ")}. Make sure your mutation modifies the harness or an applied component.`,
   ].join("\n");
 
   const payload = {
@@ -269,21 +276,82 @@ export async function buildProposalMessages(
     parent: {
       candidate_id: context.parent.candidate_id,
       selection_score: context.parent.selection_score,
-      per_task: context.parent.per_task,
-      prompts: context.parent.manifest.prompts,
+      per_task: [] as ProposalContext["parent"]["per_task"],
+      prompts: Object.create(null) as Record<string, string>,
       retrieval: context.parent.manifest.retrieval,
     },
-    archive: context.archive ?? [],
-    lineage: context.lineage ?? [],
-    failure_traces: context.failure_traces ?? [],
+    archive: [] as ArchiveSummaryEntry[],
+    lineage: [] as LineageEntry[],
+    failure_traces: [] as FailureTrace[],
     harness_policy: policy ?? null,
     applied_components: applied ?? null,
-    mutable_files: mutableFiles,
+    mutable_files: [] as typeof mutableFiles,
   };
+  const encoder = new TextEncoder();
+  const serialize = () => JSON.stringify(payload, null, 2);
+  const size = () => encoder.encode(serialize()).byteLength;
+  const baseSize = size();
+  if (baseSize > maxContextBytes)
+    fail("invalid_input", "required proposal context exceeds maxContextBytes");
+  const groupBudget = Math.floor((maxContextBytes - baseSize) / 6);
+  const append = <T>(target: T[], items: readonly T[], limit: number) => {
+    for (const item of items) {
+      target.push(item);
+      if (size() > limit) {
+        target.pop();
+        break;
+      }
+    }
+  };
+  for (const [key, value] of Object.entries(context.parent.manifest.prompts)) {
+    payload.parent.prompts[key] = value;
+    if (size() > baseSize + groupBudget) {
+      delete payload.parent.prompts[key];
+      break;
+    }
+  }
+  append(
+    payload.parent.per_task,
+    context.parent.per_task,
+    size() + groupBudget,
+  );
+  append(payload.archive, context.archive ?? [], size() + groupBudget);
+  append(payload.lineage, context.lineage ?? [], size() + groupBudget);
+  append(
+    payload.failure_traces,
+    context.failure_traces ?? [],
+    size() + groupBudget,
+  );
+  for (const file of mutableFiles) {
+    payload.mutable_files.push(file);
+    if (size() <= maxContextBytes) continue;
+    payload.mutable_files.pop();
+    let low = 0;
+    let high = file.content.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      payload.mutable_files.push({
+        ...file,
+        content: file.content.slice(0, middle),
+        truncated: true,
+      });
+      const fits = size() <= maxContextBytes;
+      payload.mutable_files.pop();
+      if (fits) low = middle;
+      else high = middle - 1;
+    }
+    if (low > 0)
+      payload.mutable_files.push({
+        ...file,
+        content: file.content.slice(0, low),
+        truncated: true,
+      });
+    break;
+  }
 
   const user = [
     "Propose one bounded mutation for the next candidate based on this selection-split context:",
-    JSON.stringify(payload, null, 2),
+    serialize(),
   ].join("\n\n");
 
   return { system, user };
@@ -327,7 +395,7 @@ export function createModelProposer(
 
   return {
     id,
-    async propose(context, signal, reportUsage) {
+    async propose(context, signal, accounting) {
       if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
       const { system, user } = await buildProposalMessages(
         context,
@@ -338,14 +406,19 @@ export function createModelProposer(
       if (model !== undefined) selection.model = model;
       if (options.route !== undefined) selection.route = options.route;
 
+      const messages: ChatRequest["messages"] = [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ];
+      const inputTokens =
+        new TextEncoder().encode(JSON.stringify(messages)).byteLength + 64;
+      const outputLimit =
+        accounting?.reserve(inputTokens, maxTokens) ?? maxTokens;
       const startedAt = Date.now();
       const completePromise = options.client.complete(
         {
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          maxTokens,
+          messages,
+          maxTokens: outputLimit,
           temperature,
         },
         selection,
@@ -377,15 +450,15 @@ export function createModelProposer(
       );
       const rawTokens =
         response.usage?.totalTokens ??
-        (response.usage?.inputTokens ?? 0) +
-          (response.usage?.outputTokens ?? 0);
+        (response.usage?.inputTokens ?? inputTokens) +
+          (response.usage?.outputTokens ?? outputLimit);
       const tokens =
         Number.isFinite(rawTokens) && rawTokens > 0 ? Math.round(rawTokens) : 0;
       const rawUsd = response.usage?.costUsd ?? 0;
       const usd = Number.isFinite(rawUsd) && rawUsd > 0 ? rawUsd : 0;
       const ms = Math.max(0, Math.round(Date.now() - startedAt));
       const usage = { tokens, usd, ms };
-      reportUsage?.(usage);
+      accounting?.settle(usage);
       if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
       if (
         !allowPaid &&
@@ -502,12 +575,9 @@ export function createOpenRouterProposerClient(
         ...(json.usage
           ? {
               usage: {
-                inputTokens: json.usage.prompt_tokens ?? 0,
-                outputTokens: json.usage.completion_tokens ?? 0,
-                totalTokens:
-                  json.usage.total_tokens ??
-                  (json.usage.prompt_tokens ?? 0) +
-                    (json.usage.completion_tokens ?? 0),
+                inputTokens: json.usage.prompt_tokens,
+                outputTokens: json.usage.completion_tokens,
+                totalTokens: json.usage.total_tokens,
                 ...(typeof json.usage.cost === "number" &&
                 Number.isFinite(json.usage.cost) &&
                 json.usage.cost >= 0

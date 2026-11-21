@@ -78,10 +78,16 @@
     "status": "passed",
     "verifies": [
       "real Docker --network=none build with pinned oven/bun digest",
-      "model proposer receiving selection-only archive, lineage, and failure traces (excluding final-test tasks and protected files)",
+      "model proposer driven by a fixed-patch client",
       "held-out promotion gate verdict accepted",
       "durable rollback to baseline champion entry",
       "hash-chained ledger verification"
-    ]
+    ],
+    "context_isolation_coverage": {
+      "sandbox": "host process (separate test)",
+      "test_file": "packages/evolution/src/proposer-docker.test.ts",
+      "test_name": "model proposer receives selection-only archive, lineage, and failure traces and improves candidate through EvolutionService",
+      "verifies": "selection-only archive, lineage, and failure traces are included and final-test tasks and protected files are excluded"
+    }
   }
 }

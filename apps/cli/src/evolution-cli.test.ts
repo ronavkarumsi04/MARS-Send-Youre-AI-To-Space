@@ -2,7 +2,17 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EvolutionUsageError, runEvolution } from "./evolution";
+import { createProcessSandbox, runOfflineDemo } from "@mars/evolution";
+import {
+  createFixture,
+  runConfig,
+} from "../../../packages/evolution/src/test-support";
+import {
+  createLiveSmokeEvaluator,
+  EvolutionUsageError,
+  rollbackSmokePromotion,
+  runEvolution,
+} from "./evolution";
 
 const entrypoint = join(import.meta.dir, "main.ts");
 const roots: string[] = [];
@@ -104,4 +114,82 @@ test("mars evolution rejects missing flags with a usage error", async () => {
       "1",
     ]),
   ).rejects.toThrow(/non-negative/);
+});
+
+test("live-smoke retries use fresh run IDs after a completed all-rejected run, unless named", async () => {
+  const fixture = await createFixture(() => {
+    throw new Error("OpenRouter HTTP 429");
+  });
+  roots.push(fixture.root);
+  const service = await fixture.open();
+  try {
+    const smoke: NonNullable<Parameters<typeof runEvolution>[1]> = async ({
+      runId,
+    }) => {
+      await fixture.start(service, runConfig({ run_id: runId }));
+      const status = await service.run(runId);
+      expect(status.status).toBe("completed");
+      expect(service.lineage(runId)[1]).toMatchObject({
+        state: "rejected",
+        reason: expect.stringContaining("HTTP 429"),
+      });
+      return { run_id: runId, ...status };
+    };
+    const args = ["live-smoke", "--state", fixture.root];
+    await runEvolution(args, smoke);
+    await runEvolution(args, smoke);
+    await runEvolution([...args, "--run", "named"], smoke);
+    await runEvolution([...args, "--run", "named"], smoke);
+    const requests = fixture.contexts.map((context) => context.run_id);
+    expect(requests).toHaveLength(3);
+    expect(requests[0]).not.toBe(requests[1]);
+    expect(requests[2]).toBe("named");
+  } finally {
+    service.close();
+  }
+});
+
+test("live-smoke rolls back a replayed promotion exactly once without changing later champion history", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-evolution-cli-replay-"));
+  roots.push(root);
+  const { service } = await runOfflineDemo(root);
+  try {
+    const decision = await service.promote({
+      run_id: "demo-run",
+      idempotency_key: "demo-promotion",
+    });
+    expect(decision.verdict).toBe("accepted");
+    expect(service.champion("scope-1")?.action).toBe("deploy");
+    expect(rollbackSmokePromotion(service, "scope-1", decision)).toBe(true);
+    expect(rollbackSmokePromotion(service, "scope-1", decision)).toBe(true);
+    expect(service.history("scope-1").map((row) => row.action)).toEqual([
+      "initial",
+      "deploy",
+      "rollback",
+    ]);
+    const current = service.champion("scope-1");
+    if (!current) throw new Error("missing champion");
+    service.rollback({
+      scope_key: "scope-1",
+      to_entry_seq: 2,
+      expected_pointer_version: current.pointer_version,
+    });
+    const later = service.champion("scope-1");
+    expect(rollbackSmokePromotion(service, "scope-1", decision)).toBe(true);
+    expect(service.champion("scope-1")).toEqual(later);
+  } finally {
+    service.close();
+  }
+});
+
+test("live-smoke evaluator identity binds the image and applies only harness patches", () => {
+  const sandbox = createProcessSandbox();
+  const first = createLiveSmokeEvaluator(sandbox, "image-one");
+  expect(first.appliedComponents).toEqual([]);
+  expect(createLiveSmokeEvaluator(sandbox, "image-one").digest).toBe(
+    first.digest,
+  );
+  expect(createLiveSmokeEvaluator(sandbox, "image-two").digest).not.toBe(
+    first.digest,
+  );
 });
