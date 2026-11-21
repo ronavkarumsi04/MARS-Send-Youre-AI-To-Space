@@ -160,7 +160,9 @@ export async function createHostMcpControlPlane(
     probeTimeoutMs,
     getTrustedBaseline: async (ctx, identity) => {
       const { state } = await store.load();
-      const baselines: Array<{ evidence: typeof state.grants[number]["evidence"] }> = [];
+      const baselines: Array<{
+        evidence: (typeof state.grants)[number]["evidence"];
+      }> = [];
       const grant = state.grants.findLast(
         (g) =>
           g.state === "approved" &&

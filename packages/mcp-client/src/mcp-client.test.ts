@@ -1000,7 +1000,13 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
               jsonrpc: "2.0",
               id: body.id,
               result: {
-                tools: [{ name: "tool_a", description: "A", inputSchema: { type: "object" } }],
+                tools: [
+                  {
+                    name: "tool_a",
+                    description: "A",
+                    inputSchema: { type: "object" },
+                  },
+                ],
                 nextCursor: "page2",
               },
             });
@@ -1010,7 +1016,13 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
               jsonrpc: "2.0",
               id: body.id,
               result: {
-                tools: [{ name: "tool_b", description: "B", inputSchema: { type: "object" } }],
+                tools: [
+                  {
+                    name: "tool_b",
+                    description: "B",
+                    inputSchema: { type: "object" },
+                  },
+                ],
                 nextCursor: "page3",
               },
             });
@@ -1019,7 +1031,13 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
             jsonrpc: "2.0",
             id: body.id,
             result: {
-              tools: [{ name: "tool_c", description: "C", inputSchema: { type: "object" } }],
+              tools: [
+                {
+                  name: "tool_c",
+                  description: "C",
+                  inputSchema: { type: "object" },
+                },
+              ],
             },
           });
         }

@@ -258,7 +258,13 @@ export class McpEvidenceProbe implements EvidenceProbe {
           dependencySha === b.evidence.dependency_sha256,
       );
       if (!matched) {
-        const primary = baselines[0]!;
+        const primary = baselines[0];
+        if (!primary) {
+          throw new IntegrationTrustError(
+            "verification_failed",
+            "Missing trusted baseline for stdio drift comparison",
+          );
+        }
         const driftedContentSha = sha256(
           canonicalJSON({
             artifact_sha256: entrypointSha ?? configSha,

@@ -427,7 +427,14 @@ describe("mars mcp CLI flow", () => {
 
   it("approves a changed stdio replacement reviewed with --allow-stdio-probe", async () => {
     const stateDir = await makeStateDir();
-    const common = ["--state-dir", stateDir, "--owner", "local", "--project", "default"];
+    const common = [
+      "--state-dir",
+      stateDir,
+      "--owner",
+      "local",
+      "--project",
+      "default",
+    ];
 
     // 1. Review and approve V1 stdio server
     const review1Json = await execMcpCli([
@@ -464,7 +471,10 @@ describe("mars mcp CLI flow", () => {
       "--json",
     ]);
     const { review: r2 } = JSON.parse(review2Json) as {
-      review: { review_id: string; evidence: { tools: Array<{ name: string }> } };
+      review: {
+        review_id: string;
+        evidence: { tools: Array<{ name: string }> };
+      };
     };
     expect(r2.evidence.tools.some((t) => t.name === "echo")).toBe(true);
 
