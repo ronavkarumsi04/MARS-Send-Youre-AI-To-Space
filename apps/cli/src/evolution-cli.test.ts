@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
 import {
   createFixture,
+  replaceLine,
   runConfig,
 } from "../../../packages/evolution/src/test-support";
 import {
@@ -191,15 +192,99 @@ test("live-smoke rolls back a replayed promotion exactly once without changing l
 });
 
 test("live-smoke evaluator identity binds the image and applies only harness patches", () => {
-  const sandbox = createProcessSandbox();
-  const first = createLiveSmokeEvaluator(sandbox, "image-one");
+  const first = createLiveSmokeEvaluator("image-one");
   expect(first.appliedComponents).toEqual([]);
-  expect(createLiveSmokeEvaluator(sandbox, "image-one").digest).toBe(
-    first.digest,
+  expect(createLiveSmokeEvaluator("image-one").digest).toBe(first.digest);
+  expect(createLiveSmokeEvaluator("image-two").digest).not.toBe(first.digest);
+});
+
+test.each([
+  [
+    "forged stdout and stderr",
+    `console.log('"hello world"'); console.error('"hello world"'); return 'wrong';`,
+  ],
+  [
+    "forged result file",
+    `try { Bun.write('/workspace/result.json', '"hello world"'); } catch {} return 'wrong';`,
+  ],
+  [
+    "early exit",
+    `console.log('"hello world"'); process.exit(0); return 'wrong';`,
+  ],
+  ["coercible object", `return { toJSON() { return 'hello world'; } };`],
+])(
+  "live-smoke rejects %s instead of a correct return value",
+  async (_case, body) => {
+    const fixture = await createFixture(() => ({ hypothesis: "unused" }));
+    roots.push(fixture.root);
+    await writeFile(
+      join(fixture.baseDir, "harness", "solver.mjs"),
+      `export function solve() { ${body} }\n`,
+    );
+    await writeFile(
+      join(fixture.baseDir, "harness", "result.json"),
+      '"hello world"',
+    );
+    const evaluator = createLiveSmokeEvaluator("test-image");
+    const service = await fixture.open({ evaluator });
+    try {
+      await fixture.start(
+        service,
+        runConfig({
+          selection: { stages: [{ tasks: ["sel-trim-collapse"] }], repeats: 1 },
+        }),
+      );
+      await service.run("run-1");
+      expect(
+        service.lineage("run-1").find((row) => row.candidate_id === "initial")
+          ?.score,
+      ).toBe(0);
+    } finally {
+      service.close();
+    }
+  },
+);
+
+test("live-smoke credits a legitimate solver patch on selection and held-out tasks", async () => {
+  const baseline =
+    "export function solve(_task, input) { return input.trim(); }";
+  const fixed = String.raw`export function solve(task, input) { return task.includes('slug') ? input.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : input.trim().replace(/\s+/g, ' '); }`;
+  const fixture = await createFixture(() => ({
+    hypothesis: "Normalize all whitespace",
+    patch: replaceLine("harness/solver.mjs", baseline, fixed),
+  }));
+  roots.push(fixture.root);
+  await writeFile(
+    join(fixture.baseDir, "harness", "solver.mjs"),
+    `${baseline}\n`,
   );
-  expect(createLiveSmokeEvaluator(sandbox, "image-two").digest).not.toBe(
-    first.digest,
-  );
+  const service = await fixture.open({
+    evaluator: createLiveSmokeEvaluator("test-image"),
+  });
+  try {
+    await fixture.start(
+      service,
+      runConfig({
+        selection: { stages: [{ tasks: ["sel-trim-collapse"] }], repeats: 1 },
+        final_test: {
+          tasks: ["final-mixed-spaces", "final-punct-slug"],
+          repeats: 2,
+        },
+        regression_families: [],
+      }),
+    );
+    await service.run("run-1");
+    expect(
+      service.lineage("run-1").find((row) => row.parent_id !== null)?.score,
+    ).toBe(1);
+    const decision = await service.promote({
+      run_id: "run-1",
+      idempotency_key: "promote",
+    });
+    expect(decision.verdict).toBe("accepted");
+  } finally {
+    service.close();
+  }
 });
 
 test("live-smoke settles HTTP 429 and cooldown skips without charging estimated tokens", async () => {

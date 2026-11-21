@@ -27,6 +27,7 @@
     "@mars/workbench": "workspace:*",
     "@mars/workspaces-remote": "workspace:*",
     "@oh-my-pi/pi-tui": "18.20.0",
+    "quickjs-emscripten": "0.32.0",
     "zod": "3.25.76"
   }
 }

@@ -25,6 +25,7 @@ import {
   ModelRouter,
   NoModelAvailableError,
 } from "@mars/providers";
+import { getQuickJS } from "quickjs-emscripten";
 import { CliUsageError } from "./cli-errors";
 
 export const EVOLUTION_USAGE = [
@@ -86,21 +87,69 @@ const SMOKE_FINAL_TASKS: readonly SmokeTaskSpec[] = [
   },
 ];
 
-export function createLiveSmokeEvaluator(
-  sandbox: ReturnType<typeof createEvolutionDockerSandbox>,
-  image: string,
-): CandidateEvaluator {
+const MAX_SMOKE_SOLVER_BYTES = 256 * 1024;
+
+function scoreSmokeSolver(
+  vm: Awaited<ReturnType<typeof getQuickJS>>,
+  source: string,
+  task: SmokeTaskSpec,
+  deadline: number,
+  signal: AbortSignal,
+): boolean {
+  using runtime = vm.newRuntime();
+  runtime.setMemoryLimit(16 * 1024 * 1024);
+  runtime.setMaxStackSize(256 * 1024);
+  runtime.setInterruptHandler(
+    () => signal.aborted || performance.now() >= deadline,
+  );
+  using context = runtime.newContext();
+  using prelude = context.evalCode(
+    "globalThis.console = { log() {}, error() {}, warn() {} };",
+    "console.js",
+    { type: "global" },
+  );
+  if (prelude.error) return false;
+  using module = context.evalCode(source, "solver.mjs", { type: "module" });
+  if (module.error) return false;
+  const state = context.getPromiseState(module.value);
+  if (state.type === "rejected") {
+    state.error.dispose();
+    return false;
+  }
+  if (state.type !== "fulfilled") return false;
+  if (!state.notAPromise) {
+    state.value.dispose();
+    return false;
+  }
+  using solve = context.getProp(module.value, "solve");
+  if (context.typeof(solve) !== "function") return false;
+  using taskId = context.newString(task.id);
+  using input = context.newString(task.input);
+  using result = context.callFunction(solve, context.undefined, taskId, input);
+  if (result.error || signal.aborted || performance.now() >= deadline)
+    return false;
+  using expected = context.newString(task.expected);
+  return context.eq(result.value, expected);
+}
+
+export function createLiveSmokeEvaluator(image: string): CandidateEvaluator {
   const allTasks = new Map(
     [...SMOKE_SELECTION_TASKS, ...SMOKE_FINAL_TASKS].map((t) => [t.id, t]),
   );
-  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v3", image]);
-  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const digest = digestOf(["mars-evolution-live-smoke-evaluator", "v4", image]);
   return {
     digest,
     simulated: false,
     appliedComponents: [],
     async evaluate(request, signal) {
-      const started = Date.now();
+      const started = performance.now();
+      const deadline = started + Math.max(0, request.deadline_ms - Date.now());
+      const file = Bun.file(join(request.bundle_dir, "solver.mjs"));
+      const source =
+        (await file.exists()) && file.size <= MAX_SMOKE_SOLVER_BYTES
+          ? await file.text()
+          : null;
+      const vm = await getQuickJS();
       const per_task: {
         task_id: string;
         rewards: (number | null)[];
@@ -121,60 +170,31 @@ export function createLiveSmokeEvaluator(
             rewards.push(0);
             continue;
           }
-          const remainingMs = request.deadline_ms - (Date.now() - started);
-          if (remainingMs <= 0) {
+          if (performance.now() >= deadline) {
             throw new EvolutionError(
               "deadline_exceeded",
               "live smoke evaluation deadline exceeded",
             );
           }
-          const result = await sandbox.run({
-            workspaceDir: request.bundle_dir,
-            argv: [
-              "bun",
-              "-e",
-              `import { solve } from "/workspace/solver.mjs"; console.log(JSON.stringify(solve(${JSON.stringify(spec.id)}, ${JSON.stringify(spec.input)})));`,
-            ],
-            timeoutMs: Math.min(10_000, Math.max(1_000, remainingMs)),
-            maxOutputBytes: 64 * 1024,
-            signal,
-            runId: request.run_id,
-            labels: {
-              phase: "live-smoke-eval",
-              subject: request.subject_id,
-            },
-          });
-          if (result.cancelled || signal.aborted) {
+          const passed =
+            source !== null &&
+            scoreSmokeSolver(
+              vm,
+              source,
+              spec,
+              Math.min(deadline, performance.now() + 10_000),
+              signal,
+            );
+          if (performance.now() >= deadline || signal.aborted) {
             throw new EvolutionError(
               "deadline_exceeded",
-              "live smoke evaluation cancelled",
+              "live smoke evaluation deadline exceeded or cancelled",
             );
           }
-          if (result.timedOut) {
-            rewards.push(0);
-            notes.push(`task ${taskId} timed out in sandbox`);
-            continue;
-          }
-          const stdout = decoder.decode(result.stdout);
-          const stderr = decoder.decode(result.stderr);
-          if (result.exitCode !== 0) {
-            rewards.push(0);
-            notes.push(
-              `task ${taskId} exited ${result.exitCode}: ${stderr.trim()}`,
-            );
-            continue;
-          }
-          let actual: unknown;
-          try {
-            actual = JSON.parse(stdout.trim());
-          } catch {
-            actual = stdout.trim();
-          }
-          const passed = actual === spec.expected;
           rewards.push(passed ? 1 : 0);
           if (!passed && request.split === "selection") {
             notes.push(
-              `task ${taskId} failed: input=${JSON.stringify(spec.input)} expected=${JSON.stringify(spec.expected)} got=${JSON.stringify(actual)}`,
+              `task ${taskId} did not return the expected string: input=${JSON.stringify(spec.input)} expected=${JSON.stringify(spec.expected)}`,
             );
           }
         }
@@ -186,7 +206,7 @@ export function createLiveSmokeEvaluator(
         per_task,
         cost_usd: 0,
         tokens: 0,
-        runtime_ms: Math.max(1, Date.now() - started),
+        runtime_ms: Math.max(1, Math.ceil(performance.now() - started)),
         report: null,
         notes,
       };
@@ -336,7 +356,7 @@ async function runLiveSmoke(options: {
     EvolutionService.open({
       storeDir: join(options.state, "store"),
       workDir: join(options.state, "work"),
-      evaluator: createLiveSmokeEvaluator(sandbox, options.image),
+      evaluator: createLiveSmokeEvaluator(options.image),
       proposer: createModelProposer({
         client: instrumentedClient,
         model: options.model,
