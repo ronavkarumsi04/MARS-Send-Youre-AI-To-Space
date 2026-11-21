@@ -119,6 +119,10 @@ export class TeamChatController {
   private selected: SelectedConversation | null = null;
   private readonly pending: PendingSend[] = [];
   private readonly pendingInputs = new Map<string, SendMessageInput>();
+  private readonly pendingAgentPreviews = new Map<
+    string,
+    { conversationId: string; messageIds: string[]; referenceIds: string[] }
+  >();
   private panel: TeamChatViewState["panel"] = null;
   private pathSearch: PathSearchMatch[] = [];
   private pathSearchQuery: string | null = null;
@@ -293,6 +297,7 @@ export class TeamChatController {
       this.announcement = null;
       this.pending.splice(0, this.pending.length);
       this.pendingInputs.clear();
+      this.pendingAgentPreviews.clear();
       this.options.realtime?.subscribe([]);
       this.emit();
     });
@@ -328,7 +333,33 @@ export class TeamChatController {
           (p) => p.client_message_id === message.clientMessageId,
         );
         if (!input || item?.status === "conflict") return;
-        await this.send(input);
+        const previewFollowup = this.pendingAgentPreviews.get(
+          message.clientMessageId,
+        );
+        const sent = await this.send(input);
+        if (sent && previewFollowup) {
+          this.pendingAgentPreviews.delete(message.clientMessageId);
+          const sentMessage = this.selected?.messages.find(
+            (m) =>
+              m.conversation_id === previewFollowup.conversationId &&
+              m.sequence === sent.sequence,
+          );
+          const nextMessageIds = sentMessage
+            ? [...previewFollowup.messageIds, sentMessage.message_id]
+            : previewFollowup.messageIds;
+          const nextReferenceIds = sentMessage
+            ? [
+                ...sentMessage.references.map((r) => r.reference_id),
+                ...previewFollowup.referenceIds,
+              ]
+            : previewFollowup.referenceIds;
+          await this.runAgentPreview(
+            previewFollowup.conversationId,
+            nextMessageIds,
+            nextReferenceIds,
+          );
+          this.emit();
+        }
         return;
       }
       case "discardSend":
@@ -491,6 +522,7 @@ export class TeamChatController {
       if (item && item.conversation_id === conversationId) {
         this.pending.splice(i, 1);
         this.pendingInputs.delete(item.client_message_id);
+        this.pendingAgentPreviews.delete(item.client_message_id);
       }
     }
     if (this.search)
@@ -864,6 +896,7 @@ export class TeamChatController {
     );
     if (index !== -1) this.pending.splice(index, 1);
     this.pendingInputs.delete(clientMessageId);
+    this.pendingAgentPreviews.delete(clientMessageId);
   }
 
   private async togglePin(conversationId: string): Promise<void> {
@@ -1000,7 +1033,16 @@ export class TeamChatController {
         reply_to: draft.replyTo,
         references: draft.references,
       });
-      if (!sent) return;
+      if (!sent) {
+        if (this.pendingInputs.has(draft.clientMessageId)) {
+          this.pendingAgentPreviews.set(draft.clientMessageId, {
+            conversationId,
+            messageIds,
+            referenceIds,
+          });
+        }
+        return;
+      }
       const sentMessage = this.selected?.messages.find(
         (m) =>
           m.conversation_id === conversationId && m.sequence === sent.sequence,
@@ -1095,7 +1137,7 @@ export class TeamChatController {
     code: TeamErrorCode,
     phase: "preview" | "request",
   ): TeamChatNotice {
-    if (code === "invalid_request") {
+    if (code === "invalid") {
       return {
         kind: "error",
         text:
@@ -1295,6 +1337,7 @@ export class TeamChatController {
     this.search = null;
     this.pending.splice(0, this.pending.length);
     this.pendingInputs.clear();
+    this.pendingAgentPreviews.clear();
     await this.refreshInbox();
     const first = this.conversations[0];
     if (first) await this.select(first.conversation_id);

@@ -832,7 +832,12 @@ export class RpcTeamService implements TeamService {
       }).trim();
       const segment = url.split(/[/:]/).filter(Boolean).pop();
       if (!segment) return null;
-      return segment.replace(/\.git$/i, "").trim().toLowerCase() || null;
+      return (
+        segment
+          .replace(/\.git$/i, "")
+          .trim()
+          .toLowerCase() || null
+      );
     } catch {
       return null;
     }
