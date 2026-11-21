@@ -195,15 +195,22 @@ export function mentionCandidates(
 }
 
 const USER_MENTION_RE = /(?:^|[\s(])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/g;
-const MARS_INVOCATION_RE = /(?:^|\s)@mars(?=$|[\s,.;:!?])/gi;
+/** Sentence punctuation that can follow `@MARS` or a line number, ASCII and full-width. */
+const SENTENCE_PUNCT = ",.;:!?…。！？，；：、";
+const MARS_INVOCATION_RE = new RegExp(
+  `(?:^|\\s)@mars(?=$|[\\s${SENTENCE_PUNCT}])`,
+  "gi",
+);
+const MARS_PROMPT_LEAD_RE = new RegExp(`^[\\s${SENTENCE_PUNCT}]+`);
 /**
  * A dotted `@mars.<name>:<line>[-<line>]` token is a file-and-line mention, not a command.
  * The line number must end the token: at whitespace or end of input, optionally after sentence
  * punctuation, or at punctuation followed by another `@` token. Anything else (`:2.0`, `:20%`,
  * `:1-2x`) continues an agent prompt, which must stay private.
  */
-const MARS_FILE_RANGE_RE =
-  /^\.[^\s:]+:\d+(?:-\d+)?(?=[,.;:!?)]*(?:$|\s)|[,.;:!?)]+@)/;
+const MARS_FILE_RANGE_RE = new RegExp(
+  `^\\.[^\\s:]+:\\d+(?:-\\d+)?(?=[${SENTENCE_PUNCT})]*(?:$|\\s)|[${SENTENCE_PUNCT})]+@)`,
+);
 
 /** Extract distinct teammate `@handles` from a message body (excluding `@MARS`). */
 export function extractUserMentions(text: string): string[] {
@@ -247,7 +254,7 @@ export function parseMarsInvocation(
       )
         continue;
     }
-    const after = tail.replace(/^[\s,.;:!?]+/, "").trimEnd();
+    const after = tail.replace(MARS_PROMPT_LEAD_RE, "").trimEnd();
     return { prompt: [before, after].filter(Boolean).join(" ") };
   }
   return null;

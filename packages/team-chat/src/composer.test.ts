@@ -385,6 +385,10 @@ describe("@MARS invocations", () => {
     "@mars.svg:7,@mars.css:8 both need new icons",
     "@mars.svg:7; @mars.css:8-9. Both need new icons",
     "@mars.svg:1) and the other one",
+    "See @mars.svg:7…",
+    "@mars.svg:7。",
+    "@mars.svg:7！ needs a new icon",
+    "is it @mars.svg:1-3？",
   ])("leaves the file-and-line token in %j as ordinary chat", (text) => {
     expect(parseMarsInvocation(text)).toBeNull();
     expect(parseMarsInvocation(text, { leadingOnly: true })).toBeNull();
@@ -408,6 +412,10 @@ describe("@MARS invocations", () => {
     ["@MARS.Sum:2+2 please", "Sum:2+2 please"],
     ["@MARS.Estimate:$5 budget", "Estimate:$5 budget"],
     ['@MARS.Quote:5" screens', 'Quote:5" screens'],
+    ["@MARS，总结一下", "总结一下"],
+    ["@MARS… what changed?", "what changed?"],
+    ["@MARS。Summarize this", "Summarize this"],
+    ["@MARS？", ""],
   ])("keeps %j a private agent command", (text, prompt) => {
     expect(parseMarsInvocation(text)).toEqual({ prompt });
     expect(parseMarsInvocation(text, { leadingOnly: true })).toEqual({
