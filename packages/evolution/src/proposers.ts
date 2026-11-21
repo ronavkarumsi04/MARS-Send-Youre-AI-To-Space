@@ -325,6 +325,7 @@ export function createModelProposer(
         context,
         maxContextBytes,
       );
+      if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
       const selection: { model?: string; route?: string } = {};
       if (model !== undefined) selection.model = model;
       if (options.route !== undefined) selection.route = options.route;
@@ -343,18 +344,16 @@ export function createModelProposer(
       );
       const response = await new Promise<Awaited<typeof completePromise>>(
         (resolvePromise, rejectPromise) => {
-          if (signal.aborted) {
-            rejectPromise(
-              new EvolutionError("deadline_exceeded", "proposal aborted"),
-            );
-            return;
-          }
           const onAbort = () => {
             rejectPromise(
               new EvolutionError("deadline_exceeded", "proposal aborted"),
             );
           };
-          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) {
+            onAbort();
+          } else {
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
           completePromise.then(
             (value) => {
               signal.removeEventListener("abort", onAbort);
