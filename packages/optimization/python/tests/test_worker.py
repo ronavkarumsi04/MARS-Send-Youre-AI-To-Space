@@ -12,8 +12,17 @@ import pytest
 
 from mars_gepa_worker.adapter import BrokeredAdapter, Trace, candidate_id
 from mars_gepa_worker.protocol import Broker, Channel, ProtocolError
-from mars_gepa_worker.scrub import TRUNCATION_MARKER, UNTRUSTED_LABEL, scrub_secrets
-from mars_gepa_worker.worker import EXIT_ABORTED, EXIT_GEPA_ERROR, EXIT_OK, EXIT_PIN_MISMATCH, EXIT_PROTOCOL, installed_versions, run
+from mars_gepa_worker.scrub import TRUNCATION_MARKER, UNTRUSTED_LABEL, bounded, scrub_secrets
+from mars_gepa_worker.worker import (
+    EXIT_ABORTED,
+    EXIT_GEPA_ERROR,
+    EXIT_OK,
+    EXIT_PIN_MISMATCH,
+    EXIT_PROTOCOL,
+    _CandidateEmitter,
+    installed_versions,
+    run,
+)
 
 Handler = Callable[[dict[str, Any]], dict[str, Any] | None]
 
@@ -253,3 +262,68 @@ def test_scrub_redacts_fine_grained_github_tokens_and_pem_keys() -> None:
         "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY----- c"
     )
     assert scrub_secrets(text) == "a [redacted] b [redacted] c"
+
+
+def test_broker_rejects_boolean_reply_id() -> None:
+    reader = io.StringIO(json.dumps({"type": "pong", "id": False}) + "\n")
+    broker = Broker(Channel(reader, io.StringIO()))
+    with pytest.raises(ProtocolError, match="unexpected reply id"):
+        broker.request({"type": "ping"}, "pong")
+
+
+def test_bounded_respects_small_and_non_positive_limits() -> None:
+    assert bounded("hello world", 0) == ""
+    assert bounded("hello world", -5) == ""
+    assert len(bounded("hello world", 5)) <= 5
+    assert bounded("hi", 5) == "hi"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"train": None},
+        {"train": ["not-a-dict"]},
+        {"expected": "not-a-dict"},
+        {"seed_candidate": {"system_prompt": 123}},
+        {"repeats": "one"},
+        {"repeats": True},
+        {"max_metric_calls": 0},
+        {"budget": "not-a-dict"},
+    ],
+)
+def test_malformed_start_fields_return_protocol_error(overrides: dict[str, Any]) -> None:
+    host = HostStreams(lambda _m: None, [start_message(**overrides)])
+    assert run(host, host, io.StringIO()) == EXIT_PROTOCOL
+    [error] = host.messages("error")
+    assert error["code"] == "protocol_error"
+
+
+def test_candidate_emitter_handles_none_parent_id() -> None:
+    writer = io.StringIO()
+    emitter = _CandidateEmitter(Channel(io.StringIO(), writer))
+    emitter.on_valset_evaluated(
+        {
+            "candidate_idx": 0,
+            "parent_ids": [None],
+            "candidate": {"system_prompt": "seed"},
+            "average_score": 0.5,
+        }
+    )
+    emitted = json.loads(writer.getvalue().strip())
+    assert emitted["candidate_idx"] == 0
+    assert emitted["parent_idx"] is None
+
+
+def test_malformed_score_result_is_protocol_error() -> None:
+    pytest.importorskip("gepa")
+
+    def bad_score(message: dict[str, Any]) -> dict[str, Any] | None:
+        if message["type"] == "score":
+            return {"type": "score_result", "id": message["id"], "result": {"scores": [{"instance_id": "train-0", "score": True}]}}
+        return None
+
+    host = HostStreams(bad_score, [start_message()])
+    assert run(host, host, io.StringIO()) == EXIT_PROTOCOL
+    [error] = host.messages("error")
+    assert error["code"] == "protocol_error"
+

@@ -60,7 +60,7 @@ class Broker:
             reply_id = reply.get("id")
             if reply.get("type") == "abort":
                 raise HostAbort(str(reply.get("message", "aborted by host")))
-            if not isinstance(reply_id, int) or reply_id not in pending:
+            if isinstance(reply_id, bool) or not isinstance(reply_id, int) or reply_id not in pending:
                 raise ProtocolError(f"unexpected reply id {reply_id!r}")
             if reply.get("type") != expect:
                 raise ProtocolError(f"expected {expect}, got {reply.get('type')!r}")

@@ -262,5 +262,8 @@ curl -fsSL https://bun.sh/install -o install-bun.sh   # installer is not tracked
 bash install-bun.sh bun-v1.4.4
 export PATH="$HOME/.bun/bin:$PATH"
 bun install --frozen-lockfile --ignore-scripts
+(cd packages/optimization/python && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.lock && .venv/bin/python -m pytest -q)
+(cd packages/training/python && python3 -m unittest discover -s tests -v)
 bun run check && bun run doctor
+(cd apps/vscode && bun run typecheck && bun run smoke)
 ```

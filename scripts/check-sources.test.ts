@@ -59,4 +59,14 @@ describe("source manifest validation", () => {
     first.acceptance_plan = {};
     expect(() => validateManifest(changed)).toThrow();
   });
+  test("rejects dot segments and backslashes in source paths", () => {
+    for (const badPath of ["./README.md", "src/./index.ts", "src\\index.ts"]) {
+      const changed = structuredClone(manifest);
+      const first = changed.components[0];
+      if (!first || !first.sources[0]) throw new Error("Fixture missing");
+      first.sources[0].path = badPath;
+      first.sources[0].url = `${first.repository_url}/blob/${first.revision}/${badPath}`;
+      expect(() => validateManifest(changed)).toThrow("Invalid source path");
+    }
+  });
 });

@@ -31,9 +31,13 @@ def scrub_secrets(text: str) -> str:
 
 
 def bounded(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
     if len(text) <= max_chars:
         return text
-    keep = max(0, max_chars - len(TRUNCATION_MARKER))
+    if max_chars <= len(TRUNCATION_MARKER):
+        return TRUNCATION_MARKER[:max_chars]
+    keep = max_chars - len(TRUNCATION_MARKER)
     return text[:keep] + TRUNCATION_MARKER
 
 

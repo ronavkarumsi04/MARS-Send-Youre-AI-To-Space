@@ -68,15 +68,25 @@ class _CandidateEmitter:
 
     def on_valset_evaluated(self, event: dict[str, Any]) -> None:
         parents = list(event.get("parent_ids") or [])
+        parent_idx = int(parents[0]) if parents and parents[0] is not None else None
         self._channel.send(
             {
                 "type": "candidate",
                 "candidate_idx": int(event["candidate_idx"]),
-                "parent_idx": int(parents[0]) if parents else None,
+                "parent_idx": parent_idx,
                 "components": dict(event["candidate"]),
                 "validation_mean_score": event.get("average_score"),
             }
         )
+
+
+def _require_int(message: dict[str, Any], key: str, *, minimum: int | None = None) -> int:
+    value = message.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProtocolError(f"start.{key} must be an integer, got {value!r}")
+    if minimum is not None and value < minimum:
+        raise ProtocolError(f"start.{key} must be >= {minimum}, got {value!r}")
+    return value
 
 
 def _validate_start(message: dict[str, Any]) -> None:
@@ -85,10 +95,31 @@ def _validate_start(message: dict[str, Any]) -> None:
     missing = [key for key in REQUIRED_START_KEYS if key not in message]
     if missing:
         raise ProtocolError(f"start message missing {missing}")
+    if not isinstance(message["expected"], dict):
+        raise ProtocolError("start.expected must be an object")
+    if not isinstance(message["seed_candidate"], dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in message["seed_candidate"].items()
+    ):
+        raise ProtocolError("start.seed_candidate must be a string-to-string object")
+    if not isinstance(message["budget"], dict):
+        raise ProtocolError("start.budget must be an object")
+    _require_int(message, "max_metric_calls", minimum=1)
+    _require_int(message, "reflection_minibatch_size", minimum=1)
+    _require_int(message, "seed")
+    _require_int(message, "repeats", minimum=1)
+    _require_int(message, "max_feedback_chars", minimum=1)
+    _require_int(message, "max_records_per_component", minimum=1)
     for split in ("train", "validation"):
-        for item in message[split]:
+        items = message[split]
+        if not isinstance(items, list):
+            raise ProtocolError(f"start.{split} must be a list")
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("instance_id"), str):
+                raise ProtocolError(f"start.{split} entries must be objects with string 'instance_id'")
             if item.get("split") != split:
-                raise ProtocolError(f"instance {item.get('instance_id')!r} listed under {split} with split {item.get('split')!r}")
+                raise ProtocolError(
+                    f"instance {item.get('instance_id')!r} listed under {split} with split {item.get('split')!r}"
+                )
 
 
 def run(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
@@ -119,8 +150,17 @@ def run(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     )
 
     def reflection_lm(prompt: Any) -> str:
-        text = prompt if isinstance(prompt, str) else "\n\n".join(str(part.get("content", part)) for part in prompt)
-        return str(broker.request({"type": "reflect", "prompt": text}, "reflect_result")["text"])
+        if isinstance(prompt, str):
+            text = prompt
+        else:
+            text = "\n\n".join(
+                str(part.get("content", part)) if isinstance(part, dict) else str(part)
+                for part in prompt
+            )
+        reply = broker.request({"type": "reflect", "prompt": text}, "reflect_result")
+        if "text" not in reply or not isinstance(reply["text"], str):
+            raise ProtocolError("reflect_result missing string 'text'")
+        return reply["text"]
 
     try:
         import gepa
