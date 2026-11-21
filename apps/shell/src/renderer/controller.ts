@@ -88,7 +88,13 @@ export function createController(
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
   const render = () => {
-    const focusKey = doc.activeElement?.getAttribute(FOCUS_KEY) ?? null;
+    const active = doc.activeElement;
+    const focusKey = active?.getAttribute(FOCUS_KEY) ?? null;
+    const selectionStart =
+      typeof active?.selectionStart === "number" ? active.selectionStart : null;
+    const selectionEnd =
+      typeof active?.selectionEnd === "number" ? active.selectionEnd : null;
+    const selectionDirection = active?.selectionDirection ?? undefined;
     state = {
       ...state,
       composer,
@@ -167,7 +173,25 @@ export function createController(
     const targets = Array.from(root.querySelectorAll(`[${FOCUS_KEY}]`));
     const keyed = (key: string) =>
       targets.find((element) => element.getAttribute(FOCUS_KEY) === key);
-    (keyed(focusKey) ?? keyed(HEADING_FOCUS_KEY))?.focus();
+    const matched = keyed(focusKey);
+    const target = matched ?? keyed(HEADING_FOCUS_KEY);
+    target?.focus();
+    if (
+      matched &&
+      selectionStart !== null &&
+      selectionEnd !== null &&
+      typeof matched.setSelectionRange === "function"
+    ) {
+      try {
+        matched.setSelectionRange(
+          selectionStart,
+          selectionEnd,
+          selectionDirection ?? undefined,
+        );
+      } catch {
+        // Ignore input types that do not support selection ranges.
+      }
+    }
   };
 
   const displayError = (message: string) => {

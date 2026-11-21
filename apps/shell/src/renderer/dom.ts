@@ -8,6 +8,14 @@ export interface ShellElement {
   value?: string;
   checked?: boolean;
   disabled?: boolean;
+  selectionStart?: number | null;
+  selectionEnd?: number | null;
+  selectionDirection?: "forward" | "backward" | "none" | null;
+  setSelectionRange?(
+    start: number,
+    end: number,
+    direction?: "forward" | "backward" | "none",
+  ): void;
   setAttribute(name: string, value: string): void;
   getAttribute(name: string): string | null;
   removeAttribute(name: string): void;
