@@ -259,7 +259,7 @@ async function handleReview(
 
   if (config.transport.type === "stdio" && !values["allow-stdio-probe"]) {
     throw new CliUsageError(
-      'Reviewing a stdio MCP server spawns the configured executable to discover its tools. Pass --allow-stdio-probe to explicitly authorize running this unapproved command during review.',
+      "Reviewing a stdio MCP server spawns the configured executable to discover its tools. Pass --allow-stdio-probe to explicitly authorize running this unapproved command during review.",
     );
   }
 
