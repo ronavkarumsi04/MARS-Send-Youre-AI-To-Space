@@ -822,15 +822,43 @@ export class RpcTeamService implements TeamService {
     }
   }
 
-  private workspaceHeadForRepo(label: string): string | null {
+  private gitRemoteNameIn(dir: string): string | null {
+    try {
+      const url = execFileSync("git", ["remote", "get-url", "origin"], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 1000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      const segment = url.split(/[/:]/).filter(Boolean).pop();
+      if (!segment) return null;
+      return segment.replace(/\.git$/i, "").trim().toLowerCase() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private workspaceHeadForRepo(repoId: string, label: string): string | null {
     const dirs = this.openWorkspaceDirs();
-    const normalized = label.trim().toLowerCase();
-    // Prefer a workspace folder whose directory name matches the repository label.
-    const matched = dirs.find(
-      (dir) => basename(dir).trim().toLowerCase() === normalized,
+    const candidates = new Set(
+      [label, repoId]
+        .map((v) => v.trim().toLowerCase())
+        .filter((v) => v.length > 0),
     );
-    if (matched) {
-      const sha = this.gitHeadIn(matched);
+    // Prefer a workspace folder whose directory name or origin remote matches the repository.
+    const matchedByDir = dirs.find((dir) =>
+      candidates.has(basename(dir).trim().toLowerCase()),
+    );
+    if (matchedByDir) {
+      const sha = this.gitHeadIn(matchedByDir);
+      if (sha) return sha;
+    }
+    const matchedByRemote = dirs.find((dir) => {
+      const remoteName = this.gitRemoteNameIn(dir);
+      return remoteName !== null && candidates.has(remoteName);
+    });
+    if (matchedByRemote) {
+      const sha = this.gitHeadIn(matchedByRemote);
       if (sha) return sha;
     }
     for (const dir of dirs) {
@@ -849,7 +877,7 @@ export class RpcTeamService implements TeamService {
       for (const repo of this.repos.values()) {
         const commitSha =
           this.repoCommits.get(repo.repo_id) ??
-          this.workspaceHeadForRepo(repo.label);
+          this.workspaceHeadForRepo(repo.repo_id, repo.label);
         if (commitSha) {
           repos.push({
             repo_id: repo.repo_id,
@@ -880,14 +908,38 @@ export class RpcTeamService implements TeamService {
       return Promise.resolve(succeed([]));
     return this.guard(null, async () => {
       await this.identity();
-      const result = await this.client.searchPaths(input);
-      if (result.state !== "ok") return [];
-      return result.matches.map((m) => ({
-        repo_id: input.repo_id,
-        commit_sha: input.commit_sha,
-        path: m.path,
-        rank: m.rank,
-      }));
+      const first = await this.client.searchPaths(input);
+      if (first.state === "ok") {
+        this.repoCommits.set(input.repo_id, input.commit_sha);
+        return first.matches.map((m) => ({
+          repo_id: input.repo_id,
+          commit_sha: input.commit_sha,
+          path: m.path,
+          rank: m.rank,
+        }));
+      }
+      // If the initial commit did not belong to this repository (e.g. aliased checkout in a
+      // multi-root workspace), probe the remaining open workspace HEADs and cache the match.
+      const tried = new Set<string>([input.commit_sha]);
+      for (const dir of this.openWorkspaceDirs()) {
+        const candidateSha = this.gitHeadIn(dir);
+        if (!candidateSha || tried.has(candidateSha)) continue;
+        tried.add(candidateSha);
+        const fallback = await this.client.searchPaths({
+          ...input,
+          commit_sha: candidateSha,
+        });
+        if (fallback.state === "ok") {
+          this.repoCommits.set(input.repo_id, candidateSha);
+          return fallback.matches.map((m) => ({
+            repo_id: input.repo_id,
+            commit_sha: candidateSha,
+            path: m.path,
+            rank: m.rank,
+          }));
+        }
+      }
+      return [];
     });
   }
 
