@@ -464,13 +464,19 @@ async function runServe(
   let devTokensFile: string | null = null;
   let activeDevUsers = 0;
   const provisionedUsers = new Set<string>();
+  // Initial provisioning only: a member removed via removeTeamMember stays
+  // removed across restarts until explicitly re-added.
   const ensureMember = (user_id: string, isFirst: boolean) => {
     provisionedUsers.add(user_id);
-    opened.setTeamMember({
-      team_id: options.team,
-      user_id,
-      role: isFirst ? "admin" : "member",
-    });
+    if (
+      opened.teamMemberState({ team_id: options.team, user_id }) === null
+    ) {
+      opened.setTeamMember({
+        team_id: options.team,
+        user_id,
+        role: isFirst ? "admin" : "member",
+      });
+    }
   };
   for (const [index, user_id] of options.members.entries())
     ensureMember(user_id, index === 0);
@@ -520,11 +526,18 @@ async function runServe(
     authenticators.push(createDevAuthenticator(users));
     for (const user of tokens.users) {
       provisionedUsers.add(user.user_id);
-      opened.setTeamMember({
-        team_id: options.team,
-        user_id: user.user_id,
-        role: user.role,
-      });
+      if (
+        opened.teamMemberState({
+          team_id: options.team,
+          user_id: user.user_id,
+        }) === null
+      ) {
+        opened.setTeamMember({
+          team_id: options.team,
+          user_id: user.user_id,
+          role: user.role,
+        });
+      }
     }
   }
   const authenticator: Authenticator =

@@ -213,6 +213,11 @@ export interface TeamStore {
   removeTeamMember(input: { team_id: string; user_id: string }): TeamMembership;
   /** Host-side lookup of active team ids for a user (used by token/GitHub authenticators). */
   activeTeamIds(user_id: string): string[];
+  /** Returns 'active', 'removed', or null if the user was never provisioned in this team. */
+  teamMemberState(input: {
+    team_id: string;
+    user_id: string;
+  }): "active" | "removed" | null;
   describe(actor: TeamActor): TeamDescription;
   createDm(
     actor: TeamActor,

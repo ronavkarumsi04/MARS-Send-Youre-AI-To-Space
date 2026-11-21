@@ -16,6 +16,7 @@ export function teamOperations(
   | "setTeamMember"
   | "removeTeamMember"
   | "activeTeamIds"
+  | "teamMemberState"
   | "describe"
 > {
   const {
@@ -131,6 +132,18 @@ export function teamOperations(
           .all(parsed.data)
           .map((row) => row.team_id),
       );
+    },
+    teamMemberState(input) {
+      const parsed = z
+        .object({ team_id: idSchema, user_id: idSchema })
+        .strict()
+        .safeParse(input);
+      if (!parsed.success) return null;
+      return read(() => {
+        const row = memberRow(parsed.data.team_id, parsed.data.user_id);
+        if (!row) return null;
+        return row.state === "active" ? "active" : "removed";
+      });
     },
     describe(actor) {
       return read(() => {
