@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadModelRegistry } from "@mars/providers";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { createModelBridge } from "./model-bridge";
+import { createModelBridge, toChatRequest } from "./model-bridge";
 
 async function fixture(
   pricing = { free: true, inputPerMTokUsd: 0, outputPerMTokUsd: 0 },
@@ -191,5 +191,52 @@ test("USD capacity clamps output, supports zero output price, and refuses unaffo
     } finally {
       await f.cleanup();
     }
+  }
+});
+
+test("USD clamp dispatches an exact one-token fit but rejects genuinely insufficient USD", async () => {
+  const f = await fixture({
+    free: false,
+    inputPerMTokUsd: 1,
+    outputPerMTokUsd: 0.3,
+  });
+  const inputAllowance =
+    Buffer.byteLength(JSON.stringify(toChatRequest(context)), "utf8") + 512;
+  try {
+    for (const reservedUsd of [0, 0.1]) {
+      for (const affordableTokens of [1, 0.9]) {
+        const requests: { max_tokens: number }[] = [];
+        const failures: string[] = [];
+        const bridge = createModelBridge({
+          ...f,
+          budget: {
+            ...budget,
+            max_usd:
+              reservedUsd +
+              (inputAllowance + affordableTokens * 0.3) / 1_000_000,
+          },
+          ledger: { ...ledger(), reserved_usd: reservedUsd },
+          signal: new AbortController().signal,
+          persistLedger: async () => {},
+          onFailure: (code) => failures.push(code),
+          fetch: async (_url, init) => {
+            requests.push(JSON.parse(String(init?.body)));
+            return sse([{ content: "OK" }]);
+          },
+        });
+        const result = await bridge(model, context).result();
+        if (affordableTokens === 1) {
+          expect(result.stopReason).toBe("stop");
+          expect(requests).toEqual([{ ...requests[0], max_tokens: 1 }]);
+          expect(failures).toEqual([]);
+        } else {
+          expect(result.stopReason).toBe("error");
+          expect(requests).toEqual([]);
+          expect(failures).toEqual(["budget_exhausted"]);
+        }
+      }
+    }
+  } finally {
+    await f.cleanup();
   }
 });

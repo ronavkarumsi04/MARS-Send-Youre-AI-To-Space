@@ -290,15 +290,19 @@ export function createModelBridge(options: ModelBridgeOptions) {
           : selected.pricing.outputPerMTokUsd;
         if (inputRate === undefined || outputRate === undefined)
           throw new ExecutionLimitError();
-        const outputUsd =
-          budget.max_usd -
-          ledger.reserved_usd -
-          (inputAllowance * inputRate) / 1_000_000;
-        if (outputRate > 0)
-          maxTokens = Math.min(
-            maxTokens,
-            Math.floor((outputUsd * 1_000_000) / outputRate),
-          );
+        if (outputRate > 0) {
+          let affordable = 0;
+          let ceiling = Math.floor(maxTokens);
+          while (affordable < ceiling) {
+            const candidate = Math.ceil((affordable + ceiling) / 2);
+            const cost =
+              (inputAllowance * inputRate + candidate * outputRate) / 1_000_000;
+            if (exceedsUsd(ledger.reserved_usd + cost, budget.max_usd))
+              ceiling = candidate - 1;
+            else affordable = candidate;
+          }
+          maxTokens = affordable;
+        }
         if (maxTokens < 1) throw new ExecutionLimitError();
         const reservedCost =
           (inputAllowance * inputRate + maxTokens * outputRate) / 1_000_000;
