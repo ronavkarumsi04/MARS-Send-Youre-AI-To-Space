@@ -258,7 +258,10 @@ function send(): void {
         : composer.reply_to
           ? [composer.reply_to.message_id]
           : [];
-    if (messageIds.length === 0) {
+    const hasQuestionOrRefs =
+      input.body.replace(/@MARS/g, "").trim().length > 0 ||
+      input.references.length > 0;
+    if (!hasQuestionOrRefs && messageIds.length === 0) {
       composerError =
         "Send a message in this conversation before asking @MARS.";
       renderComposerParts();
@@ -270,14 +273,29 @@ function send(): void {
           m.references.map((ref) => ref.reference_id),
         ),
       ),
-    );
+    ).slice(-MAX_REFERENCES_PER_MESSAGE);
     composerError = null;
     post({
       type: "agentPreview",
       conversationId: selected.conversation.conversation_id,
       messageIds,
       referenceIds,
+      ...(hasQuestionOrRefs
+        ? {
+            draft: {
+              clientMessageId: input.client_message_id,
+              body: input.body,
+              replyTo: input.reply_to,
+              references: input.references,
+            },
+          }
+        : {}),
     });
+    if (hasQuestionOrRefs) {
+      composer = EMPTY_COMPOSER;
+      textarea.value = "";
+      stickToBottom = true;
+    }
     renderComposerParts();
     return;
   }
@@ -903,26 +921,40 @@ function renderComposerParts(): void {
           item.kind === "reference" && typeof item.reference_id === "string",
       )
       .map((item) => item.reference_id);
+    const restrictedSet = new Set(preview.restricted_reference_ids);
+    const allowedReferenceIds = previewReferenceIds.filter(
+      (refId) => !restrictedSet.has(refId),
+    );
     const totalBytes = preview.items.reduce((sum, item) => sum + item.bytes, 0);
     const restricted =
       preview.restricted_reference_ids.length > 0
-        ? ` · ${preview.restricted_reference_ids.length} restricted ref(s) omitted`
+        ? ` · ${preview.restricted_reference_ids.length} restricted ref(s) blocked`
         : "";
-    const confirm = button("Confirm @MARS", "agent-confirm", () => {
-      post({
-        type: "agentRequest",
-        conversationId: preview.conversation_id,
-        messageIds: previewMessageIds,
-        referenceIds: previewReferenceIds,
-        idempotencyKey: `agent_${preview.preview_sha256.slice(0, 16)}_${newClientMessageId()}`,
-        previewSha256: preview.preview_sha256,
-      });
-      composer = EMPTY_COMPOSER;
-      composerError = null;
-      textarea.value = "";
-      stickToBottom = true;
-      renderComposerParts();
-    });
+    const confirm =
+      preview.restricted_reference_ids.length > 0
+        ? button("Preview without restricted refs", "agent-repreview", () => {
+            post({
+              type: "agentPreview",
+              conversationId: preview.conversation_id,
+              messageIds: previewMessageIds,
+              referenceIds: allowedReferenceIds,
+            });
+          })
+        : button("Confirm @MARS", "agent-confirm", () => {
+            post({
+              type: "agentRequest",
+              conversationId: preview.conversation_id,
+              messageIds: previewMessageIds,
+              referenceIds: allowedReferenceIds,
+              idempotencyKey: `agent_${preview.preview_sha256.slice(0, 16)}_${newClientMessageId()}`,
+              previewSha256: preview.preview_sha256,
+            });
+            composer = EMPTY_COMPOSER;
+            composerError = null;
+            textarea.value = "";
+            stickToBottom = true;
+            renderComposerParts();
+          });
     const cancel = button(
       "Cancel",
       "agent-cancel-preview",

@@ -122,6 +122,17 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
       conversationId: id,
       messageIds: z.array(id).max(200),
       referenceIds: z.array(id).max(MAX_REFERENCES_PER_MESSAGE),
+      draft: z
+        .object({
+          clientMessageId: id,
+          body: z.string().max(MAX_MESSAGE_CHARS),
+          replyTo: id.nullable(),
+          references: z
+            .array(ReferenceInputSchema)
+            .max(MAX_REFERENCES_PER_MESSAGE),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z

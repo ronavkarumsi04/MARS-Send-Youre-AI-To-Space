@@ -7,6 +7,7 @@ import {
   type EvidenceShareView,
   FIXTURE_USERS,
   FixtureTeamService,
+  MAX_REFERENCES_PER_MESSAGE,
   type MessageView,
   type PathSearchMatch,
   type SendMessageInput,
@@ -313,20 +314,22 @@ export class TeamChatController {
         await this.loadOlder(message.conversationId, message.cursor);
         return this.emit();
       case "send":
-        return this.send({
+        await this.send({
           conversation_id: message.conversationId,
           client_message_id: message.clientMessageId,
           body: message.body,
           reply_to: message.replyTo,
           references: message.references,
         });
+        return;
       case "retrySend": {
         const input = this.pendingInputs.get(message.clientMessageId);
         const item = this.pending.find(
           (p) => p.client_message_id === message.clientMessageId,
         );
         if (!input || item?.status === "conflict") return;
-        return this.send(input);
+        await this.send(input);
+        return;
       }
       case "discardSend":
         this.removePending(message.clientMessageId);
@@ -383,6 +386,7 @@ export class TeamChatController {
           message.conversationId,
           message.messageIds,
           message.referenceIds,
+          message.draft,
         );
         return this.emit();
       case "agentRequest":
@@ -795,11 +799,13 @@ export class TeamChatController {
 
   // ---------------------------------------------------------------- writes
 
-  private async send(input: SendMessageInput): Promise<void> {
+  private async send(
+    input: SendMessageInput,
+  ): Promise<{ sequence: number; duplicate: boolean } | null> {
     const existing = this.pending.find(
       (p) => p.client_message_id === input.client_message_id,
     );
-    if (existing?.status === "pending") return;
+    if (existing?.status === "pending") return null;
     if (existing) {
       existing.status = "pending";
       existing.reason = null;
@@ -818,19 +824,21 @@ export class TeamChatController {
     this.emit();
     const delay = this.options.sendDelayMs ?? 0;
     if (delay > 0) await (this.options.sleep ?? defaultSleep)(delay);
-    if (this.disposedFlag) return;
+    if (this.disposedFlag) return null;
     const result: TeamResult<{ sequence: number; duplicate: boolean }> =
       await this.service.sendMessage(this.viewer, input);
     const item = this.pending.find(
       (p) => p.client_message_id === input.client_message_id,
     );
-    if (!item) return;
+    if (!item) return null;
     if (result.ok) {
       this.removePending(input.client_message_id);
       await this.refreshInbox();
       await this.reloadSelected(result.value.duplicate ? 0 : 1);
       if (this.viewport.focused && this.viewport.atBottom)
         await this.markRead(input.conversation_id, result.value.sequence);
+      this.emit();
+      return result.value;
     } else if (
       REMOVAL_CODES.has(result.code) &&
       this.conversations.some(
@@ -847,6 +855,7 @@ export class TeamChatController {
       if (result.code === "unauthorized") this.failed(result.code);
     }
     this.emit();
+    return null;
   }
 
   private removePending(clientMessageId: string): void {
@@ -967,6 +976,12 @@ export class TeamChatController {
     conversationId: string,
     messageIds: string[],
     referenceIds: string[],
+    draft?: {
+      clientMessageId: string;
+      body: string;
+      replyTo: string | null;
+      references: SendMessageInput["references"];
+    },
   ): Promise<void> {
     if (!this.service.agentPreview) {
       this.notice = {
@@ -975,14 +990,64 @@ export class TeamChatController {
       };
       return;
     }
-    const result = await this.service.agentPreview(this.viewer, {
+    let effectiveMessageIds = [...messageIds];
+    let effectiveReferenceIds = [...referenceIds];
+    if (draft) {
+      const sent = await this.send({
+        conversation_id: conversationId,
+        client_message_id: draft.clientMessageId,
+        body: draft.body,
+        reply_to: draft.replyTo,
+        references: draft.references,
+      });
+      if (!sent) return;
+      const sentMessage = this.selected?.messages.find(
+        (m) =>
+          m.conversation_id === conversationId && m.sequence === sent.sequence,
+      );
+      if (sentMessage) {
+        effectiveMessageIds = [...effectiveMessageIds, sentMessage.message_id];
+        // Prioritize references attached to the user's new question, then prior context.
+        effectiveReferenceIds = [
+          ...sentMessage.references.map((r) => r.reference_id),
+          ...effectiveReferenceIds,
+        ];
+      }
+    }
+    effectiveMessageIds = Array.from(new Set(effectiveMessageIds)).slice(-200);
+    effectiveReferenceIds = Array.from(new Set(effectiveReferenceIds)).slice(
+      0,
+      MAX_REFERENCES_PER_MESSAGE,
+    );
+    if (effectiveMessageIds.length === 0) return;
+    let result = await this.service.agentPreview(this.viewer, {
       conversation_id: conversationId,
-      message_ids: messageIds,
-      reference_ids: referenceIds,
+      message_ids: effectiveMessageIds,
+      reference_ids: effectiveReferenceIds,
     });
     if (!result.ok) {
       this.failed(result.code, conversationId);
       return;
+    }
+    if (result.value.restricted_reference_ids.length > 0) {
+      const restricted = new Set(result.value.restricted_reference_ids);
+      const allowedRefs = effectiveReferenceIds.filter(
+        (refId) => !restricted.has(refId),
+      );
+      const filtered = await this.service.agentPreview(this.viewer, {
+        conversation_id: conversationId,
+        message_ids: effectiveMessageIds,
+        reference_ids: allowedRefs,
+      });
+      if (filtered.ok) {
+        result = filtered;
+        this.notice = {
+          kind: "info",
+          text: `Omitted ${restricted.size} restricted code reference(s) not readable by every participant.`,
+        };
+        this.agentPreviewState = result.value;
+        return;
+      }
     }
     this.notice = null;
     this.agentPreviewState = result.value;
