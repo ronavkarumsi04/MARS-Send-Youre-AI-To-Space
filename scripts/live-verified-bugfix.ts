@@ -5,8 +5,7 @@
  * - Host-defined protected test suite overlaid into a disposable --network=none Docker container
  * - Exact patch export & verification receipt bound to workspace revision and patch_sha256
  *
- * Usage:
- *   OPENROUTER_API_KEY=... bun scripts/live-verified-bugfix.ts [--model google/gemma-4-31b-it:free] [--out-json FILE] [--out-txt FILE]
+ * Run with --help for preflight and live usage.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -19,26 +18,55 @@ import type { Task } from "../packages/contracts/src/index";
 import { openRuntimeSession } from "../packages/execution/src/index";
 import { loadModelRegistry } from "../packages/providers/src/index";
 import { createWorkbenchService } from "../packages/workbench/src/index";
+import { createDockerSandbox } from "../packages/workspaces/src/index";
 
 const DEFAULT_IMAGE =
   "oven/bun@sha256:5148f6742ac31fac28e6eab391ab1f11f6dfc0c8512c7a3679b374ec470f5982";
+const DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
   options: {
-    model: {
-      type: "string",
-      default: "nvidia/nemotron-3-ultra-550b-a55b:free",
-    },
-    image: { type: "string", default: DEFAULT_IMAGE },
+    help: { type: "boolean" },
+    preflight: { type: "boolean" },
+    model: { type: "string" },
+    image: { type: "string" },
     "out-json": { type: "string" },
     "out-txt": { type: "string" },
   },
   strict: true,
 });
 
-const modelId = values.model ?? "nvidia/nemotron-3-ultra-550b-a55b:free";
+const modelId = values.model ?? DEFAULT_MODEL;
 const dockerImage = values.image ?? DEFAULT_IMAGE;
+
+if (values.help) {
+  console.log(`Usage: bun scripts/live-verified-bugfix.ts [options]
+
+  --preflight       Run the buggy baseline in Docker without calling a model
+  --model ID        Free OpenRouter model (default: ${DEFAULT_MODEL})
+  --image IMAGE     Locally available Docker image pinned to sha256
+                    Default: ${DEFAULT_IMAGE}
+  --out-json FILE   Write a machine-readable live receipt
+  --out-txt FILE    Write the live report
+  --help            Show this message
+
+Set OPENROUTER_API_KEY in the environment for a live run.`);
+  process.exit(0);
+}
+
+if (modelId !== "openrouter/free" && !modelId.endsWith(":free")) {
+  console.error(
+    `Refusing non-free OpenRouter model "${modelId}"; pass "openrouter/free" or a ":free" model ID.`,
+  );
+  process.exit(1);
+}
+if (!values.preflight && !process.env.OPENROUTER_API_KEY?.trim()) {
+  console.error(
+    "Set OPENROUTER_API_KEY for a live run, or use --preflight without a key.",
+  );
+  process.exit(1);
+}
 
 const BUGGY_CSV = `/**
  * Parse RFC-4180 CSV text into rows of string fields.
@@ -181,36 +209,54 @@ try {
     ),
   );
 
-  // Run baseline check in Docker before the agent touches anything.
-  const baselineProc = Bun.spawnSync({
-    cmd: [
-      "docker",
-      "run",
-      "--rm",
-      "--network=none",
-      "--read-only",
-      "-v",
-      `${source}:/workspace:ro`,
-      "-w",
-      "/workspace",
-      dockerImage,
-      "bun",
-      "test",
-      "tests/csv.test.ts",
-    ],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const baselineOutput =
-    new TextDecoder().decode(baselineProc.stdout) +
-    new TextDecoder().decode(baselineProc.stderr);
+  const baseline = await runBaseline();
+  if (values.preflight) {
+    console.log(
+      `${baseline.output}\n\nPreflight passed: expected buggy baseline, model_requests=0.`,
+    );
+  } else {
+    await runLive(baseline);
+  }
+} finally {
+  await rm(base, { recursive: true, force: true });
+}
 
-  if (modelId !== "openrouter/free" && !modelId.endsWith(":free")) {
+async function runBaseline() {
+  const sandbox = createDockerSandbox({ image: dockerImage });
+  try {
+    await sandbox.verify();
+  } catch (cause) {
+    throw new Error(`Start Docker and run: docker pull ${dockerImage}`, {
+      cause,
+    });
+  }
+  const result = await sandbox.run({
+    workspaceDir: source,
+    argv: ["bun", "test", "tests/csv.test.ts"],
+    timeoutMs: 60_000,
+    maxOutputBytes: 64_000,
+    signal: new AbortController().signal,
+    runId: randomUUID(),
+    labels: {},
+  });
+  const decoder = new TextDecoder();
+  const output =
+    `${decoder.decode(result.stdout)}\n${decoder.decode(result.stderr)}`.trim();
+  if (
+    result.exitCode !== 1 ||
+    result.stdoutTruncated ||
+    result.stderrTruncated ||
+    !/^\s*3 pass\s*$/m.test(output) ||
+    !/^\s*3 fail\s*$/m.test(output)
+  ) {
     throw new Error(
-      `Refusing non-free OpenRouter model "${modelId}" on $0.00 free-tier harness; pass "openrouter/free" or a ":free" model ID.`,
+      `Expected the buggy CSV baseline to exit 1 with 3 passing and 3 failing tests; got exit ${result.exitCode}.\n${output}`,
     );
   }
+  return { exitCode: result.exitCode, output };
+}
 
+async function runLive(baseline: Awaited<ReturnType<typeof runBaseline>>) {
   if (
     ![
       "openrouter/free",
@@ -310,7 +356,7 @@ try {
       scope,
       revision: 0,
       request:
-        "Fix all RFC-4180 parsing bugs in src/csv.ts so that tests/csv.test.ts passes (escaped double quotes, embedded newlines inside quoted fields, and trailing/consecutive empty fields). Read src/csv.ts and tests/csv.test.ts, edit src/csv.ts, and run bun test tests/csv.test.ts to confirm.",
+        "Fix all RFC-4180 parsing bugs in src/csv.ts so that tests/csv.test.ts passes (escaped double quotes, embedded newlines inside quoted fields, and trailing/consecutive empty fields). Read src/csv.ts and tests/csv.test.ts, edit only src/csv.ts, and run bun test tests/csv.test.ts to confirm.",
       acceptance_criteria: [
         "All 6 tests in tests/csv.test.ts pass under host verification in Docker with --network=none",
         "Source checkout remains untouched outside the isolated workspace",
@@ -352,6 +398,20 @@ try {
           })
         : null;
     const sourceAfter = await readFile(join(source, "src", "csv.ts"), "utf8");
+    const patch =
+      exported?.verified && exported.artifact
+        ? await client.artifact(created.task_id, exported.artifact)
+        : null;
+    const success =
+      settled.status === "completed" &&
+      requestStatuses.some((status) => status >= 200 && status < 300) &&
+      sourceAfter === BUGGY_CSV &&
+      diff.files.length === 1 &&
+      diff.files[0]?.path === "src/csv.ts" &&
+      verification.state === "verified" &&
+      patch !== null &&
+      patch.bytes.byteLength > 0 &&
+      patch.ref.sha256 === verification.patch_sha256;
     const durationMs = Date.now() - startedAt;
 
     const receipt = {
@@ -364,13 +424,14 @@ try {
       network_policy: "docker --network=none",
       task_id: created.task_id,
       task_status: settled.status,
+      success,
       model_requests: modelRequests,
       http_statuses: requestStatuses,
       duration_ms: durationMs,
       source_untouched: sourceAfter === BUGGY_CSV,
       source_csv_sha256: sha256(BUGGY_CSV),
-      baseline_docker_exit_code: baselineProc.exitCode,
-      baseline_docker_output: baselineOutput.trim(),
+      baseline_docker_exit_code: baseline.exitCode,
+      baseline_docker_output: baseline.output,
       verification_state: verification.state,
       patch_sha256: verification.patch_sha256 ?? null,
       candidate: verification.candidate ?? null,
@@ -387,11 +448,12 @@ try {
       `Task ID: ${receipt.task_id}`,
       "",
       "$ docker run --rm --network=none ... bun test tests/csv.test.ts  # baseline before agent",
-      `exit_code=${baselineProc.exitCode}`,
-      baselineOutput.trim(),
+      `exit_code=${baseline.exitCode}`,
+      baseline.output,
       "",
       `$ OPENROUTER_API_KEY=[redacted] bun scripts/live-verified-bugfix.ts --model ${receipt.model_id}`,
       `task_status=${settled.status}`,
+      `live_acceptance=${success ? "passed" : "failed"}`,
       ...(settled.status !== "completed"
         ? [
             `task_detail=${JSON.stringify({
@@ -415,14 +477,11 @@ try {
       `changed_files=${diff.files.map((f) => f.path).join(", ") || "(none)"}`,
       "",
       "Exported Patch (exact verified bytes)",
-      diff.files
-        .map((f) => f.patch)
-        .filter(Boolean)
-        .join("") || "(no patch exported)",
+      patch ? new TextDecoder().decode(patch.bytes) : "(no patch exported)",
       "",
       "Honest Limits",
       "- Single self-contained TypeScript RFC-4180 CSV bug-fix fixture (6 unit tests, 3 distinct bugs) run on OpenRouter free tier ($0.00).",
-      "- Proves end-to-end live-model editing, workspace isolation, no-network Docker host verification with protected test overlay, and exact patch export.",
+      "- A passing run exercises live-model editing, workspace isolation, no-network Docker host verification with protected test overlay, and exact patch export via the typed client, not a VS Code window.",
       "- Does not prove general benchmark superiority over other agents; see mars bench edit-formats for matched multi-repo evaluation.",
       "",
     ].join("\n");
@@ -438,11 +497,8 @@ try {
     }
 
     console.log(textReport);
-    process.exitCode =
-      verification.state === "verified" && exported?.verified === true ? 0 : 1;
+    process.exitCode = success ? 0 : 1;
   } finally {
     await service.close();
   }
-} finally {
-  await rm(base, { recursive: true, force: true });
 }

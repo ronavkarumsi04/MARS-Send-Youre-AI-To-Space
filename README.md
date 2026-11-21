@@ -143,4 +143,4 @@ The exact [source manifest](sources/manifest.json) distinguishes audited source 
 
 ## Next gate
 
-The durable task store, VS Code workbench, tool approvals, checkpoint restore, cancellation and resume are code complete; the next gate is live acceptance: one real model run producing a verified, exportable patch (Milestone 1), then real-model evaluation and GEPA runs (Milestone 4), and a GPU host with a pinned vLLM for live specialist serving (Milestone 7). Open items and blockers per milestone are in [HANDOFF.md](HANDOFF.md).
+The [live OpenRouter CSV smoke](documentation/evidence/live-openrouter-bugfix.txt) produced a verified, exportable patch through the workbench client. The remaining Milestone 1 gate is the same flow in a real VS Code window. See the [live smoke runbook](documentation/LOCAL_WORKBENCH.md#repeat-the-live-csv-bug-fix-smoke) to rerun it and [HANDOFF.md](HANDOFF.md) for other milestone blockers.
