@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { basename } from "node:path";
 import type { ReferenceChip } from "@mars/contracts";
 import {
   type AgentPreviewView,
@@ -109,12 +110,18 @@ export class RpcTeamService implements TeamService {
   >();
   /** Most recently observed pinned commit SHA per `repo_id`. */
   private readonly repoCommits = new Map<string, string>();
-  /** Cached local workspace git HEAD SHA (null = checked and unavailable). */
-  private cachedHeadSha: string | null | undefined = undefined;
+  /** Cached git HEAD SHA per workspace directory (null = checked and unavailable). */
+  private readonly cachedDirHeads = new Map<string, string | null>();
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
+  private readonly workspaceRoots?: readonly string[];
 
-  constructor(private readonly client: TeamClient) {}
+  constructor(
+    private readonly client: TeamClient,
+    options?: { workspaceRoots?: readonly string[] },
+  ) {
+    this.workspaceRoots = options?.workspaceRoots;
+  }
 
   disabled(): boolean {
     return this.hostDisabled;
@@ -145,6 +152,7 @@ export class RpcTeamService implements TeamService {
     this.reactions.clear();
     this.repos.clear();
     this.repoCommits.clear();
+    this.cachedDirHeads.clear();
     this.client.forget();
   }
 
@@ -764,19 +772,72 @@ export class RpcTeamService implements TeamService {
     });
   }
 
-  private workspaceHeadSha(): string | null {
-    if (this.cachedHeadSha !== undefined) return this.cachedHeadSha;
+  private openWorkspaceDirs(): string[] {
+    if (this.workspaceRoots) return [...this.workspaceRoots];
+    try {
+      // Optional dynamic load so Bun/Node tests without the VS Code host still run.
+      const dynamicRequire =
+        typeof require === "function"
+          ? require
+          : (globalThis as unknown as { require?: (id: string) => unknown })
+              .require;
+      const vscodeModule = dynamicRequire?.("vscode") as
+        | {
+            workspace?: {
+              workspaceFolders?: readonly { uri?: { fsPath?: string } }[];
+            };
+          }
+        | undefined;
+      const folders = vscodeModule?.workspace?.workspaceFolders;
+      if (folders && folders.length > 0) {
+        const dirs = folders
+          .map((folder) => folder.uri?.fsPath)
+          .filter(
+            (dir): dir is string => typeof dir === "string" && dir.length > 0,
+          );
+        if (dirs.length > 0) return dirs;
+      }
+    } catch {
+      // Not running inside a VS Code extension host.
+    }
+    return [process.cwd()];
+  }
+
+  private gitHeadIn(dir: string): string | null {
+    const cached = this.cachedDirHeads.get(dir);
+    if (cached !== undefined) return cached;
     try {
       const out = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: dir,
         encoding: "utf8",
         timeout: 1000,
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
-      this.cachedHeadSha = /^[0-9a-f]{40}$/.test(out) ? out : null;
+      const sha = /^[0-9a-f]{40}$/.test(out) ? out : null;
+      this.cachedDirHeads.set(dir, sha);
+      return sha;
     } catch {
-      this.cachedHeadSha = null;
+      this.cachedDirHeads.set(dir, null);
+      return null;
     }
-    return this.cachedHeadSha;
+  }
+
+  private workspaceHeadForRepo(label: string): string | null {
+    const dirs = this.openWorkspaceDirs();
+    const normalized = label.trim().toLowerCase();
+    // Prefer a workspace folder whose directory name matches the repository label.
+    const matched = dirs.find(
+      (dir) => basename(dir).trim().toLowerCase() === normalized,
+    );
+    if (matched) {
+      const sha = this.gitHeadIn(matched);
+      if (sha) return sha;
+    }
+    for (const dir of dirs) {
+      const sha = this.gitHeadIn(dir);
+      if (sha) return sha;
+    }
+    return null;
   }
 
   mentionIndex(): MentionIndex {
@@ -785,9 +846,10 @@ export class RpcTeamService implements TeamService {
       return { repos };
     }
     if (this.serverCapabilities.references) {
-      const fallbackSha = this.workspaceHeadSha();
       for (const repo of this.repos.values()) {
-        const commitSha = this.repoCommits.get(repo.repo_id) ?? fallbackSha;
+        const commitSha =
+          this.repoCommits.get(repo.repo_id) ??
+          this.workspaceHeadForRepo(repo.label);
         if (commitSha) {
           repos.push({
             repo_id: repo.repo_id,
