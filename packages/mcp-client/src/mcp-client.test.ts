@@ -16,6 +16,7 @@ import {
   type HostMcpControlPlane,
   type McpCredentialResolver,
   type McpServerConfig,
+  StreamableHttpMcpTransport,
 } from "./index";
 
 const STDIO_FIXTURE = resolve(import.meta.dir, "__fixtures__/stdio-server.ts");
@@ -965,5 +966,78 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
       expires_at: new Date(Date.now() + 60_000).toISOString(),
     });
     expect(proof.approver_id).toBe("custom-owner");
+  });
+
+  it("enforces a single total timeout budget across initialize and paginated tools/list", async () => {
+    const slowPaginated = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as {
+          id?: number;
+          method: string;
+          params?: { cursor?: string };
+        };
+        if (body.method === "initialize") {
+          await Bun.sleep(60);
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: "slow-paginated", version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        if (body.method === "tools/list") {
+          await Bun.sleep(80);
+          const cursor = body.params?.cursor;
+          if (!cursor) {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: {
+                tools: [{ name: "tool_a", description: "A", inputSchema: { type: "object" } }],
+                nextCursor: "page2",
+              },
+            });
+          }
+          if (cursor === "page2") {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: {
+                tools: [{ name: "tool_b", description: "B", inputSchema: { type: "object" } }],
+                nextCursor: "page3",
+              },
+            });
+          }
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              tools: [{ name: "tool_c", description: "C", inputSchema: { type: "object" } }],
+            },
+          });
+        }
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    activeServers.push(slowPaginated);
+
+    // Total latency is ~60 + 80 + 80 + 80 = 300ms; each single request is < 160ms.
+    // With a shared 160ms total timeout budget, initialize() must fail rather than
+    // resetting the timeout per page.
+    const transport = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url: `http://127.0.0.1:${slowPaginated.port}/mcp`,
+    });
+    await expect(transport.initialize({ timeoutMs: 160 })).rejects.toThrow(
+      /timed out|aborted/i,
+    );
+    await transport.close();
   });
 });

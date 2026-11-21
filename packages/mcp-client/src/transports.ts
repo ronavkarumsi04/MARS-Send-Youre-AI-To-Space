@@ -149,14 +149,34 @@ function parseToolsListPage(raw: unknown): {
   return { tools, nextCursor };
 }
 
+function remainingOptions(
+  options: McpRequestOptions | undefined,
+  deadlineMs: number | undefined,
+): McpRequestOptions | undefined {
+  if (deadlineMs === undefined) return options;
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) {
+    throw new Error("MCP operation timed out");
+  }
+  return { ...options, timeoutMs: remaining };
+}
+
 async function listAllToolsPaginated(
-  fetchPage: (cursor: string | undefined) => Promise<unknown>,
+  fetchPage: (
+    cursor: string | undefined,
+    stepOptions: McpRequestOptions | undefined,
+  ) => Promise<unknown>,
+  options?: McpRequestOptions,
 ): Promise<McpToolDescriptor[]> {
+  const deadlineMs =
+    options?.timeoutMs !== undefined
+      ? Date.now() + options.timeoutMs
+      : undefined;
   const all: McpToolDescriptor[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < MAX_TOOLS_LIST_PAGES; page++) {
-    const raw = await fetchPage(cursor);
+    const raw = await fetchPage(cursor, remainingOptions(options, deadlineMs));
     const parsed = parseToolsListPage(raw);
     all.push(...parsed.tools);
     if (!parsed.nextCursor) {
@@ -359,6 +379,10 @@ export class StdioMcpTransport implements McpTransportConnection {
   }
 
   async initialize(options?: McpRequestOptions): Promise<McpServerDescriptor> {
+    const deadlineMs =
+      options?.timeoutMs !== undefined
+        ? Date.now() + options.timeoutMs
+        : undefined;
     const raw = await this.sendRequest(
       "initialize",
       {
@@ -366,11 +390,11 @@ export class StdioMcpTransport implements McpTransportConnection {
         capabilities: {},
         clientInfo: { name: "mars-mcp-client", version: "0.0.1" },
       },
-      options,
+      remainingOptions(options, deadlineMs),
     );
     const init = parseInitializeResult(raw);
     this.sendNotification("notifications/initialized");
-    const tools = await this.listTools(options);
+    const tools = await this.listTools(remainingOptions(options, deadlineMs));
     return {
       protocolVersion: init.protocolVersion,
       serverInfo: init.serverInfo,
@@ -381,8 +405,10 @@ export class StdioMcpTransport implements McpTransportConnection {
   }
 
   async listTools(options?: McpRequestOptions): Promise<McpToolDescriptor[]> {
-    return listAllToolsPaginated((cursor) =>
-      this.sendRequest("tools/list", cursor ? { cursor } : {}, options),
+    return listAllToolsPaginated(
+      (cursor, stepOptions) =>
+        this.sendRequest("tools/list", cursor ? { cursor } : {}, stepOptions),
+      options,
     );
   }
 
@@ -683,6 +709,10 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async initialize(options?: McpRequestOptions): Promise<McpServerDescriptor> {
+    const deadlineMs =
+      options?.timeoutMs !== undefined
+        ? Date.now() + options.timeoutMs
+        : undefined;
     const raw = await this.sendRequest(
       "initialize",
       {
@@ -690,7 +720,7 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
         capabilities: {},
         clientInfo: { name: "mars-mcp-client", version: "0.0.1" },
       },
-      options,
+      remainingOptions(options, deadlineMs),
     );
     const init = parseInitializeResult(raw);
     await this.postJsonRpc(
@@ -698,9 +728,9 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
         jsonrpc: "2.0",
         method: "notifications/initialized",
       },
-      options,
+      remainingOptions(options, deadlineMs),
     ).catch(() => {});
-    const tools = await this.listTools(options);
+    const tools = await this.listTools(remainingOptions(options, deadlineMs));
     return {
       protocolVersion: init.protocolVersion,
       serverInfo: init.serverInfo,
@@ -711,8 +741,10 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async listTools(options?: McpRequestOptions): Promise<McpToolDescriptor[]> {
-    return listAllToolsPaginated((cursor) =>
-      this.sendRequest("tools/list", cursor ? { cursor } : {}, options),
+    return listAllToolsPaginated(
+      (cursor, stepOptions) =>
+        this.sendRequest("tools/list", cursor ? { cursor } : {}, stepOptions),
+      options,
     );
   }
 
