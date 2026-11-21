@@ -1148,6 +1148,18 @@ export class EvolutionService {
     let manifest: AgentManifest = parentManifest;
     let reason: string | null = null;
     try {
+      this.store.verifyLedger(runId);
+      const spentBeforeProposal = this.spent(runId);
+      if (
+        spentBeforeProposal.tokens >= config.budget.max_tokens ||
+        spentBeforeProposal.usd > config.budget.max_usd + 1e-9 ||
+        spentBeforeProposal.ms >= config.budget.max_duration_ms
+      ) {
+        fail(
+          "budget_exhausted",
+          `run ${runId} exhausted its budget before proposal`,
+        );
+      }
       await verifyControlDigests(control.control_digests, "before proposal");
       await materialize(
         scratch,
@@ -1186,6 +1198,43 @@ export class EvolutionService {
       await verifyControlDigests(control.control_digests, "after proposal");
       const proposal = MutationProposalSchema.parse(raw);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
+      if (proposal.usage !== undefined) {
+        const proposalLedgerKey = `${candidateId}/proposal`;
+        const usage = {
+          tokens: proposal.usage.tokens,
+          usd: proposal.usage.usd,
+          ms: proposal.usage.ms,
+        };
+        this.store.transaction(() => {
+          this.store.assertLease(runId, lease, this.now());
+          const atProposal = nowIso(this.now());
+          this.store.appendLedger(
+            runId,
+            "reserve",
+            proposalLedgerKey,
+            usage,
+            atProposal,
+          );
+          this.store.appendLedger(
+            runId,
+            "settle",
+            proposalLedgerKey,
+            usage,
+            atProposal,
+          );
+        });
+        const spentAfterProposal = this.spent(runId);
+        if (
+          spentAfterProposal.tokens > config.budget.max_tokens ||
+          spentAfterProposal.usd > config.budget.max_usd + 1e-9 ||
+          spentAfterProposal.ms > config.budget.max_duration_ms
+        ) {
+          fail(
+            "budget_exhausted",
+            `run ${runId} exhausted its budget during proposal`,
+          );
+        }
+      }
       proposalJson = canonicalJson(proposal);
       const patches = [...parentManifest.harness.patches];
       let tree = parentManifest.harness.tree_sha256;

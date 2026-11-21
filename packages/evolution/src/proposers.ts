@@ -118,9 +118,16 @@ export interface ModelProposerClient {
     signal?: AbortSignal,
   ): Promise<
     Pick<ChatResponse, "content"> & {
-      model?: string;
-      provider?: string;
-      usage?: ChatResponse["usage"];
+      model?: string | undefined;
+      provider?: string | undefined;
+      usage?:
+        | {
+            inputTokens?: number | undefined;
+            outputTokens?: number | undefined;
+            totalTokens?: number | undefined;
+            costUsd?: number | undefined;
+          }
+        | undefined;
     }
   >;
 }
@@ -330,6 +337,7 @@ export function createModelProposer(
       if (model !== undefined) selection.model = model;
       if (options.route !== undefined) selection.route = options.route;
 
+      const startedAt = Date.now();
       const completePromise = options.client.complete(
         {
           messages: [
@@ -379,8 +387,21 @@ export function createModelProposer(
       }
 
       const parsed = extractProposalJson(response.content);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        delete (parsed as Record<string, unknown>).usage;
+      }
       const proposal = MutationProposalSchema.parse(parsed);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
+      const rawTokens =
+        response.usage?.totalTokens ??
+        (response.usage?.inputTokens ?? 0) +
+          (response.usage?.outputTokens ?? 0);
+      const tokens =
+        Number.isFinite(rawTokens) && rawTokens > 0 ? Math.round(rawTokens) : 0;
+      const rawUsd = response.usage?.costUsd ?? 0;
+      const usd = Number.isFinite(rawUsd) && rawUsd > 0 ? rawUsd : 0;
+      const ms = Math.max(0, Math.round(Date.now() - startedAt));
+      proposal.usage = { tokens, usd, ms };
 
       if (proposal.patch !== undefined && context.harness_policy) {
         const bytes = new TextEncoder().encode(proposal.patch).byteLength;
@@ -467,6 +488,7 @@ export function createOpenRouterProposerClient(
           prompt_tokens?: number;
           completion_tokens?: number;
           total_tokens?: number;
+          cost?: number;
         };
       };
       const content = json.choices?.[0]?.message?.content ?? "";
@@ -483,6 +505,11 @@ export function createOpenRouterProposerClient(
                   json.usage.total_tokens ??
                   (json.usage.prompt_tokens ?? 0) +
                     (json.usage.completion_tokens ?? 0),
+                ...(typeof json.usage.cost === "number" &&
+                Number.isFinite(json.usage.cost) &&
+                json.usage.cost >= 0
+                  ? { costUsd: json.usage.cost }
+                  : {}),
               },
             }
           : {}),

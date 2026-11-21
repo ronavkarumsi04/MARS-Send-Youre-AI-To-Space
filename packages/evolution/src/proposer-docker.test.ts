@@ -456,36 +456,23 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
-  test("Docker-sandboxed candidate build (--network=none) runs end-to-end with promotion and rollback", async () => {
-    const dockerCheck = Bun.spawnSync(
+  const hasPinnedDockerImage =
+    Bun.spawnSync(
       ["docker", "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE],
       { stdout: "ignore", stderr: "ignore" },
-    );
-    if (dockerCheck.exitCode !== 0) {
-      return;
-    }
+    ).exitCode === 0;
 
+  test("createModelProposer attaches measured usage to the ledger and enforces run budget", async () => {
     await withTempDir(async (dir) => {
       const baseDir = join(dir, "base");
       await seedHarness(baseDir);
-      // Verify bun runs inside the pinned Docker container with --network=none
-      await writeFile(
-        join(baseDir, "build.sh"),
-        [
-          "#!/bin/sh",
-          "set -eu",
-          "mkdir -p dist",
-          `bun -e 'const fs = require("node:fs"); fs.copyFileSync("harness/${FIXTURE_POLICY_FILE}", "dist/${FIXTURE_POLICY_FILE}");'`,
-          "",
-        ].join("\n"),
-        { mode: 0o755 },
-      );
-
       const client: ModelProposerClient = {
         async complete() {
           return {
             content: JSON.stringify({
-              hypothesis: "update fixture-policy.json for docker build test",
+              hypothesis: "improve policy while testing usage accounting",
+              // Spoofed usage in model output must be ignored in favor of client usage
+              usage: { tokens: 0, usd: 0, ms: 0 },
               patch: [
                 `diff --git a/harness/${FIXTURE_POLICY_FILE} b/harness/${FIXTURE_POLICY_FILE}`,
                 `--- a/harness/${FIXTURE_POLICY_FILE}`,
@@ -501,6 +488,12 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
               ].join("\n"),
             }),
             model: "openrouter/free",
+            usage: {
+              inputTokens: 120,
+              outputTokens: 30,
+              totalTokens: 150,
+              costUsd: 0,
+            },
           };
         },
       };
@@ -510,46 +503,50 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
         workDir: join(dir, "work"),
         evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
         proposer: createModelProposer({ client }),
-        sandbox: createEvolutionDockerSandbox(),
+        sandbox: createProcessSandbox(),
       });
       try {
         await service.startRun({
           config: {
             schema: "mars.evolution-run/v1",
-            run_id: "docker-build-run",
-            seed: "seed-docker",
+            run_id: "proposal-usage-run",
+            seed: "proposal-usage-seed",
             generations: 1,
             children_per_generation: 1,
-            selection: { stages: [{ tasks: ["sel-1", "sel-2"] }], repeats: 1 },
+            selection: { stages: [{ tasks: ["sel-1"] }], repeats: 1 },
             final_test: {
-              tasks: ["final-1", "final-2", "final-3", "final-4"],
+              tasks: ["fin-1", "fin-2"],
               repeats: 2,
+              bootstrap_samples: 200,
+              max_uses: 1,
             },
-            evaluation_budget: {
-              max_usd: 0,
+            regression_families: [],
+            budget: {
               max_tokens: 100_000,
-              max_duration_ms: 60_000,
+              max_usd: 0,
+              max_duration_ms: 120_000,
               max_depth: 2,
               max_concurrency: 1,
             },
-            budget: {
+            evaluation_budget: {
+              max_tokens: 10_000,
               max_usd: 0,
-              max_tokens: 500_000,
-              max_duration_ms: 180_000,
-              max_depth: 4,
+              max_duration_ms: 30_000,
+              max_depth: 2,
               max_concurrency: 1,
             },
             harness: {
               mutable_paths: ["harness/**"],
-              protected_paths: ["protected/**", "build.sh"],
+              protected_paths: ["build.sh"],
+              max_patch_bytes: 16_384,
               build: {
                 argv: ["/bin/sh", "build.sh"],
-                timeout_ms: 60_000,
+                timeout_ms: 30_000,
                 bundle_dir: "dist",
               },
             },
           },
-          scope_key: "docker-build-scope",
+          scope_key: "proposal-usage-scope",
           base_dir: baseDir,
           base_ref: "base",
           model: {
@@ -567,29 +564,274 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
             research: false,
           },
         });
-        const runStatus = await service.run("docker-build-run");
-        expect(runStatus.status).toBe("completed");
-        const lineage = service.lineage("docker-build-run");
-        expect(
-          lineage.some((c) => c.state === "evaluated" && c.parent_id !== null),
-        ).toBe(true);
-        const decision = await service.promote({
-          run_id: "docker-build-run",
-          idempotency_key: "promote-docker-build-run",
-        });
-        expect(decision.verdict).toBe("accepted");
-        const rolled = await service.rollback({
-          scope_key: "docker-build-scope",
-          to_entry_seq: 1,
-          expected_pointer_version: 2,
-        });
-        expect(rolled.entry_seq).toBe(3);
-        expect(rolled.manifest_sha256).toBe(decision.champion.manifest_sha256);
-        const verify = await service.verify("docker-build-run");
+        const status = await service.run("proposal-usage-run");
+        expect(status.status).toBe("completed");
+        const proposalRows = service.store
+          .ledger("proposal-usage-run")
+          .filter((row) => row.key.endsWith("/proposal"));
+        expect(proposalRows.length).toBe(2);
+        expect(proposalRows[0]?.tokens).toBe(150);
+        const metrics = service.metrics("proposal-usage-run");
+        expect(metrics.search_process.spend.tokens).toBeGreaterThanOrEqual(150);
+        const verify = await service.verify("proposal-usage-run");
         expect(verify.ok).toBe(true);
       } finally {
         service.close();
       }
     });
-  }, 60_000);
+  });
+
+  test("proposal usage exceeding run budget halts the run with budget_exhausted", async () => {
+    await withTempDir(async (dir) => {
+      const baseDir = join(dir, "base");
+      await seedHarness(baseDir);
+      const client: ModelProposerClient = {
+        async complete() {
+          return {
+            content: JSON.stringify({
+              hypothesis: "expensive proposal that exceeds max_tokens",
+              patch: [
+                `diff --git a/harness/${FIXTURE_POLICY_FILE} b/harness/${FIXTURE_POLICY_FILE}`,
+                `--- a/harness/${FIXTURE_POLICY_FILE}`,
+                `+++ b/harness/${FIXTURE_POLICY_FILE}`,
+                "@@ -1,5 +1,5 @@",
+                " {",
+                '-  "default": 0,',
+                '+  "default": 1,',
+                '   "effort": 1,',
+                '   "solve": {}',
+                " }",
+                "",
+              ].join("\n"),
+            }),
+            model: "openrouter/free",
+            usage: {
+              inputTokens: 800,
+              outputTokens: 400,
+              totalTokens: 1200,
+              costUsd: 0,
+            },
+          };
+        },
+      };
+
+      const service = await EvolutionService.open({
+        storeDir: join(dir, "store"),
+        workDir: join(dir, "work"),
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        proposer: createModelProposer({ client }),
+        sandbox: createProcessSandbox(),
+      });
+      try {
+        await service.startRun({
+          config: {
+            schema: "mars.evolution-run/v1",
+            run_id: "proposal-budget-exhausted-run",
+            seed: "proposal-budget-seed",
+            generations: 1,
+            children_per_generation: 1,
+            selection: { stages: [{ tasks: ["sel-1"] }], repeats: 1 },
+            final_test: {
+              tasks: ["fin-1", "fin-2"],
+              repeats: 2,
+              bootstrap_samples: 200,
+              max_uses: 1,
+            },
+            regression_families: [],
+            budget: {
+              max_tokens: 500,
+              max_usd: 0,
+              max_duration_ms: 120_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            evaluation_budget: {
+              max_tokens: 100,
+              max_usd: 0,
+              max_duration_ms: 30_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            harness: {
+              mutable_paths: ["harness/**"],
+              protected_paths: ["build.sh"],
+              max_patch_bytes: 16_384,
+              build: {
+                argv: ["/bin/sh", "build.sh"],
+                timeout_ms: 30_000,
+                bundle_dir: "dist",
+              },
+            },
+          },
+          scope_key: "proposal-budget-scope",
+          base_dir: baseDir,
+          base_ref: "base",
+          model: {
+            id: "openrouter/free",
+            provider: "openrouter",
+            revision: "1",
+          },
+          prompts: { system_prompt: "baseline" },
+          skills: { store_revision: "1" },
+          tools: [],
+          retrieval: {
+            repo_map_tokens: 0,
+            memory_top_k: 0,
+            context_window_tokens: 8192,
+            research: false,
+          },
+        });
+        const status = await service.run("proposal-budget-exhausted-run");
+        expect(status.status).toBe("budget_exhausted");
+        const metrics = service.metrics("proposal-budget-exhausted-run");
+        expect(metrics.search_process.spend.tokens).toBeGreaterThanOrEqual(
+          1200,
+        );
+        const verify = await service.verify("proposal-budget-exhausted-run");
+        expect(verify.ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
+  test.skipIf(!hasPinnedDockerImage)(
+    "Docker-sandboxed candidate build (--network=none) runs end-to-end with promotion and rollback",
+    async () => {
+      await withTempDir(async (dir) => {
+        const baseDir = join(dir, "base");
+        await seedHarness(baseDir);
+        // Verify bun runs inside the pinned Docker container with --network=none
+        await writeFile(
+          join(baseDir, "build.sh"),
+          [
+            "#!/bin/sh",
+            "set -eu",
+            "mkdir -p dist",
+            `bun -e 'const fs = require("node:fs"); fs.copyFileSync("harness/${FIXTURE_POLICY_FILE}", "dist/${FIXTURE_POLICY_FILE}");'`,
+            "",
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+
+        const client: ModelProposerClient = {
+          async complete() {
+            return {
+              content: JSON.stringify({
+                hypothesis: "update fixture-policy.json for docker build test",
+                patch: [
+                  `diff --git a/harness/${FIXTURE_POLICY_FILE} b/harness/${FIXTURE_POLICY_FILE}`,
+                  `--- a/harness/${FIXTURE_POLICY_FILE}`,
+                  `+++ b/harness/${FIXTURE_POLICY_FILE}`,
+                  "@@ -1,5 +1,5 @@",
+                  " {",
+                  '-  "default": 0,',
+                  '+  "default": 1,',
+                  '   "effort": 1,',
+                  '   "solve": {}',
+                  " }",
+                  "",
+                ].join("\n"),
+              }),
+              model: "openrouter/free",
+            };
+          },
+        };
+
+        const service = await EvolutionService.open({
+          storeDir: join(dir, "store"),
+          workDir: join(dir, "work"),
+          evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+          proposer: createModelProposer({ client }),
+          sandbox: createEvolutionDockerSandbox(),
+        });
+        try {
+          await service.startRun({
+            config: {
+              schema: "mars.evolution-run/v1",
+              run_id: "docker-build-run",
+              seed: "seed-docker",
+              generations: 1,
+              children_per_generation: 1,
+              selection: {
+                stages: [{ tasks: ["sel-1", "sel-2"] }],
+                repeats: 1,
+              },
+              final_test: {
+                tasks: ["final-1", "final-2", "final-3", "final-4"],
+                repeats: 2,
+              },
+              evaluation_budget: {
+                max_usd: 0,
+                max_tokens: 100_000,
+                max_duration_ms: 60_000,
+                max_depth: 2,
+                max_concurrency: 1,
+              },
+              budget: {
+                max_usd: 0,
+                max_tokens: 500_000,
+                max_duration_ms: 180_000,
+                max_depth: 4,
+                max_concurrency: 1,
+              },
+              harness: {
+                mutable_paths: ["harness/**"],
+                protected_paths: ["protected/**", "build.sh"],
+                build: {
+                  argv: ["/bin/sh", "build.sh"],
+                  timeout_ms: 60_000,
+                  bundle_dir: "dist",
+                },
+              },
+            },
+            scope_key: "docker-build-scope",
+            base_dir: baseDir,
+            base_ref: "base",
+            model: {
+              id: "openrouter/free",
+              provider: "openrouter",
+              revision: "1",
+            },
+            prompts: { system_prompt: "baseline" },
+            skills: { store_revision: "1" },
+            tools: [],
+            retrieval: {
+              repo_map_tokens: 0,
+              memory_top_k: 0,
+              context_window_tokens: 8192,
+              research: false,
+            },
+          });
+          const runStatus = await service.run("docker-build-run");
+          expect(runStatus.status).toBe("completed");
+          const lineage = service.lineage("docker-build-run");
+          expect(
+            lineage.some(
+              (c) => c.state === "evaluated" && c.parent_id !== null,
+            ),
+          ).toBe(true);
+          const decision = await service.promote({
+            run_id: "docker-build-run",
+            idempotency_key: "promote-docker-build-run",
+          });
+          expect(decision.verdict).toBe("accepted");
+          const rolled = await service.rollback({
+            scope_key: "docker-build-scope",
+            to_entry_seq: 1,
+            expected_pointer_version: 2,
+          });
+          expect(rolled.entry_seq).toBe(3);
+          expect(rolled.manifest_sha256).toBe(
+            decision.champion.manifest_sha256,
+          );
+          const verify = await service.verify("docker-build-run");
+          expect(verify.ok).toBe(true);
+        } finally {
+          service.close();
+        }
+      });
+    },
+    60_000,
+  );
 });
