@@ -24,6 +24,7 @@ import {
   type Gate,
   IdSchema,
   type Interval,
+  type MutationProposal,
   MutationProposalSchema,
   type PromotionDecision,
   PromotionDecisionSchema,
@@ -1028,6 +1029,53 @@ export class EvolutionService {
     }
   }
 
+  private settleProposalUsage(
+    runId: string,
+    lease: number,
+    candidateId: string,
+    usage: NonNullable<MutationProposal["usage"]>,
+    budget: RunConfig["budget"],
+  ): void {
+    this.store.transaction(() => {
+      this.store.assertLease(runId, lease, this.now());
+      const prefix = `${candidateId}/proposal`;
+      const attempt = this.store
+        .ledger(runId)
+        .filter(
+          (row) =>
+            row.kind === "reserve" &&
+            (row.key === prefix || row.key.startsWith(`${prefix}#`)),
+        ).length;
+      const proposalLedgerKey = attempt === 0 ? prefix : `${prefix}#${attempt}`;
+      const atProposal = nowIso(this.now());
+      this.store.appendLedger(
+        runId,
+        "reserve",
+        proposalLedgerKey,
+        usage,
+        atProposal,
+      );
+      this.store.appendLedger(
+        runId,
+        "settle",
+        proposalLedgerKey,
+        usage,
+        atProposal,
+      );
+    });
+    const spent = this.spent(runId);
+    if (
+      spent.tokens > budget.max_tokens ||
+      spent.usd > budget.max_usd + 1e-9 ||
+      spent.ms > budget.max_duration_ms
+    ) {
+      fail(
+        "budget_exhausted",
+        `run ${runId} exhausted its budget during proposal`,
+      );
+    }
+  }
+
   private async propose(
     runId: string,
     lease: number,
@@ -1166,6 +1214,7 @@ export class EvolutionService {
         this.entriesOf(parentManifest.harness.tree_sha256),
         (digest) => this.store.getBlob(digest),
       );
+      let reportedUsage = false;
       const raw = await this.options.proposer.propose(
         {
           run_id: runId,
@@ -1194,55 +1243,28 @@ export class EvolutionService {
           applied_components: this.options.evaluator.appliedComponents,
         },
         AbortSignal.timeout(config.evaluation_budget.max_duration_ms),
+        (usage) => {
+          this.settleProposalUsage(
+            runId,
+            lease,
+            candidateId,
+            usage,
+            config.budget,
+          );
+          reportedUsage = true;
+        },
       );
       await verifyControlDigests(control.control_digests, "after proposal");
       const proposal = MutationProposalSchema.parse(raw);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
-      if (proposal.usage !== undefined) {
-        const usage = {
-          tokens: proposal.usage.tokens,
-          usd: proposal.usage.usd,
-          ms: proposal.usage.ms,
-        };
-        this.store.transaction(() => {
-          this.store.assertLease(runId, lease, this.now());
-          const prefix = `${candidateId}/proposal`;
-          const attempt = this.store
-            .ledger(runId)
-            .filter(
-              (row) =>
-                row.kind === "reserve" &&
-                (row.key === prefix || row.key.startsWith(`${prefix}#`)),
-            ).length;
-          const proposalLedgerKey =
-            attempt === 0 ? prefix : `${prefix}#${attempt}`;
-          const atProposal = nowIso(this.now());
-          this.store.appendLedger(
-            runId,
-            "reserve",
-            proposalLedgerKey,
-            usage,
-            atProposal,
-          );
-          this.store.appendLedger(
-            runId,
-            "settle",
-            proposalLedgerKey,
-            usage,
-            atProposal,
-          );
-        });
-        const spentAfterProposal = this.spent(runId);
-        if (
-          spentAfterProposal.tokens > config.budget.max_tokens ||
-          spentAfterProposal.usd > config.budget.max_usd + 1e-9 ||
-          spentAfterProposal.ms > config.budget.max_duration_ms
-        ) {
-          fail(
-            "budget_exhausted",
-            `run ${runId} exhausted its budget during proposal`,
-          );
-        }
+      if (!reportedUsage && proposal.usage !== undefined) {
+        this.settleProposalUsage(
+          runId,
+          lease,
+          candidateId,
+          proposal.usage,
+          config.budget,
+        );
       }
       proposalJson = canonicalJson(proposal);
       const patches = [...parentManifest.harness.patches];

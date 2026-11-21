@@ -88,6 +88,7 @@ export interface MutationProposer {
   propose(
     context: ProposalContext,
     signal: AbortSignal,
+    reportUsage?: (usage: NonNullable<MutationProposal["usage"]>) => void,
   ): Promise<MutationProposal>;
 }
 
@@ -326,7 +327,7 @@ export function createModelProposer(
 
   return {
     id,
-    async propose(context, signal) {
+    async propose(context, signal, reportUsage) {
       if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
       const { system, user } = await buildProposalMessages(
         context,
@@ -374,6 +375,17 @@ export function createModelProposer(
           );
         },
       );
+      const rawTokens =
+        response.usage?.totalTokens ??
+        (response.usage?.inputTokens ?? 0) +
+          (response.usage?.outputTokens ?? 0);
+      const tokens =
+        Number.isFinite(rawTokens) && rawTokens > 0 ? Math.round(rawTokens) : 0;
+      const rawUsd = response.usage?.costUsd ?? 0;
+      const usd = Number.isFinite(rawUsd) && rawUsd > 0 ? rawUsd : 0;
+      const ms = Math.max(0, Math.round(Date.now() - startedAt));
+      const usage = { tokens, usd, ms };
+      reportUsage?.(usage);
       if (signal.aborted) fail("deadline_exceeded", "proposal aborted");
       if (
         !allowPaid &&
@@ -392,16 +404,7 @@ export function createModelProposer(
       }
       const proposal = MutationProposalSchema.parse(parsed);
       proposal.hypothesis = bounded(scrubSecrets(proposal.hypothesis), 4000);
-      const rawTokens =
-        response.usage?.totalTokens ??
-        (response.usage?.inputTokens ?? 0) +
-          (response.usage?.outputTokens ?? 0);
-      const tokens =
-        Number.isFinite(rawTokens) && rawTokens > 0 ? Math.round(rawTokens) : 0;
-      const rawUsd = response.usage?.costUsd ?? 0;
-      const usd = Number.isFinite(rawUsd) && rawUsd > 0 ? rawUsd : 0;
-      const ms = Math.max(0, Math.round(Date.now() - startedAt));
-      proposal.usage = { tokens, usd, ms };
+      proposal.usage = usage;
 
       if (proposal.patch !== undefined && context.harness_policy) {
         const bytes = new TextEncoder().encode(proposal.patch).byteLength;

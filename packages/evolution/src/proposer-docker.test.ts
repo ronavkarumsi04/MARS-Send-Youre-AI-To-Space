@@ -695,6 +695,142 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
+  test("charges malformed and policy-invalid proposals until the run budget stops further calls", async () => {
+    await withTempDir(async (dir) => {
+      const runId = "rejected-proposal-budget-run";
+      const baseDir = join(dir, "base");
+      await seedHarness(baseDir);
+      const protectedPatch = [
+        "diff --git a/protected/secret.txt b/protected/secret.txt",
+        "--- a/protected/secret.txt",
+        "+++ b/protected/secret.txt",
+        "@@ -1 +1 @@",
+        "-do-not-expose-or-edit",
+        "+replacement",
+        "",
+      ].join("\n");
+      let calls = 0;
+      const client: ModelProposerClient = {
+        async complete() {
+          calls += 1;
+          return {
+            content:
+              calls === 1
+                ? '{"hypothesis":'
+                : JSON.stringify({
+                    hypothesis: "edit a protected path",
+                    patch: protectedPatch,
+                  }),
+            model: "openrouter/free",
+            usage: { inputTokens: 120, outputTokens: 30, costUsd: 0.01 },
+          };
+        },
+      };
+      const service = await EvolutionService.open({
+        storeDir: join(dir, "store"),
+        workDir: join(dir, "work"),
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        proposer: createModelProposer({ client }),
+        sandbox: createProcessSandbox(),
+      });
+      try {
+        await service.startRun({
+          config: {
+            schema: "mars.evolution-run/v1",
+            run_id: runId,
+            seed: "rejected-proposal-budget-seed",
+            generations: 1,
+            children_per_generation: 3,
+            selection: { stages: [{ tasks: ["sel-1"] }], repeats: 1 },
+            final_test: {
+              tasks: ["fin-1", "fin-2"],
+              repeats: 2,
+              bootstrap_samples: 200,
+              max_uses: 1,
+            },
+            regression_families: [],
+            budget: {
+              max_tokens: 300,
+              max_usd: 1,
+              max_duration_ms: 120_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            evaluation_budget: {
+              max_tokens: 100,
+              max_usd: 0,
+              max_duration_ms: 30_000,
+              max_depth: 2,
+              max_concurrency: 1,
+            },
+            harness: {
+              mutable_paths: ["harness/**"],
+              protected_paths: ["build.sh", "protected/**"],
+              max_patch_bytes: 16_384,
+              build: {
+                argv: ["/bin/sh", "build.sh"],
+                timeout_ms: 30_000,
+                bundle_dir: "dist",
+              },
+            },
+          },
+          scope_key: "rejected-proposal-budget-scope",
+          base_dir: baseDir,
+          base_ref: "base",
+          model: {
+            id: "openrouter/free",
+            provider: "openrouter",
+            revision: "1",
+          },
+          prompts: { system_prompt: "baseline" },
+          skills: { store_revision: "1" },
+          tools: [],
+          retrieval: {
+            repo_map_tokens: 0,
+            memory_top_k: 0,
+            context_window_tokens: 8192,
+            research: false,
+          },
+        });
+        expect((await service.run(runId)).status).toBe("budget_exhausted");
+        expect(calls).toBe(2);
+        expect(service.store.getCandidate(runId, "g1-c0")).toMatchObject({
+          state: "rejected",
+          reason: expect.stringContaining("did not return a valid JSON object"),
+        });
+        expect(service.store.getCandidate(runId, "g1-c1")).toMatchObject({
+          state: "rejected",
+          reason: expect.stringContaining("protected_path"),
+        });
+        const settled = service.store
+          .ledger(runId)
+          .filter(
+            (row) => row.kind === "settle" && row.key.endsWith("/proposal"),
+          )
+          .map(({ key, tokens, usd, ms }) => ({ key, tokens, usd, ms }));
+        expect(settled).toEqual([
+          {
+            key: "g1-c0/proposal",
+            tokens: 150,
+            usd: 0.01,
+            ms: expect.any(Number),
+          },
+          {
+            key: "g1-c1/proposal",
+            tokens: 150,
+            usd: 0.01,
+            ms: expect.any(Number),
+          },
+        ]);
+        expect((await service.run(runId)).status).toBe("budget_exhausted");
+        expect(calls).toBe(2);
+        expect((await service.verify(runId)).ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
   test("resumed proposal after crash between ledger settlement and candidate insertion charges retry usage", async () => {
     await withTempDir(async (dir) => {
       const baseDir = join(dir, "base");
