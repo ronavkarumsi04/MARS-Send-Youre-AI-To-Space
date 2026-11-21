@@ -570,18 +570,13 @@ async function runServe(
     authenticators.push(createDevAuthenticator(users));
     for (const user of tokens.users) {
       provisionedUsers.add(user.user_id);
-      if (
-        opened.teamMemberState({
-          team_id: options.team,
-          user_id: user.user_id,
-        }) === null
-      ) {
-        opened.setTeamMember({
-          team_id: options.team,
-          user_id: user.user_id,
-          role: user.role,
-        });
-      }
+      // `ensureDevTokens` already omits revoked users until `mars team readmit`,
+      // so every user in `tokens.users` is active and keeps their token-file role.
+      opened.setTeamMember({
+        team_id: options.team,
+        user_id: user.user_id,
+        role: user.role,
+      });
     }
   }
   if (options.authProvider === "token") {
