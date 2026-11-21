@@ -417,9 +417,15 @@ class TeamChatViewProvider
   private service: RpcTeamService | undefined;
   private view: vscode.WebviewView | undefined;
 
+  private readonly workspaceListener =
+    vscode.workspace.onDidChangeWorkspaceFolders(() =>
+      this.controller?.refreshMentionIndex(),
+    );
+
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   dispose(): void {
+    this.workspaceListener.dispose();
     this.controller?.dispose();
     this.controller = undefined;
     this.service = undefined;
@@ -465,9 +471,15 @@ class TeamChatViewProvider
         timeoutMs: settings().timeoutMs,
       }),
     );
-    const service = new RpcTeamService(client);
-    this.service = service;
     let controller: TeamChatController | undefined;
+    const service = new RpcTeamService(client, {
+      workspaceRoots: () =>
+        (vscode.workspace.workspaceFolders ?? []).map(
+          (folder) => folder.uri.fsPath,
+        ),
+      onWorkspaceGitChanged: () => controller?.refreshMentionIndex(),
+    });
+    this.service = service;
     const realtime = new TeamRealtime({
       client,
       streamUrl: endpoint.rpcUrl.replace(/\/v1\/rpc$/, TEAM_STREAM_PATH),

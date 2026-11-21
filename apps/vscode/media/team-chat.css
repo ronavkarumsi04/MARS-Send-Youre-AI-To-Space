@@ -406,6 +406,18 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.agent-bar > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agent-bar ul {
+  max-height: 140px;
+  margin: 4px 0;
+  padding-inline-start: 20px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .composer-input {
   position: relative;
   display: flex;

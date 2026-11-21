@@ -44,6 +44,8 @@ let composerConversation: string | null = null;
 /** Saved conversation id to re-select on first render; cleared once applied. */
 let pendingRestore: string | null | undefined;
 let composerError: string | null = null;
+let previewDraftId: string | null = null;
+let confirmedDraftId: string | null = null;
 /** Focus key of the chip that opened the code panel; focus returns there on close. */
 let panelOrigin: string | null = null;
 let returnFocusTo: string | null = null;
@@ -153,6 +155,7 @@ textarea.addEventListener("keydown", (event) => {
 });
 
 let lastPathSearchKey: string | null = null;
+let lastPathSearchId: string | null = null;
 let lastPathSearchDigest = "";
 
 function currentPathSearchKey(
@@ -164,9 +167,12 @@ function currentPathSearchKey(
 
 function env(): ComposerEnvironment {
   const base = state?.mention_index ?? { repos: [] };
-  const pathQuery = composer.picker?.query.trim().split(":")[0] ?? "";
+  const pathQuery =
+    composer.picker?.query.trim().split(":")[0]?.slice(0, 256) ?? "";
   const matches =
     pathQuery &&
+    lastPathSearchId !== null &&
+    state?.path_search_id === lastPathSearchId &&
     lastPathSearchKey === currentPathSearchKey(base.repos, pathQuery)
       ? (state?.path_search ?? [])
       : [];
@@ -204,35 +210,43 @@ function env(): ComposerEnvironment {
 }
 
 function maybeRequestPathSearch(): void {
-  const pickerState = composer.picker;
-  if (!pickerState) {
-    lastPathSearchKey = null;
-    lastPathSearchDigest = "";
-    return;
-  }
-  if (!state?.capabilities.references) return;
-  const repos = state.mention_index.repos;
-  if (repos.length === 0) return;
-  const pathQuery = pickerState.query.trim().split(":")[0] ?? "";
-  if (!pathQuery) return;
-  const key = currentPathSearchKey(repos, pathQuery);
+  const repos = state?.capabilities.references ? state.mention_index.repos : [];
+  const pathQuery =
+    composer.picker?.query.trim().split(":")[0]?.slice(0, 256) ?? "";
+  const key =
+    repos.length && pathQuery ? currentPathSearchKey(repos, pathQuery) : null;
   if (key === lastPathSearchKey) return;
   lastPathSearchKey = key;
   lastPathSearchDigest = "";
-  for (const repo of repos) {
-    post({
-      type: "searchPaths",
-      repoId: repo.repo_id,
-      commitSha: repo.commit_sha,
-      query: pathQuery,
-      limit: 20,
-    });
-  }
+  const searchId = newClientMessageId();
+  lastPathSearchId = key ? searchId : null;
+  post({
+    type: "searchPaths",
+    searchId,
+    repositories: key
+      ? repos.map((repo) => ({
+          repoId: repo.repo_id,
+          commitSha: repo.commit_sha,
+        }))
+      : [],
+    query: key ? pathQuery : "",
+    limit: 20,
+  });
 }
 
 function updateComposer(action: Parameters<typeof reduceComposer>[1]): void {
   const next = reduceComposer(composer, action, env());
   if (next === composer) return;
+  if (
+    previewDraftId &&
+    (next.text !== composer.text ||
+      next.chips !== composer.chips ||
+      next.reply_to !== composer.reply_to)
+  ) {
+    previewDraftId = null;
+    confirmedDraftId = null;
+    post({ type: "clearAgent" });
+  }
   composer = next;
   maybeRequestPathSearch();
   renderComposerParts();
@@ -253,7 +267,7 @@ function newClientMessageId(): string {
 
 function send(): void {
   const selected = state?.selected;
-  if (!selected) return;
+  if (!selected || confirmedDraftId) return;
   const problem = composerProblem(composer);
   if (problem === "too_long") {
     composerError = `Message is ${composer.text.trim().length} characters; the limit is ${MAX_MESSAGE_CHARS}. Shorten it or split it.`;
@@ -295,6 +309,7 @@ function send(): void {
       ),
     ).slice(-MAX_REFERENCES_PER_MESSAGE);
     composerError = null;
+    previewDraftId = hasQuestionOrRefs ? input.client_message_id : null;
     post({
       type: "agentPreview",
       conversationId: selected.conversation.conversation_id,
@@ -311,11 +326,6 @@ function send(): void {
           }
         : {}),
     });
-    if (hasQuestionOrRefs) {
-      composer = EMPTY_COMPOSER;
-      textarea.value = "";
-      stickToBottom = true;
-    }
     renderComposerParts();
     return;
   }
@@ -328,6 +338,7 @@ function send(): void {
     references: input.references,
   });
   composer = EMPTY_COMPOSER;
+  maybeRequestPathSearch();
   composerError = null;
   textarea.value = "";
   stickToBottom = true;
@@ -928,39 +939,114 @@ function renderComposerParts(): void {
     state.agent_request.conversation_id === selectedConversationId
       ? state.agent_request
       : null;
-  if (preview) {
-    const previewMessageIds = preview.items
+  const draft =
+    state?.agent_draft &&
+    state.agent_draft.conversationId === selectedConversationId &&
+    state.agent_draft.clientMessageId === previewDraftId
+      ? state.agent_draft
+      : null;
+  if (draft || (!state?.agent_draft && preview)) {
+    const items = preview?.items ?? [];
+    const previewMessageIds = items
       .filter(
         (item): item is typeof item & { message_id: string } =>
           item.kind === "message" && typeof item.message_id === "string",
       )
       .map((item) => item.message_id);
-    const previewReferenceIds = preview.items
+    const previewReferenceIds = items
       .filter(
         (item): item is typeof item & { reference_id: string } =>
           item.kind === "reference" && typeof item.reference_id === "string",
       )
       .map((item) => item.reference_id);
-    const restrictedSet = new Set(preview.restricted_reference_ids);
+    const restrictedSet = new Set(preview?.restricted_reference_ids);
     const allowedReferenceIds = previewReferenceIds.filter(
       (refId) => !restrictedSet.has(refId),
     );
-    const totalBytes = preview.items.reduce((sum, item) => sum + item.bytes, 0);
-    const restricted =
-      preview.restricted_reference_ids.length > 0
-        ? ` · ${preview.restricted_reference_ids.length} restricted ref(s) blocked`
-        : "";
+    const selectedMessages = state?.selected?.messages ?? [];
+    const selectedReferences = selectedMessages.flatMap(
+      (message) => message.references,
+    );
+    const details = h("ul", {});
+    if (draft) {
+      details.append(h("li", {}, `Draft: ${draft.body}`));
+      for (const reference of draft.references) {
+        const repo = state?.mention_index.repos.find(
+          (r) => r.repo_id === reference.repo_id,
+        );
+        details.append(
+          h(
+            "li",
+            {},
+            `Draft attachment: ${chipLabel(reference, repo?.name ?? reference.repo_id)}`,
+          ),
+        );
+      }
+    }
+    for (const item of items) {
+      if (item.kind === "message") {
+        const message = selectedMessages.find(
+          (m) => m.message_id === item.message_id,
+        );
+        details.append(
+          h(
+            "li",
+            {},
+            message
+              ? `${message.author_name} (#${message.sequence}): ${message.body}`
+              : `Message #${item.seq ?? "?"}`,
+          ),
+        );
+      } else {
+        const reference = selectedReferences.find(
+          (ref) => ref.reference_id === item.reference_id,
+        );
+        details.append(
+          h(
+            "li",
+            {},
+            restrictedSet.has(item.reference_id ?? "")
+              ? "Restricted reference (not shared)"
+              : reference
+                ? chipText(reference)
+                : `Reference ${item.reference_id ?? ""}`,
+          ),
+        );
+      }
+    }
     const confirm =
-      preview.restricted_reference_ids.length > 0
+      preview && restrictedSet.size > 0
         ? button("Preview without restricted refs", "agent-repreview", () => {
             post({
               type: "agentPreview",
               conversationId: preview.conversation_id,
               messageIds: previewMessageIds,
               referenceIds: allowedReferenceIds,
+              ...(draft
+                ? {
+                    draft: {
+                      clientMessageId: draft.clientMessageId,
+                      body: draft.body,
+                      replyTo: draft.replyTo,
+                      references: draft.references,
+                    },
+                  }
+                : {}),
             });
           })
         : button("Confirm @MARS", "agent-confirm", () => {
+            if (draft) {
+              if (confirmedDraftId) return;
+              confirmedDraftId = draft.clientMessageId;
+              post({
+                type: "agentConfirmDraft",
+                clientMessageId: draft.clientMessageId,
+                idempotencyKey: newClientMessageId(),
+                previewSha256: preview?.preview_sha256 ?? null,
+              });
+              return;
+            }
+            if (!preview) return;
             post({
               type: "agentRequest",
               conversationId: preview.conversation_id,
@@ -979,16 +1065,26 @@ function renderComposerParts(): void {
       "Cancel",
       "agent-cancel-preview",
       () => {
+        previewDraftId = null;
+        confirmedDraftId = null;
         post({ type: "clearAgent" });
+        renderComposerParts();
         textarea.focus();
       },
       { secondary: true },
     );
     agentBar.append(
       h(
-        "span",
+        "div",
         { class: "small" },
-        `@MARS preview: ${previewMessageIds.length} message(s), ${previewReferenceIds.length} ref(s), ${totalBytes}B (${preview.model.model_id})${restricted}`,
+        h(
+          "strong",
+          {},
+          preview
+            ? `@MARS preview (${preview.model.model_id})`
+            : "@MARS preview",
+        ),
+        details,
       ),
       confirm,
       cancel,
@@ -1010,7 +1106,7 @@ function renderComposerParts(): void {
       action,
     );
   }
-  agentBar.hidden = !preview && !request;
+  agentBar.hidden = agentBar.childElementCount === 0;
   replyBar.replaceChildren();
   if (composer.reply_to) {
     const clear = button(
@@ -1214,7 +1310,9 @@ function render(): void {
   if (selectedId !== composerConversation) {
     composerConversation = selectedId;
     composer = EMPTY_COMPOSER;
-    lastPathSearchKey = null;
+    previewDraftId = null;
+    confirmedDraftId = null;
+    maybeRequestPathSearch();
     textarea.value = "";
     anchorOlder = null;
     stickToBottom = true;
@@ -1314,7 +1412,19 @@ window.addEventListener(
     const message = event.data;
     if (message?.type === "state") {
       state = message.state;
-      const digest = JSON.stringify(state.path_search ?? []);
+      if (confirmedDraftId) {
+        if (state.agent_draft?.clientMessageId !== confirmedDraftId) {
+          composer = EMPTY_COMPOSER;
+          textarea.value = "";
+          previewDraftId = null;
+          confirmedDraftId = null;
+          stickToBottom = true;
+        } else if (state.notice) {
+          confirmedDraftId = null;
+        }
+      }
+      maybeRequestPathSearch();
+      const digest = JSON.stringify([state.path_search_id, state.path_search]);
       if (digest !== lastPathSearchDigest) {
         lastPathSearchDigest = digest;
         if (composer.picker) {

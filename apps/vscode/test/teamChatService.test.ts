@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { succeed } from "@mars/team-chat";
 import { RpcError } from "../src/rpc";
 import { TeamClient } from "../src/teamChat/client";
 import { TeamChatController } from "../src/teamChat/controller";
-import type { TeamChatViewState } from "../src/teamChat/messages";
+import type { AgentDraft, TeamChatViewState } from "../src/teamChat/messages";
 import {
   parseSseBlock,
   type StreamFetchLike,
@@ -183,6 +184,250 @@ describe("TeamClient", () => {
 });
 
 describe("RpcTeamService through the controller", () => {
+  test("mention snapshots coalesce asynchronous HEAD and origin reads and track checkout changes", async () => {
+    const server = new FakeTeamServer();
+    server.members.add(ADA);
+    const transport = server.transport(ADA);
+    const queries: unknown[] = [];
+    const client = new TeamClient({
+      async send(request, signal) {
+        switch (request.method) {
+          case "team.describe": {
+            const result = (await transport.send(request, signal)) as {
+              capabilities: object;
+            };
+            return {
+              ...result,
+              capabilities: { ...result.capabilities, references: true },
+            };
+          }
+          case "repos.list":
+            return [
+              {
+                repo_id: "project",
+                label: "Project",
+                team_id: "team_fixture",
+                revision: 1,
+              },
+            ];
+          case "references.search_paths":
+            queries.push(request.params);
+            return { state: "unavailable" };
+          default:
+            return transport.send(request, signal);
+        }
+      },
+    });
+    let now = 1;
+    let roots = ["/tmp/project", "/tmp/renamed"];
+    const old = "a".repeat(40);
+    const other = "b".repeat(40);
+    const next = "c".repeat(40);
+    let head = old;
+    let origin = "https://forge.example/project.git";
+    let reads = 0;
+    const service = new RpcTeamService(client, {
+      workspaceRoots: () => roots,
+      now: () => now,
+      readGit: async (dir, args) => {
+        reads++;
+        return args[0] === "rev-parse"
+          ? dir === "/tmp/renamed"
+            ? head
+            : other
+          : dir === "/tmp/renamed"
+            ? origin
+            : "https://forge.example/other.git";
+      },
+    });
+    await service.listConversations();
+    expect(service.mentionIndex().repos).toEqual([]);
+    service.mentionIndex();
+    expect(reads).toBe(0);
+    await until(() => service.mentionIndex().repos[0]?.commit_sha === old);
+    expect(reads).toBe(4);
+    service.mentionIndex();
+    expect(reads).toBe(4);
+    head = next;
+    now += 2001;
+    const result = await service.searchPaths(ADA, {
+      repo_id: "project",
+      commit_sha: old,
+      query: "file",
+    });
+    expect(result).toEqual(succeed([]));
+    expect(queries).toEqual([
+      { repo_id: "project", commit_sha: next, query: "file" },
+    ]);
+    expect(reads).toBe(8);
+    expect(service.mentionIndex().repos[0]?.commit_sha).toBe(next);
+    origin = "https://forge.example/elsewhere.git";
+    now += 2001;
+    await until(() => service.mentionIndex().repos[0]?.commit_sha === other);
+    expect(reads).toBe(12);
+    roots = ["/tmp/renamed"];
+    expect(service.mentionIndex().repos[0]?.commit_sha).toBe(next);
+  });
+
+  test("coalesces path prefixes without holding up sends and drops stale results", async () => {
+    const { controller, service, last, group } = setup();
+    await controller.handleMessage({ type: "ready" });
+    const commit = "a".repeat(40);
+    const calls: string[] = [];
+    let finishOld!: () => void;
+    const old = new Promise<void>((resolve) => {
+      finishOld = resolve;
+    });
+    let oldFinished = false;
+    service.searchPaths = async (_viewer, input) => {
+      calls.push(input.query);
+      if (input.query === "src") {
+        await old;
+        oldFinished = true;
+      }
+      return succeed([
+        { repo_id: "repo", commit_sha: commit, path: input.query, rank: 1 },
+      ]);
+    };
+    const search = (query: string) =>
+      controller.handleMessage({
+        type: "searchPaths",
+        searchId: query,
+        repositories: [{ repoId: "repo", commitSha: commit }],
+        query,
+      });
+    await search("s");
+    await search("sr");
+    await search("src");
+    await until(() => calls.length > 0);
+    expect(calls).toEqual(["src"]);
+    await controller.handleMessage({
+      type: "send",
+      conversationId: group,
+      clientMessageId: "search-does-not-block",
+      body: "Send while search is in flight",
+      replyTo: null,
+      references: [],
+    });
+    expect(last().selected?.messages.at(-1)?.body).toBe(
+      "Send while search is in flight",
+    );
+    await search("src-next");
+    await until(() => last().path_search_id === "src-next");
+    finishOld();
+    await until(() => oldFinished);
+    expect(last().path_search_id).toBe("src-next");
+    expect(last().path_search?.map((m) => m.path)).toEqual(["src-next"]);
+    controller.dispose();
+  });
+
+  test("@MARS preview and cancel do not post the question or create references", async () => {
+    const { controller, service, group, last } = setup();
+    await controller.handleMessage({ type: "ready" });
+    const prior = last().selected?.messages[0]?.message_id;
+    if (!prior) throw new Error("no prior message");
+    const digest = "a".repeat(64);
+    const selections: Parameters<typeof service.agentPreview>[1][] = [];
+    const requests: typeof selections = [];
+    service.agentPreview = async (_viewer, input) => {
+      selections.push(input);
+      return succeed({
+        conversation_id: group,
+        audience: "conversation",
+        items: input.message_ids.map((message_id) => ({
+          kind: "message",
+          message_id,
+          flagged: null,
+          bytes: 7,
+        })),
+        participant_count: 3,
+        restricted_reference_ids: [],
+        model: { model_id: "free-model", tier: "free" },
+        preview_sha256: digest,
+      });
+    };
+    service.agentRequest = async (_viewer, input) => {
+      requests.push(input);
+      return succeed({
+        request_id: "request",
+        conversation_id: group,
+        team_id: "team_fixture",
+        requester_id: ADA,
+        idempotency_key: input.idempotency_key,
+        audience: "conversation",
+        reference_ids: [],
+        preview_sha256: input.preview_sha256,
+        model_id: "free-model",
+        status: "pending",
+        dropped_citations: 0,
+        reason_code: null,
+        answer: null,
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      });
+    };
+    const send = service.sendMessage.bind(service);
+    const sends: Parameters<typeof send>[1][] = [];
+    service.sendMessage = (viewer, input) => {
+      sends.push(input);
+      return send(viewer, { ...input, references: [] });
+    };
+    const draft: AgentDraft = {
+      clientMessageId: "draft",
+      body: "@MARS Private question",
+      replyTo: prior,
+      references: [
+        {
+          kind: "range",
+          repo_id: "repo",
+          path: "src/private.ts",
+          commit_sha: "a".repeat(40),
+          line_start: 3,
+          line_end: 4,
+          symbol: null,
+        },
+      ],
+    };
+    const preview = () =>
+      controller.handleMessage({
+        type: "agentPreview",
+        conversationId: group,
+        messageIds: [prior],
+        referenceIds: [],
+        draft,
+      });
+    const confirm = () =>
+      controller.handleMessage({
+        type: "agentConfirmDraft",
+        clientMessageId: draft.clientMessageId,
+        idempotencyKey: "test-request",
+        previewSha256: digest,
+      });
+    await preview();
+    expect(last().agent_draft).toEqual({ ...draft, conversationId: group });
+    expect(last().agent_preview?.items.map((item) => item.message_id)).toEqual([
+      prior,
+    ]);
+    expect(selections).toEqual([
+      { conversation_id: group, message_ids: [prior], reference_ids: [] },
+    ]);
+    expect(sends).toEqual([]);
+    expect(last().pending).toEqual([]);
+    await controller.handleMessage({ type: "clearAgent" });
+    await confirm();
+    expect(last().agent_draft).toBeNull();
+    expect(sends).toEqual([]);
+    expect(requests).toEqual([]);
+    await preview();
+    await confirm();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.references).toEqual(draft.references);
+    const posted = last().selected?.messages.at(-1);
+    if (!posted) throw new Error("no posted question");
+    expect(posted.body).toBe(draft.body);
+    expect(requests[0]?.message_ids).toEqual([prior, posted.message_id]);
+  });
+
   test("ready lists conversations with the server-derived identity and no fixture viewers", async () => {
     const { controller, last, dm, group } = setup();
     await controller.handleMessage({ type: "ready" });

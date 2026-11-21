@@ -43,6 +43,7 @@ const vscode = new Proxy(
         return disposable;
       },
       onDidChangeConfiguration: () => disposable,
+      onDidChangeWorkspaceFolders: () => disposable,
       getConfiguration: () => ({
         get: (key, fallback) => (key in config ? config[key] : fallback),
       }),

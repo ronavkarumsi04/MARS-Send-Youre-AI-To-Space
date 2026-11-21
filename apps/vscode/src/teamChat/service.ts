@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import type { ReferenceChip } from "@mars/contracts";
 import {
@@ -50,6 +50,27 @@ const DEFAULT_PAGE = 20;
 const MAX_PAGE = 200;
 /** Messages kept per conversation in the host cache; older pages are re-fetched on demand. */
 const MAX_CACHED_PER_CONVERSATION = 1000;
+const WORKSPACE_GIT_TTL = 2_000;
+
+type WorkspaceCheckout = {
+  sha: string | null;
+  origin: string | null;
+};
+
+async function readGit(dir: string, args: string[]): Promise<string | null> {
+  try {
+    return await new Promise<string | null>((resolve) => {
+      execFile(
+        "git",
+        args,
+        { cwd: dir, encoding: "utf8", timeout: 1000 },
+        (error, stdout) => resolve(error ? null : stdout.trim()),
+      );
+    });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Maps transport failures to the fixed `TeamErrorCode` vocabulary. Only the
@@ -110,21 +131,25 @@ export class RpcTeamService implements TeamService {
   >();
   /** Most recently observed pinned commit SHA per `repo_id`. */
   private readonly repoCommits = new Map<string, string>();
-  /** Cached git HEAD SHA per workspace directory (null = checked and unavailable). */
-  private readonly cachedDirHeads = new Map<
+  private readonly workspaceGit = new Map<
     string,
-    { sha: string | null; at: number }
+    {
+      checkout: WorkspaceCheckout | null;
+      expires: number;
+      pending?: Promise<void>;
+    }
   >();
   /** Last `team.describe.enabled === false` seen (PR 7 kill switch); re-read on every `unavailable` failure. */
   private hostDisabled = false;
-  private readonly workspaceRoots: readonly string[] | undefined;
-
   constructor(
     private readonly client: TeamClient,
-    options?: { workspaceRoots?: readonly string[] },
-  ) {
-    this.workspaceRoots = options?.workspaceRoots;
-  }
+    private readonly options: {
+      workspaceRoots?: readonly string[] | (() => readonly string[]);
+      onWorkspaceGitChanged?: () => void;
+      readGit?: typeof readGit;
+      now?: () => number;
+    } = {},
+  ) {}
 
   disabled(): boolean {
     return this.hostDisabled;
@@ -155,7 +180,7 @@ export class RpcTeamService implements TeamService {
     this.reactions.clear();
     this.repos.clear();
     this.repoCommits.clear();
-    this.cachedDirHeads.clear();
+    this.workspaceGit.clear();
     this.client.forget();
   }
 
@@ -775,112 +800,97 @@ export class RpcTeamService implements TeamService {
     });
   }
 
-  private openWorkspaceDirs(): string[] {
-    if (this.workspaceRoots) return [...this.workspaceRoots];
-    try {
-      // Optional dynamic load so Bun/Node tests without the VS Code host still run.
-      const dynamicRequire =
-        typeof require === "function"
-          ? require
-          : (globalThis as unknown as { require?: (id: string) => unknown })
-              .require;
-      const vscodeModule = dynamicRequire?.("vscode") as
-        | {
-            workspace?: {
-              workspaceFolders?: readonly { uri?: { fsPath?: string } }[];
-            };
-          }
-        | undefined;
-      const folders = vscodeModule?.workspace?.workspaceFolders;
-      if (folders && folders.length > 0) {
-        const dirs = folders
-          .map((folder) => folder.uri?.fsPath)
-          .filter(
-            (dir): dir is string => typeof dir === "string" && dir.length > 0,
-          );
-        if (dirs.length > 0) return dirs;
-      }
-    } catch {
-      // Not running inside a VS Code extension host.
-    }
-    return [process.cwd()];
+  private openWorkspaceDirs(): readonly string[] {
+    const roots = this.options.workspaceRoots;
+    return typeof roots === "function" ? roots() : (roots ?? [process.cwd()]);
   }
 
-  private gitHeadIn(dir: string): string | null {
-    const now = Date.now();
-    const cached = this.cachedDirHeads.get(dir);
-    if (cached !== undefined && now - cached.at < 2_000) return cached.sha;
-    try {
-      const out = execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: dir,
-        encoding: "utf8",
-        timeout: 1000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      const sha = /^[0-9a-f]{40}$/.test(out) ? out : null;
-      this.cachedDirHeads.set(dir, { sha, at: now });
-      return sha;
-    } catch {
-      this.cachedDirHeads.set(dir, { sha: null, at: now });
-      return null;
+  private async refreshWorkspaceGit(dirs: readonly string[]): Promise<void> {
+    const now = (this.options.now ?? Date.now)();
+    const read = this.options.readGit ?? readGit;
+    const active = new Set(dirs);
+    for (const dir of this.workspaceGit.keys()) {
+      if (!active.has(dir)) this.workspaceGit.delete(dir);
     }
+    await Promise.all(
+      dirs.map((dir) => {
+        let entry = this.workspaceGit.get(dir);
+        if (!entry) {
+          entry = { checkout: null, expires: 0 };
+          this.workspaceGit.set(dir, entry);
+        }
+        if (entry.pending || entry.expires > now) return entry.pending;
+        const current = entry;
+        current.pending = Promise.resolve()
+          .then(async () => {
+            const [head, url] = await Promise.all([
+              read(dir, ["rev-parse", "HEAD"]),
+              read(dir, ["remote", "get-url", "origin"]),
+            ]);
+            if (this.workspaceGit.get(dir) !== current) return;
+            const sha = head && /^[0-9a-f]{40}$/.test(head) ? head : null;
+            const origin =
+              url
+                ?.split(/[/:]/)
+                .filter(Boolean)
+                .pop()
+                ?.replace(/\.git$/i, "")
+                .trim()
+                .toLowerCase() || null;
+            const changed =
+              !current.checkout ||
+              sha !== current.checkout.sha ||
+              origin !== current.checkout.origin;
+            current.checkout = { sha, origin };
+            current.expires =
+              (this.options.now ?? Date.now)() + WORKSPACE_GIT_TTL;
+            if (changed) this.options.onWorkspaceGitChanged?.();
+          })
+          .finally(() => {
+            delete current.pending;
+          });
+        return current.pending;
+      }),
+    );
   }
 
-  private gitRemoteNameIn(dir: string): string | null {
-    try {
-      const url = execFileSync("git", ["remote", "get-url", "origin"], {
-        cwd: dir,
-        encoding: "utf8",
-        timeout: 1000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      const segment = url.split(/[/:]/).filter(Boolean).pop();
-      if (!segment) return null;
-      return (
-        segment
-          .replace(/\.git$/i, "")
-          .trim()
-          .toLowerCase() || null
-      );
-    } catch {
-      return null;
-    }
+  private head(dir: string): string | null {
+    return this.workspaceGit.get(dir)?.checkout?.sha ?? null;
   }
 
-  private matchedWorkspaceDir(repoId: string, label: string): string | null {
-    const dirs = this.openWorkspaceDirs();
+  private matchedWorkspaceDir(
+    dirs: readonly string[],
+    repoId: string,
+    label: string,
+  ): string | undefined {
     const candidates = new Set(
-      [label, repoId]
-        .map((v) => v.trim().toLowerCase())
-        .filter((v) => v.length > 0),
+      [label, repoId].map((v) => v.trim().toLowerCase()),
     );
-    const matchedByDir = dirs.find(
-      (dir) =>
-        candidates.has(basename(dir).trim().toLowerCase()) &&
-        this.gitHeadIn(dir) !== null,
+    return (
+      dirs.find(
+        (dir) =>
+          this.head(dir) &&
+          candidates.has(this.workspaceGit.get(dir)?.checkout?.origin ?? ""),
+      ) ??
+      dirs.find(
+        (dir) =>
+          this.head(dir) && candidates.has(basename(dir).trim().toLowerCase()),
+      )
     );
-    if (matchedByDir) return matchedByDir;
-    const matchedByRemote = dirs.find((dir) => {
-      const remoteName = this.gitRemoteNameIn(dir);
-      return (
-        remoteName !== null &&
-        candidates.has(remoteName) &&
-        this.gitHeadIn(dir) !== null
-      );
-    });
-    return matchedByRemote ?? null;
   }
 
-  private workspaceHeadForRepo(repoId: string, label: string): string | null {
-    const matched = this.matchedWorkspaceDir(repoId, label);
-    if (matched) return this.gitHeadIn(matched);
-    const pinned = this.repoCommits.get(repoId);
-    if (pinned) return pinned;
-    for (const dir of this.openWorkspaceDirs()) {
-      const sha = this.gitHeadIn(dir);
-      if (sha) return sha;
-    }
-    return null;
+  private workspaceHeadForRepo(
+    dirs: readonly string[],
+    repoId: string,
+    label: string,
+  ): string | null {
+    const matched = this.matchedWorkspaceDir(dirs, repoId, label);
+    if (matched) return this.head(matched);
+    return (
+      this.repoCommits.get(repoId) ??
+      dirs.map((dir) => this.head(dir)).find(Boolean) ??
+      null
+    );
   }
 
   mentionIndex(): MentionIndex {
@@ -889,8 +899,15 @@ export class RpcTeamService implements TeamService {
       return { repos };
     }
     if (this.serverCapabilities.references) {
-      for (const repo of this.repos.values()) {
-        const commitSha = this.workspaceHeadForRepo(repo.repo_id, repo.label);
+      const dirs = this.openWorkspaceDirs();
+      void this.refreshWorkspaceGit(dirs);
+      const ready = dirs.every((dir) => this.workspaceGit.get(dir)?.checkout);
+      for (const repo of ready ? this.repos.values() : []) {
+        const commitSha = this.workspaceHeadForRepo(
+          dirs,
+          repo.repo_id,
+          repo.label,
+        );
         if (commitSha) {
           repos.push({
             repo_id: repo.repo_id,
@@ -921,11 +938,20 @@ export class RpcTeamService implements TeamService {
       return Promise.resolve(succeed([]));
     return this.guard(null, async () => {
       await this.identity();
-      const first = await this.client.searchPaths(input);
+      const dirs = this.openWorkspaceDirs();
+      await this.refreshWorkspaceGit(dirs);
+      const repo = this.repos.get(input.repo_id);
+      const matched =
+        repo && this.matchedWorkspaceDir(dirs, repo.repo_id, repo.label);
+      const sha = (matched && this.head(matched)) || input.commit_sha;
+      const first = await this.client.searchPaths({
+        ...input,
+        commit_sha: sha,
+      });
       if (first.state === "ok") {
         return first.matches.map((m) => ({
           repo_id: input.repo_id,
-          commit_sha: input.commit_sha,
+          commit_sha: sha,
           path: m.path,
           rank: m.rank,
         }));
@@ -933,13 +959,10 @@ export class RpcTeamService implements TeamService {
       // Only probe other workspace folders when no open folder matched this repo by name or remote
       // (an aliased checkout); never substitute another checkout when a matching checkout is on an
       // unpushed commit.
-      const repo = this.repos.get(input.repo_id);
-      if (repo && this.matchedWorkspaceDir(repo.repo_id, repo.label) !== null) {
-        return [];
-      }
-      const tried = new Set<string>([input.commit_sha]);
-      for (const dir of this.openWorkspaceDirs()) {
-        const candidateSha = this.gitHeadIn(dir);
+      if (matched) return [];
+      const tried = new Set<string>([sha]);
+      for (const dir of dirs) {
+        const candidateSha = this.head(dir);
         if (!candidateSha || tried.has(candidateSha)) continue;
         tried.add(candidateSha);
         const fallback = await this.client.searchPaths({

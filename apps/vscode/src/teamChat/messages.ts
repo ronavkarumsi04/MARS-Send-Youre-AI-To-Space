@@ -109,8 +109,15 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("searchPaths"),
-      repoId: id,
-      commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+      searchId: id,
+      repositories: z.array(
+        z
+          .object({
+            repoId: id,
+            commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+          })
+          .strict(),
+      ),
       query: z.string().max(256),
       limit: z.number().int().min(1).max(200).optional(),
     })
@@ -143,6 +150,17 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
       referenceIds: z.array(id).max(MAX_REFERENCES_PER_MESSAGE),
       idempotencyKey: id,
       previewSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("agentConfirmDraft"),
+      clientMessageId: id,
+      idempotencyKey: id,
+      previewSha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .nullable(),
     })
     .strict(),
   z.object({ type: z.literal("agentCancel"), requestId: id }).strict(),
@@ -223,6 +241,10 @@ export type TeamChatWebviewMessage = z.infer<
   typeof TeamChatWebviewMessageSchema
 >;
 
+export type AgentDraft = NonNullable<
+  Extract<TeamChatWebviewMessage, { type: "agentPreview" }>["draft"]
+>;
+
 export interface PendingSend {
   client_message_id: string;
   conversation_id: string;
@@ -284,7 +306,9 @@ export interface TeamChatViewState {
   } | null;
   mention_index: MentionIndex;
   path_search?: PathSearchMatch[];
+  path_search_id?: string | null;
   agent_preview?: AgentPreviewView | null;
+  agent_draft?: (AgentDraft & { conversationId: string }) | null;
   agent_request?: AgentRequestView | null;
   task_link_draft?: TaskLinkDraftView | null;
   task_link?: TaskLinkView | null;
