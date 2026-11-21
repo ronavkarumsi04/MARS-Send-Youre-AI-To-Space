@@ -100,11 +100,21 @@ function parseInitializeResult(raw: unknown): {
   return { protocolVersion, serverInfo, capabilities, droppedInstructions };
 }
 
-function parseToolsListResult(raw: unknown): McpToolDescriptor[] {
+const MAX_TOOLS_LIST_PAGES = 100;
+
+function compareCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function parseToolsListPage(raw: unknown): {
+  tools: McpToolDescriptor[];
+  nextCursor: string | undefined;
+} {
   if (!raw || typeof raw !== "object") {
     throw new Error("MCP tools/list returned non-object result");
   }
-  const toolsRaw = (raw as Record<string, unknown>).tools;
+  const obj = raw as Record<string, unknown>;
+  const toolsRaw = obj.tools;
   if (!Array.isArray(toolsRaw)) {
     throw new Error("MCP tools/list missing tools array");
   }
@@ -132,7 +142,36 @@ function parseToolsListResult(raw: unknown): McpToolDescriptor[] {
       ...(outputSchema ? { outputSchema } : {}),
     });
   }
-  return tools.sort((a, b) => a.name.localeCompare(b.name));
+  const nextCursor =
+    typeof obj.nextCursor === "string" && obj.nextCursor.length > 0
+      ? obj.nextCursor
+      : undefined;
+  return { tools, nextCursor };
+}
+
+async function listAllToolsPaginated(
+  fetchPage: (cursor: string | undefined) => Promise<unknown>,
+): Promise<McpToolDescriptor[]> {
+  const all: McpToolDescriptor[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOLS_LIST_PAGES; page++) {
+    const raw = await fetchPage(cursor);
+    const parsed = parseToolsListPage(raw);
+    all.push(...parsed.tools);
+    if (!parsed.nextCursor) {
+      break;
+    }
+    if (seenCursors.has(parsed.nextCursor)) {
+      throw new Error("MCP tools/list returned duplicate pagination cursor");
+    }
+    seenCursors.add(parsed.nextCursor);
+    cursor = parsed.nextCursor;
+    if (page === MAX_TOOLS_LIST_PAGES - 1) {
+      throw new Error("MCP tools/list exceeded maximum pagination depth");
+    }
+  }
+  return all.sort((a, b) => compareCodeUnit(a.name, b.name));
 }
 
 function parseToolCallResult(raw: unknown): RawMcpToolCallResult {
@@ -342,8 +381,9 @@ export class StdioMcpTransport implements McpTransportConnection {
   }
 
   async listTools(options?: McpRequestOptions): Promise<McpToolDescriptor[]> {
-    const raw = await this.sendRequest("tools/list", {}, options);
-    return parseToolsListResult(raw);
+    return listAllToolsPaginated((cursor) =>
+      this.sendRequest("tools/list", cursor ? { cursor } : {}, options),
+    );
   }
 
   async callTool(
@@ -566,8 +606,9 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async listTools(options?: McpRequestOptions): Promise<McpToolDescriptor[]> {
-    const raw = await this.sendRequest("tools/list", {}, options);
-    return parseToolsListResult(raw);
+    return listAllToolsPaginated((cursor) =>
+      this.sendRequest("tools/list", cursor ? { cursor } : {}, options),
+    );
   }
 
   async callTool(
