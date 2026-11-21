@@ -326,10 +326,11 @@ describe("@MARS invocations", () => {
     ],
     [" \t@mArS:summarize this", "summarize this"],
     ["@mars? What changed?", "What changed?"],
-    ["@MARS.Summarize the changes.", "Summarize the changes."],
+    ["@MARS. Summarize the changes.", "Summarize the changes."],
     ["Please @MARS summarize this", "Please summarize this"],
     ["\n @mArS? ", ""],
     ["@MARS", ""],
+    ["@MARS.", ""],
   ])("extracts the prompt from %j", (text, prompt) => {
     expect(parseMarsInvocation(text)).toEqual({ prompt });
   });
@@ -338,6 +339,7 @@ describe("@MARS invocations", () => {
     "Email dev@mars.example for details",
     "@MARSHALL, can you summarize?",
     "@MARS_TEAM can you summarize?",
+    "@mars.ops can you summarize?",
   ])("treats %j as an ordinary message", (text) => {
     expect(parseMarsInvocation(text)).toBeNull();
   });

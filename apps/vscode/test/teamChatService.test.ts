@@ -399,7 +399,7 @@ describe("RpcTeamService through the controller", () => {
       "@MARS, can you summarize the selected transport details?",
       " \t@mArS: summarize",
       "@mars? What changed?",
-      "@MARS.Summarize this",
+      "@MARS. Summarize this",
     ].entries()) {
       const clientMessageId = `unconfirmed_${index}`;
       await controller.handleMessage({
@@ -415,7 +415,7 @@ describe("RpcTeamService through the controller", () => {
       await controller.handleMessage({ type: "retrySend", clientMessageId });
       expect(server.messages).toHaveLength(before);
     }
-    const body = "@MARSHALL, please email dev@mars.example.";
+    const body = "@MARSHALL and @mars.ops, please email dev@mars.example.";
     await controller.handleMessage({
       type: "send",
       conversationId: group,
