@@ -71,6 +71,21 @@ function parsePositiveInt(
   return parsed;
 }
 
+function resolveCliCredentialFromEnv(refId: string): string | undefined {
+  const normalized = refId.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+  const prefixed = process.env[`MARS_MCP_CREDENTIAL_${normalized}`];
+  if (prefixed !== undefined && prefixed.length > 0) {
+    return prefixed;
+  }
+  if (/^[A-Z][A-Z0-9_]*$/.test(refId)) {
+    const direct = process.env[refId];
+    if (direct !== undefined && direct.length > 0) {
+      return direct;
+    }
+  }
+  return undefined;
+}
+
 async function openControlPlane(
   stateDir: string | undefined,
   workspaceRoots: string[] | undefined,
@@ -89,6 +104,11 @@ async function openControlPlane(
         project_ids: [projectId],
       },
     ],
+    credentialResolver: {
+      async resolve({ ref_id }) {
+        return resolveCliCredentialFromEnv(ref_id);
+      },
+    },
   });
 }
 
@@ -267,6 +287,12 @@ async function handleReview(
       ? permissions.map((p) => normalizePermission(p, evidence))
       : [
           ...defaultRemotePerms,
+          ...credentialBindings.map((b) =>
+            normalizePermission(
+              { capability: "credential.use", resource: b.ref_id },
+              evidence,
+            ),
+          ),
           ...evidence.tools.map((t) =>
             normalizePermission(
               { capability: "tool.invoke", resource: t.name },
