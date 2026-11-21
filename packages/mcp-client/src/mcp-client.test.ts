@@ -10,6 +10,7 @@ import {
   type Permission,
   sha256,
 } from "@mars/integration-trust";
+import { startStatefulMcpServer } from "./__fixtures__/stateful-http";
 import {
   createHostMcpControlPlane,
   defaultRequestContext,
@@ -1317,5 +1318,144 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
       target_origin: origin,
     });
     expect(out.content[0]?.text).toBe("authed-ok");
+  });
+
+  it("skips unresolved credentials and isolates and tears down identity-bound HTTP sessions", async () => {
+    let descriptorDrift = false;
+    const fixture = startStatefulMcpServer((identity) =>
+      descriptorDrift && identity === "Bearer secondary"
+        ? ["ping", "extra"]
+        : ["ping"],
+    );
+    activeServers.push(fixture.server);
+    const origin = fixture.server.url.origin;
+    const resolutions: string[] = [];
+    let onResolve:
+      | ((ref: string, grantId: string) => Promise<void>)
+      | undefined;
+    const cp = await createControlPlane({
+      credentialResolver: {
+        async resolve({ ref_id, target_origin, grant_id }) {
+          expect(target_origin).toBe(origin);
+          resolutions.push(ref_id);
+          await onResolve?.(ref_id, grant_id);
+          return ref_id === "missing" ? undefined : ref_id;
+        },
+      },
+    });
+    const ctx = makeCtx();
+    const refs = ["missing", "primary", "secondary"];
+    const config = makeConfig({
+      id: "stateful-server",
+      transport: { type: "streamable-http", url: `${origin}/mcp` },
+      permissions: [
+        { capability: "network.connect", resource: origin },
+        { capability: "tool.invoke", resource: "ping" },
+        ...refs.map((resource) => ({
+          capability: "credential.use" as const,
+          resource,
+        })),
+      ],
+      credential_bindings: refs.map((ref_id) => ({
+        ref_id,
+        allowed_origin: origin,
+      })),
+    });
+    const { grant } = await registerReviewApprove(cp, ctx, config);
+    expect(resolutions).toEqual(["missing", "primary", "missing", "primary"]);
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.deleted.map(({ identity }) => identity)).toEqual([
+      "Bearer primary",
+      "Bearer primary",
+    ]);
+
+    await cp.registry.upsert({
+      ...config,
+      credential_bindings: [
+        { ref_id: "unapproved", allowed_origin: origin },
+        ...config.credential_bindings,
+      ],
+    });
+    const admitted = await cp.loader.admitServer(ctx, config.id);
+    expect(admitted.credential_ref).toBe("primary");
+    const primaryId = [...fixture.sessions.keys()][0];
+    expect(primaryId).toBeDefined();
+    const invoke = (credential_ref?: string) =>
+      cp.loader.invokeTool(ctx, {
+        server_id: config.id,
+        tool: "ping",
+        input: {},
+        ...(credential_ref ? { credential_ref } : {}),
+      });
+    for (const ref of ["secondary", undefined, "primary", "secondary"]) {
+      expect((await invoke(ref)).content[0]?.text).toBe("pong");
+    }
+    expect(fixture.calls.map(({ identity }) => identity)).toEqual([
+      "Bearer secondary",
+      null,
+      "Bearer primary",
+      "Bearer secondary",
+    ]);
+    expect(fixture.calls[2]?.id).toBe(primaryId);
+    expect(fixture.calls[0]?.id).toBe(fixture.calls[3]?.id);
+    expect(fixture.sessions.size).toBe(3);
+    expect(resolutions).not.toContain("unapproved");
+
+    const openSessions = [...fixture.sessions].map(([id, identity]) => ({
+      id,
+      identity,
+    }));
+    await cp.loader.closeServer(config.id);
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.deleted.slice(-3)).toEqual(
+      expect.arrayContaining(openSessions),
+    );
+    expect(fixture.invalidSessionRequests).toBe(0);
+    expect(fixture.redirectRequests).toBe(0);
+
+    descriptorDrift = true;
+    await expect(invoke("secondary")).rejects.toMatchObject({ code: "drift" });
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.calls).toHaveLength(4);
+
+    const other = startStatefulMcpServer();
+    activeServers.push(other.server);
+    onResolve = async (_ref, grantId) => {
+      if (grantId !== "probe") return;
+      onResolve = undefined;
+      await cp.registry.upsert({
+        ...config,
+        transport: { type: "streamable-http", url: other.server.url.href },
+      });
+    };
+    await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
+      code: "endpoint_mismatch",
+    });
+    expect(other.sessions.size).toBe(0);
+    expect(other.deleted).toHaveLength(0);
+    expect(other.invalidSessionRequests).toBe(0);
+
+    descriptorDrift = false;
+    await cp.registry.upsert(config);
+    onResolve = async (ref, grantId) => {
+      if (ref !== "secondary" || grantId !== grant.grant_id) return;
+      await cp.admin.revoke(ctx, {
+        grant_id: grant.grant_id,
+        expected_revision: grant.revision,
+        proof: cp.signHostProof({
+          review_id: grant.review_id,
+          review_revision: grant.revision,
+          binding_sha256: grant.binding_sha256,
+          scope: grant.scope,
+          expires_at: grant.expires_at,
+          decision: "revoke",
+        }),
+      });
+    };
+    await expect(invoke("secondary")).rejects.toMatchObject({
+      code: "revoked",
+    });
+    expect(fixture.sessions.size).toBe(0);
+    expect(fixture.calls).toHaveLength(4);
   });
 });

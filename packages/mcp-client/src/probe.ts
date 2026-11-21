@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { RequestContext } from "@mars/contracts";
 import {
+  type AuthorizedArtifact,
   canonicalJSON,
   type EvidenceProbe,
   type Identity,
@@ -9,6 +10,7 @@ import {
   type SourceEvidence,
   sha256,
 } from "@mars/integration-trust";
+import { selectMcpAuthentication } from "./credentials";
 import type { McpServerRegistry } from "./registry";
 import {
   type McpCredentialResolver,
@@ -55,6 +57,10 @@ export interface McpEvidenceProbeOptions {
 
 export interface ObserveServerOptions {
   allowUnapprovedStdioProbe?: boolean;
+  authorization?: Pick<
+    AuthorizedArtifact,
+    "permissions" | "credential_bindings"
+  >;
 }
 
 async function hashFileOrSpec(
@@ -111,7 +117,7 @@ function buildToolEvidence(descriptor: McpServerDescriptor) {
   }));
 }
 
-function buildDescriptorHash(descriptor: McpServerDescriptor): string {
+export function buildDescriptorHash(descriptor: McpServerDescriptor): string {
   return sha256(
     canonicalJSON({
       protocolVersion: descriptor.protocolVersion,
@@ -127,17 +133,7 @@ function deriveStdioRevision(contentHash: string): string {
   return contentHash.slice(0, 40);
 }
 
-export function buildCredentialHeaders(
-  server: McpServerConfig,
-  secretValue: string,
-): Record<string, string> {
-  if (server.transport.type !== "streamable-http") {
-    throw new IntegrationTrustError("credential_denied");
-  }
-  const headerName = server.transport.credential_header ?? "Authorization";
-  const prefix = server.transport.credential_prefix ?? "Bearer ";
-  return { [headerName]: `${prefix}${secretValue}` };
-}
+export { buildCredentialHeaders } from "./credentials";
 
 export async function probeMcpServerDescriptor(
   server: McpServerConfig,
@@ -188,6 +184,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
   async observe(
     ctx: RequestContext,
     identity: Identity,
+    authorization?: ObserveServerOptions["authorization"],
   ): Promise<SourceEvidence> {
     if (identity.kind !== "mcp") {
       throw new IntegrationTrustError("evidence_unavailable");
@@ -196,7 +193,11 @@ export class McpEvidenceProbe implements EvidenceProbe {
     if (!server) {
       throw new IntegrationTrustError("evidence_unavailable");
     }
-    return this.observeServer(ctx, server);
+    return this.observeServer(
+      ctx,
+      server,
+      authorization ? { authorization } : undefined,
+    );
   }
 
   async observeServer(
@@ -210,27 +211,16 @@ export class McpEvidenceProbe implements EvidenceProbe {
       const canonicalOrigin = normalizeOrigin(
         new URL(server.transport.url).origin,
       );
-      let extraHeaders: Record<string, string> | undefined;
-      if (this.credentialResolver) {
-        const binding = server.credential_bindings.find(
-          (b) => normalizeOrigin(b.allowed_origin) === canonicalOrigin,
-        );
-        if (binding) {
-          const secretValue = await this.credentialResolver.resolve({
-            ref_id: binding.ref_id,
-            target_origin: canonicalOrigin,
-            server_id: server.id,
-            grant_id: "probe",
-          });
-          if (secretValue) {
-            extraHeaders = buildCredentialHeaders(server, secretValue);
-          }
-        }
-      }
+      const authentication = await selectMcpAuthentication(
+        server,
+        this.credentialResolver,
+        "probe",
+        options?.authorization,
+      );
       const descriptor = await probeMcpServerDescriptor(
         server,
         this.probeTimeoutMs,
-        extraHeaders,
+        authentication?.headers,
       );
       const tools = buildToolEvidence(descriptor);
       const descriptorSha = buildDescriptorHash(descriptor);

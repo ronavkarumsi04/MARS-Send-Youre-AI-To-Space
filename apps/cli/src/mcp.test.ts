@@ -519,7 +519,7 @@ describe("mars mcp CLI flow", () => {
     expect(result.content[0]?.text).toBe("echo:v2-ok");
   });
 
-  it("displays expired approved grants as expired rather than active in mars mcp list", async () => {
+  it("lists and dispatches against the latest approval even when it expires before an older one", async () => {
     const stateDir = await makeStateDir();
     const server = Bun.serve({
       port: 0,
@@ -562,40 +562,56 @@ describe("mars mcp CLI flow", () => {
       "--project",
       "proj-exp",
     ];
-    const reviewJson = await execMcpCli([
+    const reviewArgs = [
       "review",
       "exp-demo",
       "--url",
       `http://127.0.0.1:${server.port}/mcp`,
       ...common,
       "--json",
-    ]);
-    const { review } = JSON.parse(reviewJson) as {
-      review: { review_id: string };
+    ];
+    const approve = async (ttl: string) => {
+      const { review } = JSON.parse(await execMcpCli(reviewArgs)) as {
+        review: { review_id: string };
+      };
+      const { grant } = JSON.parse(
+        await execMcpCli([
+          "approve",
+          review.review_id,
+          "--ttl-ms",
+          ttl,
+          ...common,
+          "--json",
+        ]),
+      ) as { grant: { grant_id: string } };
+      return grant.grant_id;
     };
-    await execMcpCli([
-      "approve",
-      review.review_id,
-      "--ttl-ms",
-      "100",
-      ...common,
-    ]);
+    const older = await approve("60000");
+    expect(await execMcpCli(["test", "exp-demo", ...common])).toContain(
+      `grant=${older}`,
+    );
+    const newer = await approve("100");
 
     await Bun.sleep(150);
 
     const listText = await execMcpCli(["list", ...common]);
     expect(listText).toContain("exp-demo");
-    expect(listText).toContain("expired (grant=");
+    expect(listText).toContain(`expired (grant=${newer},`);
     expect(listText).not.toContain("active (grant=");
+    await expect(
+      execMcpCli(["test", "exp-demo", ...common]),
+    ).rejects.toMatchObject({ code: "expired" });
 
     const listJson = await execMcpCli(["list", ...common, "--json"]);
     const parsed = JSON.parse(listJson) as {
       servers: Array<{
         id: string;
-        grants: Array<{ state: string; expired: boolean }>;
+        grants: Array<{ grant_id: string; state: string; expired: boolean }>;
       }>;
     };
-    expect(parsed.servers[0]?.grants[0]?.state).toBe("approved");
-    expect(parsed.servers[0]?.grants[0]?.expired).toBe(true);
+    expect(parsed.servers[0]?.grants).toMatchObject([
+      { grant_id: older, state: "approved", expired: false },
+      { grant_id: newer, state: "approved", expired: true },
+    ]);
   });
 });

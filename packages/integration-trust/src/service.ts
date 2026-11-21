@@ -28,7 +28,11 @@ import {
 } from "./schemas";
 import type { TrustStore } from "./store";
 export interface EvidenceProbe {
-  observe(ctx: RequestContext, identity: Identity): Promise<SourceEvidence>;
+  observe(
+    ctx: RequestContext,
+    identity: Identity,
+    authorization?: Pick<Grant, "permissions" | "credential_bindings">,
+  ): Promise<SourceEvidence>;
 }
 export interface CallerCapabilities {
   permissions: Permission[];
@@ -39,6 +43,7 @@ export interface AuthorizedArtifact {
   binding_sha256: string;
   evidence: SourceEvidence;
   permissions: Permission[];
+  credential_bindings: CredentialBinding[];
 }
 export interface AuthorizedInvocation extends AuthorizedArtifact {
   tool: string;
@@ -179,13 +184,19 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     const age = clock().getTime() - Date.parse(e.observed_at);
     if (age > policy.maxEvidenceAgeMs || age < -60000) fail("stale_evidence");
   }
-  async function observe(ctx: RequestContext, id: Identity) {
+  async function observe(
+    ctx: RequestContext,
+    id: Identity,
+    authorization?: Pick<Grant, "permissions" | "credential_bindings">,
+  ) {
     let e: SourceEvidence;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       e = parseEvidence(
         await Promise.race([
-          Promise.resolve().then(() => probe.observe(ctx, frozenClone(id))),
+          Promise.resolve().then(() =>
+            probe.observe(ctx, frozenClone(id), authorization),
+          ),
           new Promise<never>((_, reject) => {
             timer = setTimeout(
               () => reject(new Error("evidence_unavailable")),
@@ -425,7 +436,14 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         )
       )
         fail("scanner_unavailable");
-      const current = await observe(ctx, r);
+      const current = await observe(
+        ctx,
+        r,
+        frozenClone({
+          permissions: r.permissions,
+          credential_bindings: r.credential_bindings,
+        }),
+      );
       if (
         binding(ctx.scope, current, r.permissions, r.credential_bindings) !==
         r.binding_sha256
@@ -550,7 +568,14 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         fail("no_grant");
       }
       if (clock().getTime() >= Date.parse(r.expires_at)) fail("expired");
-      const evidence = await observe(ctx, id.data);
+      const evidence = await observe(
+        ctx,
+        id.data,
+        frozenClone({
+          permissions: r.permissions,
+          credential_bindings: r.credential_bindings,
+        }),
+      );
       if (
         binding(ctx.scope, evidence, r.permissions, r.credential_bindings) !==
         r.binding_sha256
@@ -568,6 +593,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         binding_sha256: r.binding_sha256,
         evidence,
         permissions: r.permissions,
+        credential_bindings: r.credential_bindings,
       };
       if (invoke) {
         const req = invoke;
@@ -613,7 +639,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           ) ||
             !isSubset(
               [{ capability: "credential.use", resource: req.credential_ref }],
-              caller,
+              permissions,
             ))
         )
           fail("credential_denied");

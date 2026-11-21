@@ -182,20 +182,15 @@ async function handleList(
     return;
   }
   for (const item of items) {
-    const activeGrant = item.grants.findLast(
-      (g) => g.state === "approved" && !g.expired,
-    );
+    const latestGrant = item.grants.findLast((g) => g.state === "approved");
     const pendingReview = item.reviews.findLast((r) => r.state === "pending");
-    const expiredGrant = !activeGrant
-      ? item.grants.findLast((g) => g.state === "approved" && g.expired)
-      : undefined;
-    const status = activeGrant
-      ? `active (grant=${activeGrant.grant_id}, expires=${activeGrant.expires_at})`
+    const status = latestGrant
+      ? latestGrant.expired
+        ? `expired (grant=${latestGrant.grant_id}, expired_at=${latestGrant.expires_at})`
+        : `active (grant=${latestGrant.grant_id}, expires=${latestGrant.expires_at})`
       : pendingReview
         ? `pending_review (review=${pendingReview.review_id})`
-        : expiredGrant
-          ? `expired (grant=${expiredGrant.grant_id}, expired_at=${expiredGrant.expires_at})`
-          : "unapproved";
+        : "unapproved";
     out(`${item.id} [${item.transport}] ${item.target} — ${status}`);
   }
 }

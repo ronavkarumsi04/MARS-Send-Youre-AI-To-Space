@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import type { RequestContext } from "@mars/contracts";
 import {
   type AuthorizedArtifact,
@@ -7,7 +8,8 @@ import {
   IntegrationTrustError,
   type Permission,
 } from "@mars/integration-trust";
-import { buildCredentialHeaders } from "./probe";
+import { type McpAuthentication, selectMcpAuthentication } from "./credentials";
+import { buildDescriptorHash } from "./probe";
 import type { McpServerRegistry } from "./registry";
 import { sanitizeToolOutput } from "./sanitize";
 import {
@@ -27,6 +29,7 @@ export interface AdmittedMcpServer {
   readonly origin: string | null;
   readonly descriptor: McpServerDescriptor;
   readonly permissions: readonly Permission[];
+  readonly credential_ref?: string;
 }
 
 export interface InvokeMcpToolRequest {
@@ -39,6 +42,7 @@ export interface InvokeMcpToolRequest {
   credential_ref?: string;
   delegation_depth?: number;
   timeout_ms?: number;
+  signal?: AbortSignal;
 }
 
 export interface TrustedMcpLoaderOptions {
@@ -60,9 +64,6 @@ export interface TrustedMcpLoaderOptions {
 }
 
 interface ActiveConnection {
-  serverId: string;
-  grantId: string;
-  bindingSha256: string;
   transport: McpTransportConnection;
   descriptor: McpServerDescriptor;
   inFlight: Set<AbortController>;
@@ -93,57 +94,84 @@ export function createTrustedMcpLoader(
   const { gate, registry, credentialResolver, isGrantActive } = options;
   const revocationPollMs = options.revocationPollMs ?? 50;
   const defaultTimeoutMs = options.defaultTimeoutMs ?? 10_000;
-  const connections = new Map<string, ActiveConnection>();
+  const authenticationKey = randomBytes(32);
+  const connections = new Map<
+    string,
+    {
+      grantId: string;
+      bindingSha256: string;
+      contexts: Map<string, Promise<ActiveConnection>>;
+    }
+  >();
 
   async function teardownServer(serverId: string): Promise<void> {
-    const active = connections.get(serverId);
-    if (!active) return;
+    const server = connections.get(serverId);
+    if (!server) return;
     connections.delete(serverId);
-    for (const controller of active.inFlight) {
-      controller.abort();
-    }
-    active.inFlight.clear();
-    await active.transport.close().catch(() => {});
+    await Promise.allSettled(
+      [...server.contexts.values()].map(async (connection) => {
+        const active = await connection;
+        for (const controller of active.inFlight) controller.abort();
+        active.inFlight.clear();
+        await active.transport.close();
+      }),
+    );
   }
 
   async function openConnection(
     server: McpServerConfig,
     artifact: AuthorizedArtifact,
     timeoutMs: number,
-    extraHeaders?: Record<string, string>,
+    authentication?: McpAuthentication,
   ): Promise<ActiveConnection> {
-    const existing = connections.get(server.id);
+    let current = connections.get(server.id);
     if (
-      existing &&
-      existing.grantId === artifact.grant_id &&
-      existing.bindingSha256 === artifact.binding_sha256
+      current &&
+      (current.grantId !== artifact.grant_id ||
+        current.bindingSha256 !== artifact.binding_sha256)
     ) {
-      return existing;
+      void teardownServer(server.id);
+      current = undefined;
     }
-    if (existing) {
-      await teardownServer(server.id);
-    }
-
-    const transport = createMcpTransport(server.transport);
-    try {
-      const descriptor = await transport.initialize({
-        timeoutMs,
-        ...(extraHeaders ? { extraHeaders } : {}),
-      });
-      const active: ActiveConnection = {
-        serverId: server.id,
+    if (!current) {
+      current = {
         grantId: artifact.grant_id,
         bindingSha256: artifact.binding_sha256,
-        transport,
-        descriptor,
-        inFlight: new Set(),
+        contexts: new Map(),
       };
-      connections.set(server.id, active);
-      return active;
-    } catch (error) {
-      await transport.close().catch(() => {});
-      throw error;
+      connections.set(server.id, current);
     }
+    const contexts = current.contexts;
+    const key = authentication
+      ? createHmac("sha256", authenticationKey)
+          .update(JSON.stringify([authentication.ref, authentication.headers]))
+          .digest("hex")
+      : "anonymous";
+    const existing = contexts.get(key);
+    if (existing) return existing;
+    const transport = createMcpTransport(server.transport);
+    const pending = (async (): Promise<ActiveConnection> => {
+      try {
+        const descriptor = await transport.initialize({
+          timeoutMs,
+          ...(authentication ? { extraHeaders: authentication.headers } : {}),
+        });
+        if (
+          transport.transportType === "streamable-http" &&
+          buildDescriptorHash(descriptor) !==
+            artifact.evidence.endpoint?.descriptor_sha256
+        ) {
+          throw new IntegrationTrustError("drift");
+        }
+        return { transport, descriptor, inFlight: new Set() };
+      } catch (error) {
+        contexts.delete(key);
+        await transport.close().catch(() => {});
+        throw error;
+      }
+    })();
+    contexts.set(key, pending);
+    return pending;
   }
 
   function assertOriginMatch(
@@ -166,11 +194,11 @@ export function createTrustedMcpLoader(
     return serverOrigin;
   }
 
-  async function resolveOriginBoundHeaders(
+  async function resolveInvocationAuthentication(
     server: McpServerConfig,
     authorized: AuthorizedInvocation,
     serverOrigin: string | null,
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<McpAuthentication | undefined> {
     if (!authorized.credential_ref) return undefined;
     if (
       !serverOrigin ||
@@ -179,19 +207,17 @@ export function createTrustedMcpLoader(
     ) {
       throw new IntegrationTrustError("credential_denied");
     }
-    if (!credentialResolver) {
+    const authentication = await selectMcpAuthentication(
+      server,
+      credentialResolver,
+      authorized.grant_id,
+      authorized,
+      authorized.credential_ref,
+    );
+    if (!authentication) {
       throw new IntegrationTrustError("credential_denied");
     }
-    const value = await credentialResolver.resolve({
-      ref_id: authorized.credential_ref,
-      target_origin: serverOrigin,
-      server_id: server.id,
-      grant_id: authorized.grant_id,
-    });
-    if (!value) {
-      throw new IntegrationTrustError("credential_denied");
-    }
-    return buildCredentialHeaders(server, value);
+    return authentication;
   }
 
   return {
@@ -205,40 +231,24 @@ export function createTrustedMcpLoader(
             if (!server) {
               throw new IntegrationTrustError("evidence_unavailable");
             }
-            let admitHeaders: Record<string, string> | undefined;
-            if (
-              server.transport.type === "streamable-http" &&
-              credentialResolver
-            ) {
-              const serverOrigin = normalizeOrigin(
-                new URL(server.transport.url).origin,
-              );
-              const binding = server.credential_bindings.find(
-                (b) =>
-                  normalizeOrigin(b.allowed_origin) === serverOrigin &&
-                  artifact.permissions.some(
-                    (p) =>
-                      p.capability === "credential.use" &&
-                      p.resource === b.ref_id,
-                  ),
-              );
-              if (binding) {
-                const secretValue = await credentialResolver.resolve({
-                  ref_id: binding.ref_id,
-                  target_origin: serverOrigin,
-                  server_id: server.id,
-                  grant_id: artifact.grant_id,
-                });
-                if (secretValue) {
-                  admitHeaders = buildCredentialHeaders(server, secretValue);
-                }
-              }
+            const currentOrigin =
+              server.transport.type === "streamable-http"
+                ? normalizeOrigin(new URL(server.transport.url).origin)
+                : undefined;
+            if (currentOrigin !== artifact.evidence.endpoint?.origin) {
+              throw new IntegrationTrustError("endpoint_mismatch");
             }
+            const authentication = await selectMcpAuthentication(
+              server,
+              credentialResolver,
+              artifact.grant_id,
+              artifact,
+            );
             const active = await openConnection(
               server,
               artifact,
               defaultTimeoutMs,
-              admitHeaders,
+              authentication,
             );
             return frozenClone<AdmittedMcpServer>({
               server_id: server.id,
@@ -248,6 +258,7 @@ export function createTrustedMcpLoader(
               origin: active.transport.origin,
               descriptor: active.descriptor,
               permissions: [...artifact.permissions],
+              ...(authentication ? { credential_ref: authentication.ref } : {}),
             });
           },
         );
@@ -265,6 +276,7 @@ export function createTrustedMcpLoader(
     },
 
     async invokeTool(ctx, request) {
+      request.signal?.throwIfAborted();
       const server = await registry.get(request.server_id);
       const inferredOrigin =
         request.target_origin ??
@@ -318,19 +330,24 @@ export function createTrustedMcpLoader(
               throw new IntegrationTrustError("evidence_unavailable");
             }
             const serverOrigin = assertOriginMatch(currentServer, authorized);
-            const extraHeaders = await resolveOriginBoundHeaders(
+            const authentication = await resolveInvocationAuthentication(
               currentServer,
               authorized,
               serverOrigin,
             );
+            request.signal?.throwIfAborted();
             const timeoutMs = request.timeout_ms ?? defaultTimeoutMs;
             const active = await openConnection(
               currentServer,
               authorized,
               timeoutMs,
-              extraHeaders,
+              authentication,
             );
 
+            request.signal?.throwIfAborted();
+            if (isGrantActive && !(await isGrantActive(authorized.grant_id))) {
+              throw new IntegrationTrustError("revoked");
+            }
             const abortController = new AbortController();
             active.inFlight.add(abortController);
             let revokedMidFlight = false;
@@ -355,8 +372,9 @@ export function createTrustedMcpLoader(
                 (authorized.input ?? {}) as Record<string, unknown>,
                 {
                   timeoutMs,
-                  signal: abortController.signal,
-                  ...(extraHeaders ? { extraHeaders } : {}),
+                  signal: request.signal
+                    ? AbortSignal.any([abortController.signal, request.signal])
+                    : abortController.signal,
                 },
               );
 

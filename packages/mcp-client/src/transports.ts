@@ -548,6 +548,8 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
 
   private readonly config: StreamableHttpTransportConfig;
   private sessionId: string | null = null;
+  private sessionHeaders: Record<string, string> = {};
+  private initialized = false;
   private nextId = 1;
   private closed = false;
 
@@ -570,11 +572,11 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     }
 
     const headers: Record<string, string> = {
+      ...this.sessionHeaders,
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
       ...(this.sessionId ? { "Mcp-Session-Id": this.sessionId } : {}),
-      ...(options?.extraHeaders ?? {}),
     };
 
     const controller = new AbortController();
@@ -709,6 +711,11 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
   }
 
   async initialize(options?: McpRequestOptions): Promise<McpServerDescriptor> {
+    if (this.initialized) {
+      throw new Error("MCP Streamable HTTP transport already initialized");
+    }
+    this.initialized = true;
+    this.sessionHeaders = { ...options?.extraHeaders };
     const deadlineMs =
       options?.timeoutMs !== undefined
         ? Date.now() + options.timeoutMs
@@ -765,15 +772,20 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
     const sid = this.sessionId;
     this.sessionId = null;
     this.closed = true;
+    const headers = new Headers(this.sessionHeaders);
+    this.sessionHeaders = {};
     if (!sid) return;
-    await fetch(this.config.url, {
-      method: "DELETE",
-      headers: {
-        "Mcp-Session-Id": sid,
-        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
-      },
-      redirect: "manual",
-    }).catch(() => {});
+    headers.set("Mcp-Session-Id", sid);
+    headers.set("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
+    try {
+      const response = await fetch(this.config.url, {
+        method: "DELETE",
+        headers,
+        redirect: "error",
+        signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+      });
+      await response.body?.cancel();
+    } catch {}
   }
 }
 
