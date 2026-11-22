@@ -42,6 +42,79 @@ function button(doc: MiniDocument, text: string) {
   return result;
 }
 
+test("chat load waits for another process to release a brief SQLite write lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mars-history-busy-"));
+  try {
+    const file = join(dir, "chat.sqlite");
+    const original = { id: randomUUID(), title: "Saved", messages: [] };
+    await saveTurn(file, original, 0);
+    const writer = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+      const {DatabaseSync} = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec("BEGIN EXCLUSIVE"); console.log("locked");
+      setTimeout(() => {db.exec("COMMIT"); db.close()}, 150);
+    `,
+        file,
+      ],
+      { stdout: "pipe" },
+    );
+    try {
+      expect(
+        new TextDecoder().decode(
+          (await writer.stdout.getReader().read()).value,
+        ),
+      ).toContain("locked");
+      expect(await readHistory(file)).toEqual([original]);
+    } finally {
+      await writer.exited;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("task Refresh keeps keyboard focus while a separate offline banner offers Retry", async () => {
+  const doc = new MiniDocument();
+  const base = fakeBridge(await loadFixtureData());
+  let online = true;
+  const ctl = createController(
+    {
+      ...base,
+      "workbench.describe": (args) =>
+        online
+          ? base["workbench.describe"](args)
+          : Promise.resolve({
+              ok: false,
+              error: { kind: "not_connected", message: "Offline" },
+            }),
+    },
+    doc,
+    doc.root,
+    undefined,
+    {
+      request: async () => ({
+        ok: true,
+        configured: false,
+        canConfigure: false,
+        sessions: [],
+      }),
+    },
+  );
+  await ctl.load();
+  button(doc, "Tasks").click();
+  online = false;
+  const refresh = button(doc, "Refresh");
+  refresh.focus();
+  refresh.click();
+  await ctl.settled();
+  expect(button(doc, "Retry")).toBeDefined();
+  expect(doc.activeElement?.textContent).toBe("Refresh");
+});
+
 test("chat exposes a disconnected workbench with Retry and recovers its configured model", async () => {
   let online = false;
   const base = fakeBridge(await loadFixtureData());

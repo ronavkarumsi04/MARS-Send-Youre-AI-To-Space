@@ -331,7 +331,12 @@ export function createController(
     const keyed = (key: string) =>
       targets.find((element) => element.getAttribute(FOCUS_KEY) === key);
     const matched = keyed(focusKey);
-    const target = matched ?? keyed(HEADING_FOCUS_KEY);
+    const target =
+      matched ??
+      (focusKey === "workbench-retry"
+        ? (keyed("refresh") ?? keyed("assistant-input"))
+        : undefined) ??
+      keyed(HEADING_FOCUS_KEY);
     target?.focus();
     if (
       matched &&

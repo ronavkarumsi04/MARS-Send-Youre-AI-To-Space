@@ -1203,7 +1203,7 @@ export function renderShell(
     const retry = h(
       doc,
       "button",
-      { type: "button", class: "retry", "data-focus-key": REFRESH_FOCUS_KEY },
+      { type: "button", class: "retry", "data-focus-key": "workbench-retry" },
       "Retry",
     );
     retry.addEventListener("click", () => state.onRefresh?.());

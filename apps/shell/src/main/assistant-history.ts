@@ -26,6 +26,7 @@ export async function readHistory(path: string): Promise<AssistantSession[]> {
   // A read can require a write to roll back a hot journal after a crash.
   const db = new DatabaseSync(path);
   try {
+    db.exec("PRAGMA busy_timeout=2000");
     // A second instance may have just created the database for its first send.
     if (
       !db
