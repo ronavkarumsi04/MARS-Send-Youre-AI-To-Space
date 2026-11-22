@@ -7,7 +7,7 @@ import type {
   BrowserWorkerContext,
   BrowserWorkerInput,
 } from "@mars/browser";
-import { BrowserError } from "@mars/browser";
+import { BrowserError, BrowserStepSchema } from "@mars/browser";
 import type { ArtifactRef } from "@mars/contracts";
 import type { ModelGateway } from "@mars/research-worker";
 import {
@@ -301,6 +301,26 @@ test("secrets and private paths are never typed and are scrubbed from model-visi
   expect(engine.typed).toEqual([]);
   expect(prompts[0]).not.toContain("Welcome to Mars");
   expect(prompts[0]).toContain("[redacted]");
+});
+
+test("redacted navigation actions remain valid browser steps", async () => {
+  const worker = createBrowserWorker({
+    engine: createFakeBrowserEngine(),
+    fetch: fakeFetch,
+    resolveHost,
+    hostPrivateRoots: ["/srv/private"],
+  });
+  const memory = memoryContext();
+  memory.context.recordStep = async (step) => {
+    memory.steps.push(BrowserStepSchema.parse(step));
+  };
+  await worker.run(
+    input({ actions: [{ type: "navigate", url: "https://srv/private/page" }] }),
+    memory.context,
+  );
+  expect(memory.steps).toHaveLength(1);
+  expect(JSON.stringify(memory.steps)).not.toContain("/srv/private");
+  expect(memory.state.result).toBeDefined();
 });
 
 test("cancellation kills the owned browser mid-navigation", async () => {

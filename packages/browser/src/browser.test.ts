@@ -7,6 +7,7 @@ import { createTaskStore } from "@mars/tasks";
 import {
   BrowserError,
   type BrowserServiceOptions,
+  BrowserStepSchema,
   type BrowserWorker,
   type BrowserWorkerContext,
   type BrowserWorkerInput,
@@ -366,6 +367,35 @@ test("cancel aborts the running worker, frees its slot and settles the hold", as
     tokens: 3,
     usd: 0,
   });
+});
+
+test("stored redacted navigation actions remain schema-valid", async () => {
+  const { service } = await setup({
+    service: { hostPrivateRoots: ["/srv/private"] },
+    run: async (_input, context) => {
+      await context.recordStep({
+        index: 0,
+        action: { type: "navigate", url: "https://srv/private/page" },
+        outcome: "blocked",
+        detail: "",
+        url: "",
+        title: "",
+        artifacts: [],
+      });
+      await context.complete({
+        success: false,
+        summary: "blocked",
+        final_url: "",
+        artifacts: [],
+      });
+    },
+  });
+  const job = await service.submit(ctx(), request());
+  await settled(service, job.request_id);
+  const steps = await service.readResult(ctx(), job.request_id);
+  expect(steps.steps).toHaveLength(1);
+  expect(BrowserStepSchema.safeParse(steps.steps[0]).success).toBe(true);
+  expect(JSON.stringify(steps)).not.toContain("/srv/private");
 });
 
 test("evidence must be captured by the attempt, private paths are refused or scrubbed", async () => {

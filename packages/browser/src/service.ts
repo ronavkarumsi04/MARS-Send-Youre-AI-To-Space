@@ -789,7 +789,13 @@ export async function createBrowserService(
             parsed.data.action.type === "type"
               ? { ...parsed.data.action, text: scrub(parsed.data.action.text) }
               : parsed.data.action.type === "navigate"
-                ? { ...parsed.data.action, url: scrub(parsed.data.action.url) }
+                ? {
+                    ...parsed.data.action,
+                    url:
+                      scrub(parsed.data.action.url) === parsed.data.action.url
+                        ? parsed.data.action.url
+                        : "https://redacted.invalid/",
+                  }
                 : parsed.data.action.type === "done"
                   ? {
                       ...parsed.data.action,
