@@ -40,30 +40,38 @@ function welcome(): HTMLElement {
     "div",
     { class: "assistant-welcome" },
     h("div", { class: "orbit-mark" }),
-    h("p", { class: "eyebrow" }, "MISSION CONTROL  /  ASSISTANT"),
-    h("h1", {}, "What are we", h("span", {}, "working on?")),
+    h("p", { class: "eyebrow" }, "MARS / ASSISTANT"),
+    h("h1", {}, "Where should we start?"),
     h(
       "p",
       { class: "welcome-subtitle" },
-      "Explore an idea here, then hand a plan to your agent.",
+      "Explore an idea, plan a build, or talk through code.",
     ),
-    h(
-      "div",
-      { class: "suggestion-grid" },
-      ...suggestions.map(([title, prompt], index) => {
-        const suggestion = button(`${title} ↗`, `suggestion-${index}`, () => {
-          const input =
-            document.querySelector<HTMLTextAreaElement>(".assistant-input");
-          if (input) {
-            input.value = prompt;
-            input.dispatchEvent(new Event("input"));
-            input.focus();
-          }
-        });
-        suggestion.className = "suggestion";
-        return suggestion;
-      }),
-    ),
+  );
+}
+
+function quickStarts(): HTMLElement {
+  return h(
+    "div",
+    { class: "suggestion-grid" },
+    ...suggestions.map(([title, prompt], index) => {
+      const suggestion = button(title, `suggestion-${index}`, () => {
+        const input =
+          document.querySelector<HTMLTextAreaElement>(".assistant-input");
+        if (input) {
+          input.value = prompt;
+          input.dispatchEvent(new Event("input"));
+          input.focus();
+        }
+      });
+      suggestion.className = "suggestion";
+      const number = h("span", { class: "suggestion-number" }, `0${index + 1}`);
+      const arrow = h("span", { class: "suggestion-arrow" }, "↗");
+      number.setAttribute("aria-hidden", "true");
+      arrow.setAttribute("aria-hidden", "true");
+      suggestion.replaceChildren(number, document.createTextNode(title), arrow);
+      return suggestion;
+    }),
   );
 }
 
@@ -96,7 +104,11 @@ function turn(
   );
 }
 
-function composer(chat: Chat, actions: ChatActions): HTMLElement {
+function composer(
+  chat: Chat,
+  actions: ChatActions,
+  empty: boolean,
+): HTMLElement {
   const input = h("textarea", {
     class: "assistant-input",
     key: "assistant-input",
@@ -179,6 +191,7 @@ function composer(chat: Chat, actions: ChatActions): HTMLElement {
       consent,
       "Share this chat with OpenRouter",
     ),
+    empty ? quickStarts() : null,
   );
 }
 
@@ -203,6 +216,6 @@ export function renderChat(chat: Chat, actions: ChatActions): HTMLElement {
     "section",
     { class: `assistant-main${empty ? " is-empty" : ""}` },
     transcript,
-    composer(chat, actions),
+    composer(chat, actions, empty),
   );
 }
