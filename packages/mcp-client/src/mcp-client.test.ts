@@ -563,7 +563,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       transport: {
         type: "stdio",
         command: BUN_BIN,
-        args: ["run", STDIO_FIXTURE, "--mode-file", modeFile],
+        args: ["run", STDIO_FIXTURE, `--mode-file=${modeFile}`],
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -604,6 +604,16 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(oldGrant?.state).toBe("superseded");
     const pendingReview = inspected.reviews.find((r) => r.state === "pending");
     expect(pendingReview).toBeDefined();
+    // Only the live descriptor drifted; static artifact hashes are unchanged.
+    expect(pendingReview?.evidence.config_sha256).toBe(
+      firstGrant.evidence.config_sha256,
+    );
+    expect(pendingReview?.evidence.dependency_sha256).toBe(
+      firstGrant.evidence.dependency_sha256,
+    );
+    expect(pendingReview?.evidence.tools).not.toEqual(
+      firstGrant.evidence.tools,
+    );
 
     // Verify hash-chained audit log integrity
     const { state } = await cp.readState();
