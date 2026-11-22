@@ -31,6 +31,33 @@ function previewKind(language: string): "document" | "json" | "source" {
   return "source";
 }
 
+/** Validate JSON, but format its tokens rather than round-tripping JS values.
+ * That would round numbers and discard duplicate keys in untrusted files. */
+function formatJson(content: string): string {
+  JSON.parse(content);
+  const tokens =
+    content.match(/"(?:\\.|[^"\\])*"|[{}[\],:]|[^\s{}[\],:]+/g) ?? [];
+  let depth = 0;
+  let formatted = "";
+  const newline = () => `\n${"  ".repeat(depth)}`;
+  for (const [i, token] of tokens.entries()) {
+    if (token === "{" || token === "[") {
+      formatted += token;
+      // Pretty-printing must not amplify deeply nested/untrusted input.
+      if (++depth > 64) return content;
+      if (tokens[i + 1] !== (token === "{" ? "}" : "]")) formatted += newline();
+    } else if (token === "}" || token === "]") {
+      depth--;
+      if (tokens[i - 1] !== (token === "}" ? "{" : "[")) formatted += newline();
+      formatted += token;
+    } else if (token === ",") formatted += `,${newline()}`;
+    else if (token === ":") formatted += ": ";
+    else formatted += token;
+    if (formatted.length > 1_000_000) return content;
+  }
+  return formatted;
+}
+
 function preview(doc: ShellDocument, artifact: ChatArtifact): ShellElement {
   const kind = previewKind(artifact.language);
   if (kind === "document")
@@ -42,11 +69,7 @@ function preview(doc: ShellDocument, artifact: ChatArtifact): ShellElement {
     );
   if (kind === "json") {
     try {
-      return renderSource(
-        doc,
-        JSON.stringify(JSON.parse(artifact.content), null, 2),
-        "json",
-      );
+      return renderSource(doc, formatJson(artifact.content), "json");
     } catch {
       return h(
         doc,
