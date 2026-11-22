@@ -80,6 +80,8 @@ Server registrations are isolated by scope. If upgrading from a build with a sha
 
 Local reviews and launches use host-private package revisions on POSIX. Select a program folder to keep sibling imports or a virtual environment together, or protect a working folder for locally installed npx dependencies. Each argument must be classified explicitly: `text` passes it unchanged, `data` keeps it writable outside the package, `file` pins one code file, and `folder:<path>` pins its package. A dependency manifest is checked for drift; it does not pin all the code it references. System libraries, shebang interpreters, startup downloads and code resolved outside selected folders are not protected. This is not a sandbox against the account running MARS.
 
+A writable data file also reserves its SQLite companion names (`-wal`, `-shm`, and `-journal`) outside the package, even if those files do not yet exist. Keep program files under other names.
+
 ```sh
 # List registered servers, pending reviews, and active grants (empty by default)
 mars mcp list [--state-dir <dir>] [--owner <id>] [--project <id>] [--json]
