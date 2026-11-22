@@ -5799,6 +5799,44 @@ test("oversized instruction files are omitted whole and recorded, never truncate
   await api.close();
 });
 
+test("oversized launch metadata fails start cleanly without publishing launch state", async () => {
+  const f = await fixture();
+  const files = Array.from({ length: 64 }, (_, index) => ({
+    path: `${index}/${("a".repeat(250) + "/").repeat(4)}${"a".repeat(16)}`,
+    kind: "AGENTS.md" as const,
+    text: "x",
+    bytes: 1,
+    truncated: false,
+  }));
+  const api = await conventionsHost(f, {
+    instructions: {
+      text: "rules",
+      files,
+      omitted: 0,
+      total_bytes: 64,
+      sha256: createHash("sha256").update("rules").digest("hex"),
+    },
+  });
+  try {
+    await api.create(context(), task());
+    await expect(
+      api.start(context(), {
+        task_id: "task",
+        expected_revision: 0,
+        approvals: { read: true, write: false, execute: false },
+      }),
+    ).rejects.toMatchObject({ code: "too_large" });
+    expect((await api.inspect(context(), "task")).status).toBe("failed");
+    const session = required(f.sessions[0]);
+    await session.disposed;
+    expect(
+      await Bun.file(join(session.options.stateDir, "launch.json")).exists(),
+    ).toBe(false);
+  } finally {
+    await api.close();
+  }
+});
+
 test("an oversized slash-command expansion is rejected as too_large, not an internal error", async () => {
   const f = await fixture();
   const conventions: WorkbenchConventions = {

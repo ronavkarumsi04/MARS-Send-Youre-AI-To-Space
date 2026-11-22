@@ -67,6 +67,14 @@ export const launchSchema = z
   })
   .strict();
 export type Launch = z.infer<typeof launchSchema>;
+const MAX_LAUNCH_BYTES = 128 * 1024;
+
+function serializeLaunch(launch: Launch): string {
+  const serialized = JSON.stringify(launchSchema.parse(launch));
+  if (Buffer.byteLength(serialized, "utf8") > MAX_LAUNCH_BYTES)
+    throw new WorkbenchError("too_large");
+  return serialized;
+}
 
 /** Where a host keeps per-task private state: its state root and scope. */
 export interface LaunchLocation {
@@ -109,7 +117,11 @@ export async function readLaunch(
   );
   try {
     const info = await file.stat();
-    if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 128 * 1024)
+    if (
+      !info.isFile() ||
+      (info.mode & 0o077) !== 0 ||
+      info.size > MAX_LAUNCH_BYTES
+    )
       throw new WorkbenchError("internal_error");
     const value = launchSchema.parse(JSON.parse(await file.readFile("utf8")));
     if (value.repository_map) {
@@ -188,6 +200,7 @@ export async function writeLaunch(
   task: Task,
   launch: Launch,
 ): Promise<void> {
+  const serialized = serializeLaunch(launch);
   const dir = taskStateDir(location, task.task_id);
   if ((await realpath(dir)) !== dir || ((await stat(dir)).mode & 0o077) !== 0)
     throw new WorkbenchError("internal_error");
@@ -204,7 +217,7 @@ export async function writeLaunch(
   );
   try {
     try {
-      await file.writeFile(JSON.stringify(launchSchema.parse(launch)));
+      await file.writeFile(serialized);
       await file.sync();
     } finally {
       await file.close();
@@ -220,6 +233,7 @@ export async function rewriteLaunch(
   task: Task,
   launch: Launch,
 ): Promise<void> {
+  const serialized = serializeLaunch(launch);
   const dir = taskStateDir(location, task.task_id);
   if ((await realpath(dir)) !== dir || ((await stat(dir)).mode & 0o077) !== 0)
     throw new WorkbenchError("internal_error");
@@ -233,7 +247,7 @@ export async function rewriteLaunch(
     0o600,
   );
   try {
-    await file.writeFile(JSON.stringify(launchSchema.parse(launch)));
+    await file.writeFile(serialized);
   } finally {
     await file.close();
   }
