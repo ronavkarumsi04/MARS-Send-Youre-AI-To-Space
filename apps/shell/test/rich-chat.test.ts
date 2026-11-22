@@ -4,12 +4,15 @@ import {
   type AssistantViewState,
   renderAssistant,
 } from "../src/renderer/assistant-view";
+import { createController } from "../src/renderer/controller";
+import type { ShellElement } from "../src/renderer/dom";
 import {
   chatArtifacts,
   parseMessage,
   renderMarkdown,
 } from "../src/renderer/rich-content";
 import { findAll, MiniDocument, type MiniElement } from "./mini-dom";
+import { fakeBridge, loadFixtureData } from "./test-utils";
 
 const source =
   "## Launch plan\n\nBuild a **small, useful** first version with `Bun`.\n\n1. Explore the repo\n2. Ship a vertical slice\n\n| Phase | Outcome |\n| --- | --- |\n| Build | Working chat |\n\n```typescript src/launch.ts\nexport const launch = true;\n```\n\n```markdown plan.md\n# Launch checklist\n\n- Test the flow\n- Review the diff\n```";
@@ -163,4 +166,69 @@ test("artifact preview does not run code, source is exact, and selection has rec
     mode: "source",
   }) as MiniElement;
   expect(raw.textContent).toContain(document.content);
+});
+
+test("artifact toolbar round-trip retains the last visible chat scroll and returns to its trigger", async () => {
+  const doc = new MiniDocument();
+  const ctl = createController(
+    fakeBridge(await loadFixtureData()),
+    doc,
+    doc.root,
+    undefined,
+    {
+      request: async () => ({
+        ok: true,
+        configured: false,
+        canConfigure: false,
+        workspace: "fixture",
+        sessions: [
+          {
+            id: "chat",
+            title: "Saved",
+            messages: [{ role: "assistant", content: source }],
+          },
+        ],
+      }),
+    },
+  );
+  await ctl.load();
+  const field = (key: string) => {
+    const el = findAll(
+      doc.root,
+      (item) => item.getAttribute("data-focus-key") === key,
+    )[0];
+    if (!el) throw new Error(`Missing ${key}`);
+    return el;
+  };
+  const transcript = () =>
+    findAll(
+      doc.root,
+      (el) => el.getAttribute("data-chat-scroll") !== null,
+    )[0] as ShellElement;
+  Object.assign(transcript(), {
+    clientHeight: 500,
+    scrollHeight: 2000,
+    scrollTop: 120,
+  });
+  field("artifacts-toggle").focus();
+  field("artifacts-toggle").click();
+  // A narrow layout hides the still-mounted conversation. Hidden metrics must
+  // not replace its last visible position during a preview/source rerender.
+  Object.assign(transcript(), {
+    clientHeight: 0,
+    scrollHeight: 0,
+    scrollTop: 0,
+  });
+  field("artifact-mode:source").click();
+  Object.assign(transcript(), {
+    clientHeight: 0,
+    scrollHeight: 0,
+    scrollTop: 0,
+  });
+  field("artifact-close").click();
+  expect(transcript().scrollTop).toBe(120);
+  expect(doc.activeElement?.getAttribute("data-focus-key")).toBe(
+    "artifacts-toggle",
+  );
+  ctl.dispose();
 });

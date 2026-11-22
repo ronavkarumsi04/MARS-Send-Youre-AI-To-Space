@@ -537,6 +537,13 @@
 .artifact-canvas .source-toolbar {
   display: none;
 }
+.artifact-canvas.is-source .source-block {
+  overflow: visible;
+  min-width: max-content;
+}
+.artifact-canvas.is-source .source-code {
+  overflow: visible;
+}
 .artifact-note {
   padding: 0 20px;
   font-size: 11px;
