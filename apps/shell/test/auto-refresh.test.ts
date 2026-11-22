@@ -77,6 +77,7 @@ test("auto-refresh preserves unsubmitted Team Chat search text, focus, and caret
     timers.advance(3000);
     await controller.settled();
     const refreshed = search();
+    if (!refreshed) throw new Error("refreshed search input missing");
     expect(refreshed).not.toBe(input);
     expect(refreshed?.value).toBe("unfinished search");
     expect(doc.activeElement).toBe(refreshed);
