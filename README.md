@@ -51,6 +51,23 @@ The installer file is local setup tooling, not product source. Bun's bundled pla
 
 Lifecycle scripts stay disabled: optional `onnxruntime-node` and `protobufjs` postinstalls are **not required by these probes**. Voice/embedding/transformer functionality is untested; do not broadly trust dependencies to enable it.
 
+### Optional Python optimization worker
+
+The real GEPA worker tests, including the reflection-prompt scrubbing test, skip
+when `packages/optimization/python/.venv` is missing. The remaining offline
+checks require no Python worker. To include those tests, install
+[uv](https://docs.astral.sh/uv/getting-started/installation/) and run from the
+repository root:
+
+```sh
+uv venv --python 3.12 packages/optimization/python/.venv
+uv pip install --python packages/optimization/python/.venv/bin/python -r packages/optimization/python/requirements.lock
+bun test packages/optimization/src/optimization.test.ts
+```
+
+This separate worker environment is optional and does not configure a model
+provider or enable paid requests.
+
 ## Commands
 
 | Command | Purpose |

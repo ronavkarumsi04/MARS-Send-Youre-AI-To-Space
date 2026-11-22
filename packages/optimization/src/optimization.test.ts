@@ -922,49 +922,55 @@ describe("reservations and stalled backends", () => {
     expect(Date.now() - began).toBeLessThan(300 + DRAIN_GRACE_MS + 3000);
   }, 20_000);
 
-  test("reflection prompts are scrubbed before reaching the responder", async () => {
-    const SECRET = "api_key=supersecretvalue99";
-    const root = await newRoot();
-    const artifacts = createMemoryArtifactStore();
-    const backend = createFixtureScoringBackend({
-      score: keywordScore([KEYWORD]),
-    });
-    const reflection = createScriptedReflectionResponder(() => REFLECTION_TEXT);
-    const service = createOptimizationService({
-      rootDir: root,
-      backend,
-      backendId: backend.id,
-      reflection,
-      artifacts,
-      launcher: createPythonWorkerLauncher(),
-    });
-    const put = (value: unknown) =>
-      artifacts.put(
-        context,
-        new TextEncoder().encode(JSON.stringify(value)),
-        "application/json",
+  workerTest(
+    "reflection prompts are scrubbed before reaching the responder",
+    async () => {
+      const SECRET = "api_key=supersecretvalue99";
+      const root = await newRoot();
+      const artifacts = createMemoryArtifactStore();
+      const backend = createFixtureScoringBackend({
+        score: keywordScore([KEYWORD]),
+      });
+      const reflection = createScriptedReflectionResponder(
+        () => REFLECTION_TEXT,
       );
-    const reg = registration();
-    const targetId = await service.registerTarget(
-      context,
-      await put({
-        ...reg,
-        components: { system_prompt: `${SEED} Use ${SECRET}.` },
-      }),
-    );
-    const manifest = await put({
-      schema: PROPOSAL_REQUEST_SCHEMA,
-      max_metric_calls: 12,
-    });
-    const job = await service.propose(context, targetId, manifest, budget);
-    const finished = await service.waitForJob(context, job.job_id);
-    expect(finished.status).toBe("completed");
-    expect(reflection.prompts.length).toBeGreaterThan(0);
-    for (const prompt of reflection.prompts) {
-      expect(prompt).not.toContain("supersecretvalue99");
-      expect(prompt).toContain("[redacted]");
-    }
-  }, 60_000);
+      const service = createOptimizationService({
+        rootDir: root,
+        backend,
+        backendId: backend.id,
+        reflection,
+        artifacts,
+        launcher: createPythonWorkerLauncher(),
+      });
+      const put = (value: unknown) =>
+        artifacts.put(
+          context,
+          new TextEncoder().encode(JSON.stringify(value)),
+          "application/json",
+        );
+      const reg = registration();
+      const targetId = await service.registerTarget(
+        context,
+        await put({
+          ...reg,
+          components: { system_prompt: `${SEED} Use ${SECRET}.` },
+        }),
+      );
+      const manifest = await put({
+        schema: PROPOSAL_REQUEST_SCHEMA,
+        max_metric_calls: 12,
+      });
+      const job = await service.propose(context, targetId, manifest, budget);
+      const finished = await service.waitForJob(context, job.job_id);
+      expect(finished.status).toBe("completed");
+      expect(reflection.prompts.length).toBeGreaterThan(0);
+      for (const prompt of reflection.prompts) {
+        expect(prompt).not.toContain("supersecretvalue99");
+        expect(prompt).toContain("[redacted]");
+      }
+    },
+    60_000,
+  );
 });
 
 describe("evaluate bounds", () => {
