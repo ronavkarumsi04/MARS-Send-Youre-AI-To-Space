@@ -108,7 +108,30 @@ export function createController(
   doc: ShellDocument,
   root: ShellElement,
   teamChat?: TeamChatBridgeApi,
+  options: {
+    scheduleRefresh?: (callback: () => void, delayMs: number) => () => void;
+  } = {},
 ) {
+  const scheduleRefresh =
+    options.scheduleRefresh ??
+    ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => clearTimeout(timer);
+    });
+  let disposed = false;
+  let cancelRefresh: (() => void) | undefined;
+  let refreshDelayMs = 3000;
+  let pollingTaskId: string | undefined;
+  const trackPollingTask = (task: Task | undefined) => {
+    pollingTaskId =
+      task?.status === "pending" || task?.status === "running"
+        ? task.task_id
+        : undefined;
+  };
+  const clearRefresh = () => {
+    cancelRefresh?.();
+    cancelRefresh = undefined;
+  };
   let selectedId: string | undefined;
   let selectionGeneration = 0;
   let searchGeneration = 0;
@@ -149,6 +172,7 @@ export function createController(
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
   const render = () => {
+    if (disposed) return;
     const active = doc.activeElement;
     const focusKey = active?.getAttribute(FOCUS_KEY) ?? null;
     const selectionStart =
@@ -1203,6 +1227,7 @@ export function createController(
         tasks.find((task) => task.task_id === selectedId) ?? tasks[0];
       if (selectedId !== selected?.task_id) selectionGeneration++;
       selectedId = selected?.task_id;
+      trackPollingTask(selected);
       if (!selected) {
         state = {
           describe: described,
@@ -1212,11 +1237,12 @@ export function createController(
           onRefresh: () => void load(),
         };
         render();
-        return;
+        return true;
       }
       const inspected = await value(
         bridge["tasks.inspect"]({ task_id: selected.task_id }),
       );
+      if (selectedId === inspected.task_id) trackPollingTask(inspected);
       const [verification, diff, evidence, events] = await Promise.all([
         optionalValue(() =>
           value(bridge["tasks.verification"]({ task_id: selected.task_id })),
@@ -1371,6 +1397,8 @@ export function createController(
           selectionGeneration++;
           searchGeneration++;
           selectedId = taskId;
+          trackPollingTask(state.tasks.find((task) => task.task_id === taskId));
+          refreshDelayMs = 3000;
           patchExport = { busy: false };
           launch = createInitialLaunch();
           teamState = { ...teamState, open: false };
@@ -1387,24 +1415,38 @@ export function createController(
       if (!events.ok) nextState.eventsError = events.error;
       state = nextState;
       render();
+      return true;
     } catch (error) {
       displayError(
         error instanceof Error ? error.message : "Workbench is unavailable.",
       );
+      return false;
     }
   };
 
   const load = () => {
+    if (disposed) return Promise.resolve();
+    clearRefresh();
     loadRequested = true;
     if (!loadPromise) {
       loadPromise = (async () => {
-        while (loadRequested) {
+        while (loadRequested && !disposed) {
           loadRequested = false;
-          await loadOnce();
+          const success = await loadOnce();
+          refreshDelayMs = success
+            ? 3000
+            : Math.min(refreshDelayMs * 2, 30_000);
         }
       })().finally(() => {
         loadPromise = undefined;
+        if (disposed) return;
         if (loadRequested) void load();
+        else if (pollingTaskId && pollingTaskId === selectedId) {
+          cancelRefresh = scheduleRefresh(() => {
+            cancelRefresh = undefined;
+            void load();
+          }, refreshDelayMs);
+        }
       });
     }
     return loadPromise;
@@ -1414,5 +1456,11 @@ export function createController(
     while (loadPromise) await loadPromise;
   };
 
-  return { load, settled };
+  const dispose = () => {
+    disposed = true;
+    loadRequested = false;
+    clearRefresh();
+  };
+
+  return { load, settled, dispose };
 }
