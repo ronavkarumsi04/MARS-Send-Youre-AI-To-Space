@@ -12,6 +12,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createBridge } from "../src/main/bridge";
 import { startLocalWorkbench } from "../src/main/local-workbench";
@@ -241,7 +242,8 @@ const expectedBun = (await readFile(join(repo, ".bun-version"), "utf8")).trim();
 if (Bun.version !== expectedBun)
   throw new Error(`Use Bun ${expectedBun} to package MARS.`);
 await mkdir(output, { recursive: true });
-const stage = await mkdtemp(join(shell, "dist", ".desktop-"));
+// Stage outside the checkout so missing dependencies cannot resolve from its node_modules.
+const stage = await mkdtemp(join(tmpdir(), "mars-desktop-"));
 try {
   await (process.platform === "darwin"
     ? packageMac(stage)
