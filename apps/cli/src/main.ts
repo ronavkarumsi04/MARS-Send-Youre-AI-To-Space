@@ -361,7 +361,7 @@ try {
       ),
       limitations: [
         "Initialization probe only; no agent task or model request was run.",
-        "Live-provider and real IDE workbench acceptance remain unverified; memory and learning (skills plus proposal-only background review) are implemented with offline evidence only; training is not implemented.",
+        "Live-provider and real IDE workbench acceptance remain unverified; memory and learning (skills plus proposal-only background review) are implemented with offline evidence only; training is implemented and offline-verified only, with one tiny CPU LoRA plumbing run on a synthetic fixture; QLoRA remains unverified.",
         "Background research runs only when mars serve is started with --research-search; no live search provider or model run has been verified.",
         "Background browser tasks run only when mars serve is started with --browser-chromium; no live browsing or planner model run has been verified.",
         "OmniRoute is an optional provider target enabled by mars serve --omniroute; the doctor probe is one GET /v1/models and no model request. No live OmniRoute or upstream provider call has been verified; catalog quotas are upstream approximations.",
