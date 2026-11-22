@@ -76,7 +76,7 @@ export class SkillsController {
         busy: null,
         notice: {
           kind: "info",
-          text: "Connect to a MARS server in the Tasks view first.",
+          text: "Connect to a MARS server from Workbench Settings or Agent tasks first.",
         },
       });
       return;

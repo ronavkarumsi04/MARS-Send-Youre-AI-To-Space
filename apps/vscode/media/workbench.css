@@ -1,3 +1,6 @@
+@import url("./workspace-tokens.css");
+@import url("./workspace.css");
+
 body {
   padding: 0 8px 16px;
   color: var(--vscode-foreground);

@@ -1,0 +1,493 @@
+@font-face {
+  font-family: "Commit Mono";
+  src: url("./CommitMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+body:has(.workspace-rail) {
+  margin: 0;
+  padding: 0;
+  background: var(--page);
+}
+
+#app:has(.workspace-rail) {
+  display: grid;
+  grid-template-columns: minmax(156px, 21%) minmax(0, 1fr);
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--page);
+  font:
+    13px / 1.45 system-ui,
+    sans-serif;
+}
+
+#app:has(.workspace-rail) * {
+  box-sizing: border-box;
+}
+
+#app:has(.workspace-rail) :is(button, textarea, summary):focus-visible {
+  outline-offset: 3px;
+}
+
+#app:has(.workspace-rail) :is(button, input, textarea) {
+  border-radius: var(--radius);
+}
+
+.workspace-rail {
+  min-width: 0;
+  padding: 16px;
+  background: var(--card);
+  border-right: 1px solid var(--divider);
+}
+
+.workspace-brand {
+  margin: 0 0 16px;
+  color: var(--accent);
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.workspace-nav,
+.workspace-history {
+  display: grid;
+  gap: 4px;
+}
+
+.workspace-history {
+  min-width: 0;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.workspace-rail button.secondary {
+  min-width: 0;
+  overflow: hidden;
+  background: transparent;
+  border-color: transparent;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-rail button[aria-current="page"],
+.workspace-rail button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--selected);
+  border-color: var(--divider);
+}
+
+.chat-history {
+  max-height: 45vh;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.chat-history summary,
+.eyebrow,
+.mode-badge,
+.extension-state {
+  font: 400 10px / 1.5 var(--mono);
+  letter-spacing: 0.06em;
+}
+
+.chat-history summary {
+  padding: 8px 4px;
+  color: var(--quiet);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.chat-history button {
+  display: block;
+  width: 100%;
+}
+
+#app:has(.workspace-rail) button {
+  min-height: 28px;
+  padding: 5px 10px;
+}
+
+.workspace-page {
+  min-width: 0;
+  height: 100vh;
+  overflow: auto;
+}
+
+.page-chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 54px;
+  padding: 0 var(--space);
+  border-bottom: 1px solid var(--divider);
+}
+
+.breadcrumb {
+  display: flex;
+  min-width: 0;
+  gap: 9px;
+  color: var(--quiet);
+  font-size: 12px;
+}
+
+.breadcrumb strong {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-badge,
+.extension-state {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  color: var(--accent);
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+}
+
+.assistant-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.assistant-scroll {
+  flex: 1;
+  min-height: 190px;
+  overflow: auto;
+  padding: 20px max(var(--space), calc((100% - 740px) / 2));
+}
+
+.is-empty .assistant-scroll {
+  display: flex;
+  align-items: safe center;
+}
+
+.assistant-welcome {
+  position: relative;
+  width: 100%;
+  padding: 10px 0;
+}
+
+.orbit-mark {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 46%;
+  height: 192px;
+  pointer-events: none;
+  background: url("./orbit.svg") center / contain no-repeat;
+  filter: var(--orbit-art-filter);
+}
+
+.assistant-welcome :is(.eyebrow, h1, .welcome-subtitle) {
+  position: relative;
+  max-width: 66%;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  color: var(--accent);
+  letter-spacing: 0.12em;
+}
+
+.assistant-welcome h1,
+.workspace-content h1 {
+  margin: 0;
+  font-size: clamp(26px, 4.2vw, 44px);
+  font-weight: 450;
+  letter-spacing: -0.045em;
+  line-height: 1.16;
+}
+
+.assistant-welcome h1 span {
+  display: block;
+  color: var(--accent);
+}
+
+.welcome-subtitle {
+  margin: 14px 0 24px;
+  color: var(--quiet);
+  line-height: 1.6;
+}
+
+.suggestion-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#app:has(.workspace-rail) .suggestion {
+  padding: 10px;
+  color: var(--quiet);
+  background: var(--surface);
+  text-align: left;
+  font-size: 11px;
+}
+
+#app:has(.workspace-rail) .suggestion:hover {
+  color: var(--text);
+  border-color: var(--edge);
+}
+
+.assistant-compose-wrap {
+  width: min(calc(100% - 2 * var(--space)), 740px);
+  margin: 0 auto;
+  padding: 8px 0 14px;
+}
+
+.assistant-composer,
+.connect-callout,
+.key-help,
+.extension-library,
+.extension-category {
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.assistant-composer {
+  padding: 12px;
+  border-color: var(--edge);
+  border-radius: 14px;
+}
+
+.assistant-composer:focus-within {
+  border-color: var(--accent);
+}
+
+#app:has(.workspace-rail) .assistant-input {
+  display: block;
+  min-height: 64px;
+  max-height: 180px;
+  padding: 0;
+  outline: none;
+  border: 0;
+  background: transparent;
+  resize: vertical;
+}
+
+.assistant-input::placeholder {
+  color: var(--quiet);
+}
+
+.assistant-composer-tools,
+.connect-callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.assistant-composer-tools {
+  margin-top: 9px;
+  font-size: 11px;
+}
+
+.composer-mode,
+.thinking {
+  color: var(--accent);
+}
+
+.composer-model {
+  margin-left: auto;
+  color: var(--quiet);
+}
+
+.connect-callout {
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+}
+
+.connect-callout p,
+.chat-consent,
+.extensions-note {
+  margin: 4px 0 0;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.chat-consent {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-consent input {
+  accent-color: var(--accent);
+}
+
+.chat-error {
+  color: var(--error);
+}
+
+.assistant-message {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.message-avatar {
+  display: grid;
+  flex: 0 0 28px;
+  place-items: center;
+  height: 28px;
+  color: var(--accent);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius);
+}
+
+.message-user .message-avatar {
+  color: var(--quiet);
+  background: var(--selected);
+}
+
+.message-body {
+  min-width: 0;
+}
+
+.message-author {
+  margin: 3px 0 7px;
+  font-weight: 600;
+}
+
+.message-content {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.7;
+}
+
+.workspace-content {
+  max-width: 850px;
+  margin: 0 auto;
+  padding: var(--space);
+}
+
+.workspace-content h1 {
+  font-size: clamp(24px, 3.5vw, 34px);
+}
+
+.model-settings {
+  max-width: 620px;
+}
+
+.key-help,
+.extension-library,
+.extension-category {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+}
+
+.key-help p:not(.eyebrow, .chat-error),
+.extension-library p,
+.extension-category p {
+  margin: 5px 0 8px;
+  color: var(--quiet);
+  font-size: 12px;
+}
+
+.key-help .panel {
+  margin-bottom: 10px;
+}
+
+.extension-category {
+  display: flex;
+  gap: 10px;
+}
+
+.extension-icon {
+  display: grid;
+  flex: 0 0 30px;
+  height: 30px;
+  place-items: center;
+  color: var(--accent);
+  background: var(--card);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius);
+}
+
+@media (max-width: 620px) {
+  #app:has(.workspace-rail) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .workspace-rail {
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .workspace-brand {
+    margin: 0 0 4px;
+  }
+
+  .workspace-nav,
+  .workspace-history {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: start;
+  }
+
+  .workspace-history {
+    margin: 4px 0 0;
+    padding: 0;
+    border: 0;
+  }
+
+  #app:has(.workspace-rail) .workspace-nav button {
+    padding: 4px 5px;
+    font-size: 11px;
+  }
+
+  .chat-history {
+    flex: 1 1 140px;
+    max-width: 100%;
+    max-height: 24vh;
+  }
+
+  .workspace-page {
+    height: auto;
+    overflow: visible;
+  }
+
+  .workspace-toolbar {
+    height: 42px;
+  }
+
+  .assistant-scroll {
+    overflow: visible;
+  }
+
+  .orbit-mark {
+    height: 125px;
+  }
+}
+
+@media (max-height: 670px) {
+  .page-chat {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .assistant-scroll {
+    overflow: visible;
+  }
+}

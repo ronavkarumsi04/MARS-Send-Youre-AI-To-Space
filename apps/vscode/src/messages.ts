@@ -10,6 +10,7 @@ import type {
 } from "@mars/contracts";
 import { HostCheckIdSchema } from "@mars/contracts";
 import { z } from "zod";
+import type { AssistantUpdate } from "./assistantMessages";
 
 const taskId = z.string().min(1).max(200);
 const shortId = z.string().min(1).max(500);
@@ -231,4 +232,5 @@ export interface ViewState {
 
 export type HostMessage =
   | { type: "state"; state: ViewState }
+  | AssistantUpdate
   | { type: "focusNewTask" };
