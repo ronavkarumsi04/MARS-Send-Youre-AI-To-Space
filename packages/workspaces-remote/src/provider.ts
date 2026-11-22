@@ -335,16 +335,16 @@ export async function createRemoteWorkspaceProvider(
     let exitCode: number | null = null;
     let stopReason: "timeout" | "cancel" | null = null;
     while (exitCode === null) {
-      if (signal?.aborted || closed) stopReason = "cancel";
-      else if (Date.now() >= deadline) stopReason = "timeout";
-      if (stopReason) {
-        await client.stopCommand(id).catch(() => undefined);
-        break;
-      }
       // The order filter stays fixed while paging so page offsets stay valid.
       const after = lastOrder;
       let pageId: string | undefined;
       do {
+        if (signal?.aborted || closed) stopReason = "cancel";
+        else if (Date.now() >= deadline) stopReason = "timeout";
+        if (stopReason) {
+          await client.stopCommand(id).catch(() => undefined);
+          break;
+        }
         const page = await client.searchOutput(id, after, pageId);
         for (const event of page.items.sort((a, b) => a.order - b.order)) {
           if (event.order <= lastOrder) continue;
@@ -356,17 +356,17 @@ export async function createRemoteWorkspaceProvider(
         }
         pageId = page.next_page_id ?? undefined;
       } while (pageId && exitCode === null);
+      if (stopReason) break;
       if (exitCode === null)
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, pollMs);
-          signal?.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true },
-          );
+          const done = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", done);
+            resolve();
+          };
+          const timer = setTimeout(done, pollMs);
+          signal?.addEventListener("abort", done, { once: true });
+          if (signal?.aborted) done();
         });
     }
     return {

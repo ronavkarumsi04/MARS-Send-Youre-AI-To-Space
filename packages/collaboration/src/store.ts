@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, realpath, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
 import {
@@ -163,6 +163,33 @@ export class CollaborationStore {
       );
     }
     const dbPath = join(root, "collaboration.sqlite");
+    for (const file of [
+      dbPath,
+      `${dbPath}-wal`,
+      `${dbPath}-shm`,
+      `${dbPath}-journal`,
+    ]) {
+      let info: Awaited<ReturnType<typeof lstat>>;
+      try {
+        info = await lstat(file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new CollaborationError(
+          "invalid_input",
+          "Collaboration state file is unsafe",
+        );
+      }
+      if (!info.isFile())
+        throw new CollaborationError(
+          "invalid_input",
+          "Collaboration state file must be a regular file",
+        );
+      if (typeof process.getuid === "function" && info.uid !== process.getuid())
+        throw new CollaborationError(
+          "invalid_input",
+          "Collaboration state file must be owned by the current user",
+        );
+    }
     let db!: Database;
     try {
       db = new Database(dbPath, { create: true, strict: true });

@@ -785,6 +785,23 @@ export async function createBrowserService(
           throw new BrowserError("invalid_input", "Invalid browser step");
         const step: BrowserStep = {
           ...parsed.data,
+          action:
+            parsed.data.action.type === "type"
+              ? { ...parsed.data.action, text: scrub(parsed.data.action.text) }
+              : parsed.data.action.type === "navigate"
+                ? {
+                    ...parsed.data.action,
+                    url:
+                      scrub(parsed.data.action.url) === parsed.data.action.url
+                        ? parsed.data.action.url
+                        : "https://redacted.invalid/",
+                  }
+                : parsed.data.action.type === "done"
+                  ? {
+                      ...parsed.data.action,
+                      result: scrub(parsed.data.action.result),
+                    }
+                  : parsed.data.action,
           detail: scrub(parsed.data.detail),
           url: scrub(parsed.data.url),
           title: scrub(parsed.data.title),

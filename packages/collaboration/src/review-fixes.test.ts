@@ -53,7 +53,11 @@ function task(): Task {
 }
 
 async function fixture(
-  options: { limits?: Partial<CollaborationLimits>; roomModelId?: string } = {},
+  options: {
+    limits?: Partial<CollaborationLimits>;
+    roomModelId?: string;
+    write?: boolean;
+  } = {},
 ) {
   const rootDir = await mkdtemp(join(tmpdir(), "mars-collaboration-review-"));
   cleanup.push(() => rm(rootDir, { recursive: true, force: true }));
@@ -75,7 +79,7 @@ async function fixture(
     delegation_pool: { max_tokens: 800 },
     ...(options.roomModelId ? { model_id: options.roomModelId } : {}),
     authority: {
-      approvals: { read: true, write: false, execute: false },
+      approvals: { read: true, write: options.write ?? false, execute: false },
       allow_delegation: true,
       paid_consent: false,
     },
@@ -124,6 +128,77 @@ async function expectCode(
 }
 
 const sha = "a".repeat(64);
+
+test("nested delegation cannot widen the parent's write paths", async () => {
+  const f = await fixture({ write: true });
+  const parent = await f.collaboration.agents.delegate(
+    context,
+    f.coordinator,
+    delegation("path-parent", {
+      approvals: { read: true, write: true },
+      write_paths: ["src/feature"],
+      may_delegate: true,
+      budget: {
+        max_tokens: 400,
+        max_duration_ms: 20_000,
+        max_steps: 10,
+        max_messages: 10,
+        delegation_pool_tokens: 300,
+      },
+    }),
+  );
+  if (!parent.capability) throw new Error("Missing parent capability");
+  const capability = parent.capability;
+  for (const path of [
+    "src/feature/../outside",
+    "src/feature/",
+    "src//feature/file.ts",
+    "src/feature/./file.ts",
+    "src/feature\\file.ts",
+  ]) {
+    await expectCode(
+      () =>
+        f.collaboration.agents.delegate(
+          context,
+          capability,
+          delegation(`unnormalized-${path}`, {
+            approvals: { read: true, write: true },
+            write_paths: [path],
+          }),
+        ),
+      "invalid_input",
+    );
+  }
+  for (const path of ["src", "src/feature-other/file.ts", "other/file.ts"]) {
+    await expectCode(
+      () =>
+        f.collaboration.agents.delegate(
+          context,
+          capability,
+          delegation(`escape-${path}`, {
+            approvals: { read: true, write: true },
+            write_paths: [path],
+          }),
+        ),
+      "forbidden",
+    );
+  }
+  const child = await f.collaboration.agents.delegate(
+    context,
+    capability,
+    delegation("contained-path", {
+      approvals: { read: true, write: true },
+      write_paths: ["src/feature/file.ts"],
+    }),
+  );
+  expect(child.write_paths).toEqual(["src/feature/file.ts"]);
+  const reader = await f.collaboration.agents.delegate(
+    context,
+    capability,
+    delegation("reader-without-paths"),
+  );
+  expect(reader.write_paths).toEqual([]);
+});
 
 test("child artifacts pass the publishable filter before they reach results", async () => {
   const f = await fixture();

@@ -128,6 +128,7 @@ export function createCliRunner(options: CliRunnerOptions): CliRunner {
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
+          detached: process.platform !== "win32",
           env: sandboxEnvironment({
             ...options,
             dataRoot: invocation.dataRoot ?? options.dataRoot,
@@ -144,12 +145,16 @@ export function createCliRunner(options: CliRunnerOptions): CliRunner {
           duration_ms: Date.now() - started,
         };
       }
+      const kill = () => {
+        try {
+          if (process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
+          else child.kill("SIGKILL");
+        } catch {}
+      };
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill("SIGKILL");
-        } catch {}
+        kill();
       }, invocation.timeoutMs);
       try {
         const [stdout, stderr, exitCode] = await Promise.all([
@@ -168,6 +173,7 @@ export function createCliRunner(options: CliRunnerOptions): CliRunner {
         };
       } finally {
         clearTimeout(timer);
+        kill();
       }
     },
   };
