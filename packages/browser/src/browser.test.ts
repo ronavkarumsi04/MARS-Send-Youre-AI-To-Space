@@ -428,7 +428,7 @@ test("evidence must be captured by the attempt, private paths are refused or scr
       );
       await context.recordStep({
         index: 0,
-        action: { type: "click", ref: "e1" },
+        action: { type: "type", ref: "e1", text: privatePath },
         outcome: "blocked",
         detail: `not allowed ${privatePath}`,
         url: "",
