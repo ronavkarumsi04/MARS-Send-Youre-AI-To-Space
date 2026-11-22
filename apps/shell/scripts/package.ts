@@ -96,7 +96,7 @@ async function stageWorkbench(resources: string, scratch: string) {
   const host = startLocalWorkbench({
     resources: runtime,
     source,
-    state: join(scratch, "state"),
+    state: join(scratch, "Application Support", "MARS", "local-workbench"),
   });
   try {
     const connected = await host.connection();
