@@ -20,6 +20,7 @@ import {
   shell,
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
+import { desktopExtensionsMenu } from "./extensions";
 import { startLocalWorkbench } from "./local-workbench";
 import { hasRemovableKey } from "./model-key";
 import { SHELL_WEB_PREFERENCES } from "./security";
@@ -198,6 +199,36 @@ export async function createDesktop(
           : "session";
   });
 
+  const activeWorkbench = () => {
+    if (changing || closing) return undefined;
+    if (!workbench) {
+      const running = startLocalWorkbench({
+        resources: join(process.resourcesPath, "workbench"),
+        onExpired(name) {
+          if (
+            workbench !== running ||
+            changing ||
+            closing ||
+            window.isDestroyed()
+          )
+            return;
+          void dialog.showMessageBox(window, {
+            type: "info",
+            message: `${name} needs renewed approval`,
+            detail: `This tool is unavailable to tasks in ${source}. Use Project → Add Verified Extension to approve it again.`,
+          });
+        },
+        source,
+        state: join(root, "projects"),
+        ...(openRouterKey ? { openRouterKey } : {}),
+      });
+      workbench = running;
+      void running.exited.then(() => {
+        if (workbench === running) workbench = undefined;
+      });
+    }
+    return workbench;
+  };
   const projectMenu: MenuItemConstructorOptions = {
     label: "Project",
     submenu: [
@@ -223,6 +254,12 @@ export async function createDesktop(
       },
       { type: "separator" },
       { label: "Model Settings…", click: showModelSettings },
+      desktopExtensionsMenu(
+        { dialog, ipcMain },
+        window,
+        activeWorkbench,
+        () => source,
+      ),
       { type: "separator" },
       { role: "close" },
     ],
@@ -246,24 +283,13 @@ export async function createDesktop(
       };
     },
     resolve() {
-      if (changing || closing)
-        return Promise.resolve({
+      return (
+        activeWorkbench()?.connection() ??
+        Promise.resolve({
           ok: false as const,
           reason: "The local workbench is switching projects. Try again.",
-        });
-      if (!workbench) {
-        const running = startLocalWorkbench({
-          resources: join(process.resourcesPath, "workbench"),
-          source,
-          state: join(root, "projects"),
-          ...(openRouterKey ? { openRouterKey } : {}),
-        });
-        workbench = running;
-        void running.exited.then(() => {
-          if (workbench === running) workbench = undefined;
-        });
-      }
-      return workbench.connection();
+        })
+      );
     },
     async close() {
       closing = true;

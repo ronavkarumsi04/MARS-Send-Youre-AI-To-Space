@@ -102,7 +102,7 @@ app.on("ready", async () => {
     backgroundColor: "#101216",
     webPreferences: {
       ...SHELL_WEB_PREFERENCES,
-      preload: join(app.getAppPath(), "preload.cjs"),
+      preload: join(app.getAppPath(), managed ? "managed.cjs" : "preload.cjs"),
     },
   });
   mainWindow = window;
