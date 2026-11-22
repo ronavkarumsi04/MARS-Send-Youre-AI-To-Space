@@ -4,7 +4,7 @@ An IDE-connected agent platform for completing work, retaining useful context, a
 
 ## Desktop app
 
-Install MARS from the [Desktop installers workflow](https://github.com/tanaypatel917-lab/MARS-Send-Youre-AI-To-Space/actions/workflows/desktop.yml), then open it from Applications. The app includes the local workbench and a demo project; no terminal or separate Bun install is needed. See [desktop setup](documentation/SHELL.md#install-and-open) for downloads, model setup, and platform limits.
+Download MARS from [GitHub Releases](https://github.com/ronavkarumsi04/MARS-Send-Youre-AI-To-Space/releases) for macOS or Ubuntu/Debian (x64). The app includes the local workbench and a demo project; no separate Bun install is needed. See [desktop setup](documentation/SHELL.md#install-and-open) for installation steps, model setup, and platform limits.
 
 ## Current state: offline-verified platform
 
