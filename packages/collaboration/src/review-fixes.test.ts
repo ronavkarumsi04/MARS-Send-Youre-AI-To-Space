@@ -149,6 +149,26 @@ test("nested delegation cannot widen the parent's write paths", async () => {
   );
   if (!parent.capability) throw new Error("Missing parent capability");
   const capability = parent.capability;
+  for (const path of [
+    "src/feature/../outside",
+    "src/feature/",
+    "src//feature/file.ts",
+    "src/feature/./file.ts",
+    "src/feature\\file.ts",
+  ]) {
+    await expectCode(
+      () =>
+        f.collaboration.agents.delegate(
+          context,
+          capability,
+          delegation(`unnormalized-${path}`, {
+            approvals: { read: true, write: true },
+            write_paths: [path],
+          }),
+        ),
+      "invalid_input",
+    );
+  }
   for (const path of ["src", "src/feature-other/file.ts", "other/file.ts"]) {
     await expectCode(
       () =>

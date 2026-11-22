@@ -155,19 +155,19 @@ export function parseScan(
       blocked.add(path);
       continue;
     }
+    try {
+      validate(path);
+    } catch {
+      skipped.push({ path, reason: "unsupported-name" });
+      blocked.add(path);
+      continue;
+    }
     if (entry.type === "d") {
       directories.push(path);
       continue;
     }
     if (entry.type !== "f") {
       skipped.push({ path, reason: "special" });
-      blocked.add(path);
-      continue;
-    }
-    try {
-      validate(path);
-    } catch {
-      skipped.push({ path, reason: "unsupported-name" });
       blocked.add(path);
       continue;
     }
