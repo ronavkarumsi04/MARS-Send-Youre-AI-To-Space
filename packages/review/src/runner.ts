@@ -14,9 +14,12 @@ import { SkillError, withDirectoryLock } from "@mars/skills";
 import { type ReviewModelGateway, ReviewRateLimit } from "./model";
 import {
   InvalidOutput,
+  normalizeFact,
   OUTPUT_LIMITS,
   parseOutput,
+  type ReviewProposal,
   SYSTEM_PROMPT,
+  utf8Bytes,
 } from "./output";
 
 /**
@@ -99,6 +102,9 @@ export const REVIEW_LIMITS = {
 } as const;
 
 const ERROR_MESSAGE_CHARS = 200;
+/** Largest delay `setTimeout` honours; longer delays fire immediately. */
+const MAX_TIMER_MS = 2_147_483_647;
+const ROLES = new Set(["user", "assistant", "tool"]);
 const SNAPSHOT_CHANGED = "Snapshot changed";
 const UNSUPPORTED = "unsupported";
 const SAFE_ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -132,9 +138,101 @@ const EXCLUDED =
   /(^|:)(review|background_review|cron|heartbeat|hook|subagent|acp|memory|overflow)(:|$)|active-memory|incognito|internal:/i;
 /** Recursion guard: only named foreground sessions are ever reviewed. */
 export const eligible = (turn: Turn) =>
+  Boolean(turn) &&
+  typeof turn === "object" &&
   turn.origin === "foreground" &&
+  typeof turn.sessionId === "string" &&
   Boolean(turn.sessionId.trim()) &&
   !EXCLUDED.test(turn.sessionId);
+
+/**
+ * Detached copy of a host turn holding only the documented fields, so extra
+ * keys (on the turn or its messages) never reach the prompt and values that
+ * `structuredClone` cannot copy never throw.
+ */
+function copyTurn(input: Turn): Turn {
+  const transcript = Array.isArray(input.transcript)
+    ? input.transcript.map((message) =>
+        message && typeof message === "object"
+          ? { role: message.role, content: message.content }
+          : message,
+      )
+    : input.transcript;
+  return {
+    sessionId: input.sessionId,
+    ...(typeof input.taskId === "string" ? { taskId: input.taskId } : {}),
+    origin: input.origin,
+    iterations: input.iterations,
+    transcript,
+    ...(typeof input.success === "boolean" ? { success: input.success } : {}),
+  };
+}
+const validTranscript = (transcript: unknown) =>
+  Array.isArray(transcript) &&
+  transcript.every(
+    (message) =>
+      message &&
+      typeof message === "object" &&
+      ROLES.has(message.role) &&
+      typeof message.content === "string",
+  );
+
+/**
+ * Appends items to the prompt while it stays within the context budget, so a
+ * large memory or skill store shrinks the evidence instead of disabling review.
+ */
+function fit<T>(items: readonly T[], budget: { left: number }): T[] {
+  const kept: T[] = [];
+  for (const item of items) {
+    const cost = JSON.stringify(item).length + (kept.length ? 1 : 0);
+    if (cost > budget.left) break;
+    budget.left -= cost;
+    kept.push(item);
+  }
+  return kept;
+}
+
+/** Rejects with the abort reason as soon as `signal` fires, even if `work` hangs. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Drops memory ops whose fact the store already holds for the same target. */
+function withoutKnownFacts(
+  proposals: ReviewProposal[],
+  entries: readonly MemoryEntry[],
+): ReviewProposal[] {
+  const known = new Set(
+    entries.map((entry) => `${entry.target}\u0000${normalizeFact(entry.fact)}`),
+  );
+  return proposals.flatMap((proposal): ReviewProposal[] => {
+    if (proposal.tool !== "memory.submitProposal") return [proposal];
+    const ops = proposal.ops.filter(
+      (op) =>
+        !known.has(
+          `${op.target === "user" ? "profile" : "project"}\u0000${normalizeFact(op.content)}`,
+        ),
+    );
+    return ops.length ? [{ ...proposal, ops }] : [];
+  });
+}
 
 function memoryEntries(
   context: RequestContext,
@@ -212,8 +310,10 @@ export class ReviewRunner {
     if (
       !Number.isFinite(this.idleMs) ||
       this.idleMs < 0 ||
+      this.idleMs > MAX_TIMER_MS ||
       !Number.isFinite(this.timeoutMs) ||
-      this.timeoutMs <= 0
+      this.timeoutMs <= 0 ||
+      this.timeoutMs > MAX_TIMER_MS
     )
       throw new Error("Invalid review timing");
     this.logRoot = resolve(deps.logRoot);
@@ -268,11 +368,17 @@ export class ReviewRunner {
         this.cancelTimer = undefined;
         const next = this.pending.entries().next();
         if (next.done) return;
-        const [key, turn] = next.value;
-        this.pending.delete(key);
-        await this.reviewNow(turn).catch(() => undefined);
+        // reviewNow removes the session only once it actually starts, so a
+        // timer that fires early (cooldown not over yet) keeps it queued.
+        const result = await this.reviewNow(next.value[1]).catch(
+          () => undefined,
+        );
+        if (result?.status === "skipped") this.arm();
       },
-      Math.max(0, this.quietUntil - this.now(), this.cooldown - this.now()),
+      Math.min(
+        MAX_TIMER_MS,
+        Math.max(0, this.quietUntil - this.now(), this.cooldown - this.now()),
+      ),
     );
   }
   /** Foreground work is starting: defer scheduling and cancel in-flight review. */
@@ -286,9 +392,22 @@ export class ReviewRunner {
     this.quietUntil = this.now() + this.idleMs;
     this.arm();
   }
+  /** Queue a turn, keeping a newer queued turn unless `replace`, and evicting the oldest past the cap. */
+  private enqueue(turn: Turn, replace: boolean) {
+    if (this.pending.has(turn.sessionId)) {
+      if (replace) this.pending.set(turn.sessionId, turn);
+      return;
+    }
+    if (this.pending.size >= REVIEW_LIMITS.pending_sessions) {
+      const oldest = this.pending.keys().next();
+      if (!oldest.done) this.pending.delete(oldest.value);
+    }
+    this.pending.set(turn.sessionId, turn);
+  }
   /** Record a completed foreground turn; review runs once 10 iterations accumulate. */
-  recordTurn(turn: Turn) {
-    if (this.stopped || !eligible(turn)) return;
+  recordTurn(input: Turn) {
+    if (this.stopped || !eligible(input)) return;
+    const turn = copyTurn(input);
     this.quietUntil = this.now() + this.idleMs;
     if (turn.success === false) {
       this.arm();
@@ -301,14 +420,7 @@ export class ReviewRunner {
       count >= REVIEW_LIMITS.iterations_threshold
     ) {
       this.counters.delete(turn.sessionId);
-      if (
-        !this.pending.has(turn.sessionId) &&
-        this.pending.size >= REVIEW_LIMITS.pending_sessions
-      ) {
-        const oldest = this.pending.keys().next();
-        if (!oldest.done) this.pending.delete(oldest.value);
-      }
-      this.pending.set(turn.sessionId, structuredClone(turn));
+      this.enqueue(turn, true);
     } else {
       this.counters.delete(turn.sessionId);
       this.counters.set(turn.sessionId, count);
@@ -320,15 +432,15 @@ export class ReviewRunner {
     this.arm();
   }
   async reviewNow(input: Turn): Promise<ReviewResult> {
-    const turn = structuredClone(input);
     const result: ReviewResult = {
       reviewId: randomUUID(),
       status: "skipped",
       proposals: [],
     };
+    if (!eligible(input)) return result;
+    const turn = copyTurn(input);
     if (
       this.stopped ||
-      !eligible(turn) ||
       this.live.size ||
       this.running ||
       this.now() < this.cooldown
@@ -338,8 +450,9 @@ export class ReviewRunner {
     this.pending.delete(turn.sessionId);
     const abort = new AbortController();
     this.abort = abort;
+    const deadline = Date.now() + this.timeoutMs;
     const timeout = setTimeout(() => abort.abort(), this.timeoutMs);
-    const action = this.execute(turn, result, abort.signal);
+    const action = this.execute(turn, result, abort.signal, deadline);
     this.running = action;
     try {
       return await action;
@@ -354,39 +467,51 @@ export class ReviewRunner {
     turn: Turn,
     result: ReviewResult,
     signal: AbortSignal,
+    deadline: number,
   ): Promise<ReviewResult> {
     let outputHash: string | undefined;
     let failure: ReturnType<typeof describeError> | undefined;
     const context = this.deps.context;
     try {
       await this.log(turn, result, "started", {
-        transcriptHash: hash(JSON.stringify(turn.transcript)),
+        transcriptHash: hash(JSON.stringify(turn.transcript) ?? ""),
       });
       signal.throwIfAborted();
-      if (
-        !Array.isArray(turn.transcript) ||
-        turn.transcript.some(
-          (message) =>
-            !message ||
-            !["user", "assistant", "tool"].includes(message.role) ||
-            typeof message.content !== "string",
-        )
-      )
+      if (!validTranscript(turn.transcript))
         throw new InvalidOutput("transcript");
-      const [memory, skillsRevision] = await Promise.all([
-        this.deps.memory.snapshot(context),
-        this.deps.skills.getRevision(),
-      ]);
-      const skills = await this.deps.skills.list();
-      if ((await this.deps.skills.getRevision()) !== skillsRevision)
+      const [memory, skillsRevision] = await abortable(
+        Promise.all([
+          this.deps.memory.snapshot(context),
+          this.deps.skills.getRevision(),
+        ]),
+        signal,
+      );
+      const skills = await abortable(this.deps.skills.list(), signal);
+      if (
+        (await abortable(this.deps.skills.getRevision(), signal)) !==
+        skillsRevision
+      )
         throw new Error(SNAPSHOT_CHANGED);
-      const prompt = JSON.stringify({
+      const evidence = {
         untrusted_evidence: true,
         transcript: turn.transcript,
-        memory: memory.entries
+        memory: [] as { target: string; fact: string }[],
+        skills: [] as { name: string; status: string; content: string }[],
+        memoryRevision: memory.revision,
+        skillsRevision,
+      };
+      const budget = {
+        left: REVIEW_LIMITS.context_chars - JSON.stringify(evidence).length,
+      };
+      if (budget.left < 0) throw new InvalidOutput("context size");
+      evidence.memory = fit(
+        memory.entries
           .slice(0, REVIEW_LIMITS.memory_entries)
           .map((entry) => ({ target: entry.target, fact: entry.fact })),
-        skills: skills
+        budget,
+      );
+      evidence.skills = fit(
+        skills
           .filter((skill) => skill.status !== "archived")
           .slice(0, REVIEW_LIMITS.skills)
           .map((skill) => ({
@@ -394,38 +519,47 @@ export class ReviewRunner {
             status: skill.status,
             content: skill.content.slice(0, REVIEW_LIMITS.skill_content_chars),
           })),
-        memoryRevision: memory.revision,
-        skillsRevision,
-      });
+        budget,
+      );
+      const prompt = JSON.stringify(evidence);
       if (prompt.length > REVIEW_LIMITS.context_chars)
         throw new InvalidOutput("context size");
       signal.throwIfAborted();
       this.requests++;
-      const reply = await this.deps.model.complete({
-        system: SYSTEM_PROMPT,
-        user: prompt,
-        maxTokens: REVIEW_LIMITS.max_tokens,
-        timeoutMs: this.timeoutMs,
+      const reply = await abortable(
+        this.deps.model.complete({
+          system: SYSTEM_PROMPT,
+          user: prompt,
+          maxTokens: REVIEW_LIMITS.max_tokens,
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          signal,
+        }),
         signal,
-      });
+      );
       if (
+        !reply ||
+        typeof reply !== "object" ||
         reply.toolCalls ||
         (reply.finishReason !== null && reply.finishReason !== "stop") ||
         typeof reply.text !== "string" ||
-        reply.text.length > OUTPUT_LIMITS.output_bytes
+        utf8Bytes(reply.text) > OUTPUT_LIMITS.output_bytes
       )
         throw new InvalidOutput("reply");
       outputHash = hash(reply.text);
-      const proposals = parseOutput(reply.text);
+      const proposals = withoutKnownFacts(
+        parseOutput(reply.text),
+        memory.entries,
+      );
       signal.throwIfAborted();
       const source = `background_review:${turn.sessionId}:${result.reviewId}`;
       const now = new Date(this.now()).toISOString();
       for (const [proposalIndex, proposal] of proposals.entries()) {
         signal.throwIfAborted();
         if (
-          (await this.deps.memory.snapshot(context)).revision !==
-            memory.revision ||
-          (await this.deps.skills.getRevision()) !== skillsRevision
+          (await abortable(this.deps.memory.snapshot(context), signal))
+            .revision !== memory.revision ||
+          (await abortable(this.deps.skills.getRevision(), signal)) !==
+            skillsRevision
         )
           throw new Error(SNAPSHOT_CHANGED);
         signal.throwIfAborted();
@@ -492,7 +626,7 @@ export class ReviewRunner {
           this.backoff * 2 || REVIEW_LIMITS.backoff_initial_ms,
         );
         this.cooldown = this.now() + this.backoff;
-        this.pending.set(turn.sessionId, turn);
+        if (!this.stopped) this.enqueue(turn, false);
       } else
         result.status =
           error instanceof InvalidOutput ||
@@ -502,12 +636,14 @@ export class ReviewRunner {
             ? "rejected"
             : "error";
     }
+    // The returned result is authoritative; a failing audit write must not
+    // turn a finished review (whose proposals are in the inbox) into a throw.
     await this.log(turn, result, result.status, {
       proposals: result.proposals,
       outputHash,
       cooldownUntil: this.cooldown || undefined,
       ...failure,
-    });
+    }).catch(() => undefined);
     return result;
   }
   /**
@@ -553,7 +689,7 @@ export class ReviewRunner {
     await this.log(turn, result, "withdrawn", {
       withdrawn,
       remaining: failed,
-    });
+    }).catch(() => undefined);
   }
   /** Clears pending work, aborts in-flight review and drains it. */
   async stop() {
