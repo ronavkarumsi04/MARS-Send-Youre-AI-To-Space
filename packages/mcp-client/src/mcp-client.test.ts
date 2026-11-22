@@ -1194,6 +1194,80 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     await transport.close();
   });
 
+  it("ignores null and other non-object stdio lines instead of crashing the host", async () => {
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "stdio-non-object-lines",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        args: ["run", STDIO_FIXTURE],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const result = await cp.loader.invokeTool(ctx, {
+      server_id: config.id,
+      tool: "echo",
+      input: { message: "after-null", nonObjectLines: true },
+      timeout_ms: 2000,
+    });
+    expect(result.content[0]?.text).toBe("echo:after-null");
+  });
+
+  it("handles null JSON-RPC bodies from Streamable HTTP servers without a TypeError", async () => {
+    const initResult = {
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: {} },
+      serverInfo: { name: "null-body", version: "1.0.0" },
+    };
+    const srv = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        if (req.method !== "POST") return new Response(null, { status: 204 });
+        const body = (await req.json()) as { id?: number; method?: string };
+        if (body.id === undefined) return new Response(null, { status: 202 });
+        if (req.headers.get("x-null-mode") === "json") {
+          return new Response("null", {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const result =
+          body.method === "initialize" ? initResult : { tools: [] };
+        return new Response(
+          `data: null\n\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    activeServers.push(srv);
+    const url = `http://127.0.0.1:${srv.port}/mcp`;
+
+    const sse = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    const descriptor = await sse.initialize({ timeoutMs: 2000 });
+    expect(descriptor.serverInfo.name).toBe("null-body");
+    await sse.close();
+
+    const json = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    await expect(
+      json.initialize({
+        timeoutMs: 2000,
+        extraHeaders: { "x-null-mode": "json" },
+      }),
+    ).rejects.toThrow("MCP Streamable HTTP response is not a JSON-RPC object");
+    await json.close();
+  });
+
   it("never spawns a drifted stdio entrypoint during admission even after a pending drift review is recorded", async () => {
     const dir = await makeTempDir("mars-mcp-pending-drift-");
     const stateDir = join(dir, "state");
