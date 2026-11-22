@@ -1261,7 +1261,7 @@ export class EvolutionService {
         },
         signal,
         {
-          reserve: (inputTokens, maxOutputTokens) =>
+          reserve: (inputTokens, maxOutputTokens, reserveOptions) =>
             this.store.transaction(() => {
               const at = this.now();
               this.store.assertLease(runId, lease, at);
@@ -1270,8 +1270,18 @@ export class EvolutionService {
                   "deadline_exceeded",
                   `run ${runId} passed its deadline before proposal dispatch`,
                 );
-              const remaining =
-                config.budget.max_tokens - this.spent(runId).tokens;
+              const spent = this.spent(runId);
+              const remaining = config.budget.max_tokens - spent.tokens;
+              const remainingUsd = Math.max(
+                0,
+                config.budget.max_usd - spent.usd,
+              );
+              const paid = reserveOptions?.paid === true;
+              if (paid && remainingUsd <= 1e-9)
+                fail(
+                  "budget_exhausted",
+                  `run ${runId} has no USD budget left for a paid proposal`,
+                );
               const outputLimit = Math.min(
                 maxOutputTokens,
                 remaining - inputTokens,
@@ -1289,7 +1299,11 @@ export class EvolutionService {
                 runId,
                 "reserve",
                 reservedKey,
-                { tokens: inputTokens + outputLimit, usd: 0, ms: 0 },
+                {
+                  tokens: inputTokens + outputLimit,
+                  usd: paid ? remainingUsd : 0,
+                  ms: 0,
+                },
                 nowIso(at),
               );
               return outputLimit;
