@@ -145,6 +145,30 @@ test("optional Docker sandbox skips a missing image but fails an installed diges
   });
 });
 
+test("optional Docker sandbox skips when the Docker socket denies access", async () => {
+  await withTempDir(async (dir) => {
+    const dockerPath = join(dir, "docker");
+    const options = { dockerPath, user: { uid: 1000, gid: 1000 } };
+    for (const denial of [
+      "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+      'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/version": dial unix /var/run/docker.sock: connect: permission denied',
+    ]) {
+      await writeFile(dockerPath, `#!/bin/sh\necho '${denial}' >&2\nexit 1\n`, {
+        mode: 0o700,
+      });
+      expect(await optionalEvolutionDockerSandbox(options)).toBeNull();
+    }
+    await writeFile(
+      dockerPath,
+      "#!/bin/sh\necho 'unexpected daemon failure' >&2\nexit 1\n",
+      { mode: 0o700 },
+    );
+    await expect(optionalEvolutionDockerSandbox(options)).rejects.toThrow(
+      "Docker version check failed",
+    );
+  });
+});
+
 test("optional Docker sandbox skips when the configured binary is missing", async () => {
   await withTempDir(async (dir) => {
     const dockerPath = join(dir, "docker");

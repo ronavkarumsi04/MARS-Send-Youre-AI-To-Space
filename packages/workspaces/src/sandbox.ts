@@ -210,7 +210,7 @@ export function createDockerSandbox(
         if (version.exitCode !== 0) {
           const detail = version.stderr.toString().trim();
           if (
-            /cannot connect to the docker daemon|(?:connect|connection): (?:no such file or directory|connection refused|permission denied)/i.test(
+            /cannot connect to the docker daemon|permission denied while trying to connect to the docker (?:api|daemon socket)|(?:connect|connection): (?:no such file or directory|connection refused|permission denied)/i.test(
               detail,
             )
           ) {
