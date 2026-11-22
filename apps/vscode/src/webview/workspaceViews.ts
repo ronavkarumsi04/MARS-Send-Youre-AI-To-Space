@@ -48,6 +48,7 @@ export function renderSettings(
     removeKey: () => void;
     settings: () => void;
     importConnection: () => void;
+    extensions: () => void;
   },
   connection?: HTMLElement,
 ): HTMLElement {
@@ -55,35 +56,22 @@ export function renderSettings(
     "section",
     {
       class: "model-settings workspace-content",
-      label: "Model and task settings",
+      label: "Settings",
     },
-    h("p", { class: "eyebrow" }, "MODEL CONNECTION / OPENROUTER"),
-    h("h1", {}, "Connect your model"),
+    h("h1", {}, "Settings"),
     h(
       "p",
       { class: "welcome-subtitle" },
-      "Chat uses OpenRouter’s free route. Your key is stored in VS Code Secret Storage and is never included in prompts.",
+      "Manage your model, privacy, and project extensions.",
     ),
     h(
       "section",
       { class: "key-help" },
-      h("h2", {}, "1. Create your key"),
-      h("p", {}, "Sign in to OpenRouter, choose Create API key, and copy it."),
-      button(
-        "Open OpenRouter key settings ↗",
-        "get-model-key",
-        actions.getKey,
-        { secondary: true },
-      ),
-    ),
-    h(
-      "section",
-      { class: "key-help" },
-      h("h2", {}, "2. Connect in VS Code"),
+      h("h2", {}, "Model connection"),
       h(
         "p",
         {},
-        "Paste your key into the secure VS Code prompt, not into chat.",
+        "Chat uses OpenRouter’s free route. Create an OpenRouter API key, then paste it into the secure VS Code prompt, not into chat.",
       ),
       h(
         "div",
@@ -100,6 +88,9 @@ export function renderSettings(
               disabled: loading,
             })
           : null,
+        button("Get an OpenRouter API key ↗", "get-model-key", actions.getKey, {
+          secondary: true,
+        }),
       ),
       h(
         "p",
@@ -111,6 +102,29 @@ export function renderSettings(
             : "No API key configured",
       ),
       error ? h("p", { class: "chat-error", role: "alert" }, error) : null,
+    ),
+    h(
+      "section",
+      { class: "key-help" },
+      h("h2", {}, "Privacy"),
+      h(
+        "p",
+        {},
+        "After you opt in, sending a chat shares the conversation with OpenRouter, not your project files. Completed conversations are saved in VS Code for this workspace. Your API key is kept in VS Code Secret Storage and is never included in prompts.",
+      ),
+    ),
+    h(
+      "section",
+      { class: "key-help" },
+      h("h2", {}, "Project extensions"),
+      h(
+        "p",
+        {},
+        "MCP servers, skills, and plugins can add capabilities to new agent tasks. They do not give Chat access to your files or tools.",
+      ),
+      button("Browse extensions", "settings-extensions", actions.extensions, {
+        secondary: true,
+      }),
     ),
     h(
       "section",

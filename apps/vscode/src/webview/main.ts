@@ -1046,6 +1046,7 @@ function renderPage(): [HTMLElement, HTMLElement?] {
           settings: () => vscode.postMessage({ type: "openSettings" }),
           importConnection: () =>
             vscode.postMessage({ type: "importConnection" }),
+          extensions: () => openPage("extensions"),
         },
         state ? taskStatus(state) : undefined,
       ),
