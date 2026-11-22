@@ -1,27 +1,28 @@
 import { randomBytes } from "node:crypto";
-import {
-  lstat,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
 import type { Skill } from "@mars/skills";
+import { replaceDurably } from "./durable";
 import { VaultError } from "./errors";
+import { withVaultLock } from "./lock";
 import { renderNote, sha256, wikilink } from "./notes";
 import {
   assertVaultDirectory,
   contains,
   encodeSegment,
   encodeSourcePath,
-  readFileNoFollow,
+  makeDirectoryInside,
+  pinVaultRoot,
+  readNoteInside,
   realpathExisting,
+  removeFileInside,
   resolveInside,
+  VAULT_MAX_FILE_BYTES,
   VaultPathError,
+  type VaultRoot,
+  verifyVaultRoot,
 } from "./paths";
 import {
   type ExportReport,
@@ -82,11 +83,25 @@ export function mentionTokens(text: string): Set<string> {
 }
 
 export async function readManifest(
-  vaultDir: string,
+  vault: string | VaultRoot,
 ): Promise<VaultManifest | undefined> {
+  let root: VaultRoot;
+  try {
+    root =
+      typeof vault === "string"
+        ? await pinVaultRoot(await realpathExisting(vault))
+        : vault;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
   let text: string;
   try {
-    text = await readFile(join(vaultDir, VAULT_MANIFEST_FILE), "utf8");
+    text = await readNoteInside(
+      root,
+      join(root.path, VAULT_MANIFEST_FILE),
+      VAULT_MANIFEST_FILE,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -109,30 +124,38 @@ export async function readManifest(
  * inside the real vault directory, and the target may not be a symlink, so a
  * planted link inside the vault cannot redirect the export elsewhere.
  */
-async function writeAtomic(
-  vaultDir: string,
+export async function writeAtomic(
+  root: VaultRoot,
   absolute: string,
   text: string,
 ): Promise<boolean> {
+  const vaultDir = root.path;
+  if (Buffer.byteLength(text, "utf8") > VAULT_MAX_FILE_BYTES)
+    throw new VaultPathError(
+      "file_too_large",
+      "generated file exceeds the vault read limit",
+    );
   // Resolve links before creating anything so a symlinked directory inside
   // the vault cannot make mkdir build a tree outside it.
-  const [realVault, realParent] = await Promise.all([
-    realpathExisting(vaultDir),
-    realpathExisting(dirname(absolute)),
-  ]);
-  if (realParent !== realVault && !contains(realVault, realParent))
+  await verifyVaultRoot(root);
+  const realParent = await realpathExisting(dirname(absolute));
+  if (!contains(root.path, realParent))
     throw new VaultPathError(
       "path_escape",
       `${relative(vaultDir, absolute)} resolves outside the vault`,
     );
-  await mkdir(dirname(absolute), { recursive: true, mode: 0o700 });
+  await makeDirectoryInside(root, dirname(absolute));
   try {
     if ((await lstat(absolute)).isSymbolicLink())
       throw new VaultPathError(
         "path_escape",
         `${relative(vaultDir, absolute)} is a symlink`,
       );
-    if ((await readFile(absolute, "utf8")) === text) return false;
+    if (
+      (await readNoteInside(root, absolute, relative(vaultDir, absolute))) ===
+      text
+    )
+      return false;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -140,17 +163,7 @@ async function writeAtomic(
     dirname(absolute),
     `.${basename(absolute)}.${randomBytes(6).toString("hex")}.tmp`,
   );
-  try {
-    await writeFile(temporary, text, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temporary, absolute);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  await replaceDurably(temporary, absolute, text, undefined, { root });
   return true;
 }
 
@@ -419,11 +432,23 @@ export async function exportVault(
 ): Promise<ExportReport> {
   const context = RequestContextSchema.safeParse(ctx);
   if (!context.success) throw new VaultError("invalid_context");
-  const vaultDir = resolve(options.vaultDir);
-  await assertVaultDirectory(vaultDir, [
+  const requestedVaultDir = resolve(options.vaultDir);
+  const vaultDir = await assertVaultDirectory(requestedVaultDir, [
     ...(options.privateRoots ?? []),
     options.skills.root,
   ]);
+  const root = await pinVaultRoot(vaultDir, true);
+  return withVaultLock(root, () =>
+    exportVaultLocked(ctx, { ...options, vaultDir }, root),
+  );
+}
+
+async function exportVaultLocked(
+  ctx: RequestContext,
+  options: ExportVaultOptions,
+  root: VaultRoot,
+): Promise<ExportReport> {
+  const vaultDir = options.vaultDir;
   const graphs = (
     options.graph === undefined
       ? []
@@ -446,7 +471,7 @@ export async function exportVault(
     byString(a.workspace.workspace_id, b.workspace.workspace_id),
   );
 
-  const previous = await readManifest(vaultDir);
+  const previous = await readManifest(root);
   if (previous && canonicalJson(previous.scope) !== canonicalJson(ctx.scope))
     throw new VaultError(
       "scope_mismatch",
@@ -576,7 +601,7 @@ export async function exportVault(
     const absolute = resolveInside(vaultDir, note.path);
     let current: string | null = null;
     try {
-      current = await readFileNoFollow(absolute, note.path);
+      current = await readNoteInside(root, absolute, note.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -594,7 +619,7 @@ export async function exportVault(
   for (const note of planned) {
     const absolute = resolveInside(vaultDir, note.path);
     const text = rendered.get(note.path) ?? renderNote(note);
-    if (await writeAtomic(vaultDir, absolute, text)) written += 1;
+    if (await writeAtomic(root, absolute, text)) written += 1;
     else unchanged += 1;
     counts[note.kind] = (counts[note.kind] ?? 0) + 1;
     manifestNotes.push({
@@ -620,7 +645,7 @@ export async function exportVault(
     try {
       // Never read through a link: a stale path swapped for a symlink is
       // left alone (and stays retained so the scan reports it).
-      current = await readFileNoFollow(absolute, stale.path);
+      current = await readNoteInside(root, absolute, stale.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       if (error instanceof VaultPathError) current = null;
@@ -635,7 +660,7 @@ export async function exportVault(
       stale.file_digest !== undefined &&
       sha256(current) === stale.file_digest
     ) {
-      await rm(absolute, { force: true });
+      await removeFileInside(root, absolute);
       removed += 1;
     } else {
       // The edited note stays tracked (as retained) so the next import can
@@ -661,7 +686,7 @@ export async function exportVault(
     notes: manifestNotes,
   };
   await writeAtomic(
-    vaultDir,
+    root,
     join(vaultDir, VAULT_MANIFEST_FILE),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );

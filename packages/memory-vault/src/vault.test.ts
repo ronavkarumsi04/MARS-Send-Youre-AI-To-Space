@@ -1,32 +1,43 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { createMemoryStore, type DurableMemoryStore } from "@mars/memory";
 import { SkillStore } from "@mars/skills";
+import { writeAtomic } from "./export";
 import {
   encodeSegment,
   encodeSourcePath,
   exportVault,
   importVault,
   parseNote,
+  scanVault,
   VAULT_MANIFEST_FILE,
   type VaultGraphArtifact,
   VaultManifestSchema,
   vaultStatus,
 } from "./index";
-import { readFileNoFollow } from "./paths";
+import {
+  contains,
+  pinVaultRoot,
+  readFileNoFollow,
+  readNoteInside,
+  VAULT_MAX_FILE_BYTES,
+} from "./paths";
 import { ImportReportSchema, StatusReportSchema } from "./schema";
 import { emitYaml, parseYaml } from "./yaml";
 
@@ -948,6 +959,74 @@ test("review: a vault that is a symlink into a private root is refused", async (
   ).rejects.toMatchObject({ code: "private_root" });
 });
 
+test("hardening: export, scan and import accept a symlinked vault root", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, root } = await fixture();
+  mkdirSync(vaultDir);
+  const linked = join(root, "vault-alias");
+  symlinkSync(vaultDir, linked, "dir");
+  const aliased = { ...common, vaultDir: linked };
+
+  const exported = await exportVault(ctx, aliased);
+  expect(exported.written).toBeGreaterThan(0);
+  expect((await vaultStatus(ctx, aliased)).vault_dir).toBe(vaultDir);
+
+  writeFileSync(
+    join(vaultDir, "facts/fact-plain.md"),
+    read(vaultDir, "facts/fact-plain.md").replace("Fridays", "Mondays"),
+  );
+  const imported = await importVault(ctx, { ...aliased, actor: "tester" });
+  expect(imported.proposals.memory).toHaveLength(1);
+});
+
+test("race: export rejects root rebinding after its snapshot starts", async () => {
+  const { common, vaultDir, root, memory } = await fixture();
+  await exportVault(ctx, common);
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  const snapshot = memory.snapshot.bind(memory);
+  memory.snapshot = async (context) => {
+    const value = await snapshot(context);
+    renameSync(vaultDir, join(root, "moved-vault"));
+    symlinkSync(outside, vaultDir, "dir");
+    return value;
+  };
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  expect(readdirSync(outside)).toEqual([]);
+});
+
+for (const operation of ["scan", "import"] as const) {
+  test(`race: ${operation} rejects root rebinding without reading outside notes`, async () => {
+    const { common, vaultDir, root, memory } = await fixture();
+    await exportVault(ctx, common);
+    const outside = join(root, "outside");
+    cpSync(vaultDir, outside, { recursive: true });
+    writeFileSync(
+      join(outside, "facts/fact-plain.md"),
+      read(outside, "facts/fact-plain.md").replace("Fridays", "Mondays"),
+    );
+    const snapshot = memory.snapshot.bind(memory);
+    let swapped = false;
+    memory.snapshot = async (context) => {
+      const value = await snapshot(context);
+      if (!swapped) {
+        swapped = true;
+        renameSync(vaultDir, join(root, "moved-vault"));
+        symlinkSync(outside, vaultDir, "dir");
+      }
+      return value;
+    };
+    const result =
+      operation === "scan"
+        ? scanVault(ctx, common)
+        : importVault(ctx, { ...common, actor: "tester" });
+    await expect(result).rejects.toMatchObject({ code: "path_escape" });
+    expect(await memory.listProposals(ctx, "pending")).toEqual([]);
+  });
+}
+
 test("review: an untracked note that is a symlink is refused, not proposed", async () => {
   if (process.platform === "win32") return;
   const { common, vaultDir, state, memory, skills } = await fixture();
@@ -1072,6 +1151,182 @@ test("review: stale-note cleanup never reads or removes through a symlink", asyn
   expect(readFileSync(outside, "utf8")).toBe(generated);
   const status = await vaultStatus(ctx, common);
   expect(status.memory.notes.invalid).toBe(1);
+});
+
+test("hardening: stale cleanup retains files behind an escaping parent symlink", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, state, memory } = await fixture();
+  await exportVault(ctx, common);
+  const generated = read(vaultDir, "facts/fact-plain.md");
+  const outside = join(state, "outside-facts");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "fact-plain.md"), generated);
+  await memory.batch(
+    ctx,
+    1,
+    ["fact-plain", "fact-graph", "fact-profile"].map((entry_id) => ({
+      operation: "remove" as const,
+      entry_id,
+    })),
+  );
+  rmSync(join(vaultDir, "facts"), { recursive: true });
+  symlinkSync(outside, join(vaultDir, "facts"));
+  const report = await exportVault(ctx, common);
+  expect(report).toMatchObject({ removed: 0, kept_modified: 3 });
+  expect(readFileSync(join(outside, "fact-plain.md"), "utf8")).toBe(generated);
+});
+
+test("hardening: export and scan refuse a symlinked manifest", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, state } = await fixture();
+  await exportVault(ctx, common);
+  const manifest = read(vaultDir, VAULT_MANIFEST_FILE);
+  const outside = join(state, "manifest.json");
+  writeFileSync(outside, manifest);
+  rmSync(join(vaultDir, VAULT_MANIFEST_FILE));
+  symlinkSync(outside, join(vaultDir, VAULT_MANIFEST_FILE));
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  await expect(vaultStatus(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  expect(readFileSync(outside, "utf8")).toBe(manifest);
+});
+
+test("durability: concurrent exports serialize snapshots and leave consistent notes", async () => {
+  const { common, vaultDir, memory } = await fixture();
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  const snapshot = memory.snapshot.bind(memory);
+  const options = {
+    ...common,
+    memory: {
+      snapshot: async (context: RequestContext) => {
+        active++;
+        peak = Math.max(peak, active);
+        const result = await snapshot(context);
+        await Bun.sleep(30);
+        active--;
+        calls++;
+        return {
+          ...result,
+          revision: result.revision + calls,
+          entries: result.entries.map((entry) => ({
+            ...entry,
+            fact: `${entry.fact} round-${calls}`,
+          })),
+        };
+      },
+      submitProposal: memory.submitProposal.bind(memory),
+      listProposals: memory.listProposals.bind(memory),
+    },
+  };
+  await Promise.all([exportVault(ctx, options), exportVault(ctx, options)]);
+  expect(calls).toBe(2);
+  expect(peak).toBe(1);
+  const manifest = VaultManifestSchema.parse(
+    JSON.parse(read(vaultDir, VAULT_MANIFEST_FILE)),
+  );
+  expect(manifest.memory_revision).toBe(3);
+  for (const note of manifest.notes) {
+    expect(
+      parseNote(read(vaultDir, note.path)).frontmatter.content_digest,
+    ).toBe(note.content_digest);
+    if (note.kind === "memory_fact")
+      expect(
+        parseNote(read(vaultDir, note.path)).body.endsWith("round-2"),
+      ).toBe(true);
+  }
+  expect(readdirSync(vaultDir).filter((name) => name.includes("lock"))).toEqual(
+    [],
+  );
+});
+
+test("bounds: oversized notes are diagnosed and oversized manifests fail clearly", async () => {
+  const { common, vaultDir } = await fixture();
+  await exportVault(ctx, common);
+  await truncate(join(vaultDir, "facts/fact-plain.md"), 16 * 1024 * 1024 + 1);
+  const status = await vaultStatus(ctx, common);
+  expect(status.memory.notes.invalid).toBe(1);
+  const report = await importVault(ctx, { ...common, actor: "test" });
+  expect(
+    report.items.find((item) => item.path === "facts/fact-plain.md")?.reason,
+  ).toContain("file_too_large");
+  await truncate(join(vaultDir, VAULT_MANIFEST_FILE), 16 * 1024 * 1024 + 1);
+  await expect(vaultStatus(ctx, common)).rejects.toMatchObject({
+    code: "file_too_large",
+  });
+});
+
+test("locking: simultaneous imports submit a changed note only once", async () => {
+  const { common, vaultDir, memory } = await fixture();
+  await exportVault(ctx, common);
+  writeFileSync(
+    join(vaultDir, "facts/fact-plain.md"),
+    read(vaultDir, "facts/fact-plain.md").replace("Fridays", "Mondays"),
+  );
+  const reports = await Promise.all([
+    importVault(ctx, { ...common, actor: "test" }),
+    importVault(ctx, { ...common, actor: "test" }),
+  ]);
+  expect(reports.flatMap((report) => report.proposals.memory)).toHaveLength(1);
+  expect(await memory.listProposals(ctx, "pending")).toHaveLength(1);
+});
+
+test("containment: notes directly in the vault root are accepted", async () => {
+  const { vaultDir } = await fixture();
+  mkdirSync(vaultDir);
+  writeFileSync(join(vaultDir, "root.md"), "root note");
+  expect(contains(vaultDir, vaultDir)).toBe(true);
+  expect(
+    await readNoteInside(
+      await pinVaultRoot(vaultDir),
+      join(vaultDir, "root.md"),
+      "root.md",
+    ),
+  ).toBe("root note");
+});
+
+test("bounds: byte limits accept empty files and exact-limit UTF-8 content", async () => {
+  const { vaultDir } = await fixture();
+  mkdirSync(vaultDir);
+  const path = join(vaultDir, "limit.md");
+  writeFileSync(path, "");
+  expect(await readFileNoFollow(path, "limit.md")).toBe("");
+  const content = "é".repeat(VAULT_MAX_FILE_BYTES / 2);
+  writeFileSync(path, content);
+  expect(await readFileNoFollow(path, "limit.md")).toBe(content);
+});
+
+test("bounds: generated notes and manifests cannot exceed their read limit", async () => {
+  const { common, vaultDir, memory } = await fixture();
+  const snapshot = memory.snapshot.bind(memory);
+  memory.snapshot = async (context) => {
+    const current = await snapshot(context);
+    return {
+      ...current,
+      entries: current.entries.map((entry) => ({
+        ...entry,
+        fact: "é".repeat(VAULT_MAX_FILE_BYTES / 2),
+      })),
+    };
+  };
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "file_too_large",
+  });
+  expect(existsSync(join(vaultDir, "facts/fact-plain.md"))).toBe(false);
+  const manifest = join(vaultDir, VAULT_MANIFEST_FILE);
+  writeFileSync(manifest, "original manifest");
+  await expect(
+    writeAtomic(
+      await pinVaultRoot(vaultDir),
+      manifest,
+      "é".repeat(VAULT_MAX_FILE_BYTES / 2 + 1),
+    ),
+  ).rejects.toMatchObject({ code: "file_too_large" });
+  expect(readFileSync(manifest, "utf8")).toBe("original manifest");
 });
 
 test("review: readFileNoFollow refuses links and non-files even at open time", async () => {
