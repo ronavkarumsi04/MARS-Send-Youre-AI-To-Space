@@ -123,7 +123,7 @@ export class McpPackageStore {
       let meta = await lstat(path);
       if (meta.isSymbolicLink()) {
         const target = await realpath(path);
-        if (excluded.has(target))
+        if ([...excluded].some((data) => within(data, target)))
           throw new Error("Package link points to excluded data.");
         if (within(origin, target)) {
           entries.push({

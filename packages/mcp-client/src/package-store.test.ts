@@ -58,6 +58,17 @@ test("installs the same private revision once and preserves layout and modes", a
   expect(await readdir(directory)).toEqual([a.sha]);
 });
 
+test("a link into an excluded folder cannot publish a broken package", async () => {
+  const { src, store } = await fixture();
+  const data = join(src, "data");
+  await mkdir(data);
+  await writeFile(join(data, "record"), "mutable");
+  await symlink("data/record", join(src, "alias"));
+  await expect(store.inspect({ path: src, exclude: [data] })).rejects.toThrow(
+    "excluded data",
+  );
+});
+
 test("failed installs publish nothing and reclaim dead but not live staging directories", async () => {
   const { src, directory, store } = await fixture();
   const file = join(src, "entry");
