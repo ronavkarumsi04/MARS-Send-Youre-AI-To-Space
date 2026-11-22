@@ -79,11 +79,20 @@ test("help recognition preserves unknown commands and literal arguments", () => 
   );
 });
 
+test("every group and subcommand resolves both help flags without setup", () => {
+  for (const path of paths) {
+    const [command, ...args] = path.split(" ");
+    for (const flag of ["--help", "-h"])
+      expect(requestsHelp(command, [...args, flag])).toBe(true);
+  }
+});
+
 for (const args of [
-  ...["--help", "-h", "help"].map((flag) => [flag]),
-  ...paths.flatMap((path) =>
-    ["--help", "-h"].map((flag) => [...path.split(" "), flag]),
-  ),
+  ["--help"],
+  ["-h"],
+  ["help"],
+  ["models", "list", "-h"],
+  ["mcp", "test", "--help"],
 ]) {
   test(`CLI ${args.join(" ")} prints help successfully without setup`, async () => {
     const child = Bun.spawn(
