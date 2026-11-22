@@ -73,6 +73,7 @@ export class SkillsController {
         connected: false,
         skills: [],
         proposals: [],
+        busy: null,
         notice: {
           kind: "info",
           text: "Connect to a MARS server in the Tasks view first.",
@@ -92,10 +93,12 @@ export class SkillsController {
     this.emit({ busy: label, notice: null });
     try {
       const done = await work(client);
+      if (this.options.client() !== client) return;
       const [skills, proposals] = await Promise.all([
         client.skills(),
         client.skillProposals(),
       ]);
+      if (this.options.client() !== client) return;
       this.emit({
         connected: true,
         skills,
@@ -104,6 +107,7 @@ export class SkillsController {
         notice: done ? { kind: "info", text: done } : null,
       });
     } catch (error) {
+      if (this.options.client() !== client) return;
       this.emit({
         busy: null,
         notice: {
@@ -111,6 +115,11 @@ export class SkillsController {
           text: error instanceof Error ? error.message : String(error),
         },
       });
+    } finally {
+      if (this.options.client() !== client) {
+        this.emit({ busy: null });
+        await this.refresh();
+      }
     }
   }
 

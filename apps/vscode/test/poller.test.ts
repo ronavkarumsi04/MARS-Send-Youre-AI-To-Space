@@ -18,6 +18,40 @@ function manualSleep() {
 }
 
 describe("EventPoller", () => {
+  test("a poke during a fetch skips backoff and resets the delay", async () => {
+    const clock = manualSleep();
+    const pending = Promise.withResolvers<EventEnvelope[]>();
+    let calls = 0;
+    const poller = new EventPoller({
+      fetchBatch: async () => {
+        calls++;
+        return calls === 3 ? pending.promise : [];
+      },
+      onEvents: () => {},
+      sleep: clock.sleep,
+      minDelayMs: 100,
+      maxDelayMs: 800,
+    });
+    const loop = poller.start();
+    try {
+      await flush();
+      clock.tick();
+      await flush();
+      expect(clock.delays).toEqual([200, 400]);
+      clock.tick();
+      await flush();
+      expect(calls).toBe(3);
+      poller.poke();
+      pending.resolve([]);
+      await flush();
+      expect(calls).toBe(4);
+      expect(clock.delays).toEqual([200, 400, 200]);
+    } finally {
+      poller.dispose();
+      await loop;
+    }
+  });
+
   test("advances the cursor, deduplicates and never overlaps readers", async () => {
     const batches: EventEnvelope[][] = [
       [makeEvent("e1"), makeEvent("e2")],
