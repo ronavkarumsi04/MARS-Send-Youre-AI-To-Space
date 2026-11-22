@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistant } from "../src/main/assistant";
 import { hasRemovableKey } from "../src/main/model-key";
+import { createLoopbackTransport, TransportError } from "../src/main/transport";
 import { createController } from "../src/renderer/controller";
 import { settingsActions } from "../src/renderer/settings-actions";
+import { bridgeFailure, type ShellBridge } from "../src/shared/methods";
 import { findAll, MiniDocument } from "./mini-dom";
 import { fakeBridge, loadFixtureData } from "./test-utils";
 
@@ -52,6 +54,62 @@ test("a key pasted in chat never reaches the provider or history", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("task model failure stays distinct from offline workbench and opens native setup", async () => {
+  const fixture = await loadFixtureData();
+  const task = fixture.tasks[0];
+  if (!task) throw new Error("No fixture task");
+  task.status = "pending";
+  const doc = new MiniDocument();
+  let opened = 0;
+  const transport = createLoopbackTransport({
+    url: "http://127.0.0.1:1234",
+    token: "fixture",
+    fetch: Object.assign(
+      async () =>
+        Response.json(
+          { error: { code: "model_unavailable", message: "internal message" } },
+          { status: 503 },
+        ),
+      { preconnect: () => {} },
+    ),
+  });
+  const bridge: ShellBridge = {
+    ...fakeBridge(fixture),
+    "tasks.start": async (params) => {
+      try {
+        await transport.send({ method: "tasks.start", params });
+        throw new Error("unexpected success");
+      } catch (error) {
+        if (!(error instanceof TransportError)) throw error;
+        return bridgeFailure(error.kind);
+      }
+    },
+  };
+  const ctl = createController(bridge, doc, doc.root, undefined, {
+    request: async (req) => {
+      if (req.action === "settings") opened++;
+      return {
+        ok: true,
+        workspace: "a",
+        configured: false,
+        canConfigure: true,
+        sessions: [],
+      };
+    },
+  });
+  await ctl.load();
+  const by = (key: string, value: string) =>
+    findAll(doc.root, (el) => el.getAttribute(key) === value)[0];
+  by("data-page", "tasks")?.click();
+  by("data-action", "start-task")?.click();
+  await Bun.sleep(0);
+  expect(doc.root.textContent).toContain("No OpenRouter key is configured");
+  expect(doc.root.textContent).not.toContain("Workbench is unavailable");
+  by("data-focus-key", "task-add-key")?.click();
+  expect(opened).toBe(1);
+  expect(by("data-panel", "settings")).toBeDefined();
 });
 
 test("attached workbench without a key explains environment setup without offering a settings window", async () => {

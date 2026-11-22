@@ -1240,6 +1240,10 @@ p {
 }
 
 /* Secure model entry is a real native window, not a credential field in chat. */
+#close-settings {
+  margin-left: auto;
+  padding: 4px 10px;
+}
 .model-settings {
   overflow: auto;
 }

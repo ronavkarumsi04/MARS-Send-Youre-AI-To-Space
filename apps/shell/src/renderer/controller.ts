@@ -6,7 +6,7 @@ import type {
 } from "@mars/team-chat";
 import { type ProjectionEvent, projectTranscript } from "@mars/ui-core";
 import type { AssistantApi } from "../shared/assistant";
-import type { BridgeResult, ShellBridge } from "../shared/methods";
+import type { BridgeError, BridgeResult, ShellBridge } from "../shared/methods";
 import {
   TEAM_CHAT_MAX_MESSAGE_CHARS,
   TEAM_CHAT_MAX_SEARCH_CHARS,
@@ -43,6 +43,12 @@ const FOCUS_KEY = "data-focus-key";
 const DEFAULT_PAID_MODEL_ID = "claude-sonnet-4-5";
 
 type OptionalValue<T> = { ok: true; value: T } | { ok: false; error: string };
+
+class WorkbenchFailure extends Error {
+  constructor(readonly detail: BridgeError) {
+    super(detail.message);
+  }
+}
 
 function textLike(mediaType: string): boolean {
   return mediaType.startsWith("text/") || TEXT_MEDIA_TYPES.has(mediaType);
@@ -568,7 +574,7 @@ export function createController(
 
   const value = async <T>(pending: Promise<BridgeResult<T>>): Promise<T> => {
     const result = await pending;
-    if (!result.ok) throw new Error(result.error.message);
+    if (!result.ok) throw new WorkbenchFailure(result.error);
     return result.result;
   };
 
@@ -1105,6 +1111,9 @@ export function createController(
           modelChoice: snapshot.modelChoice,
           paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
           paidModelConsent: snapshot.paidModelConsent,
+          modelUnavailable:
+            error instanceof WorkbenchFailure &&
+            error.detail.kind === "model_unavailable",
           actionError:
             error instanceof Error
               ? `Task created, but failed to start: ${error.message}`
@@ -1137,7 +1146,11 @@ export function createController(
         return;
       }
     }
-    const nextLaunch: LaunchCardState = { ...launch, busy: true };
+    const nextLaunch: LaunchCardState = {
+      ...launch,
+      busy: true,
+      modelUnavailable: false,
+    };
     delete nextLaunch.actionError;
     delete nextLaunch.actionNotice;
     launch = nextLaunch;
@@ -1176,6 +1189,9 @@ export function createController(
         busy: false,
         actionError:
           error instanceof Error ? error.message : "Failed to start task.",
+        modelUnavailable:
+          error instanceof WorkbenchFailure &&
+          error.detail.kind === "model_unavailable",
       };
       render();
     }

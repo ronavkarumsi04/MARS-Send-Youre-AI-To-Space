@@ -57,6 +57,7 @@ export type LaunchCardState = {
   steerDraft: string;
   busy: boolean;
   actionNotice?: string;
+  modelUnavailable?: boolean;
   actionError?: string;
 };
 
@@ -384,6 +385,25 @@ function approvalAndLifecycleCard(
     : null;
 
   if (task.status === "pending") {
+    const keyMissing =
+      state.assistant?.canConfigure && !state.assistant.configured;
+    const modelHelp =
+      launch.modelUnavailable && keyMissing
+        ? h(
+            doc,
+            "button",
+            {
+              type: "button",
+              class: "connect-action",
+              "data-focus-key": "task-add-key",
+            },
+            "Add OpenRouter API key",
+          )
+        : null;
+    modelHelp?.addEventListener("click", () => {
+      state.onPage?.("settings");
+      state.assistant?.onSettings?.();
+    });
     const modelSelect = h(
       doc,
       "select",
@@ -555,6 +575,20 @@ function approvalAndLifecycleCard(
       h(doc, "div", { class: "action-buttons" }, startBtn, cancelBtn),
       notice,
       error,
+      modelHelp
+        ? h(
+            doc,
+            "div",
+            { class: "connect-notice" },
+            h(
+              doc,
+              "p",
+              {},
+              "No OpenRouter key is configured. Add one in Settings, then return here to start this task.",
+            ),
+            modelHelp,
+          )
+        : null,
     );
   }
 
