@@ -91,8 +91,8 @@ test("only exact same-origin assets resolve and preferences stay sandboxed", asy
   );
   expect(css).not.toMatch(/@import\b/i);
   expect(css.match(/url\s*\([^)]*\)/gi)).toEqual([
-    'url("./Switzer-Medium.woff2")',
-    'url("./GeneralSans-Regular.woff2")',
+    'url("./Manrope-Variable.woff2")',
+    'url("./Inter-Variable.woff2")',
     'url("./CommitMono-Regular.woff2")',
     'url("./orbit.svg")',
   ]);

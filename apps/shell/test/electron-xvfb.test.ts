@@ -304,8 +304,8 @@ test.skipIf(!PACKAGED_ELECTRON)(
       ).toEqual({ mcp: 3, skill: 5, plugin: 3 });
       for (const spec of [
         '12px "Commit Mono"',
-        '14px "General Sans"',
-        "500 32px Switzer",
+        '14px "Inter"',
+        "500 32px Manrope",
       ]) {
         expect(
           await cdp.evaluate(

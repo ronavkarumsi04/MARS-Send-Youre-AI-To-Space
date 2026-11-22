@@ -1,14 +1,14 @@
-/* Orbital editorial: the MARS website's exact typefaces and black / ivory palette. */
+/* Orbital editorial: licensed, local type on a black / ivory palette. */
 @font-face {
-  font-family: Switzer;
-  src: url("./Switzer-Medium.woff2") format("woff2");
-  font-weight: 500;
+  font-family: Manrope;
+  src: url("./Manrope-Variable.woff2") format("woff2");
+  font-weight: 200 800;
   font-display: swap;
 }
 @font-face {
-  font-family: "General Sans";
-  src: url("./GeneralSans-Regular.woff2") format("woff2");
-  font-weight: 400;
+  font-family: "Inter";
+  src: url("./Inter-Variable.woff2") format("woff2");
+  font-weight: 100 900;
   font-display: swap;
 }
 @font-face {
@@ -38,8 +38,8 @@
   --paperMuted: #625e58;
   --paperLine: #c8c1b7;
   --mono: "Commit Mono", ui-monospace, monospace;
-  --display: Switzer, "General Sans", sans-serif;
-  --body: "General Sans", system-ui, sans-serif;
+  --display: Manrope, "Inter", sans-serif;
+  --body: "Inter", system-ui, sans-serif;
   --radius: 2px;
   color: var(--fg);
   background: var(--pageBg);
@@ -166,7 +166,10 @@ p {
   min-height: 0;
   overflow: auto;
 }
-.inspector-hidden > .inspector {
+.workspace-panels {
+  display: contents;
+}
+.inspector-hidden .inspector {
   display: none;
 }
 .sidebar {
@@ -193,7 +196,7 @@ p {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-bottom: 35px;
+  margin-bottom: 20px;
 }
 .brand {
   margin: 0;
@@ -223,8 +226,8 @@ p {
 .workspace-switcher {
   display: grid;
   gap: 7px;
-  padding: 16px 0 21px;
-  margin-bottom: 20px;
+  padding: 12px 0 15px;
+  margin-bottom: 8px;
   border-top: 1px solid var(--paperLine);
 }
 .workspace-label,
@@ -291,7 +294,7 @@ p {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  margin-top: 30px;
+  margin-top: 17px;
 }
 .sidebar-history .sidebar-label {
   margin: 0 0 15px;
@@ -505,85 +508,81 @@ p {
   overflow: auto;
   padding: 35px max(38px, calc((100% - 1000px) / 2));
 }
+.assistant-main.is-empty {
+  overflow: auto;
+  background:
+    radial-gradient(ellipse at 65% 44%, #211c2080, transparent 66%),
+    var(--pageBg);
+}
 .is-empty .assistant-scroll {
-  display: flex;
-  flex-direction: column;
-  justify-content: safe center;
+  flex: 0 0 auto;
+  overflow: visible;
+  margin-top: auto;
+  padding: 24px 24px 4px;
 }
 .assistant-welcome {
   position: relative;
   width: 100%;
-  max-width: 1000px;
-  margin: auto;
-  padding: 20px 0 4px;
-  isolation: isolate;
+  text-align: center;
 }
 .assistant-welcome h1 {
-  position: relative;
-  z-index: 1;
   margin: 0;
-  max-width: 72%;
-  font: 500 clamp(46px, 5.7vw, 86px) / 0.99 var(--display);
-  letter-spacing: -0.065em;
+  font: 550 clamp(36px, 4.4vw, 68px) / 1.1 var(--display);
+  letter-spacing: -0.045em;
+  text-wrap: balance;
 }
-.assistant-welcome h1 span {
-  display: block;
+.assistant-welcome .eyebrow {
+  margin: 0 0 8px;
+  color: #cab596;
+  font: 600 10px / 1.4 var(--body);
+  letter-spacing: 0.14em;
 }
 .welcome-subtitle {
-  position: relative;
-  max-width: 49ch;
-  width: 58%;
-  margin: 24px 0 32px;
-  font-size: 13px;
-  line-height: 1.8;
+  margin: 12px 0 5px;
   color: var(--muted);
+  font-size: 15px;
 }
 .orbit-mark {
-  position: absolute;
-  z-index: -1;
-  right: -28px;
-  top: -30px;
-  width: 44%;
-  height: 280px;
+  width: 74px;
+  height: 48px;
+  margin: 0 auto 8px;
   overflow: hidden;
   text-indent: -9999px;
   background: url("./orbit.svg") center / contain no-repeat;
-  opacity: 0.85;
-  pointer-events: none;
 }
 .suggestion-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 22px;
-  margin-top: 35px;
+  gap: 10px;
+  margin: 16px 0 0;
 }
 .suggestion {
   display: flex;
-  gap: 14px;
   align-items: center;
+  gap: 9px;
+  padding: 15px 12px;
   text-align: left;
-  padding: 18px 0 11px;
-  border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  font-size: 12px;
+  background: var(--cardBg);
+  border: 1px solid var(--borderMuted);
+  border-radius: 9px;
+  font: 500 13px / 1.4 var(--body);
 }
 .suggestion-number {
-  color: var(--muted);
-  font: 9px / 1 var(--mono);
+  color: #cfb994;
+  font: 10px / 1 var(--mono);
 }
 .suggestion-arrow {
   margin-left: auto;
-  font-size: 18px;
-}
-.suggestion:hover:not(:disabled) {
-  background: transparent;
-  color: white;
+  color: var(--muted);
 }
 .assistant-compose-wrap {
-  width: min(calc(100% - 76px), 1000px);
+  width: min(calc(100% - 64px), 820px);
   margin: 0 auto;
   padding: 6px 0 15px;
+}
+.is-empty .assistant-compose-wrap {
+  margin-bottom: auto;
+  padding-bottom: 24px;
 }
 .connect-notice {
   display: flex;
@@ -613,8 +612,8 @@ p {
   background: var(--paper);
   color: var(--paperInk);
   border: 1px solid var(--paper);
-  border-radius: 3px;
-  padding: 21px 22px 14px;
+  border-radius: 14px;
+  padding: 18px 20px 12px;
 }
 .assistant-composer:focus-within {
   box-shadow:
@@ -624,8 +623,9 @@ p {
 .assistant-input {
   display: block;
   width: 100%;
-  min-height: 60px;
+  min-height: 52px;
   max-height: 180px;
+  resize: vertical;
   background: transparent;
   color: var(--paperInk);
   border: 0;
@@ -754,18 +754,22 @@ p {
   margin-bottom: 12px;
 }
 .task-header h1 {
-  margin: 0 0 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font: 500 27px / 1.15 var(--display);
-  letter-spacing: -0.04em;
+  margin: 0;
+  font: 600 clamp(34px, 3.3vw, 54px) / 1.08 var(--display);
+  letter-spacing: -0.045em;
+}
+.task-identifier {
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font: 11px / 1.5 var(--mono);
+  overflow-wrap: anywhere;
 }
 .task-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px 14px;
+  gap: 6px 14px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .status {
   display: inline-flex;
@@ -805,8 +809,8 @@ p {
   padding: 8px 10px;
 }
 .transcript {
-  flex: 1 0 140px;
-  overflow: auto;
+  flex: none;
+  overflow: visible;
   padding: 22px 38px;
   font-size: 12px;
 }
@@ -888,9 +892,28 @@ p {
   border-radius: 2px;
 }
 .composer-card {
-  border-top: 2px solid var(--fg);
   margin-top: 8px;
+  background: #17151a;
+  border-radius: 14px;
+  padding: clamp(18px, 2vw, 30px);
 }
+.composer-card .eyebrow {
+  margin: 0 0 6px;
+}
+.composer-card .section-title {
+  font: 600 24px / 1.25 var(--display);
+  letter-spacing: -0.03em;
+}
+.composer-card :is(textarea, input[type="text"]) {
+  border-radius: 8px;
+  background: #100f12;
+  color: var(--fg);
+  font: 14px / 1.5 var(--body);
+}
+.composer-card .primary-btn {
+  border-radius: 7px;
+}
+
 .export-card,
 .consent-card {
   padding: 13px;
@@ -1506,17 +1529,111 @@ p {
   font-size: 11px;
 }
 
+/* Team messages use their own author line, not workbench evidence chrome. */
+.team-header h1 {
+  font: 600 clamp(32px, 3vw, 48px) / 1.1 var(--display);
+}
+.team-header .entry-badge {
+  border-radius: 99px;
+  padding: 4px 9px;
+  color: var(--muted);
+}
+.team-header-actions,
+.team-search-input,
+.team-close-btn,
+.team-search-btn {
+  font-size: 13px;
+}
+.team-layout {
+  grid-template-columns: clamp(180px, 18vw, 250px) minmax(0, 1fr);
+}
+.team-conversations {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--borderMuted);
+  background: var(--cardBg);
+}
+.team-conversations .eyebrow {
+  margin: 20px 16px 8px;
+}
+.team-conv-list {
+  border: 0;
+  padding: 0 9px 18px;
+}
+.team-conv-item {
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 5px;
+}
+.team-conv-btn {
+  display: grid;
+  gap: 5px;
+  min-width: min(92px, 100%);
+  border-radius: 8px;
+  font: 550 14px / 1.4 var(--body);
+}
+.team-conv-btn .entry-badge {
+  width: fit-content;
+}
+.team-pin-btn {
+  font: 500 12px / 1.3 var(--body);
+  border: 1px solid var(--borderMuted);
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.team-thread {
+  background: var(--pageBg);
+}
+.team-message {
+  padding: 12px 8px 18px;
+}
+.team-message-header {
+  justify-content: flex-start;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+.team-message-header strong {
+  font-weight: 600;
+}
+.team-message-header .muted {
+  font: 11px / 1.4 var(--body);
+}
+.team-message-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 14px / 1.65 var(--body);
+}
+.team-search-input,
+.team-viewer-select,
+.team-close-btn,
+.team-search-btn {
+  background: var(--infoBg);
+  border-radius: 7px;
+}
+.team-composer {
+  border: 1px solid var(--borderMuted);
+  background: var(--infoBg);
+  border-radius: 12px;
+  padding: 10px;
+}
+.team-composer-input {
+  border: 0;
+  background: transparent;
+  min-height: 48px;
+  font: 14px / 1.5 var(--body);
+  resize: vertical;
+}
+.team-send-btn {
+  border-radius: 7px;
+  font-size: 12px;
+}
+
 /* Desktop responsiveness: keep the work usable, not just the opening screen. */
 @media (min-width: 1500px) {
   .sidebar {
     padding-top: 38px;
-  }
-  .assistant-welcome {
-    padding-block: 35px;
-  }
-  .orbit-mark {
-    height: 340px;
-    top: -45px;
   }
 }
 @media (max-width: 1150px) {
@@ -1538,23 +1655,6 @@ p {
   .brand-tag {
     font-size: 7px;
   }
-  .assistant-welcome h1 {
-    font-size: 62px;
-  }
-  .orbit-mark {
-    width: 42%;
-    right: -16px;
-    top: -5px;
-    height: 230px;
-    opacity: 0.65;
-  }
-  .suggestion-grid {
-    gap: 15px;
-  }
-  .suggestion {
-    gap: 9px;
-    font-size: 11px;
-  }
   .extensions-content,
   .settings-content {
     padding: 32px;
@@ -1571,19 +1671,25 @@ p {
   .app-shell.inspector-hidden {
     grid-template-columns: 190px minmax(0, 1fr);
   }
-  .app-shell:not(.inspector-hidden) {
-    grid-template-rows: 36px minmax(0, 3fr) minmax(0, 2fr) 28px;
+  /* One reading surface: timeline, new task form, then optional details. */
+  .workspace-panels {
+    display: block;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
   }
-  .app-shell.clean-chrome:not(.inspector-hidden) {
-    grid-template-rows: 0 minmax(0, 3fr) minmax(0, 2fr) 28px;
+  .workspace-panels > .main {
+    min-height: 100%;
   }
-  .app-shell:not(.inspector-hidden) .sidebar {
-    grid-row: 2 / 4;
+  .workspace-panels > .assistant-main,
+  .workspace-panels > .main:has(.team-pane) {
+    height: 100%;
   }
-  .app-shell:not(.inspector-hidden) .inspector {
-    grid-column: 2;
-    grid-row: 3;
+  .workspace-panels > .inspector {
+    overflow: visible;
     border-top: 1px solid var(--borderMuted);
+    border-left: none;
+    padding: 20px 24px;
   }
   .brand {
     font-size: 35px;
@@ -1607,25 +1713,6 @@ p {
   }
   .assistant-compose-wrap {
     width: calc(100% - 50px);
-  }
-  .assistant-welcome h1 {
-    font-size: 54px;
-    max-width: 100%;
-  }
-  .welcome-subtitle {
-    width: 75%;
-  }
-  .orbit-mark {
-    width: 45%;
-    right: -15px;
-    top: -16px;
-    opacity: 0.3;
-  }
-  .suggestion-number {
-    display: none;
-  }
-  .suggestion {
-    font-size: 10px;
   }
   .main-toolbar {
     padding: 24px;
@@ -1703,16 +1790,6 @@ p {
   .workspace-switcher strong {
     font-size: 11px;
   }
-  .assistant-welcome h1 {
-    font-size: 40px;
-  }
-  .welcome-subtitle {
-    width: 100%;
-    font-size: 12px;
-  }
-  .orbit-mark {
-    display: none;
-  }
   .assistant-scroll,
   .workspace-toolbar {
     padding-inline: 20px;
@@ -1728,14 +1805,6 @@ p {
   }
   .composer-mode {
     display: none;
-  }
-  .suggestion-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
-    margin-top: 20px;
-  }
-  .suggestion {
-    padding: 10px 0;
   }
   .connect-notice {
     flex-wrap: wrap;
@@ -1773,27 +1842,8 @@ p {
   }
 }
 @media (max-height: 780px) {
-  .assistant-welcome {
-    padding-block: 4px;
-  }
-  .assistant-welcome h1 {
-    font-size: clamp(42px, 5vw, 70px);
-  }
   .assistant-scroll {
     padding-block: 20px;
-  }
-  .assistant-welcome .eyebrow {
-    margin-bottom: 16px;
-  }
-  .welcome-subtitle {
-    margin-block: 18px;
-  }
-  .suggestion-grid {
-    margin-top: 20px;
-  }
-  .orbit-mark {
-    height: 230px;
-    top: -10px;
   }
   .assistant-input {
     min-height: 46px;
@@ -1836,5 +1886,35 @@ p {
   }
   .assistant-welcome .eyebrow {
     margin-bottom: 9px;
+  }
+}
+
+@media (max-width: 650px) {
+  .suggestion-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .suggestion {
+    padding-block: 8px;
+  }
+  .team-conversations {
+    max-height: 150px;
+  }
+}
+@media (max-height: 740px) {
+  .brand-row {
+    margin-bottom: 12px;
+  }
+  .sidebar {
+    padding-top: 20px;
+  }
+  .sidebar-bottom {
+    padding-top: 10px;
+  }
+  .is-empty .assistant-scroll {
+    padding-block: 14px 0;
+  }
+  .orbit-mark {
+    height: 32px;
   }
 }

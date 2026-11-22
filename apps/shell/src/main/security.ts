@@ -50,8 +50,8 @@ export function resolveAppAsset(
     "/settings.html": "text/html; charset=utf-8",
     "/settings.js": "text/javascript; charset=utf-8",
     "/CommitMono-Regular.woff2": "font/woff2",
-    "/Switzer-Medium.woff2": "font/woff2",
-    "/GeneralSans-Regular.woff2": "font/woff2",
+    "/Manrope-Variable.woff2": "font/woff2",
+    "/Inter-Variable.woff2": "font/woff2",
   };
   const mediaType = assets[parsed.pathname];
   if (!mediaType) return null;

@@ -125,7 +125,7 @@ test("pending task details stay visible when workspace sections are unavailable"
   const snapshot = serialize(document.root);
   expect(snapshot).toContain('data-task-id="fixture-pending"');
   expect(snapshot).toContain(
-    '<h1 data-focus-key="heading" tabindex="-1">Task fixture-pending</h1>',
+    '<h1 data-focus-key="heading" tabindex="-1">Task overview</h1>',
   );
   expect(snapshot).toContain("Pending sample task.");
   expect(snapshot).toContain("unavailable · Workbench resource was not found.");
@@ -455,8 +455,10 @@ test("a session click during an in-flight load queues the selected task", async 
   );
   await controller.settled();
   expect(
-    findAll(document.root, (element) => element.tagName === "H1")[1]
-      ?.textContent,
+    findAll(
+      document.root,
+      (element) => element.getAttribute("class") === "task-identifier",
+    )[0]?.textContent,
   ).toContain("fixture-completed-verified");
 });
 

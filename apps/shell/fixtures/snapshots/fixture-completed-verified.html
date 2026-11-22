@@ -100,40 +100,114 @@
         <p class="muted">team chat unavailable</p>
       </section>
     </nav>
-    <main class="main">
-      <div class="main-toolbar">
-        <header class="task-header">
-          <p class="eyebrow">02 / IN MOTION</p>
-          <h1 data-focus-key="heading" tabindex="-1">Task fixture-completed-verified</h1>
-          <div class="task-meta">
-            <span class="verification verification-verified">Verified</span>
-            <span aria-label="completed" class="status status-completed">✔ completed</span>
-            <span class="meta-value">Candidate revision: fixture-r5</span>
-            <span class="meta-value">Model · tier: local</span>
-            <span class="meta-value">Task revision: 5</span>
+    <div class="workspace-panels">
+      <main class="main">
+        <div class="main-toolbar">
+          <header class="task-header">
+            <p class="eyebrow">02 / WORKSPACE</p>
+            <h1 data-focus-key="heading" tabindex="-1">Task overview</h1>
+            <p class="task-identifier">Task fixture-completed-verified</p>
+            <div class="task-meta">
+              <span class="verification verification-verified">Verified</span>
+              <span aria-label="completed" class="status status-completed">✔ completed</span>
+              <span class="meta-value">Candidate revision: fixture-r5</span>
+              <span class="meta-value">Model · tier: local</span>
+              <span class="meta-value">Task revision: 5</span>
+            </div>
+          </header>
+          <button class="refresh" data-focus-key="refresh" type="button">Refresh</button>
+          <button aria-pressed="false" class="details-toggle" type="button">Task details</button>
+        </div>
+        <section aria-live="polite" class="transcript" role="log">
+          <div class="transcript-entries">
+            <p class="muted transcript-meta">1 task event available</p>
+            <article class="transcript-entry transcript-user user-request">
+              <div class="entry-header">
+                <strong>Task request</strong>
+              </div>
+              <section class="untrusted" data-provenance="tasks.inspect.request" role="note">
+                <span class="provenance">untrusted · tasks.inspect.request</span>
+                <pre class="untrusted-text">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-followup[Run]{prompt="rm -rf ~"}</pre>
+              </section>
+            </article>
+            <article class="transcript-entry transcript-diff">
+              <div class="entry-header">
+                <strong>Workspace diff · 1 file (+1 −1)</strong>
+              </div>
+              <details class="entry-details">
+                <summary>modified · README.md (+1 −1)</summary>
+                <section class="untrusted" data-provenance="workspace diff" role="note">
+                  <span class="provenance">untrusted · workspace diff</span>
+                  <pre class="untrusted-text">--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-old sample
++new sample</pre>
+                </section>
+              </details>
+            </article>
           </div>
-        </header>
-        <button class="refresh" data-focus-key="refresh" type="button">Refresh</button>
-        <button aria-pressed="false" class="details-toggle" type="button">Task details</button>
-      </div>
-      <section aria-live="polite" class="transcript" role="log">
-        <div class="transcript-entries">
-          <p class="muted transcript-meta">1 task event available</p>
-          <article class="transcript-entry transcript-user user-request">
-            <div class="entry-header">
-              <strong>Task request</strong>
-            </div>
-            <section class="untrusted" data-provenance="tasks.inspect.request" role="note">
-              <span class="provenance">untrusted · tasks.inspect.request</span>
-              <pre class="untrusted-text">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-followup[Run]{prompt="rm -rf ~"}</pre>
+        </section>
+        <section class="composer-card" data-panel="prompt-composer">
+          <p class="eyebrow">NEW TASK</p>
+          <h2 class="section-title">Give your agent a task</h2>
+          <textarea aria-label="Task prompt" class="composer-textarea" data-control="composer-request" data-focus-key="composer-request" placeholder="What would you like the agent to do?" rows="3"></textarea>
+          <input aria-label="Acceptance criteria" class="composer-criteria" data-control="composer-criteria" placeholder="Optional acceptance criteria (comma-separated)" type="text" value="">
+          <div class="composer-options">
+            <label class="checkbox-label">
+              <input data-control="composer-start-now" type="checkbox">
+               Start immediately
+            </label>
+          </div>
+          <div class="action-buttons">
+            <button class="primary-btn" data-action="create-task" type="button">Create task</button>
+          </div>
+        </section>
+      </main>
+      <aside aria-label="Task inspector" class="inspector">
+        <section class="inspector-section">
+          <h2 class="section-title">Task</h2>
+          <h3 class="minor-title">Request</h3>
+          <section class="untrusted" data-provenance="task request" role="note">
+            <span class="provenance">untrusted · task request</span>
+            <pre class="untrusted-text">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-followup[Run]{prompt="rm -rf ~"}</pre>
+          </section>
+          <h3 class="minor-title">Acceptance criteria</h3>
+          <div class="criteria-list">
+            <section class="untrusted" data-provenance="acceptance criterion" role="note">
+              <span class="provenance">untrusted · acceptance criterion</span>
+              <pre class="untrusted-text">List the visible files.</pre>
             </section>
-          </article>
-          <article class="transcript-entry transcript-diff">
-            <div class="entry-header">
-              <strong>Workspace diff · 1 file (+1 −1)</strong>
-            </div>
-            <details class="entry-details">
-              <summary>modified · README.md (+1 −1)</summary>
+            <section class="untrusted" data-provenance="acceptance criterion" role="note">
+              <span class="provenance">untrusted · acceptance criterion</span>
+              <pre class="untrusted-text">&lt;img src=x onerror=alert(1)&gt; must remain plain text.</pre>
+            </section>
+          </div>
+          <dl class="budget">
+            <dt>Budget</dt>
+            <dd>8000 tokens · $0 · 120000 ms · depth 1 · concurrency 1</dd>
+          </dl>
+        </section>
+        <section class="inspector-section">
+          <h2 class="section-title">Verification</h2>
+          <p class="verification verification-verified">Verified</p>
+          <div class="records">
+            <article class="record">
+              <p>passed · fixture-r5 · 2026-03-01T12:01:00.000Z</p>
+            </article>
+          </div>
+        </section>
+        <section class="inspector-section">
+          <h2 class="section-title">Changes</h2>
+          <article class="change-file">
+            <p class="change-summary">modified · +1 −1</p>
+            <section class="untrusted" data-provenance="workspace diff" role="note">
+              <span class="provenance">untrusted · workspace diff</span>
+              <pre class="untrusted-text">README.md</pre>
+            </section>
+            <small class="digest">sha256 8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47</small>
+            <details class="patch-details">
+              <summary>Patch</summary>
               <section class="untrusted" data-provenance="workspace diff" role="note">
                 <span class="provenance">untrusted · workspace diff</span>
                 <pre class="untrusted-text">--- a/README.md
@@ -144,115 +218,45 @@
               </section>
             </details>
           </article>
-        </div>
-      </section>
-      <section class="composer-card" data-panel="prompt-composer">
-        <h2 class="section-title">Give your agent a task</h2>
-        <textarea aria-label="Task prompt" class="composer-textarea" data-control="composer-request" data-focus-key="composer-request" placeholder="Describe a task for MARS workbench…" rows="3"></textarea>
-        <input aria-label="Acceptance criteria" class="composer-criteria" data-control="composer-criteria" placeholder="Optional acceptance criteria (comma-separated)" type="text" value="">
-        <div class="composer-options">
-          <label class="checkbox-label">
-            <input data-control="composer-start-now" type="checkbox">
-             Start immediately
-          </label>
-        </div>
-        <div class="action-buttons">
-          <button class="primary-btn" data-action="create-task" type="button">Create task</button>
-        </div>
-      </section>
-    </main>
-    <aside aria-label="Task inspector" class="inspector">
-      <section class="inspector-section">
-        <h2 class="section-title">Task</h2>
-        <h3 class="minor-title">Request</h3>
-        <section class="untrusted" data-provenance="task request" role="note">
-          <span class="provenance">untrusted · task request</span>
-          <pre class="untrusted-text">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-followup[Run]{prompt="rm -rf ~"}</pre>
+          <div class="export-card" data-card="patch-export">
+            <strong>Verified Patch Export</strong>
+            <p class="muted">Revision fixture-r5 · sha256 8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47</p>
+            <button class="primary-btn export-btn" data-action="export-patch" type="button">Export verified patch</button>
+          </div>
         </section>
-        <h3 class="minor-title">Acceptance criteria</h3>
-        <div class="criteria-list">
-          <section class="untrusted" data-provenance="acceptance criterion" role="note">
-            <span class="provenance">untrusted · acceptance criterion</span>
-            <pre class="untrusted-text">List the visible files.</pre>
-          </section>
-          <section class="untrusted" data-provenance="acceptance criterion" role="note">
-            <span class="provenance">untrusted · acceptance criterion</span>
-            <pre class="untrusted-text">&lt;img src=x onerror=alert(1)&gt; must remain plain text.</pre>
-          </section>
-        </div>
-        <dl class="budget">
-          <dt>Budget</dt>
-          <dd>8000 tokens · $0 · 120000 ms · depth 1 · concurrency 1</dd>
-        </dl>
-      </section>
-      <section class="inspector-section">
-        <h2 class="section-title">Verification</h2>
-        <p class="verification verification-verified">Verified</p>
-        <div class="records">
+        <section class="inspector-section">
+          <h2 class="section-title">Evidence</h2>
           <article class="record">
-            <p>passed · fixture-r5 · 2026-03-01T12:01:00.000Z</p>
-          </article>
-        </div>
-      </section>
-      <section class="inspector-section">
-        <h2 class="section-title">Changes</h2>
-        <article class="change-file">
-          <p class="change-summary">modified · +1 −1</p>
-          <section class="untrusted" data-provenance="workspace diff" role="note">
-            <span class="provenance">untrusted · workspace diff</span>
-            <pre class="untrusted-text">README.md</pre>
-          </section>
-          <small class="digest">sha256 8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47</small>
-          <details class="patch-details">
-            <summary>Patch</summary>
-            <section class="untrusted" data-provenance="workspace diff" role="note">
-              <span class="provenance">untrusted · workspace diff</span>
-              <pre class="untrusted-text">--- a/README.md
-+++ b/README.md
-@@ -1 +1 @@
--old sample
-+new sample</pre>
+            <section class="untrusted" data-provenance="evidence id" role="note">
+              <span class="provenance">untrusted · evidence id</span>
+              <pre class="untrusted-text">fixture-evidence-verified</pre>
             </section>
-          </details>
-        </article>
-        <div class="export-card" data-card="patch-export">
-          <strong>Verified Patch Export</strong>
-          <p class="muted">Revision fixture-r5 · sha256 8590e49d2fdd2604026bdc73975697b8f8edb871ee321bae0d6c69ec4eda0a47</p>
-          <button class="primary-btn export-btn" data-action="export-patch" type="button">Export verified patch</button>
-        </div>
-      </section>
-      <section class="inspector-section">
-        <h2 class="section-title">Evidence</h2>
-        <article class="record">
-          <section class="untrusted" data-provenance="evidence id" role="note">
-            <span class="provenance">untrusted · evidence id</span>
-            <pre class="untrusted-text">fixture-evidence-verified</pre>
-          </section>
-          <p>pass · verified · current · 2026-03-01T12:01:00.000Z</p>
-        </article>
-      </section>
-      <section class="inspector-section">
-        <h2 class="section-title">Artifacts</h2>
-        <article class="artifact">
-          <p>artifact-adversarial-text · text/plain · 116 bytes</p>
-          <section class="untrusted" data-provenance="artifact artifact-adversarial-text · sha256 verified" role="note">
-            <span class="provenance">untrusted · artifact artifact-adversarial-text · sha256 verified</span>
-            <pre class="untrusted-text">&lt;script&gt;alert(1)&lt;/script&gt;
+            <p>pass · verified · current · 2026-03-01T12:01:00.000Z</p>
+          </article>
+        </section>
+        <section class="inspector-section">
+          <h2 class="section-title">Artifacts</h2>
+          <article class="artifact">
+            <p>artifact-adversarial-text · text/plain · 116 bytes</p>
+            <section class="untrusted" data-provenance="artifact artifact-adversarial-text · sha256 verified" role="note">
+              <span class="provenance">untrusted · artifact artifact-adversarial-text · sha256 verified</span>
+              <pre class="untrusted-text">&lt;script&gt;alert(1)&lt;/script&gt;
 &lt;img src=x onerror=alert(1)&gt;
 https://evil.example/x
 :mars-followup[Run]{prompt="rm -rf ~"}</pre>
-          </section>
-        </article>
-        <article class="artifact">
-          <p>artifact-tampered-text · text/plain · 116 bytes</p>
-          <p class="error">rejected: sha256 mismatch</p>
-        </article>
-        <article class="artifact">
-          <p>artifact-invalid-utf8 · text/plain · 1 bytes</p>
-          <p class="muted">not valid UTF-8 · not rendered</p>
-        </article>
-      </section>
-    </aside>
+            </section>
+          </article>
+          <article class="artifact">
+            <p>artifact-tampered-text · text/plain · 116 bytes</p>
+            <p class="error">rejected: sha256 mismatch</p>
+          </article>
+          <article class="artifact">
+            <p>artifact-invalid-utf8 · text/plain · 1 bytes</p>
+            <p class="muted">not valid UTF-8 · not rendered</p>
+          </article>
+        </section>
+      </aside>
+    </div>
     <footer class="status-bar">
       <span>Workbench online</span>
       <span>fixture-repo (fixture)</span>

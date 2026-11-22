@@ -61,6 +61,17 @@ function conversationTitle(
   return conv.conversation_id;
 }
 
+const messageClock = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? messageClock.format(date) : value;
+}
+
 function renderMessage(
   doc: ShellDocument,
   message: MessageView,
@@ -148,14 +159,17 @@ function renderMessage(
       "div",
       { class: "team-message-header" },
       h(doc, "strong", {}, author),
-      h(
-        doc,
-        "span",
-        { class: "muted" },
-        `#${message.sequence} · ${message.created_at}`,
-      ),
+      h(doc, "span", { class: "muted" }, formatMessageTime(message.created_at)),
     ),
-    untrusted(doc, message.body, `team chat · ${author}`),
+    h(
+      doc,
+      "pre",
+      {
+        class: "team-message-body",
+        "data-provenance": `Team message from ${author}`,
+      },
+      message.body,
+    ),
     ...(refNodes.length > 0 ? refNodes : []),
     reactionBar,
   );
@@ -228,7 +242,12 @@ export function renderTeamChatPane(
         "Team Chat",
       ),
       state.label
-        ? h(doc, "span", { class: "entry-badge" }, state.label)
+        ? h(
+            doc,
+            "span",
+            { class: "entry-badge" },
+            state.label === "FIXTURE" ? "Local demo" : state.label,
+          )
         : null,
     ),
     h(doc, "div", { class: "team-header-actions" }, viewerControl, closeBtn),
@@ -277,6 +296,7 @@ export function renderTeamChatPane(
         type: "button",
         class: "team-pin-btn",
         "data-pin-conversation": conv.conversation_id,
+        "aria-label": `${conv.pinned ? "Unpin" : "Pin"} ${title}`,
       },
       conv.pinned ? "Unpin" : "Pin",
     );
@@ -424,7 +444,13 @@ export function renderTeamChatPane(
       doc,
       "div",
       { class: "team-layout" },
-      h(doc, "ul", { class: "team-conv-list" }, ...convItems),
+      h(
+        doc,
+        "nav",
+        { class: "team-conversations", "aria-label": "Team conversations" },
+        h(doc, "h2", { class: "eyebrow" }, "Conversations"),
+        h(doc, "ul", { class: "team-conv-list" }, ...convItems),
+      ),
       h(doc, "div", { class: "team-thread" }, messageFeed, notice, composer),
     ),
   );

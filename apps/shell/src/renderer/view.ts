@@ -338,8 +338,9 @@ function taskHeader(
     doc,
     "header",
     { class: "task-header" },
-    h(doc, "p", { class: "eyebrow" }, "02 / IN MOTION"),
-    h(doc, "h1", HEADING_ATTRS, `Task ${task.task_id}`),
+    h(doc, "p", { class: "eyebrow" }, "02 / WORKSPACE"),
+    h(doc, "h1", HEADING_ATTRS, "Task overview"),
+    h(doc, "p", { class: "task-identifier" }, `Task ${task.task_id}`),
     h(
       doc,
       "div",
@@ -569,7 +570,7 @@ function approvalAndLifecycleCard(
         doc,
         "div",
         { class: "model-row" },
-        h(doc, "label", {}, "Model ", modelSelect),
+        h(doc, "label", {}, h(doc, "span", {}, "Model"), modelSelect),
       ),
       paidConsentBox,
       h(doc, "div", { class: "action-buttons" }, startBtn, cancelBtn),
@@ -713,7 +714,7 @@ function promptComposer(
   const requestInput = h(doc, "textarea", {
     class: "composer-textarea",
     rows: "3",
-    placeholder: "Describe a task for MARS workbench…",
+    placeholder: "What would you like the agent to do?",
     "aria-label": "Task prompt",
     "data-control": "composer-request",
     "data-focus-key": "composer-request",
@@ -847,6 +848,7 @@ function promptComposer(
     doc,
     "section",
     { class: "composer-card", "data-panel": "prompt-composer" },
+    h(doc, "p", { class: "eyebrow" }, "NEW TASK"),
     heading(doc, "Give your agent a task"),
     requestInput,
     criteriaInput,
@@ -1504,8 +1506,7 @@ export function renderShell(
     },
     masthead,
     sidebar,
-    main,
-    inspector,
+    h(doc, "div", { class: "workspace-panels" }, main, inspector),
     footer,
   );
 }

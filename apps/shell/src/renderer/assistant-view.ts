@@ -46,11 +46,11 @@ export function renderAssistant(
   ];
   const empty = messages.length === 0;
   const input = h(doc, "textarea", {
-    rows: "3",
+    rows: "2",
     maxlength: "8000",
     class: "assistant-input",
     "aria-label": "Message MARS",
-    placeholder: "What’s on your mind?",
+    placeholder: "Ask MARS a question…",
     "data-focus-key": "assistant-input",
     disabled: state.busy || state.loading,
   });
@@ -98,6 +98,34 @@ export function renderAssistant(
       "I want to understand some code. What should I share so we can walk through it together?",
     ],
   ];
+  const quickStarts = empty
+    ? h(
+        doc,
+        "div",
+        { class: "suggestion-grid" },
+        ...suggestions.map(([title, prompt], index) => {
+          const suggestion = action(doc, "", "suggestion", () => {
+            state.onDraft?.(prompt ?? "");
+          });
+          suggestion.append(
+            h(
+              doc,
+              "span",
+              { class: "suggestion-number", "aria-hidden": "true" },
+              `0${index + 1}`,
+            ),
+            h(doc, "span", {}, title ?? ""),
+            h(
+              doc,
+              "span",
+              { class: "suggestion-arrow", "aria-hidden": "true" },
+              "↗",
+            ),
+          );
+          return suggestion;
+        }),
+      )
+    : null;
   const form = h(
     doc,
     "form",
@@ -164,45 +192,13 @@ export function renderAssistant(
                 { class: "orbit-mark", "aria-hidden": "true" },
                 "✳",
               ),
-              h(doc, "p", { class: "eyebrow" }, "01 / A SPACE TO THINK"),
-              h(
-                doc,
-                "h1",
-                {},
-                "Small thought. ",
-                h(doc, "span", {}, "Giant leap."),
-              ),
+              h(doc, "p", { class: "eyebrow" }, "MARS  /  ASSISTANT"),
+              h(doc, "h1", {}, "Where should we start?"),
               h(
                 doc,
                 "p",
                 { class: "welcome-subtitle" },
-                "Good things start with a conversation. Explore an idea, find a direction, then put MARS to work.",
-              ),
-              h(
-                doc,
-                "div",
-                { class: "suggestion-grid" },
-                ...suggestions.map(([title, prompt], index) => {
-                  const suggestion = action(doc, "", "suggestion", () => {
-                    state.onDraft?.(prompt ?? "");
-                  });
-                  suggestion.append(
-                    h(
-                      doc,
-                      "span",
-                      { class: "suggestion-number", "aria-hidden": "true" },
-                      `0${index + 1}`,
-                    ),
-                    h(doc, "span", {}, title ?? ""),
-                    h(
-                      doc,
-                      "span",
-                      { class: "suggestion-arrow", "aria-hidden": "true" },
-                      "↗",
-                    ),
-                  );
-                  return suggestion;
-                }),
+                "Explore an idea, plan a build, or talk through code.",
               ),
             ),
           ]
@@ -302,6 +298,7 @@ export function renderAssistant(
           ? "Loading your conversations…"
           : "Enter to send  ·  Shift + Enter for a new line",
       ),
+      quickStarts,
     ),
   );
 }
