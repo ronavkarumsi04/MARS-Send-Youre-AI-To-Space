@@ -94,11 +94,7 @@ export function createLoopbackTransport(options: {
   return {
     async send(request) {
       const controller = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       let response: Response;
       let body: string;
       try {
@@ -121,8 +117,8 @@ export function createLoopbackTransport(options: {
           throw new TransportError("protocol");
         body = await readBounded(response, maxBytes);
       } catch (error) {
+        if (controller.signal.aborted) throw new TransportError("timeout");
         if (error instanceof TransportError) throw error;
-        if (timedOut) throw new TransportError("timeout");
         throw new TransportError("unavailable");
       } finally {
         clearTimeout(timer);
