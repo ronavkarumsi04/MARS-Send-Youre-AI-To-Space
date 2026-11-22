@@ -19,6 +19,7 @@ import { createBridge } from "../src/main/bridge";
 import { startLocalWorkbench } from "../src/main/local-workbench";
 import { createLoopbackTransport } from "../src/main/transport";
 import { buildShell } from "./build";
+import { buildUpstream } from "./build-upstream";
 
 const shell = resolve(import.meta.dir, "..");
 const repo = resolve(shell, "../..");
@@ -93,6 +94,9 @@ async function stageWorkbench(resources: string, scratch: string) {
     { recursive: true },
   );
 
+  await buildUpstream(
+    join(runtime, "apps", "shell", "src", "runtime", "catalog"),
+  );
   const source = join(scratch, "source");
   await mkdir(source);
   const host = startLocalWorkbench({
@@ -108,6 +112,13 @@ async function stageWorkbench(resources: string, scratch: string) {
       connectionScope: connected.connection.scope,
     }).call("workbench.describe", {});
     if (!result.ok) throw new Error("Packaged workbench did not answer RPC.");
+    for (const id of ["mcp-filesystem", "mcp-sequential-thinking"]) {
+      await host.extensionAction({ action: "install", id });
+      if (
+        !(await host.extensionAction({ action: "list" })).installed.includes(id)
+      )
+        throw new Error(`Missing packaged upstream MCP: ${id}`);
+    }
     // Native menus and the library can refresh or install at the same time.
     const [before, , after] = await Promise.all([
       host.extensionAction({ action: "list" }),

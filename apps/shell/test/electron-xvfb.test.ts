@@ -301,7 +301,7 @@ test.skipIf(!PACKAGED_ELECTRON)(
         await cdp.evaluate(
           "window.marsExtensions.list().then(entries => Object.fromEntries(['mcp','skill','plugin'].map(kind => [kind, entries.filter(e => e.kind === kind && !e.installed).length])))",
         ),
-      ).toEqual({ mcp: 3, skill: 5, plugin: 3 });
+      ).toEqual({ mcp: 5, skill: 5, plugin: 3 });
       expect(
         await cdp.evaluate(
           "document.fonts.load('12px \"Commit Mono\"').then(fonts => fonts.length)",

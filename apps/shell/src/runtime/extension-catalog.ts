@@ -19,7 +19,13 @@ const handoff = {
 };
 type Asset = { file: string; sha256: string };
 export type CatalogEntry = Extension & { assets: Asset[] } & (
-    | { kind: "mcp"; tool: string; args: string[] }
+    | {
+        kind: "mcp";
+        tool: string;
+        additionalTools?: string[];
+        projectRootArg?: true;
+        args: string[];
+      }
     | { kind: "skill" | "plugin" }
   );
 const triage = {
@@ -89,6 +95,50 @@ function offlineTool(
   };
 }
 export const CATALOG: CatalogEntry[] = [
+  {
+    id: "mcp-filesystem",
+    name: "Filesystem · project browser",
+    kind: "mcp",
+    version: "2.4.0",
+    description:
+      "Browse directory names in the open project with the Model Context Protocol project's Filesystem server.",
+    tool: "list_directory",
+    additionalTools: ["list_allowed_directories"],
+    projectRootArg: true,
+    args: [],
+    assets: [
+      {
+        file: "filesystem.mjs",
+        sha256:
+          "b28d0b31686170d39aa293ba12263f4087a013a51d240ceef4e0698b2b134c84",
+      },
+    ],
+    permissions: [
+      "List file and directory names (including hidden names) and disclose the selected project's absolute path",
+      "No tool grant for reading file contents or writing files. No credentials or remote connection.",
+    ],
+  },
+  {
+    id: "mcp-sequential-thinking",
+    name: "Sequential Thinking",
+    kind: "mcp",
+    version: "2.2.0",
+    description:
+      "Track steps, branches and revisions while solving a multi-step task using the Model Context Protocol project's server.",
+    tool: "sequentialthinking",
+    args: ["--transport", "stdio"],
+    assets: [
+      {
+        file: "sequential-thinking.mjs",
+        sha256:
+          "2af778645fc56a7bb4a322d75d8f2d954017c0871ce272fe44e26a2e89ca06a4",
+      },
+    ],
+    permissions: [
+      "Process supplied reasoning steps in memory for this connection; thought logging is disabled",
+      "No credentials or remote connection.",
+    ],
+  },
   offlineTool(
     "mars-json-compare",
     "JSON comparison",
