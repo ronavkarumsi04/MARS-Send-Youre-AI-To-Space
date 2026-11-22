@@ -344,7 +344,9 @@ and `[label](ref:<reference_id>)` that resolve to the frozen selection become
 forbidden scheme) is reduced to its label and counted in `dropped_citations`.
 The store re-validates citations on `complete`. The posted answer is a normal
 message authored by the reserved user id `mars` (`MARS_AGENT_USER_ID`; never a
-team member, never authenticable) with `kind: "agent"`,
+team member, never authenticable; `--dev-users` and `--members` reject it in any
+casing, with or without `--agent-model`, because `@MARS` is matched
+case-insensitively) with `kind: "agent"`,
 `agent_request_id` and `reference_ids` = the cited references; `messages.history`
 carries both fields so clients render agent messages differently.
 

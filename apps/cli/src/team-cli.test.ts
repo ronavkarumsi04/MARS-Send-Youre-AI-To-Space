@@ -543,21 +543,56 @@ test("mars team serve requires an identity option, rejects bad repo specs, and -
         () => {},
       ),
     ).rejects.toBeInstanceOf(TeamUsageError);
-    for (const reserved of ["mars", "MARS", "Mars"])
+    for (const reserved of ["mars", "MARS", "Mars"]) {
+      const devUsers = runTeam(
+        [
+          "serve",
+          "--state",
+          state,
+          "--port",
+          "0",
+          "--dev-users",
+          `ada,${reserved}`,
+        ],
+        () => {},
+      );
+      await expect(devUsers).rejects.toBeInstanceOf(TeamUsageError);
+      await expect(devUsers).rejects.toThrow(
+        `--dev-users cannot include '${reserved}'`,
+      );
+      // The same rule holds for --members, with no --agent-model, and names that flag.
+      const members = runTeam(
+        [
+          "serve",
+          "--state",
+          state,
+          "--port",
+          "0",
+          "--auth-provider",
+          "none",
+          "--members",
+          `Ada,${reserved}`,
+        ],
+        () => {},
+      );
+      await expect(members).rejects.toBeInstanceOf(TeamUsageError);
+      await expect(members).rejects.toThrow(
+        `--members cannot include '${reserved}'`,
+      );
+      await expect(members).rejects.not.toThrow("--dev-users");
+    }
+    for (const identity of [
+      ["--dev-users", "ada,ada"],
+      ["--auth-provider", "none", "--members", "ada,not ok"],
+    ]) {
+      const flag = identity.at(-2);
       await expect(
         runTeam(
-          [
-            "serve",
-            "--state",
-            state,
-            "--port",
-            "0",
-            "--dev-users",
-            `ada,${reserved}`,
-          ],
+          ["serve", "--state", state, "--port", "0", ...identity],
           () => {},
         ),
-      ).rejects.toBeInstanceOf(TeamUsageError);
+      ).rejects.toThrow(`${flag} must list distinct ids`);
+    }
     await expect(
       runTeam(
         [

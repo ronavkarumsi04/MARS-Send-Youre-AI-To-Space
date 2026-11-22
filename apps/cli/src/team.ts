@@ -195,20 +195,29 @@ async function assertTokenTeam(state: string, team: string): Promise<void> {
     );
 }
 
-function parseUsers(value: unknown): string[] {
+/** `@MARS` is the agent's mention in every casing, with or without `--agent-model`. */
+function parseUsers(
+  value: unknown,
+  flag: "--dev-users" | "--members",
+): string[] {
   if (typeof value !== "string" || value.length === 0)
     throw new TeamUsageError(
-      "--dev-users needs a comma-separated list of 1 to 64 user ids.",
+      `${flag} needs a comma-separated list of 1 to 64 user ids.`,
     );
   const ids = value.split(",").map((id) => id.trim());
   if (
     ids.length === 0 ||
     ids.length > 64 ||
-    ids.some((id) => !ID_PATTERN.test(id) || id.toLowerCase() === "mars") ||
+    ids.some((id) => !ID_PATTERN.test(id)) ||
     new Set(ids).size !== ids.length
   )
     throw new TeamUsageError(
-      "--dev-users must list distinct ids of letters, digits, '.', '_' or '-' (never 'mars', in any casing).",
+      `${flag} must list distinct ids of letters, digits, '.', '_' or '-'.`,
+    );
+  const reserved = ids.find((id) => id.toLowerCase() === "mars");
+  if (reserved !== undefined)
+    throw new TeamUsageError(
+      `${flag} cannot include '${reserved}': 'mars' is reserved for the @MARS agent in any casing, even when the agent is off.`,
     );
   return ids;
 }
@@ -357,9 +366,11 @@ export function teamServeOptions(args: string[]): TeamServeOptions | null {
       ? rawProvider
       : "dev";
   const devUsers =
-    values["dev-users"] === undefined ? null : parseUsers(values["dev-users"]);
+    values["dev-users"] === undefined
+      ? null
+      : parseUsers(values["dev-users"], "--dev-users");
   const members =
-    values.members === undefined ? [] : parseUsers(values.members);
+    values.members === undefined ? [] : parseUsers(values.members, "--members");
   const githubAllowedIds =
     values["github-allowed-ids"] === undefined
       ? null
