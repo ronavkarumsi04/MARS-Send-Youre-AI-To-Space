@@ -81,7 +81,10 @@ export function resolveNodes(
     )
       fuzzy.push(node);
   }
-  return [...labelled, ...fuzzy].slice(0, Math.max(1, limit));
+  return [...labelled, ...fuzzy].slice(
+    0,
+    clamp(limit, 1, QUERY_LIMITS.max_results),
+  );
 }
 
 export interface NeighbourHit {
@@ -141,6 +144,7 @@ export function paths(
 ): GraphPath[] {
   const maxDepth = clamp(options.maxDepth ?? 6, 1, QUERY_LIMITS.max_path_depth);
   const limit = clamp(options.limit ?? 3, 1, QUERY_LIMITS.max_path_results);
+  if (!index.nodes.has(from.id) || !index.nodes.has(to.id)) return [];
   if (from.id === to.id) return [{ nodes: [from], edges: [] }];
   const found: GraphPath[] = [];
   const queue: Array<{ id: string; nodes: GraphNode[]; edges: GraphEdge[] }> = [

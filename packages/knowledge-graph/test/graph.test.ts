@@ -4,6 +4,7 @@ import {
   indexGraph,
   neighbours,
   paths,
+  QUERY_LIMITS,
   resolveNodes,
   summarize,
 } from "../src/graph";
@@ -93,6 +94,45 @@ describe("graph queries", () => {
       "b::parse",
     ]);
     expect(resolveNodes(index, "   ")).toEqual([]);
+  });
+
+  test("hardening: name resolution clamps oversized and non-finite result limits", () => {
+    const artifact = fixtureArtifact();
+    const template = artifact.nodes[0];
+    if (!template) throw new Error("missing");
+    const large = indexGraph({
+      ...artifact,
+      nodes: Array.from({ length: 150 }, (_, i) => ({
+        ...template,
+        id: `node-${i}`,
+        label: `match-${i}`,
+      })),
+    });
+    expect(resolveNodes(large, "match", 10_000)).toHaveLength(
+      QUERY_LIMITS.max_results,
+    );
+    expect(resolveNodes(large, "match", Number.POSITIVE_INFINITY)).toHaveLength(
+      1,
+    );
+    expect(resolveNodes(large, "match", Number.NaN)).toHaveLength(1);
+    expect(resolveNodes(large, "match", 2.9)).toHaveLength(2);
+    expect(resolveNodes(large, "absent", 10_000)).toEqual([]);
+  });
+
+  test("hardening: paths never fabricate endpoints missing from the graph", () => {
+    const node = index.nodes.get("a::main");
+    if (!node) throw new Error("missing");
+    const empty = indexGraph({
+      ...fixtureArtifact(),
+      nodes: [],
+      edges: [],
+      communities: [],
+    });
+    expect(paths(empty, node, node)).toEqual([]);
+    const missing = { ...node, id: "missing" };
+    expect(paths(index, missing, missing)).toEqual([]);
+    expect(paths(index, node, missing)).toEqual([]);
+    expect(paths(index, node, node)).toEqual([{ nodes: [node], edges: [] }]);
   });
 
   test("neighbours walk both directions with bounded depth and limit", () => {

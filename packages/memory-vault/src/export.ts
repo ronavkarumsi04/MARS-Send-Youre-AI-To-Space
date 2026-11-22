@@ -1,12 +1,5 @@
 import { randomBytes } from "node:crypto";
-import {
-  lstat,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
@@ -19,6 +12,7 @@ import {
   encodeSegment,
   encodeSourcePath,
   readFileNoFollow,
+  readNoteInside,
   realpathExisting,
   resolveInside,
   VaultPathError,
@@ -86,7 +80,10 @@ export async function readManifest(
 ): Promise<VaultManifest | undefined> {
   let text: string;
   try {
-    text = await readFile(join(vaultDir, VAULT_MANIFEST_FILE), "utf8");
+    text = await readFileNoFollow(
+      join(vaultDir, VAULT_MANIFEST_FILE),
+      VAULT_MANIFEST_FILE,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -132,7 +129,14 @@ async function writeAtomic(
         "path_escape",
         `${relative(vaultDir, absolute)} is a symlink`,
       );
-    if ((await readFile(absolute, "utf8")) === text) return false;
+    if (
+      (await readNoteInside(
+        vaultDir,
+        absolute,
+        relative(vaultDir, absolute),
+      )) === text
+    )
+      return false;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -576,7 +580,7 @@ export async function exportVault(
     const absolute = resolveInside(vaultDir, note.path);
     let current: string | null = null;
     try {
-      current = await readFileNoFollow(absolute, note.path);
+      current = await readNoteInside(vaultDir, absolute, note.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -620,7 +624,7 @@ export async function exportVault(
     try {
       // Never read through a link: a stale path swapped for a symlink is
       // left alone (and stays retained so the scan reports it).
-      current = await readFileNoFollow(absolute, stale.path);
+      current = await readNoteInside(vaultDir, absolute, stale.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       if (error instanceof VaultPathError) current = null;

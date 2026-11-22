@@ -147,6 +147,23 @@ export async function readFileNoFollow(
   }
 }
 
+export async function readNoteInside(
+  vaultDir: string,
+  absolute: string,
+  label: string,
+): Promise<string> {
+  const [realVault, realParent] = await Promise.all([
+    realpathExisting(vaultDir),
+    realpathExisting(dirname(absolute)),
+  ]);
+  if (!contains(realVault, realParent))
+    throw new VaultPathError(
+      "path_escape",
+      `${label} resolves outside the vault`,
+    );
+  return readFileNoFollow(absolute, label);
+}
+
 /**
  * Resolves symlinks in `path` even when its tail does not exist yet: the
  * nearest existing ancestor is resolved and the missing tail re-appended.

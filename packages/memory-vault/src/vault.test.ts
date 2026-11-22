@@ -1074,6 +1074,47 @@ test("review: stale-note cleanup never reads or removes through a symlink", asyn
   expect(status.memory.notes.invalid).toBe(1);
 });
 
+test("hardening: stale cleanup retains files behind an escaping parent symlink", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, state, memory } = await fixture();
+  await exportVault(ctx, common);
+  const generated = read(vaultDir, "facts/fact-plain.md");
+  const outside = join(state, "outside-facts");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "fact-plain.md"), generated);
+  await memory.batch(
+    ctx,
+    1,
+    ["fact-plain", "fact-graph", "fact-profile"].map((entry_id) => ({
+      operation: "remove" as const,
+      entry_id,
+    })),
+  );
+  rmSync(join(vaultDir, "facts"), { recursive: true });
+  symlinkSync(outside, join(vaultDir, "facts"));
+  const report = await exportVault(ctx, common);
+  expect(report).toMatchObject({ removed: 0, kept_modified: 3 });
+  expect(readFileSync(join(outside, "fact-plain.md"), "utf8")).toBe(generated);
+});
+
+test("hardening: export and scan refuse a symlinked manifest", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, state } = await fixture();
+  await exportVault(ctx, common);
+  const manifest = read(vaultDir, VAULT_MANIFEST_FILE);
+  const outside = join(state, "manifest.json");
+  writeFileSync(outside, manifest);
+  rmSync(join(vaultDir, VAULT_MANIFEST_FILE));
+  symlinkSync(outside, join(vaultDir, VAULT_MANIFEST_FILE));
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  await expect(vaultStatus(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  expect(readFileSync(outside, "utf8")).toBe(manifest);
+});
+
 test("review: readFileNoFollow refuses links and non-files even at open time", async () => {
   if (process.platform === "win32") return;
   const root = mkdtempSync(join(tmpdir(), "mars-vault-nofollow-"));

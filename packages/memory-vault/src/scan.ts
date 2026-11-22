@@ -1,5 +1,5 @@
-import { readdir, realpath } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { readdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
 import { VaultError } from "./errors";
@@ -7,8 +7,7 @@ import { readManifest, skillNotePath } from "./export";
 import { type ParsedNote, parseNote, sha256 } from "./notes";
 import {
   assertVaultDirectory,
-  contains,
-  readFileNoFollow,
+  readNoteInside,
   resolveInside,
   VaultPathError,
 } from "./paths";
@@ -65,28 +64,6 @@ async function listMarkdown(dir: string, prefix: string): Promise<string[]> {
     .filter((name) => name.endsWith(".md") && !name.startsWith("."))
     .sort()
     .map((name) => `${prefix}/${name}`);
-}
-
-/**
- * Reads a note without ever following a link out of the vault: a symlinked
- * note (or a note in a symlinked directory) could pull private files into a
- * proposal. Throws VaultPathError for links, ENOENT for a missing file.
- */
-async function readNoteInside(
-  vaultDir: string,
-  absolute: string,
-  path: string,
-): Promise<string> {
-  const [realVault, realParent] = await Promise.all([
-    realpath(vaultDir),
-    realpath(dirname(absolute)),
-  ]);
-  if (realParent !== realVault && !contains(realVault, realParent))
-    throw new VaultPathError(
-      "path_escape",
-      `${path} resolves outside the vault`,
-    );
-  return readFileNoFollow(absolute, path);
 }
 
 function kindOf(note: ParsedNote): NoteKind | null {
