@@ -25,7 +25,9 @@ export function parseRobots(text: string): RobotsFile {
         groups.push(current);
         collectingAgents = true;
       }
-      current.agents.push(value.toLowerCase());
+      // An empty product token names no crawler; matching it by prefix would
+      // apply the group to every user agent.
+      if (value !== "") current.agents.push(value.toLowerCase());
       continue;
     }
     if (!current) continue;

@@ -81,7 +81,10 @@ function globSource(pattern: string): string {
   let result = "";
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index] ?? "";
-    if (character === "*" && pattern[index + 1] === "*") {
+    if (character === "\\" && index + 1 < pattern.length) {
+      index += 1;
+      result += (pattern[index] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (character === "*" && pattern[index + 1] === "*") {
       index += 1;
       if (pattern[index + 1] === "/") {
         index += 1;

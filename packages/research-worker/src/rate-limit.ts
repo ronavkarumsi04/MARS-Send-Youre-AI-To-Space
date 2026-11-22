@@ -32,7 +32,17 @@ export class HostRateLimiter {
     const earliest = this.nextAllowedAt.get(host) ?? 0;
     const current = this.now();
     const start = Math.max(current, earliest);
-    this.nextAllowedAt.set(host, start + interval);
-    if (start > current) await this.sleep(start - current, signal);
+    const reserved = start + interval;
+    this.nextAllowedAt.set(host, reserved);
+    if (start <= current) return;
+    try {
+      await this.sleep(start - current, signal);
+    } catch (error) {
+      // An aborted wait never fetched, so it must not push later requests back.
+      if (this.nextAllowedAt.get(host) === reserved) {
+        this.nextAllowedAt.set(host, earliest);
+      }
+      throw error;
+    }
   }
 }

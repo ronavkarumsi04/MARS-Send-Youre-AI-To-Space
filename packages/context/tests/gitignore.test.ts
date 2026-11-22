@@ -100,3 +100,13 @@ describe(".gitignore matching", () => {
     expect(result.stats.skipped.gitignored).toBe(4);
   });
 });
+
+describe(".gitignore escapes", () => {
+  test("a backslash makes the next glob character literal", () => {
+    const rules = [{ prefix: "", rules: parseGitignore("foo\\*.txt\nq\\?\n") }];
+    expect(isGitignored("foo*.txt", false, rules)).toBe(true);
+    expect(isGitignored("foobar.txt", false, rules)).toBe(false);
+    expect(isGitignored("q?", false, rules)).toBe(true);
+    expect(isGitignored("qx", false, rules)).toBe(false);
+  });
+});
