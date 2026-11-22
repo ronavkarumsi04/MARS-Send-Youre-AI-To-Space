@@ -122,8 +122,8 @@ export function createLoopbackTransport(options: {
           throw new TransportError("protocol");
         body = await readBounded(response, maxBytes);
       } catch (error) {
-        if (error instanceof TransportError) throw error;
         if (timedOut) throw new TransportError("timeout");
+        if (error instanceof TransportError) throw error;
         throw new TransportError("unavailable");
       } finally {
         clearTimeout(timer);

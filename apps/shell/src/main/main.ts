@@ -13,6 +13,10 @@ import { explicitConnection, resolveConnection } from "./connection";
 import { createDesktop } from "./desktop";
 import { registerBridge, registerTeamChatBridge } from "./ipc";
 import {
+  createRendererRecovery,
+  RENDERER_RECOVERY_HTML,
+} from "./renderer-recovery";
+import {
   appResponseHeaders,
   resolveAppAsset,
   SHELL_WEB_PREFERENCES,
@@ -64,6 +68,13 @@ app.on("ready", async () => {
   );
   Menu.setApplicationMenu(null);
   protocol.handle("mars-shell", async (request) => {
+    if (request.url === `${trustedOrigin}/recovery.html`)
+      return new Response(RENDERER_RECOVERY_HTML, {
+        headers: {
+          ...appResponseHeaders(),
+          "Content-Type": "text/html; charset=utf-8",
+        },
+      });
     const rendererDir = join(app.getAppPath(), "renderer");
     const asset = resolveAppAsset(request.url, rendererDir);
     if (!asset)
@@ -100,6 +111,21 @@ app.on("ready", async () => {
     },
   });
   mainWindow = window;
+  let windowClosing = false;
+  const recoverRenderer = createRendererRecovery({
+    isClosing: () => shuttingDown || windowClosing || window.isDestroyed(),
+    log: (reason) => console.error(`MARS renderer recovery: ${reason}`),
+    reload: () => window.webContents.reload(),
+    showRecovery: () => {
+      void window.loadURL(`${trustedOrigin}/recovery.html`).catch(() => {
+        console.error("MARS recovery page could not load.");
+      });
+    },
+  });
+  window.webContents.on("render-process-gone", (_event, details) =>
+    recoverRenderer(details.reason),
+  );
+  window.on("unresponsive", () => recoverRenderer("unresponsive"));
   const newBridge = () =>
     createReconnectingBridge({
       resolve: () => (desktop ? desktop.resolve() : resolveConnection()),
@@ -109,9 +135,12 @@ app.on("ready", async () => {
   registerBridge(
     ipcMain,
     { call: (method, params) => bridge.call(method, params) },
-    { trustedOrigin },
+    { trustedOrigin, trustedContents: window.webContents },
   );
-  registerTeamChatBridge(ipcMain, createTeamChatBridge(), { trustedOrigin });
+  registerTeamChatBridge(ipcMain, createTeamChatBridge(), {
+    trustedOrigin,
+    trustedContents: window.webContents,
+  });
   if (managed) {
     try {
       desktop = await createDesktop(window, () => {
@@ -124,6 +153,7 @@ app.on("ready", async () => {
     }
   }
   window.on("close", () => {
+    windowClosing = true;
     const { width, height } = window.getBounds();
     void saveWindowLayout(filePath, { width, height }).catch(() => {});
   });

@@ -20,7 +20,7 @@ import {
   sha256Hex,
 } from "../scripts/fixture-workbench";
 import { type Bridge, createBridge } from "../src/main/bridge";
-import { registerTeamChatBridge } from "../src/main/ipc";
+import { type IpcEventLike, registerTeamChatBridge } from "../src/main/ipc";
 import {
   createTeamChatBridge,
   type TeamChatBridge,
@@ -550,12 +550,17 @@ describe("interactive workbench bridge and fixture lifecycle", () => {
 describe("Team Chat IPC bridge security and operations", () => {
   test("enforces sender origin, allowlist, messaging, reactions, pins, and search", async () => {
     const teamBridge = createTeamChatBridge();
+    const trustedContents = {
+      mainFrame: { url: "mars-shell://app/index.html" },
+      isDestroyed: () => false,
+    };
+    const trustedEvent = {
+      sender: trustedContents,
+      senderFrame: trustedContents.mainFrame,
+    };
     const handlers = new Map<
       string,
-      (
-        event: { senderFrame: { url: string } | null },
-        payload: unknown,
-      ) => Promise<unknown>
+      (event: IpcEventLike, payload: unknown) => Promise<unknown>
     >();
     registerTeamChatBridge(
       {
@@ -564,7 +569,7 @@ describe("Team Chat IPC bridge security and operations", () => {
         },
       },
       teamBridge,
-      { trustedOrigin: "mars-shell://app" },
+      { trustedOrigin: "mars-shell://app", trustedContents },
     );
     const handler = handlers.get(TEAM_CHAT_CHANNEL);
     expect(handler).toBeDefined();
@@ -579,19 +584,19 @@ describe("Team Chat IPC bridge security and operations", () => {
       code: "forbidden",
     });
 
-    const unknownMethod = await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.deleteEverything", params: {} },
-    );
+    const unknownMethod = await handler(trustedEvent, {
+      method: "team.deleteEverything",
+      params: {},
+    });
     expect(unknownMethod).toEqual({
       ok: false,
       code: "forbidden",
     });
 
-    const stateRes = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.state", params: {} },
-    )) as {
+    const stateRes = (await handler(trustedEvent, {
+      method: "team.state",
+      params: {},
+    })) as {
       ok: boolean;
       value?: {
         conversations: { conversation_id: string }[];
@@ -604,27 +609,24 @@ describe("Team Chat IPC bridge security and operations", () => {
     expect(convId).toBeTruthy();
     if (!convId) return;
 
-    const opened = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.open", params: { conversation_id: convId } },
-    )) as { ok: boolean; value?: { messages: { message_id: string }[] } };
+    const opened = (await handler(trustedEvent, {
+      method: "team.open",
+      params: { conversation_id: convId },
+    })) as { ok: boolean; value?: { messages: { message_id: string }[] } };
     expect(opened.ok).toBe(true);
 
-    const sent = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.send",
-        params: {
-          input: {
-            conversation_id: convId,
-            body: "Hello from shell test <img src=x onerror=alert(1)>",
-            client_message_id: "test-msg-1",
-            reply_to: null,
-            references: [],
-          },
+    const sent = (await handler(trustedEvent, {
+      method: "team.send",
+      params: {
+        input: {
+          conversation_id: convId,
+          body: "Hello from shell test <img src=x onerror=alert(1)>",
+          client_message_id: "test-msg-1",
+          reply_to: null,
+          references: [],
         },
       },
-    )) as {
+    })) as {
       ok: boolean;
       value?: { message_id: string; sequence: number; duplicate: boolean };
     };
@@ -633,35 +635,29 @@ describe("Team Chat IPC bridge security and operations", () => {
     expect(sent.value.message_id).toBeTruthy();
     expect(sent.value.duplicate).toBe(false);
 
-    const reacted = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.setReaction",
-        params: {
-          message_id: sent.value.message_id,
-          emoji: "👍",
-          on: true,
-        },
+    const reacted = (await handler(trustedEvent, {
+      method: "team.setReaction",
+      params: {
+        message_id: sent.value.message_id,
+        emoji: "👍",
+        on: true,
       },
-    )) as { ok: boolean };
+    })) as { ok: boolean };
     expect(reacted.ok).toBe(true);
 
-    const pinned = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.setPinned",
-        params: {
-          conversation_id: convId,
-          pinned: true,
-        },
+    const pinned = (await handler(trustedEvent, {
+      method: "team.setPinned",
+      params: {
+        conversation_id: convId,
+        pinned: true,
       },
-    )) as { ok: boolean };
+    })) as { ok: boolean };
     expect(pinned.ok).toBe(true);
 
-    const searched = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.search", params: { query: "Hello from shell test" } },
-    )) as { ok: boolean; value?: { hits: unknown[] } };
+    const searched = (await handler(trustedEvent, {
+      method: "team.search",
+      params: { query: "Hello from shell test" },
+    })) as { ok: boolean; value?: { hits: unknown[] } };
     expect(searched.ok).toBe(true);
     expect((searched.value?.hits.length ?? 0) > 0).toBe(true);
   });
