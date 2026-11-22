@@ -267,6 +267,29 @@ describe("sending", () => {
       ok: false,
       code: "empty_message",
     });
+    // Like the team server, a reference without text is not a message.
+    expect(
+      service.sendMessage(
+        U.ada,
+        send({
+          body: " \n",
+          references: [
+            {
+              kind: "range",
+              repo_id: R.site,
+              commit_sha: SITE_SHA,
+              path: "src/how.ts",
+              line_start: 4,
+              line_end: 6,
+              symbol: null,
+            },
+          ],
+        }),
+      ),
+    ).toEqual({ ok: false, code: "empty_message" });
+    expect(
+      ok(service.openConversation(U.ada, C.dmAdaGrace)).messages,
+    ).toHaveLength(4);
     expect(service.sendMessage(U.ada, send({ reply_to: "msg_grp_1" }))).toEqual(
       {
         ok: false,

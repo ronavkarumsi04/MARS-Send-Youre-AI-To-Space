@@ -367,6 +367,7 @@
       "name": "@mars/team-chat",
       "version": "0.0.1",
       "dependencies": {
+        "@mars/contracts": "workspace:*",
         "zod": "3.25.76",
       },
     },

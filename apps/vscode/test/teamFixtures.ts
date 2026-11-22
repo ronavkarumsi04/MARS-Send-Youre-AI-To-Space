@@ -1,7 +1,15 @@
-import type { Message } from "@mars/contracts";
+import {
+  type Message,
+  type ResultCard,
+  type SharedEvidence,
+  type Task,
+  type TaskLink,
+  TaskLinkWorkbenchSchema,
+} from "@mars/contracts";
 import { RpcError, type RpcRequest } from "../src/rpc";
 import type { TeamTransport } from "../src/teamChat/client";
 import type {
+  TaskLinkDraftResult,
   TeamContext,
   TeamEvent,
   TeamRpcMethod,
@@ -40,7 +48,14 @@ interface Participant {
 }
 
 export interface FakeTeamOptions {
-  capabilities?: { stream: boolean; reactions: boolean; search: boolean };
+  capabilities?: {
+    stream: boolean;
+    reactions: boolean;
+    search: boolean;
+    agent?: boolean;
+    links?: boolean;
+    shares?: boolean;
+  };
   /** Advertised and enforced `limits.page_limit` (default 200). */
   pageLimit?: number;
 }
@@ -54,6 +69,11 @@ export class FakeTeamServer {
   readonly reactions: { message_id: string; user_id: string; emoji: string }[] =
     [];
   readonly members = new Set<string>();
+  readonly links = new Map<string, TaskLink>();
+  private readonly sharePreviews = new Map<
+    string,
+    { fingerprint: string; digest: string }
+  >();
   /** Per-viewer chips the PR 4 server would return for a reference id (default: restricted). */
   readonly chips = new Map<
     string,
@@ -67,11 +87,7 @@ export class FakeTeamServer {
       line_end: number | null;
     }
   >();
-  readonly capabilities: {
-    stream: boolean;
-    reactions: boolean;
-    search: boolean;
-  };
+  readonly capabilities: NonNullable<FakeTeamOptions["capabilities"]>;
   readonly pageLimit: number;
   /** When true, `messages.send` commits but the acknowledgement is lost (transport error). */
   dropNextAck = false;
@@ -406,6 +422,137 @@ export class FakeTeamServer {
         }
         return rows.map((m) => this.decorate(m, userId, floor));
       }
+      case "tasks.link_draft": {
+        const conversationId = String(p.conversation_id);
+        this.view(conversationId, userId);
+        const rows = this.messages.filter(
+          (row) =>
+            row.conversation_id === conversationId &&
+            (p.message_ids as string[]).includes(row.message_id),
+        );
+        const linkId = this.nextId("link");
+        const stamp = this.now();
+        const link: TaskLink = {
+          link_id: linkId,
+          launch_key: `launch-${linkId}`,
+          team_id: TEAM_ID,
+          conversation_id: conversationId,
+          requester_id: userId,
+          provenance: rows.map(({ message_id, seq, body_sha256 }) => ({
+            message_id,
+            seq,
+            body_sha256,
+          })),
+          reference_ids: p.reference_ids as string[],
+          task_revision: null,
+          workbench: null,
+          target: null,
+          status: "draft",
+          created_at: stamp,
+          updated_at: stamp,
+        };
+        this.links.set(linkId, link);
+        return {
+          link,
+          excerpts: rows.map(({ message_id, seq, author_id, body }) => ({
+            message_id,
+            seq,
+            author_id,
+            excerpt: body.slice(0, 280),
+            truncated: body.length > 280,
+          })),
+        } satisfies TaskLinkDraftResult;
+      }
+      case "tasks.link_confirm":
+      case "tasks.link_created":
+      case "tasks.link_inspect":
+      case "shares.preview":
+      case "shares.create": {
+        const link = this.links.get(String(p.link_id));
+        if (!link) throw rpc("server", "not_found", 404);
+        const view = this.view(link.conversation_id, userId);
+        if (request.method === "tasks.link_inspect") {
+          if (link.requester_id === userId) return { view: "requester", link };
+          const {
+            workbench: _workbench,
+            target: _target,
+            launch_key: _key,
+            ...summary
+          } = link;
+          return { view: "member", link: summary };
+        }
+        if (link.requester_id !== userId) throw rpc("server", "forbidden", 403);
+        if (request.method === "tasks.link_confirm") {
+          link.workbench = TaskLinkWorkbenchSchema.parse(p.workbench);
+          link.target = { repo_id: null, base_revision: null };
+          if (link.status === "draft") link.status = "confirmed";
+          return link;
+        }
+        if (request.method === "tasks.link_created") {
+          link.task_revision = Number(p.task_revision);
+          link.status = "created";
+          return link;
+        }
+        const evidence = p.evidence as SharedEvidence;
+        const selection = p.selection as {
+          summary: string;
+          include_diff_digest: boolean;
+        };
+        const fingerprint = JSON.stringify([evidence, selection, p.run_status]);
+        const card: ResultCard = {
+          link_id: link.link_id,
+          requester_id: userId,
+          attested_by: userId,
+          summary: selection.summary,
+          run_status: p.run_status as Task["status"],
+          verified: false,
+          verified_reason: "missing",
+          task_revision: evidence.task_revision,
+          workspace: evidence.workspace,
+          diff_sha256: selection.include_diff_digest
+            ? evidence.diff_sha256
+            : null,
+          evidence_event_id: null,
+          evidence_sha256: evidence.diff_sha256,
+          verify_records: [],
+          export_status: "not_exported",
+          git_status: "unknown",
+        };
+        if (request.method === "shares.preview") {
+          const digest = fakeSha256(this.nextId("preview"));
+          this.sharePreviews.set(link.link_id, { fingerprint, digest });
+          return { card, preview_sha256: digest };
+        }
+        const prior = this.sharePreviews.get(link.link_id);
+        if (
+          prior?.digest !== p.preview_sha256 ||
+          prior?.fingerprint !== fingerprint
+        )
+          throw rpc("conflict", "conflict", 409);
+        const message = this.post(userId, link.conversation_id, card.summary);
+        const shareId = this.nextId("share");
+        for (const older of this.messages) {
+          if (
+            older.payload?.link_id === link.link_id &&
+            older.payload.evidence_sha256 !== card.evidence_sha256
+          ) {
+            older.payload.stale = true;
+            older.payload.superseded_by = shareId;
+          }
+        }
+        message.kind = "result_card";
+        message.payload = {
+          ...card,
+          share_id: shareId,
+          message_id: message.message_id,
+          preview_sha256: prior.digest,
+          stale: false,
+          superseded_by: null,
+          created_at: message.created_at,
+        };
+        link.status = "shared";
+        return this.decorate(message, userId, view.participant.joined_seq);
+      }
       case "events.poll": {
         const cursors = p.cursors as {
           conversation_id: string;
@@ -565,6 +712,79 @@ export class FakeTeamServer {
       );
     return frames.join("");
   }
+}
+
+export const HANDOFF_CAPABILITIES = {
+  stream: false,
+  reactions: false,
+  search: false,
+  links: true,
+  shares: true,
+};
+
+export function fakeHandoffWorkbench() {
+  const tasks = new Map<string, Task>();
+  const creates: { task: Task; launchKey: string | undefined }[] = [];
+  const server = {
+    scope: { owner_id: "owner", project_id: "project", workspace_id: "ws_1" },
+    workspaceLabel: "Test workspace",
+    capabilities: { execute: false, checkpoint: false },
+  };
+  let dropAck = false;
+  let diff = "a".repeat(64);
+  return {
+    server,
+    tasks,
+    creates,
+    loseNextAcknowledgement: () => {
+      dropAck = true;
+    },
+    changeDiff: () => {
+      diff = "b".repeat(64);
+    },
+    /** Run a task: only then does the real Workbench have a workspace to reopen. */
+    run(taskId: string) {
+      const task = tasks.get(taskId);
+      if (!task) throw new Error("unknown task");
+      tasks.set(taskId, {
+        ...task,
+        status: "completed",
+        revision: task.revision + 1,
+      });
+    },
+    async create(task: Task, options?: { launchKey?: string } | AbortSignal) {
+      const launchKey =
+        options && "launchKey" in options ? options.launchKey : undefined;
+      creates.push({ task, launchKey });
+      const existing = tasks.get(task.task_id);
+      tasks.set(task.task_id, existing ?? task);
+      if (dropAck) {
+        dropAck = false;
+        throw rpc("disconnected", undefined, undefined);
+      }
+      return existing ?? task;
+    },
+    async inspect(taskId: string) {
+      const task = tasks.get(taskId);
+      if (!task) throw new Error("unknown task");
+      return task;
+    },
+    async evidence(taskId: string) {
+      const task = await this.inspect(taskId);
+      // Like `workspace.reopen` on the real host: a task that never ran has no workspace.
+      if (task.status === "pending") throw rpc("not-found", "not_found", 404);
+      return {
+        task_revision: task.revision,
+        workspace: {
+          workspace_id: "ws_1",
+          provider: "git-worktree",
+          revision: "abc123",
+        },
+        diff_sha256: diff,
+        verify_records: [],
+      };
+    },
+  };
 }
 
 /** Browser-safe stand-in for the sha256 dm key (64 hex chars, deterministic); the harness bundles this file. */

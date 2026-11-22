@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runTeam, TeamUsageError } from "./team";
 
 const entrypoint = join(import.meta.dir, "main.ts");
@@ -90,6 +92,75 @@ const rpc = (
       params,
     }),
   });
+
+test("colliding Git credential keys only reject two HTTPS remotes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-cli-team-credentials-"));
+  const state = join(root, "state");
+  const httpsUrl = "https://forge.example/first.git";
+  const hash = createHash("sha256").update(httpsUrl).digest("hex").slice(0, 16);
+  const cached = join(state, "repos", `test-repo-${hash}.git`);
+  const local = join(root, "local.git");
+  const env = {
+    PATH: process.env.PATH ?? "",
+    HOME: root,
+    MARS_TEAM_ALLOW_FILE_REMOTE: "1",
+    MARS_TEAM_GIT_AUTH_HEADER_TEST_REPO: "Bearer fixture-only",
+  };
+  const args = [
+    "--state",
+    state,
+    "--port",
+    "0",
+    "--auth-provider",
+    "none",
+    "--remote-repo",
+    `test-repo=${httpsUrl}`,
+    "--remote-repo",
+  ];
+  let served: Served | undefined;
+  try {
+    await mkdir(join(state, "repos"), { recursive: true });
+    for (const dir of [cached, local]) {
+      const init = Bun.spawnSync(["git", "init", "--bare", dir], { env });
+      expect(init.exitCode).toBe(0);
+    }
+    const refused = Bun.spawn(
+      [
+        process.execPath,
+        entrypoint,
+        "team",
+        "serve",
+        ...args,
+        "test_repo=https://forge.example/second.git",
+      ],
+      { env, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+    );
+    const [code, error] = await Promise.all([
+      refused.exited,
+      new Response(refused.stderr).text(),
+    ]);
+    expect(code).not.toBe(0);
+    expect(error).toContain(
+      "Ambiguous per-repo credential MARS_TEAM_GIT_AUTH_HEADER_TEST_REPO",
+    );
+    expect(error).toContain("(test-repo, test_repo)");
+
+    served = await spawnServe(
+      [...args, `test_repo=${pathToFileURL(local).href}`],
+      env,
+    );
+    expect(served.report.remote_repos).toBe(2);
+    served.child.kill("SIGTERM");
+    expect(await served.child.exited).toBe(143);
+    await served.drained;
+  } finally {
+    if (served && served.child.exitCode === null) {
+      served.child.kill("SIGKILL");
+      await served.child.exited;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("mars team serve: dev users, private files, flag default off, enable/disable/stats/export/import/revoke round trip, clean SIGTERM", async () => {
   const root = await mkdtemp(join(tmpdir(), "mars-cli-team-"));
@@ -472,12 +543,56 @@ test("mars team serve requires an identity option, rejects bad repo specs, and -
         () => {},
       ),
     ).rejects.toBeInstanceOf(TeamUsageError);
-    await expect(
-      runTeam(
-        ["serve", "--state", state, "--port", "0", "--dev-users", "ada,mars"],
+    for (const reserved of ["mars", "MARS", "Mars"]) {
+      const devUsers = runTeam(
+        [
+          "serve",
+          "--state",
+          state,
+          "--port",
+          "0",
+          "--dev-users",
+          `ada,${reserved}`,
+        ],
         () => {},
-      ),
-    ).rejects.toBeInstanceOf(TeamUsageError);
+      );
+      await expect(devUsers).rejects.toBeInstanceOf(TeamUsageError);
+      await expect(devUsers).rejects.toThrow(
+        `--dev-users cannot include '${reserved}'`,
+      );
+      // The same rule holds for --members, with no --agent-model, and names that flag.
+      const members = runTeam(
+        [
+          "serve",
+          "--state",
+          state,
+          "--port",
+          "0",
+          "--auth-provider",
+          "none",
+          "--members",
+          `Ada,${reserved}`,
+        ],
+        () => {},
+      );
+      await expect(members).rejects.toBeInstanceOf(TeamUsageError);
+      await expect(members).rejects.toThrow(
+        `--members cannot include '${reserved}'`,
+      );
+      await expect(members).rejects.not.toThrow("--dev-users");
+    }
+    for (const identity of [
+      ["--dev-users", "ada,ada"],
+      ["--auth-provider", "none", "--members", "ada,not ok"],
+    ]) {
+      const flag = identity.at(-2);
+      await expect(
+        runTeam(
+          ["serve", "--state", state, "--port", "0", ...identity],
+          () => {},
+        ),
+      ).rejects.toThrow(`${flag} must list distinct ids`);
+    }
     await expect(
       runTeam(
         [
@@ -576,6 +691,57 @@ test("mars doctor --team-state reports the flag and ledger without paths or toke
     });
     expect(JSON.stringify(report.team)).not.toContain(root);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("omitting and re-adding a dev administrator preserves their admin role and metrics access", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-cli-team-admin-return-"));
+  const state = join(root, "state");
+  const env = { PATH: process.env.PATH ?? "", HOME: root };
+  let active: Awaited<ReturnType<typeof spawnServe>> | null = null;
+  try {
+    // 1. Initial start: ada is admin, bob is member
+    active = await spawnServe(
+      ["--state", state, "--port", "0", "--dev-users", "ada,bob", "--enable"],
+      env,
+    );
+    active.child.kill("SIGTERM");
+    expect(await active.child.exited).toBe(143);
+    active = null;
+
+    // 2. Restart omitting ada from --dev-users
+    active = await spawnServe(
+      ["--state", state, "--port", "0", "--dev-users", "bob", "--enable"],
+      env,
+    );
+    active.child.kill("SIGTERM");
+    expect(await active.child.exited).toBe(143);
+    active = null;
+
+    // 3. Restart re-adding ada (even listed second): ada must retain admin role and team.metrics access
+    active = await spawnServe(
+      ["--state", state, "--port", "0", "--dev-users", "bob,ada", "--enable"],
+      env,
+    );
+    const tokens = JSON.parse(
+      await readFile(String(active.report.dev_tokens_file), "utf8"),
+    ) as { users: { user_id: string; token: string; role: string }[] };
+    const ada = tokens.users.find((u) => u.user_id === "ada");
+    expect(ada?.role).toBe("admin");
+    const metricsRes = await rpc(
+      String(active.report.url),
+      ada?.token ?? "",
+      "team.metrics",
+      {},
+      "team-local",
+    );
+    expect(metricsRes.status).toBe(200);
+  } finally {
+    if (active) {
+      active.child.kill("SIGKILL");
+      await active.child.exited;
+    }
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);

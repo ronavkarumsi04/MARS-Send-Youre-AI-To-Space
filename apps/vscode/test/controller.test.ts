@@ -1116,6 +1116,25 @@ describe("Watch evidence beside the host verdict", () => {
   });
 });
 
+test("a task created from Team Chat is listed at once and never replaces an open task", async () => {
+  const ctx = await connectedWithTask("running");
+  const fromChat = makeTask({ task_id: "task-chat", status: "pending" });
+  ctx.server.tasks.set("task-chat", fromChat);
+  const before = ctx.server.methods().length;
+  await ctx.controller.adoptTask(fromChat);
+  expect(ctx.last().tasks.map((task) => task.task_id)).toContain("task-chat");
+  expect(ctx.last().selected?.task.task_id).toBe("task-1");
+  expect(ctx.server.methods()).toHaveLength(before);
+
+  const empty = setup();
+  await empty.controller.adoptTask(fromChat);
+  expect(empty.states).toHaveLength(0);
+  empty.server.tasks.set("task-chat", fromChat);
+  await empty.controller.handleMessage({ type: "ready" });
+  await empty.controller.adoptTask(fromChat);
+  expect(empty.last().selected?.task.task_id).toBe("task-chat");
+});
+
 test("onClientChange reports the shared client on connect and its loss on reconnect", async () => {
   const ctx = setup();
   await ctx.controller.connect();

@@ -1,13 +1,21 @@
+import { BudgetSchema, SHARE_MAX_SUMMARY_CHARS } from "@mars/contracts";
 import {
+  type AgentPreviewView,
+  type AgentRequestView,
   type ConversationSummary,
+  type EvidenceSharePreviewView,
+  type EvidenceShareView,
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
   type MentionIndex,
   type MessageView,
+  type PathSearchMatch,
   ReactionEmojiSchema,
   ReferenceInputSchema,
   type ReferencePreview,
   type SearchResult,
+  type TaskLinkDraftView,
+  type TaskLinkView,
   type TeamCapabilities,
   type TeamServiceLabel,
   type UserView,
@@ -98,9 +106,112 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("fixtureSwitchViewer"), userId: id })
     .strict(),
+  /** Search file paths in an accessible repo at a pinned commit for `@` code-reference autocomplete. */
+  z
+    .object({
+      type: z.literal("searchPaths"),
+      searchId: id,
+      repositories: z.array(
+        z
+          .object({
+            repoId: id,
+            commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+          })
+          .strict(),
+      ),
+      query: z.string().max(256),
+      limit: z.number().int().min(1).max(200).optional(),
+    })
+    .strict(),
+  /** `@MARS` composer actions: preview context, submit request, cancel, inspect, or clear. */
+  z
+    .object({
+      type: z.literal("agentPreview"),
+      conversationId: id,
+      messageIds: z.array(id).max(200),
+      referenceIds: z.array(id).max(MAX_REFERENCES_PER_MESSAGE),
+      draft: z
+        .object({
+          clientMessageId: id,
+          body: z.string().max(MAX_MESSAGE_CHARS),
+          replyTo: id.nullable(),
+          references: z
+            .array(ReferenceInputSchema)
+            .max(MAX_REFERENCES_PER_MESSAGE),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("agentRequest"),
+      conversationId: id,
+      messageIds: z.array(id).max(200),
+      referenceIds: z.array(id).max(MAX_REFERENCES_PER_MESSAGE),
+      idempotencyKey: id,
+      previewSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("agentConfirmDraft"),
+      clientMessageId: id,
+      idempotencyKey: id,
+      previewSha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .nullable(),
+    })
+    .strict(),
+  z.object({ type: z.literal("agentCancel"), requestId: id }).strict(),
+  z.object({ type: z.literal("agentInspect"), requestId: id }).strict(),
+  z.object({ type: z.literal("clearAgent") }).strict(),
+  /** Task-link card actions: draft, confirm, mark created, inspect, or clear. */
+  z
+    .object({
+      type: z.literal("taskLinkDraft"),
+      conversationId: id,
+      messageIds: z.array(id).max(200),
+      referenceIds: z.array(id).max(MAX_REFERENCES_PER_MESSAGE),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("taskLinkConfirm"),
+      linkId: id,
+      request: z.string().max(20_000),
+      acceptanceCriteria: z.array(z.string().max(20_000)).max(50),
+      budget: BudgetSchema,
+    })
+    .strict(),
+  z.object({ type: z.literal("taskLinkInspect"), linkId: id }).strict(),
+  z.object({ type: z.literal("clearTaskLink") }).strict(),
+  /** Verified-evidence share card actions: preview, create (bound to preview_sha256), or clear. */
+  z
+    .object({
+      type: z.literal("sharePreview"),
+      linkId: id,
+      summary: z.string().trim().min(1).max(SHARE_MAX_SUMMARY_CHARS),
+      includeDiffDigest: z.boolean(),
+      includeChecks: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("shareCreate"),
+      linkId: id,
+      previewSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .strict(),
+  z.object({ type: z.literal("clearShare") }).strict(),
 ]);
 export type TeamChatWebviewMessage = z.infer<
   typeof TeamChatWebviewMessageSchema
+>;
+
+export type AgentDraft = NonNullable<
+  Extract<TeamChatWebviewMessage, { type: "agentPreview" }>["draft"]
 >;
 
 export interface PendingSend {
@@ -163,6 +274,16 @@ export interface TeamChatViewState {
     preview: ReferencePreview;
   } | null;
   mention_index: MentionIndex;
+  path_search?: PathSearchMatch[];
+  path_search_id?: string | null;
+  agent_preview?: AgentPreviewView | null;
+  agent_draft?: (AgentDraft & { conversationId: string }) | null;
+  agent_request?: AgentRequestView | null;
+  task_link_draft?: TaskLinkDraftView | null;
+  task_link_attempted?: boolean;
+  task_link?: TaskLinkView | null;
+  share_preview?: EvidenceSharePreviewView | null;
+  share_result?: EvidenceShareView | null;
   notice: TeamChatNotice | null;
   search: SearchResult | null;
   announcement: TeamChatAnnouncement | null;
