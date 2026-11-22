@@ -50,7 +50,7 @@ export function renderAssistant(
     maxlength: "8000",
     class: "assistant-input",
     "aria-label": "Message MARS",
-    placeholder: "Ask a question, explore an idea, or plan your next build…",
+    placeholder: "Message MARS…",
     "data-focus-key": "assistant-input",
     disabled: state.busy || state.loading,
   });
@@ -107,7 +107,7 @@ export function renderAssistant(
       doc,
       "div",
       { class: "assistant-composer-tools" },
-      h(doc, "span", { class: "composer-mode" }, "✧  Chat"),
+      h(doc, "span", { class: "composer-mode" }, "Chat"),
       h(
         doc,
         "span",
@@ -141,7 +141,7 @@ export function renderAssistant(
         h(doc, "span", {}, "/"),
         h(doc, "strong", {}, session?.title ?? "New conversation"),
       ),
-      h(doc, "span", { class: "mode-badge" }, "✧  Chat"),
+      h(doc, "span", { class: "mode-badge" }, "Chat"),
     ),
     h(
       doc,
@@ -164,24 +164,13 @@ export function renderAssistant(
                 { class: "orbit-mark", "aria-hidden": "true" },
                 "✳",
               ),
-              h(
-                doc,
-                "p",
-                { class: "eyebrow" },
-                "MISSION CONTROL  /  ASSISTANT",
-              ),
-              h(
-                doc,
-                "h1",
-                {},
-                "What are we",
-                h(doc, "span", {}, "working on?"),
-              ),
+              h(doc, "p", { class: "eyebrow" }, "MARS  /  ASSISTANT"),
+              h(doc, "h1", {}, "Start a", h(doc, "span", {}, "conversation.")),
               h(
                 doc,
                 "p",
                 { class: "welcome-subtitle" },
-                "Explore an idea here, then hand a plan to your agent.",
+                "Think through an idea, then turn your plan into a task.",
               ),
               h(
                 doc,
@@ -247,23 +236,18 @@ export function renderAssistant(
               doc,
               "div",
               {},
-              h(doc, "strong", {}, "Connect your first model"),
+              h(doc, "strong", {}, "Add your API key"),
               h(
                 doc,
                 "p",
                 {},
                 state.canConfigure
-                  ? "Add an OpenRouter API key to bring MARS online."
+                  ? "Connect OpenRouter to send your first message."
                   : "Set OPENROUTER_API_KEY in the environment that launches MARS, then restart the attached app.",
               ),
             ),
             state.canConfigure
-              ? action(
-                  doc,
-                  "Connect model  ↗",
-                  "connect-action",
-                  state.onSettings,
-                )
+              ? action(doc, "Connect model", "connect-action", state.onSettings)
               : null,
           )
         : null,
@@ -294,7 +278,7 @@ export function renderAssistant(
         { class: "composer-footnote" },
         state.loading
           ? "Loading your conversations…"
-          : "Chat thinks with you. Tasks work in your project.  ·  Enter to send, Shift + Enter for a new line.",
+          : "Enter to send  ·  Shift + Enter for a new line",
       ),
     ),
   );

@@ -1,5 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fontCache, websiteFonts } from "./fonts";
 
 export async function buildShell(outdir: string): Promise<void> {
   const root = resolve(import.meta.dir, "..");
@@ -72,10 +73,8 @@ export async function buildShell(outdir: string): Promise<void> {
     resolve(root, "src/renderer/shell.css"),
     resolve(rendererDir, "shell.css"),
   );
-  await copyFile(
-    resolve(root, "assets/orbit.svg"),
-    resolve(rendererDir, "orbit.svg"),
-  );
+  for (const icon of ["orbit.svg", "navigation.svg"])
+    await copyFile(resolve(root, "assets", icon), resolve(rendererDir, icon));
   await copyFile(
     resolve(root, "assets/CommitMono-Regular.woff2"),
     resolve(rendererDir, "CommitMono-Regular.woff2"),
@@ -83,6 +82,15 @@ export async function buildShell(outdir: string): Promise<void> {
   await copyFile(
     resolve(root, "assets/CommitMono-OFL.txt"),
     resolve(outdir, "CommitMono-OFL.txt"),
+  );
+  for (const { name } of websiteFonts) {
+    // Unit-test bundles may be built offline without the optional display faces.
+    if (await Bun.file(resolve(fontCache, name)).exists())
+      await copyFile(resolve(fontCache, name), resolve(rendererDir, name));
+  }
+  await copyFile(
+    resolve(root, "assets/Fontshare-FFL.txt"),
+    resolve(outdir, "Fontshare-FFL.txt"),
   );
 }
 

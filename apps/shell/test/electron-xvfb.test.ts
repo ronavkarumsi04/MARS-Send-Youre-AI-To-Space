@@ -287,7 +287,7 @@ test.skipIf(!PACKAGED_ELECTRON)(
       cdp = await CdpClient.connect(await waitForPageTarget(port));
       await waitForCondition(
         cdp,
-        "document.querySelector('.status-bar > span')?.textContent === 'Connected'",
+        "document.querySelector('.status-bar > span')?.textContent === 'Workbench online'",
         "the bundled workbench to connect",
         20_000,
       );
@@ -297,11 +297,17 @@ test.skipIf(!PACKAGED_ELECTRON)(
       }>("window.marsWorkbench['workbench.describe']({})");
       expect(describe.ok).toBe(true);
       expect(describe.result?.workspaceLabel).toBe("demo-project");
-      expect(
-        await cdp.evaluate(
-          "document.fonts.load('12px \"Commit Mono\"').then(fonts => fonts.length)",
-        ),
-      ).toBe(1);
+      for (const spec of [
+        '12px "Commit Mono"',
+        '14px "General Sans"',
+        "500 32px Switzer",
+      ]) {
+        expect(
+          await cdp.evaluate(
+            `document.fonts.load(${JSON.stringify(spec)}).then(fonts => fonts.length)`,
+          ),
+        ).toBe(1);
+      }
       await cdp.evaluate(
         "document.querySelector('[data-action=toggle-team-chat]').click()",
       );
@@ -387,6 +393,13 @@ test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
       cdp = await CdpClient.connect(wsUrl);
       await cdp.send("Runtime.enable");
 
+      // Chat starts with conversation history; task sessions belong under Tasks.
+      await waitForCondition(
+        cdp,
+        "Boolean(document.querySelector('[data-page=tasks]'))",
+        "Tasks navigation",
+      );
+      await cdp.evaluate("document.querySelector('[data-page=tasks]').click()");
       // Wait for initial task list load
       await waitForCondition(
         cdp,

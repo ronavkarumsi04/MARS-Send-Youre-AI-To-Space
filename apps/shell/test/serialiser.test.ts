@@ -408,7 +408,7 @@ test("connection error view retries the controller load", async () => {
   await controller.settled();
 
   expect(describeCalls).toBe(2);
-  expect(serialize(document.root)).toContain("Connected");
+  expect(serialize(document.root)).toContain("Workbench online");
 });
 
 test("a session click during an in-flight load queues the selected task", async () => {

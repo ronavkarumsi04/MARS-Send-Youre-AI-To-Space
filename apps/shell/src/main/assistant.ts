@@ -79,6 +79,16 @@ export function createAssistant(options: Options) {
       const parsed = AssistantRequestSchema.safeParse(payload);
       if (!parsed.success) return { ok: false, error: "Invalid chat request." };
       const request = parsed.data;
+      if (
+        request.action === "send" &&
+        /sk-or-v1-[A-Za-z0-9_-]{20,}/.test(request.text)
+      ) {
+        return {
+          ok: false,
+          error:
+            "That looks like an OpenRouter API key. Remove it from your message and add it under Settings → Model connection instead. Nothing was sent.",
+        };
+      }
       let context: Context;
       try {
         context = await options.context();

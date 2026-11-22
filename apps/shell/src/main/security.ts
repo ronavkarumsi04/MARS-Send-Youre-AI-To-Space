@@ -46,9 +46,12 @@ export function resolveAppAsset(
     "/renderer.js": "text/javascript; charset=utf-8",
     "/shell.css": "text/css; charset=utf-8",
     "/orbit.svg": "image/svg+xml",
+    "/navigation.svg": "image/svg+xml",
     "/settings.html": "text/html; charset=utf-8",
     "/settings.js": "text/javascript; charset=utf-8",
     "/CommitMono-Regular.woff2": "font/woff2",
+    "/Switzer-Medium.woff2": "font/woff2",
+    "/GeneralSans-Regular.woff2": "font/woff2",
   };
   const mediaType = assets[parsed.pathname];
   if (!mediaType) return null;

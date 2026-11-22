@@ -9,7 +9,7 @@ Status: **Desktop preview.** `apps/shell` is an Electron window (`electron@44.10
    - **Ubuntu/Debian (x64):** `MARS-Ubuntu-Debian-x64`. Open the `.deb` in your package installer and launch MARS from the applications menu. If your distribution has no graphical package installer, use `sudo apt install ./MARS-0.0.1-linux-amd64.deb`.
    - There is no Windows installer.
 2. MARS opens a local demo project. Use **Project → Open Project Folder…** for a checkout of your own, or **Project → Open Demo Project** to return. Task state is separate per folder; tasks run on isolated copies, not the selected source files.
-3. Click **Connect model** on the Chat home (or **Project → Model Settings…**). Create a key on the [OpenRouter API Keys page](https://openrouter.ai/settings/keys), paste it in **2. Paste your OpenRouter API key**, and click **Save & connect**. Do not paste it in a chat or task. In attach mode there is no settings dialog: set `OPENROUTER_API_KEY` in the environment that launches the desktop app, then restart it. The desktop uses the default free route; provider availability and rate limits apply. The key is saved encrypted when OS-backed storage is available and otherwise kept only for that app session. Switching projects or changing the key restarts the local workbench.
+3. Open **Settings → Model connection → Add API key** in the sidebar, or click **Connect model** on Chat. Create a key on the [OpenRouter API Keys page](https://openrouter.ai/settings/keys), paste it in **2. Paste your OpenRouter API key**, and click **Save & connect**. Do not paste it in a chat or task. In attach mode there is no settings dialog: set `OPENROUTER_API_KEY` in the environment that launches the desktop app, then restart it. The desktop uses the default free route; provider availability and rate limits apply. The key is saved encrypted when OS-backed storage is available and otherwise kept only for that app session. Switching projects or changing the key restarts the local workbench.
 
 You can browse the workbench and use the **Team chat** demo without a provider key. Team chat contains local sample conversations, not a live team connection; demo messages are not durable. The built-in workbench does not enable command execution or host verification checks. Advanced workbench configuration still uses the CLI and an explicit connection file.
 
@@ -58,6 +58,8 @@ Main-process hardening: `app.enableSandbox()`, every permission request/check de
 - **Provenance**: every piece of model/repository/workspace/chat text is rendered as data in a quoted block with a visible provenance label (`untrusted · task request`, `untrusted · artifact … · sha256 verified`, `untrusted · exported patch · sha256 verified`, …).
 
 ## Build it
+
+Desktop typography follows the [MARS website](https://mars-dusky.vercel.app): Switzer Medium for headings, General Sans for body text, and Commit Mono for labels. The build downloads the two unmodified, checksum-pinned Fontshare faces from Fontshare into the local dependency cache for app embedding. They are not redistributed as standalone files in git. The desktop never contacts a font CDN at runtime.
 
 On macOS or Debian/Ubuntu with the pinned Bun version, run `bun install --frozen-lockfile --ignore-scripts`, `bun run --cwd apps/shell native:install`, then `bun run --cwd apps/shell package`. Installers are in `apps/shell/dist/installers`. The packager smoke-tests the bundled Bun, authenticated workbench RPC, and Oh My Pi native session before producing the installer.
 

@@ -9,6 +9,35 @@ import { settingsActions } from "../src/renderer/settings-actions";
 import { findAll, MiniDocument } from "./mini-dom";
 import { fakeBridge, loadFixtureData } from "./test-utils";
 
+test("a key pasted in chat never reaches the provider or history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mars-misplaced-key-"));
+  try {
+    let requests = 0;
+    const assistant = createAssistant({
+      directory,
+      context: () => ({ workspace: "demo", key: "fixture" }),
+      complete: async () => {
+        requests++;
+        return "unexpected";
+      },
+    });
+    const result = await assistant.call({
+      action: "send",
+      id: randomUUID(),
+      text: `Here is my key: sk-or-v1-${"x".repeat(36)}`,
+      consent: true,
+    });
+    expect(!result.ok && result.error).toContain("Settings");
+    expect(requests).toBe(0);
+    expect(await assistant.call({ action: "load" })).toMatchObject({
+      ok: true,
+      sessions: [],
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("attached workbench without a key explains environment setup without offering a settings window", async () => {
   const doc = new MiniDocument();
   const ctl = createController(

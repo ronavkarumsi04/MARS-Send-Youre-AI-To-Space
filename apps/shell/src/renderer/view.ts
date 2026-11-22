@@ -1273,6 +1273,16 @@ export function renderShell(
   teamChatBtn.disabled = !teamChatAvailable;
   teamChatBtn.addEventListener("click", () => state.onOpenTeamChat?.());
 
+  const destination = (id: WorkspacePage, label: string) => {
+    const el = navButton(
+      label,
+      (state.page ?? "tasks") === id && !state.teamChat?.open,
+      () => state.onPage?.(id),
+    );
+    el.setAttribute("data-focus-key", `nav-${id}`);
+    el.setAttribute("data-page", id);
+    return el;
+  };
   const sidebar = h(
     doc,
     "nav",
@@ -1281,7 +1291,7 @@ export function renderShell(
       doc,
       "div",
       { class: "brand-row" },
-      h(doc, "span", { class: "brand-icon", "aria-hidden": "true" }, "✳"),
+      h(doc, "span", { class: "brand-orbit", "aria-hidden": "true" }),
       h(doc, "h1", { class: "brand" }, "MARS"),
       h(doc, "span", { class: "brand-tag" }, "DESKTOP"),
     ),
@@ -1289,75 +1299,44 @@ export function renderShell(
       doc,
       "div",
       { class: "workspace-switcher" },
-      h(doc, "span", { class: "workspace-icon" }, "⌘"),
-      h(
-        doc,
-        "div",
-        {},
-        h(
-          doc,
-          "strong",
-          {},
-          state.describe?.workspaceLabel ?? "Local workspace",
-        ),
-        h(doc, "small", {}, "Personal workspace"),
-      ),
+      h(doc, "span", { class: "workspace-label" }, "WORKSPACE"),
+      h(doc, "strong", {}, state.describe?.workspaceLabel ?? "Local workspace"),
     ),
-    state.assistant
-      ? navButton(
-          "+  New conversation",
-          false,
-          () => state.assistant?.onNew?.(),
-          "new-conversation",
-          state.assistant.busy,
-        )
-      : null,
-    state.assistant
-      ? navButton("✧  Chat", isChat, () => state.onPage?.("chat"))
-      : null,
-    navButton(
-      "▤  Tasks",
-      (!state.page || state.page === "tasks") && !state.teamChat?.open,
-      () => state.onPage?.("tasks"),
+    state.assistant ? destination("chat", "Chat") : null,
+    destination("tasks", "Tasks"),
+    state.assistant ? destination("extensions", "Extensions") : null,
+    state.assistant ? destination("settings", "Settings") : null,
+    h(
+      doc,
+      "div",
+      { class: "sidebar-history" },
+      ...(isChat && state.assistant
+        ? [
+            h(doc, "h2", { class: "sidebar-label" }, "Conversations"),
+            navButton(
+              "+  New conversation",
+              false,
+              () => state.assistant?.onNew?.(),
+              "new-conversation",
+              state.assistant.busy,
+            ),
+            ...state.assistant.sessions.map((session) =>
+              navButton(
+                session.title,
+                session.id === state.assistant?.activeId,
+                () => state.assistant?.onSelect?.(session.id),
+                "conversation-item",
+                state.assistant?.busy,
+              ),
+            ),
+          ]
+        : (!state.page || state.page === "tasks") && !state.teamChat?.open
+          ? [
+              h(doc, "h2", { class: "sidebar-label" }, "Agent sessions"),
+              ...taskList(doc, state.tasks, task?.task_id, state.onSelect),
+            ]
+          : []),
     ),
-    state.assistant
-      ? navButton(
-          "◇  Extensions",
-          state.page === "extensions" && !state.teamChat?.open,
-          () => state.onPage?.("extensions"),
-        )
-      : null,
-    state.assistant
-      ? (() => {
-          const settings = navButton(
-            "⚙  Settings",
-            state.page === "settings" && !state.teamChat?.open,
-            () => state.onPage?.("settings"),
-          );
-          settings.setAttribute("data-focus-key", "nav-settings");
-          return settings;
-        })()
-      : null,
-    h(doc, "h2", { class: "sidebar-label" }, "RECENT CONVERSATIONS"),
-    ...(state.assistant?.sessions ?? []).map((session) =>
-      navButton(
-        session.title,
-        isChat && session.id === state.assistant?.activeId,
-        () => state.assistant?.onSelect?.(session.id),
-        "conversation-item",
-        state.assistant?.busy,
-      ),
-    ),
-    state.assistant && state.assistant.sessions.length === 0
-      ? h(
-          doc,
-          "p",
-          { class: "sidebar-empty" },
-          "Good things start with a question.",
-        )
-      : null,
-    h(doc, "h2", { class: "sidebar-label" }, "AGENT SESSIONS"),
-    ...taskList(doc, state.tasks, task?.task_id, state.onSelect),
     h(
       doc,
       "section",
@@ -1461,7 +1440,12 @@ export function renderShell(
     doc,
     "footer",
     { class: "status-bar" },
-    h(doc, "span", {}, state.describe ? "Connected" : "Not connected"),
+    h(
+      doc,
+      "span",
+      {},
+      state.describe ? "Workbench online" : "Workbench offline",
+    ),
     h(doc, "span", {}, state.describe?.workspaceLabel ?? "No workspace"),
     h(doc, "span", {}, "loopback"),
     h(doc, "span", {}, "interactive"),
@@ -1480,7 +1464,7 @@ export function renderShell(
     doc,
     "div",
     {
-      class: `app-shell${isChat || state.page === "extensions" || state.page === "settings" || state.teamChat?.open || !state.inspectorOpen ? " inspector-hidden" : ""}`,
+      class: `app-shell${!state.error ? " clean-chrome" : ""}${isChat || state.page === "extensions" || state.page === "settings" || state.teamChat?.open || !state.inspectorOpen ? " inspector-hidden" : ""}`,
     },
     masthead,
     sidebar,
