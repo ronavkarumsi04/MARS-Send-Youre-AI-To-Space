@@ -17,6 +17,8 @@ export const QUERY_LIMITS = {
   max_results: 100,
   default_results: 25,
   max_path_results: 5,
+  max_path_queue: 10_000,
+  max_path_expansions: 50_000,
   max_render_chars: 12 * 1024,
 } as const;
 
@@ -135,7 +137,7 @@ export interface GraphPath {
   edges: GraphEdge[];
 }
 
-/** Shortest undirected paths (breadth-first), at most `limit`, each at most `maxDepth` hops. */
+/** Shortest undirected paths within the hop, edge-work and pending-queue budgets. */
 export function paths(
   index: GraphIndex,
   from: GraphNode,
@@ -153,14 +155,14 @@ export function paths(
   const depthSeen = new Map<string, number>([[from.id, 0]]);
   let shortest: number | null = null;
   let expansions = 0;
-  while (queue.length && expansions < 50_000) {
+  while (queue.length && expansions < QUERY_LIMITS.max_path_expansions) {
     const current = queue.shift();
     if (!current) break;
-    expansions++;
     const length = current.edges.length;
     if (shortest !== null && length >= shortest) break;
     if (length >= maxDepth) continue;
     for (const edge of adjacent(index, current.id)) {
+      if (expansions++ >= QUERY_LIMITS.max_path_expansions) return found;
       const other = edge.source === current.id ? edge.target : edge.source;
       const node = index.nodes.get(other);
       if (!node || current.nodes.some((item) => item.id === other)) continue;
@@ -174,6 +176,7 @@ export function paths(
       }
       const previous = depthSeen.get(other);
       if (previous !== undefined && previous < edges.length) continue;
+      if (queue.length >= QUERY_LIMITS.max_path_queue) continue;
       depthSeen.set(other, edges.length);
       queue.push({ id: other, nodes, edges });
     }

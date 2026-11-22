@@ -7,6 +7,7 @@ const KEEP = /[A-Za-z0-9._-]/;
 const MAX_SEGMENT = 128;
 /** Whole graph-note file name budget (before `.md`), under the 255-byte limit. */
 const MAX_FILE_NAME = 200;
+export const VAULT_MAX_FILE_BYTES = 16 * 1024 * 1024;
 
 /** Truncates an encoded name with a digest of the original so it stays unique. */
 function bound(original: string, encoded: string, limit: number): string {
@@ -74,7 +75,8 @@ export class VaultPathError extends Error {
       | "empty_segment"
       | "path_escape"
       | "private_root"
-      | "path_collision",
+      | "path_collision"
+      | "file_too_large",
     detail?: string,
   ) {
     super(
@@ -141,7 +143,28 @@ export async function readFileNoFollow(
     const stat = await handle.stat();
     if (!stat.isFile())
       throw new VaultPathError("path_escape", `${label} is not a regular file`);
-    return await handle.readFile("utf8");
+    if (stat.size > VAULT_MAX_FILE_BYTES)
+      throw new VaultPathError(
+        "file_too_large",
+        `${label} exceeds ${VAULT_MAX_FILE_BYTES} bytes`,
+      );
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(
+        Math.min(64 * 1024, VAULT_MAX_FILE_BYTES - total + 1),
+      );
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > VAULT_MAX_FILE_BYTES)
+        throw new VaultPathError(
+          "file_too_large",
+          `${label} exceeds ${VAULT_MAX_FILE_BYTES} bytes`,
+        );
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
   } finally {
     await handle.close().catch(() => undefined);
   }

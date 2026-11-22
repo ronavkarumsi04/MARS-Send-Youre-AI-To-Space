@@ -135,6 +135,55 @@ describe("graph queries", () => {
     expect(paths(index, node, node)).toEqual([{ nodes: [node], edges: [] }]);
   });
 
+  test("bounds: dense path searches stop at the edge-work budget", () => {
+    const artifact = fixtureArtifact();
+    const template = artifact.nodes[0];
+    const edge = artifact.edges[0];
+    if (!template || !edge) throw new Error("missing");
+    const layers = Array.from({ length: 4 }, (_, layer) =>
+      Array.from({ length: 30 }, (_, i) => ({
+        ...template,
+        id: `${layer}-${i}`,
+      })),
+    );
+    const nodes = layers.flat();
+    const unreachable = { ...template, id: "unreachable" };
+    const edges = layers.slice(0, -1).flatMap((layer, i) =>
+      layer.flatMap((from) =>
+        (layers[i + 1] ?? []).map((to) => ({
+          ...edge,
+          source: from.id,
+          target: to.id,
+        })),
+      ),
+    );
+    const indexed = indexGraph({
+      ...artifact,
+      nodes: [...nodes, unreachable],
+      edges,
+      communities: [],
+    });
+    let reads = 0;
+    const counted = new Proxy(indexed.nodes, {
+      get(target, property) {
+        if (property === "get")
+          return (id: string) => {
+            if (++reads > 50_000)
+              throw new Error("path edge-work budget exceeded");
+            return target.get(id);
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const from = nodes[0];
+    if (!from) throw new Error("missing");
+    expect(
+      paths({ ...indexed, nodes: counted }, from, unreachable, { maxDepth: 8 }),
+    ).toEqual([]);
+    expect(reads).toBeLessThanOrEqual(50_000);
+  });
+
   test("neighbours walk both directions with bounded depth and limit", () => {
     const start = index.nodes.get("a::helper");
     if (!start) throw new Error("missing");

@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
 import type { Skill } from "@mars/skills";
+import { replaceDurably } from "./durable";
 import { VaultError } from "./errors";
+import { withVaultLock } from "./lock";
 import { renderNote, sha256, wikilink } from "./notes";
 import {
   assertVaultDirectory,
@@ -145,12 +147,7 @@ async function writeAtomic(
     `.${basename(absolute)}.${randomBytes(6).toString("hex")}.tmp`,
   );
   try {
-    await writeFile(temporary, text, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temporary, absolute);
+    await replaceDurably(temporary, absolute, text);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
@@ -428,6 +425,16 @@ export async function exportVault(
     ...(options.privateRoots ?? []),
     options.skills.root,
   ]);
+  return withVaultLock(vaultDir, () =>
+    exportVaultLocked(ctx, { ...options, vaultDir }),
+  );
+}
+
+async function exportVaultLocked(
+  ctx: RequestContext,
+  options: ExportVaultOptions,
+): Promise<ExportReport> {
+  const vaultDir = options.vaultDir;
   const graphs = (
     options.graph === undefined
       ? []

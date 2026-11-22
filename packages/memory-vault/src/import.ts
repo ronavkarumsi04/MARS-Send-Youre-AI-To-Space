@@ -1,6 +1,10 @@
+import { resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
-import { scanThreat } from "@mars/memory";
+import { RequestContextSchema, scanThreat } from "@mars/memory";
+import { VaultError } from "./errors";
+import { withVaultLock } from "./lock";
 import { sha256 } from "./notes";
+import { assertVaultDirectory } from "./paths";
 import { type ScannedNote, scanVault } from "./scan";
 import {
   type ImportAction,
@@ -72,6 +76,22 @@ function errorText(error: unknown, texts: readonly string[] = []): string {
  * `pending` for a human or host to accept.
  */
 export async function importVault(
+  ctx: RequestContext,
+  options: ImportVaultOptions,
+): Promise<ImportReport> {
+  if (!RequestContextSchema.safeParse(ctx).success)
+    throw new VaultError("invalid_context");
+  const vaultDir = resolve(options.vaultDir);
+  await assertVaultDirectory(vaultDir, [
+    ...(options.privateRoots ?? []),
+    options.skills.root,
+  ]);
+  return withVaultLock(vaultDir, () =>
+    importVaultLocked(ctx, { ...options, vaultDir }),
+  );
+}
+
+async function importVaultLocked(
   ctx: RequestContext,
   options: ImportVaultOptions,
 ): Promise<ImportReport> {
