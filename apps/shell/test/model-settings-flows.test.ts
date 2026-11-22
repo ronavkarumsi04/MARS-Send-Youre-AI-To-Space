@@ -1,13 +1,27 @@
 import { expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistant } from "../src/main/assistant";
+import { hasRemovableKey } from "../src/main/model-key";
 import { createController } from "../src/renderer/controller";
 import { settingsActions } from "../src/renderer/settings-actions";
 import { findAll, MiniDocument } from "./mini-dom";
 import { fakeBridge, loadFixtureData } from "./test-utils";
+
+test("Remove is available for a session key or unreadable encrypted file, but not on first launch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mars-key-presence-"));
+  const file = join(dir, "key.bin");
+  try {
+    expect(await hasRemovableKey(file)).toBe(false);
+    expect(await hasRemovableKey(file, "fixture")).toBe(true);
+    await writeFile(file, Buffer.from([0xff, 0, 0xff]));
+    expect(await hasRemovableKey(file)).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("a key pasted in chat never reaches the provider or history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mars-misplaced-key-"));
@@ -23,6 +37,8 @@ test("a key pasted in chat never reaches the provider or history", async () => {
     });
     const result = await assistant.call({
       action: "send",
+      workspace: createHash("sha256").update("demo").digest("hex"),
+      seenMessages: 0,
       id: randomUUID(),
       text: `Here is my key: sk-or-v1-${"x".repeat(36)}`,
       consent: true,
@@ -49,6 +65,7 @@ test("attached workbench without a key explains environment setup without offeri
       request: async () => ({
         ok: true,
         configured: false,
+        workspace: "scope",
         canConfigure: false,
         sessions: [],
       }),
@@ -87,7 +104,13 @@ test.each([false, true])(
       {
         request: async (req) => {
           calls.push(req.action);
-          return { ok: true, canConfigure: true, configured, sessions: [] };
+          return {
+            ok: true,
+            workspace: "scope",
+            canConfigure: true,
+            configured,
+            sessions: [],
+          };
         },
       },
     );
@@ -135,6 +158,8 @@ test("changing credentials invalidates a pending turn without blocking the next 
     });
     const request = {
       action: "send",
+      workspace: createHash("sha256").update("p").digest("hex"),
+      seenMessages: 0,
       id: randomUUID(),
       text: "old",
       consent: true,
@@ -169,6 +194,7 @@ test("settings gives a browser fallback, preserves invalid input and clears a sa
   };
   const actions = settingsActions(
     {
+      hasKey: async () => false,
       openKeyPage: async () => {
         throw new Error("no browser");
       },
@@ -176,6 +202,10 @@ test("settings gives a browser fallback, preserves invalid input and clears a sa
     },
     controls,
   );
+  await actions.initialize();
+  expect(controls.clear.disabled).toBe(true);
+  await actions.apply(null);
+  expect(controls.status.textContent).toBe("");
   await actions.openKeyPage();
   expect(controls.status.textContent).toContain("Settings → API Keys");
   controls.input.value = "typo";
@@ -185,4 +215,5 @@ test("settings gives a browser fallback, preserves invalid input and clears a sa
   controls.input.value = "accepted-fixture";
   await actions.apply("accepted-fixture");
   expect(controls.input.value).toBe("");
+  expect(controls.clear.disabled).toBe(false);
 });

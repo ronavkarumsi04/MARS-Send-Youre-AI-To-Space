@@ -169,7 +169,7 @@ export function renderAssistant(
                 doc,
                 "h1",
                 {},
-                "Small thought.",
+                "Small thought. ",
                 h(doc, "span", {}, "Giant leap."),
               ),
               h(
