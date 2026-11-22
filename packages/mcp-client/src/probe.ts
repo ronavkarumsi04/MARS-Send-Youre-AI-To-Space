@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
 import {
@@ -119,10 +120,39 @@ async function readStdioArtifact(
   const entrypointSha = config.entrypoint
     ? await hashFileOrSpec(config.entrypoint, null, signal)
     : null;
+  const argFiles = await hashArgumentFiles(config, signal);
   return {
     executable,
-    sha: sha256(canonicalJSON({ executable, executableSha, entrypointSha })),
+    sha: sha256(
+      canonicalJSON({
+        executable,
+        executableSha,
+        entrypointSha,
+        ...(argFiles.length > 0 ? { argFiles } : {}),
+      }),
+    ),
   };
+}
+
+/**
+ * Hashes every argument that names an existing regular file (resolved against
+ * the server's cwd) so interpreter-launched scripts such as
+ * `bun run server.ts` are fingerprinted even without an explicit entrypoint.
+ */
+async function hashArgumentFiles(
+  config: StdioTransportConfig,
+  signal?: AbortSignal,
+): Promise<Array<{ index: number; sha256: string }>> {
+  const cwd = config.cwd ?? process.cwd();
+  const hashes: Array<{ index: number; sha256: string }> = [];
+  for (const [index, arg] of config.args.entries()) {
+    signal?.throwIfAborted();
+    const path = resolve(cwd, arg);
+    const info = await stat(path).catch(() => undefined);
+    if (!info?.isFile()) continue;
+    hashes.push({ index, sha256: await hashFileOrSpec(path, null, signal) });
+  }
+  return hashes;
 }
 
 export async function verifyMcpConfig(

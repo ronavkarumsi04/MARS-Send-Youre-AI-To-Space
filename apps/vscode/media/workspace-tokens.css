@@ -1,0 +1,63 @@
+body:has(.workspace-rail) {
+  color-scheme: dark;
+  --page: #15171b;
+  --card: #101216;
+  --surface: #1b1e23;
+  --text: #eeeef0;
+  --accent: #e5b69a;
+  --edge: #5e626e;
+  --divider: #2c3038;
+  --quiet: #a4a7b3;
+  --selected: #25282e;
+  --success: #9ac9ad;
+  --error: #f8a5ab;
+  --button-hover: color-mix(in srgb, var(--accent) 82%, var(--text));
+  --primary-text: var(--card);
+  --orbit-art-filter: none;
+  --radius: 8px;
+  --mono: "Commit Mono", ui-monospace, monospace;
+  --space: clamp(16px, 4vw, 30px);
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light):has(
+    .workspace-rail
+  ) {
+  color-scheme: light dark;
+  --page: var(--vscode-editor-background);
+  --card: var(--vscode-sideBar-background);
+  --surface: var(--vscode-editor-background);
+  --text: var(--vscode-editor-foreground);
+  --accent: var(--vscode-textLink-foreground);
+  --edge: var(--vscode-contrastBorder);
+  --divider: var(--vscode-contrastBorder);
+  --quiet: var(--vscode-editor-foreground);
+  --selected: var(--vscode-list-activeSelectionBackground);
+  --success: var(--vscode-editor-foreground);
+  --error: var(--vscode-errorForeground);
+  --button-hover: var(--surface);
+  --primary-text: var(--text);
+}
+
+#app:has(.workspace-rail) {
+  --vscode-font-family: system-ui, sans-serif;
+  --vscode-editor-font-family: var(--mono);
+  --vscode-foreground: var(--text);
+  --vscode-descriptionForeground: var(--quiet);
+  --vscode-panel-border: var(--divider);
+  --vscode-focusBorder: var(--accent);
+  --vscode-button-background: var(--accent);
+  --vscode-button-foreground: var(--primary-text);
+  --vscode-button-hoverBackground: var(--button-hover);
+  --vscode-button-secondaryBackground: var(--surface);
+  --vscode-button-secondaryForeground: var(--text);
+  --vscode-button-secondaryHoverBackground: var(--selected);
+  --vscode-button-border: var(--divider);
+  --vscode-input-background: var(--card);
+  --vscode-input-foreground: var(--text);
+  --vscode-input-border: var(--edge);
+}
+
+:is(.vscode-high-contrast, .vscode-high-contrast-light)
+  #app:has(.workspace-rail) {
+  --vscode-button-background: var(--surface);
+}
