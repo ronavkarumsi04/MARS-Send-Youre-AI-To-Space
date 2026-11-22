@@ -446,7 +446,13 @@ test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
       })()`);
       await waitForCondition(
         cdp,
-        "Boolean(document.querySelector('[data-action=\"export-patch\"]'))",
+        "!!document.querySelector('.details-toggle')",
+        "task workspace to open",
+      );
+      await cdp.evaluate("document.querySelector('.details-toggle').click()");
+      await waitForCondition(
+        cdp,
+        "Boolean(document.querySelector('[data-action=\"export-patch\"]')?.getBoundingClientRect().height)",
         "export-patch button on verified task",
       );
       await cdp.evaluate(`(() => {

@@ -1,12 +1,26 @@
 <div id="app">
-  <div class="app-shell">
+  <div class="app-shell inspector-hidden">
     <header class="masthead">
       <span aria-hidden="true" class="masthead-dots"></span>
-      MARS / workbench
+      <span class="masthead-title">MARS</span>
+      <span class="masthead-subtitle">Your mission control</span>
     </header>
     <nav aria-label="Sidebar" class="sidebar">
-      <h1 class="brand">MARS</h1>
-      <h2 class="section-title">Sessions</h2>
+      <div class="brand-row">
+        <span aria-hidden="true" class="brand-icon">✳</span>
+        <h1 class="brand">MARS</h1>
+        <span class="brand-tag">DESKTOP</span>
+      </div>
+      <div class="workspace-switcher">
+        <span class="workspace-icon">⌘</span>
+        <div>
+          <strong>fixture-repo (fixture)</strong>
+          <small>Personal workspace</small>
+        </div>
+      </div>
+      <button aria-pressed="true" class="nav-item selected" type="button">▤  Tasks</button>
+      <h2 class="sidebar-label">RECENT CONVERSATIONS</h2>
+      <h2 class="sidebar-label">AGENT SESSIONS</h2>
       <section aria-label="running" class="session-group">
         <h3 class="group-title">running</h3>
         <ul class="session-list">
@@ -82,7 +96,7 @@
           </li>
         </ul>
       </section>
-      <section class="team-chat">
+      <section class="team-chat sidebar-bottom">
         <button aria-disabled="true" aria-pressed="false" class="team-chat-toggle" data-action="toggle-team-chat" data-focus-key="team-chat-toggle" disabled="" type="button">Team chat</button>
         <p class="muted">team chat unavailable</p>
       </section>
@@ -100,6 +114,7 @@
           </div>
         </header>
         <button class="refresh" data-focus-key="refresh" type="button">Refresh</button>
+        <button aria-pressed="false" class="details-toggle" type="button">Task details</button>
       </div>
       <section class="action-card" data-card="approval-card">
         <h2 class="section-title">Approvals &amp; Launch Consent</h2>
@@ -151,7 +166,7 @@
         </div>
       </section>
       <section class="composer-card" data-panel="prompt-composer">
-        <h2 class="section-title">New Task Composer</h2>
+        <h2 class="section-title">Give your agent a task</h2>
         <textarea aria-label="Task prompt" class="composer-textarea" data-control="composer-request" data-focus-key="composer-request" placeholder="Describe a task for MARS workbench…" rows="3"></textarea>
         <input aria-label="Acceptance criteria" class="composer-criteria" data-control="composer-criteria" placeholder="Optional acceptance criteria (comma-separated)" type="text" value="">
         <div class="composer-options">
