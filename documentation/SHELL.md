@@ -21,6 +21,8 @@ In the installed app, choose **Project → Add Verified Extension**, pick an ite
 - A **skill** supplies instructions, not executable code. Choose **Bug triage**, **Code review**, **Test planning**, **Change summary**, or **Test handoff** for focused guidance on the corresponding task.
 - A **plugin** groups extensions into a single install. The **Bug investigation kit** combines triage and test planning; the **Pull request review kit** adds review, test planning, and test handoff; the **Release handoff kit** combines change summary and test handoff. Shared skills are reused and conflicting content is never overwritten.
 
+An expired MCP stays in the catalog with a renewal notice; adding it again requires approval. A customized active skill blocks reinstall rather than losing your edits. To return to the bundled version, archive the customized skill and add the extension again. The prior content remains in the skill's version history.
+
 Here, **verified** means the payload matches a SHA-256 pin in the catalog shipped with MARS. It is not third-party certification. There are no remote downloads or custom URLs/commands. Adding any MCP requires explicit approval; the workbench checks the grant and artifact on use. In attach-only mode the external workbench, not the shell, manages its own extensions.
 
 ## No second agent loop

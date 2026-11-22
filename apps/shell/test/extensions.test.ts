@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +82,26 @@ test("the investigation and review kits install all and only their declared skil
     "mars-debug-kit",
     "mars-pr-kit",
   ]);
+});
+
+test("archive then reinstall restores bundled instructions without losing the customized version", async () => {
+  const ext = open();
+  await ext.install(skill);
+  const store = new SkillStore(join(state, "skills"));
+  const custom =
+    "---\nname: mars-change-summary\ndescription: My instructions\n---\nKeep this version.";
+  const options = { actor: "operator", source: "manual" };
+  await store.update(skill, custom, options);
+  expect((await ext.status()).conflicts).toContain(plugin);
+  await expect(ext.install(plugin)).rejects.toThrow("Archive");
+  await store.archive(skill, options);
+  await ext.install(plugin);
+  expect(await ext.list()).toContain(plugin);
+  expect(
+    (await store.listVersions(skill)).some(
+      (v) => v.skill.content === custom && v.skill.status === "archived",
+    ),
+  ).toBe(true);
 });
 
 test("supplied JSON and unified patches are processed offline by independently approved tools", async () => {
@@ -208,6 +228,18 @@ test("the runtime receives only its own project’s verified, unexpired, unrevok
     expect(grants).toHaveLength(1);
     const grant = grants[0];
     if (!grant) throw new Error("Missing grant");
+    expect(
+      Date.parse(grant.expires_at) - Date.parse(grant.approved_at),
+    ).toBeCloseTo(30 * 86_400_000, -2);
+    const future = spyOn(Date, "now").mockReturnValue(
+      Date.parse(grant.expires_at) + 1,
+    );
+    try {
+      expect((await ext.status()).expired).toEqual([mcp]);
+      expect(await runtime.listServerIds()).toEqual([]);
+    } finally {
+      future.mockRestore();
+    }
     expect(grant.permissions).toEqual([
       { capability: "tool.invoke", resource: "utc_now" },
     ]);
@@ -240,7 +272,7 @@ test("install only dispatches after explicit confirmation on the same project", 
   const a = {
     extensionAction: async (request: ExtensionAction) => {
       actions.push(request);
-      return [];
+      return { installed: [], expired: [], conflicts: [] };
     },
   };
   let project = a;
@@ -285,7 +317,13 @@ test("the catalog IPC rejects other windows, non-main frames and renderer-suppli
   desktopExtensionsMenu(
     { ipcMain, dialog: {} as Dialog },
     window,
-    () => ({ extensionAction: async () => [] }),
+    () => ({
+      extensionAction: async () => ({
+        installed: [],
+        expired: [mcp],
+        conflicts: [skill],
+      }),
+    }),
     () => source,
   );
   if (!listener) throw new Error("Missing handler");
@@ -303,9 +341,14 @@ test("the catalog IPC rejects other windows, non-main frames and renderer-suppli
       command: "unexpected",
     }),
   ).toThrow();
+  const catalog = await listener(event as never, { action: "list" });
   expect(
-    (await listener(event as never, { action: "list" })).map(
-      (entry: { kind: string }) => entry.kind,
-    ),
-  ).toEqual(CATALOG.map((entry) => entry.kind));
+    catalog.find((entry: { id: string }) => entry.id === mcp).description,
+  ).toContain("renew");
+  expect(
+    catalog.find((entry: { id: string }) => entry.id === skill).description,
+  ).toContain("Archive");
+  expect(catalog.map((entry: { kind: string }) => entry.kind)).toEqual(
+    CATALOG.map((entry) => entry.kind),
+  );
 });

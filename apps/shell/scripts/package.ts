@@ -108,11 +108,15 @@ async function stageWorkbench(resources: string, scratch: string) {
       connectionScope: connected.connection.scope,
     }).call("workbench.describe", {});
     if (!result.ok) throw new Error("Packaged workbench did not answer RPC.");
-    await host.extensionAction({ action: "install", id: "mars-release-kit" });
+    // Native menus and the library can refresh or install at the same time.
+    const [before, , after] = await Promise.all([
+      host.extensionAction({ action: "list" }),
+      host.extensionAction({ action: "install", id: "mars-release-kit" }),
+      host.extensionAction({ action: "list" }),
+    ]);
     if (
-      !(await host.extensionAction({ action: "list" })).includes(
-        "mars-release-kit",
-      )
+      before.installed.includes("mars-release-kit") ||
+      !after.installed.includes("mars-release-kit")
     )
       throw new Error("Packaged extension catalog is unavailable.");
   } finally {

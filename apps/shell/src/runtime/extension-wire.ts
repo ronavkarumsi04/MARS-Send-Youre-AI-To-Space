@@ -14,9 +14,14 @@ export const ExtensionRequest = z
   })
   .strict();
 export const REPLY_PREFIX = "MARS_EXTENSIONS ";
+const ids = z.array(id).max(CATALOG.length);
+export const CatalogStatus = z
+  .object({ installed: ids, expired: ids, conflicts: ids })
+  .strict();
+export type CatalogStatus = z.infer<typeof CatalogStatus>;
 export const ExtensionReply = z
   .object({
     token: z.string().uuid(),
-    installed: z.array(id).max(CATALOG.length).nullable(),
+    status: CatalogStatus.nullable(),
   })
   .strict();

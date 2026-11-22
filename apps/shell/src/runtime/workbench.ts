@@ -3,7 +3,11 @@ import { createInterface } from "node:readline";
 import { loadModelRegistry } from "@mars/providers";
 import { createWorkbenchService } from "@mars/workbench";
 import { z } from "zod";
-import { ExtensionRequest, REPLY_PREFIX } from "./extension-wire";
+import {
+  type CatalogStatus,
+  ExtensionRequest,
+  REPLY_PREFIX,
+} from "./extension-wire";
 import { projectExtensions } from "./extensions";
 
 const StartSchema = z
@@ -59,9 +63,9 @@ async function serve(): Promise<void> {
         return;
       }
       const { token, request } = command;
-      const reply = (installed: string[] | null) => {
+      const reply = (status: CatalogStatus | null) => {
         process.stdout.write(
-          `${REPLY_PREFIX}${JSON.stringify({ token, installed })}\n`,
+          `${REPLY_PREFIX}${JSON.stringify({ token, status })}\n`,
         );
       };
       if (pending) {
@@ -70,8 +74,14 @@ async function serve(): Promise<void> {
       }
       pending = (
         request.action === "list"
-          ? extensions.list()
-          : extensions.install(request.id).then(() => [request.id])
+          ? extensions.status()
+          : extensions
+              .install(request.id)
+              .then(() => ({
+                installed: [request.id],
+                expired: [],
+                conflicts: [],
+              }))
       )
         .then(reply, () => reply(null))
         .finally(() => {

@@ -11,9 +11,11 @@ import {
   EXTENSION_CHANNEL,
   findExtension,
 } from "../runtime/extension-catalog";
-import { ExtensionAction } from "../runtime/extension-wire";
+import { type CatalogStatus, ExtensionAction } from "../runtime/extension-wire";
 
-type Project = { extensionAction(action: ExtensionAction): Promise<string[]> };
+type Project = {
+  extensionAction(action: ExtensionAction): Promise<CatalogStatus>;
+};
 
 export function extensionController(
   project: () => Project | undefined,
@@ -25,14 +27,20 @@ export function extensionController(
       const active = project();
       if (!active)
         throw new Error("Open a local project to manage extensions.");
-      const installed = await active.extensionAction({ action: "list" });
+      const { installed, expired, conflicts } = await active.extensionAction({
+        action: "list",
+      });
       return CATALOG.map(
         ({ id, name, kind, version, description, permissions }) => ({
           id,
           name,
           kind,
           version,
-          description,
+          description: expired.includes(id)
+            ? `Approval expired. Add again to renew. ${description}`
+            : conflicts.includes(id)
+              ? `Archive the customized skill before reinstalling. ${description}`
+              : description,
           permissions,
           installed: installed.includes(id),
         }),
@@ -74,6 +82,9 @@ export function desktopExtensionsMenu(
         `Bundled with MARS · v${entry.version}`,
         `Project: ${source()}`,
         ...entry.permissions,
+        entry.kind === "mcp"
+          ? "Approval lasts 30 days. Add again after expiry to renew."
+          : "A customized active skill is never replaced. To reinstall, archive it first. Adding restores archived skills to the bundled version and keeps prior content in skill version history.",
       ].join("\n\n"),
       buttons: ["Cancel", "Add to project"],
       defaultId: 0,
@@ -118,7 +129,7 @@ export function desktopExtensionsMenu(
                   type: "warning",
                   message: "Extension not added",
                   detail:
-                    "Check that a local project is open and that no existing skill has different content under the same name, then try again.",
+                    "Check that a local project is open. If a skill has customized instructions, archive it first, then add the extension again.",
                 },
           );
         },

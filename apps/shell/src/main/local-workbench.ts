@@ -8,6 +8,7 @@ import {
   loadConnectionFile,
 } from "@mars/contracts/connection-file";
 import {
+  type CatalogStatus,
   type ExtensionAction,
   ExtensionReply,
   REPLY_PREFIX,
@@ -51,7 +52,7 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
   const ready = Promise.withResolvers<boolean>();
   const exited = Promise.withResolvers<void>();
   let pending:
-    | { token: string; finish(value: string[] | null): void }
+    | { token: string; finish(value: CatalogStatus | null): void }
     | undefined;
   let stopping = false;
   const timer = setTimeout(() => {
@@ -67,7 +68,7 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
         const reply = ExtensionReply.parse(
           JSON.parse(line.slice(REPLY_PREFIX.length)),
         );
-        if (reply.token === pending.token) pending.finish(reply.installed);
+        if (reply.token === pending.token) pending.finish(reply.status);
       } catch {
         /* Ignore unrelated child output. */
       }
@@ -96,36 +97,47 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
     }
   })();
 
+  async function send(request: ExtensionAction): Promise<CatalogStatus> {
+    if (
+      !(await ready.promise) ||
+      stopping ||
+      child.exitCode !== null ||
+      child.signalCode ||
+      pending
+    )
+      throw new Error("Extensions are unavailable.");
+    return new Promise((resolve, reject) => {
+      const token = randomUUID();
+      const finish = (value: CatalogStatus | null) => {
+        if (pending?.token !== token) return;
+        pending = undefined;
+        if (value === null)
+          reject(new Error("Could not verify or apply extension."));
+        else resolve(value);
+      };
+      pending = { token, finish };
+      child.stdin.write(`${JSON.stringify({ token, request })}\n`, (error) => {
+        if (error) finish(null);
+      });
+    });
+  }
+  let tail = Promise.resolve();
+  let listing: Promise<CatalogStatus> | undefined;
   return {
     exited: exited.promise,
-    async extensionAction(request: ExtensionAction): Promise<string[]> {
-      if (
-        !(await ready.promise) ||
-        stopping ||
-        child.exitCode !== null ||
-        child.signalCode ||
-        pending
-      )
-        throw new Error("Extensions are unavailable.");
-      return new Promise((resolve, reject) => {
-        const token = randomUUID();
-        const finish = (value: string[] | null) => {
-          if (pending?.token !== token) return;
-          clearTimeout(deadline);
-          pending = undefined;
-          if (value === null)
-            reject(new Error("Could not verify or apply extension."));
-          else resolve(value);
-        };
-        const deadline = setTimeout(() => finish(null), 30_000);
-        pending = { token, finish };
-        child.stdin.write(
-          `${JSON.stringify({ token, request })}\n`,
-          (error) => {
-            if (error) finish(null);
-          },
-        );
-      });
+    extensionAction(request: ExtensionAction) {
+      if (request.action === "list" && listing) return listing;
+      const result = tail.then(() => send(request));
+      tail = result
+        .then(
+          () => {},
+          () => {},
+        )
+        .finally(() => {
+          if (listing === result) listing = undefined;
+        });
+      listing = request.action === "list" ? result : undefined;
+      return result;
     },
     async connection(): Promise<ConnectionResult> {
       if (!(await ready.promise) || child.exitCode !== null || child.signalCode)

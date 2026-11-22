@@ -11,6 +11,7 @@ import {
 } from "@mars/mcp-client";
 import { type Operation, SkillStore } from "@mars/skills";
 import { CATALOG, type CatalogEntry, findExtension } from "./extension-catalog";
+import type { CatalogStatus } from "./extension-wire";
 
 const hash = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
@@ -82,7 +83,7 @@ export function projectExtensions(
     };
   }
 
-  async function installedMcp(cp: HostMcpControlPlane, entry: CatalogEntry) {
+  async function mcpStatus(cp: HostMcpControlPlane, entry: CatalogEntry) {
     const registered = await cp.registry.get(entry.id);
     if (
       !registered ||
@@ -91,45 +92,54 @@ export function projectExtensions(
         registered_at: registered.registered_at,
       })
     )
-      return false;
+      return "unavailable";
     const { grants } = await cp.admin.inspect(context(), {
       kind: "mcp",
       integration_id: entry.id,
     });
     const grant = grants.findLast((g) => g.state !== "superseded");
-    if (
-      grant?.state !== "approved" ||
-      Date.parse(grant.expires_at) <= Date.now()
-    )
-      return false;
+    if (grant?.state !== "approved") return "unavailable";
+    if (Date.parse(grant.expires_at) <= Date.now()) return "expired";
     try {
       await artifacts(entry);
       await verifyMcpConfig(registered, grant.evidence);
-      return true;
+      return "installed";
     } catch {
-      return false;
+      return "unavailable";
     }
   }
 
-  async function list() {
+  async function status(): Promise<CatalogStatus> {
     const skills = await store.list();
-    const installed: string[] = [];
+    const result: CatalogStatus = { installed: [], expired: [], conflicts: [] };
     for (const entry of CATALOG) {
-      if (
-        entry.kind === "mcp"
-          ? await installedMcp(await plane(), entry)
-          : entry.assets.every((asset) =>
-              skills.some(
-                (skill) =>
-                  skill.name === basename(asset.file, ".md") &&
-                  skill.status !== "archived" &&
-                  hash(skill.content) === asset.sha256,
-              ),
-            )
+      if (entry.kind === "mcp") {
+        const state = await mcpStatus(await plane(), entry);
+        if (state !== "unavailable") result[state].push(entry.id);
+      } else if (
+        entry.assets.every((asset) =>
+          skills.some(
+            (skill) =>
+              skill.name === basename(asset.file, ".md") &&
+              skill.status !== "archived" &&
+              hash(skill.content) === asset.sha256,
+          ),
+        )
       )
-        installed.push(entry.id);
+        result.installed.push(entry.id);
+      else if (
+        entry.assets.some((asset) =>
+          skills.some(
+            (s) =>
+              s.name === basename(asset.file, ".md") &&
+              s.status !== "archived" &&
+              hash(s.content) !== asset.sha256,
+          ),
+        )
+      )
+        result.conflicts.push(entry.id);
     }
-    return installed;
+    return result;
   }
 
   async function install(id: string) {
@@ -143,10 +153,14 @@ export function projectExtensions(
       for (const { name, content } of contents) {
         const existing = skills.find((skill) => skill.name === name);
         if (!existing) ops.push({ op: "create", name, content });
-        else if (existing.content !== content)
-          throw new Error("A different skill already uses that name.");
-        else if (existing.status === "archived")
+        else if (existing.status === "archived") {
           ops.push({ op: "restore", name });
+          if (existing.content !== content)
+            ops.push({ op: "update", name, content });
+        } else if (existing.content !== content)
+          throw new Error(
+            "A different skill already uses that name. Archive it first.",
+          );
       }
       if (ops.length)
         await store.applyBatch(ops, {
@@ -157,7 +171,7 @@ export function projectExtensions(
       return;
     }
     const cp = await plane();
-    if (await installedMcp(cp, entry)) return;
+    if ((await mcpStatus(cp, entry)) === "installed") return;
     const ctx = context();
     const server = config(entry);
     const evidence = await cp.probe.observeServer(ctx, server, {
@@ -184,7 +198,8 @@ export function projectExtensions(
   }
 
   return {
-    list,
+    status,
+    list: async () => (await status()).installed,
     install,
     async runtime(_cwd: string, taskScope: Scope) {
       if (!isDeepStrictEqual(scope, taskScope))
@@ -195,7 +210,10 @@ export function projectExtensions(
         async listServerIds() {
           const ids = [];
           for (const entry of CATALOG) {
-            if (entry.kind === "mcp" && (await installedMcp(cp, entry)))
+            if (
+              entry.kind === "mcp" &&
+              (await mcpStatus(cp, entry)) === "installed"
+            )
               ids.push(entry.id);
           }
           return ids;
