@@ -29,6 +29,7 @@ const HAS_XVFB = process.platform === "linux" && Bun.which("xvfb-run") !== null;
 const CAN_RUN_ELECTRON_XVFB = HAS_ELECTRON && HAS_XVFB;
 /** CI sets this so a missing Electron binary or Xvfb fails instead of skipping. */
 const REQUIRE_ELECTRON_XVFB = process.env.MARS_REQUIRE_ELECTRON_XVFB === "1";
+const PACKAGED_ELECTRON = process.env.MARS_PACKAGED_ELECTRON;
 
 test.skipIf(!REQUIRE_ELECTRON_XVFB)(
   "Electron binary and xvfb-run are present when required",
@@ -194,6 +195,73 @@ async function waitForCondition(
     `Timed out waiting for ${description}. Body snapshot: ${snapshot}`,
   );
 }
+
+test.skipIf(!PACKAGED_ELECTRON)(
+  "installed MARS opens its own workbench and Team Chat without a connection file",
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), "mars-installed-"));
+    const port = await freePort();
+    const electronProc = spawn(
+      "xvfb-run",
+      [
+        "-a",
+        PACKAGED_ELECTRON as string,
+        `--remote-debugging-port=${port}`,
+        "--disable-gpu",
+      ],
+      {
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          HOME: home,
+          XDG_CONFIG_HOME: join(home, "config"),
+          MARS_SHELL_CONNECTION: "",
+        },
+      },
+    );
+    let cdp: CdpClient | undefined;
+    const exited = new Promise<number | null>((resolve) => {
+      electronProc.once("exit", resolve);
+    });
+    try {
+      cdp = await CdpClient.connect(await waitForPageTarget(port));
+      await waitForCondition(
+        cdp,
+        "document.querySelector('.status-bar')?.textContent.includes('Connected')",
+        "the bundled workbench to connect",
+        20_000,
+      );
+      const describe = await cdp.evaluate<{
+        ok: boolean;
+        result?: { workspaceLabel: string };
+      }>("window.marsWorkbench['workbench.describe']({})");
+      expect(describe.ok).toBe(true);
+      expect(describe.result?.workspaceLabel).toBe("demo-project");
+      expect(
+        await cdp.evaluate(
+          "document.fonts.load('12px \"Commit Mono\"').then(fonts => fonts.length)",
+        ),
+      ).toBe(1);
+      await cdp.evaluate(
+        "document.querySelector('[data-action=toggle-team-chat]').click()",
+      );
+      await waitForCondition(
+        cdp,
+        "!!document.querySelector('.team-header')",
+        "Team Chat to open",
+      );
+      void cdp.send("Browser.close").catch(() => {});
+      expect(
+        await Promise.race([exited, Bun.sleep(10_000).then(() => "timeout")]),
+      ).toBe(0);
+    } finally {
+      cdp?.close();
+      if (electronProc.exitCode === null) electronProc.kill("SIGTERM");
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);
 
 test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
   "headless Electron under Xvfb enforces security/CSP and completes interactive workbench flows",

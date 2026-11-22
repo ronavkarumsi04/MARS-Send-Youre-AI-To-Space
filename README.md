@@ -2,6 +2,10 @@
 
 An IDE-connected agent platform for completing work, retaining useful context, and promoting workflows and specialist models **only when independent evidence supports improvement**.
 
+## Desktop app
+
+Install MARS from the [Desktop installers workflow](https://github.com/tanaypatel917-lab/MARS-Send-Youre-AI-To-Space/actions/workflows/desktop.yml), then open it from Applications. The app includes the local workbench and a demo project; no terminal or separate Bun install is needed. See [desktop setup](documentation/SHELL.md#install-and-open) for downloads, model setup, and platform limits.
+
 ## Current state: offline-verified platform
 
 The local workbench connects the VS Code client and CLI to durable tasks, isolated filesystem copies, checkpoints, and the Oh My Pi execution engine, and is the base for the learning, evaluation, training and specialist-serving milestones built on top of it. Everything below is **offline-verified only** (fixtures, fake servers, injected model responses); it is **not** a Milestone 1 or later acceptance claim. The per-milestone state and blockers are in the [HANDOFF milestone table](HANDOFF.md). It contains:

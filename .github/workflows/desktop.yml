@@ -1,0 +1,63 @@
+name: Desktop installers
+
+on:
+  push:
+    branches: [main]
+    paths: &desktop-paths
+      - ".github/workflows/desktop.yml"
+      - ".bun-version"
+      - "apps/shell/**"
+      - "bun.lock"
+      - "package.json"
+      - "packages/**"
+  pull_request:
+    paths: *desktop-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            artifact: MARS-macOS-Apple-Silicon
+          - runner: macos-15-intel
+            arch: x64
+            artifact: MARS-macOS-Intel
+          - runner: ubuntu-24.04
+            arch: x64
+            artifact: MARS-Ubuntu-Debian-x64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install locked dependencies and Electron
+        run: |
+          test "$(bun -p 'process.arch')" = "${{ matrix.arch }}"
+          bun install --frozen-lockfile --ignore-scripts
+          bun run --cwd apps/shell native:install
+      - name: Build and smoke-test the bundled workbench
+        run: bun run --cwd apps/shell package
+      - name: Smoke-test the installed desktop window
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb "$PWD"/apps/shell/dist/installers/*.deb
+          MARS_PACKAGED_ELECTRON=/opt/mars/electron bun test apps/shell/test/electron-xvfb.test.ts -t 'installed MARS'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: apps/shell/dist/installers/*
+          if-no-files-found: error
+          compression-level: 0

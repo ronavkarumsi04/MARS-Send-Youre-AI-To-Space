@@ -1,0 +1,98 @@
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import {
+  type ConnectionResult,
+  loadConnectionFile,
+} from "@mars/contracts/connection-file";
+
+type WorkbenchOptions = {
+  resources: string;
+  source: string;
+  state: string;
+  openRouterKey?: string;
+};
+
+const unavailable: ConnectionResult = {
+  ok: false,
+  reason:
+    "The local workbench couldn’t start. Retry or choose another project folder from the Project menu.",
+};
+
+export function startLocalWorkbench(options: WorkbenchOptions) {
+  const child = spawn(
+    join(options.resources, "bun"),
+    [
+      "--no-env-file",
+      join(
+        options.resources,
+        "apps",
+        "shell",
+        "src",
+        "runtime",
+        "workbench.ts",
+      ),
+    ],
+    {
+      cwd: options.resources,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  child.stdin.on("error", () => {});
+  child.stderr.resume();
+  const messages = createInterface({ input: child.stdout, terminal: false });
+  const ready = Promise.withResolvers<boolean>();
+  const exited = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    ready.resolve(false);
+    child.kill("SIGKILL");
+  }, 20_000);
+  messages.on("line", (line) => {
+    if (line === "MARS_WORKBENCH_READY") {
+      clearTimeout(timer);
+      ready.resolve(true);
+    }
+  });
+  const onExit = () => {
+    clearTimeout(timer);
+    ready.resolve(false);
+    exited.resolve();
+  };
+  child.once("error", onExit);
+  child.once("close", onExit);
+  const connectionPath = (async () => {
+    try {
+      const source = await realpath(options.source);
+      const id = createHash("sha256").update(source).digest("hex").slice(0, 24);
+      const state = join(options.state, `desktop-${id}`);
+      child.stdin.write(
+        `${JSON.stringify({ source, state, openRouterKey: options.openRouterKey })}\n`,
+      );
+      return join(state, "connection.json");
+    } catch {
+      child.stdin.end();
+      return undefined;
+    }
+  })();
+
+  return {
+    exited: exited.promise,
+    async connection(): Promise<ConnectionResult> {
+      if (!(await ready.promise) || child.exitCode !== null || child.signalCode)
+        return unavailable;
+      const path = await connectionPath;
+      return path ? loadConnectionFile(path) : unavailable;
+    },
+    async stop(): Promise<void> {
+      child.stdin.end();
+      const deadline = setTimeout(() => child.kill("SIGKILL"), 7500);
+      try {
+        await exited.promise;
+      } finally {
+        clearTimeout(deadline);
+      }
+    },
+  };
+}

@@ -6,18 +6,20 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "bun scripts/build.ts",
+    "package": "bun scripts/package.ts",
     "native:install": "bun node_modules/electron/install.js",
     "start": "bun run build && electron dist/main.cjs",
     "fixture-workbench": "bun scripts/fixture-workbench.ts"
   },
   "dependencies": {
     "@mars/contracts": "workspace:*",
+    "@mars/providers": "workspace:*",
     "@mars/team-chat": "workspace:*",
     "@mars/ui-core": "workspace:*",
+    "@mars/workbench": "workspace:*",
     "zod": "3.25.76"
   },
   "devDependencies": {
-    "@mars/workbench": "workspace:*",
     "electron": "44.10.2"
   }
 }

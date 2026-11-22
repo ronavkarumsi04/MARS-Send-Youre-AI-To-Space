@@ -49,12 +49,13 @@
       "version": "0.0.1",
       "dependencies": {
         "@mars/contracts": "workspace:*",
+        "@mars/providers": "workspace:*",
         "@mars/team-chat": "workspace:*",
         "@mars/ui-core": "workspace:*",
+        "@mars/workbench": "workspace:*",
         "zod": "3.25.76",
       },
       "devDependencies": {
-        "@mars/workbench": "workspace:*",
         "electron": "44.10.2",
       },
     },

@@ -44,34 +44,25 @@ function contrast(a: string, b: string): number {
   return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
 }
 
-test("every text token meets WCAG 1.4.3 (4.5:1) on every shell background in both themes", async () => {
+test("the MARS website palette maintains WCAG 1.4.3 contrast in the desktop", async () => {
   const css = await readFile(CSS_PATH, "utf8");
-  const dark = tokens(css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] ?? "");
-  const light = new Map([
-    ...dark,
-    ...tokens(
-      css.match(
-        /@media \(prefers-color-scheme: light\)\s*\{\s*:root\s*\{([\s\S]*?)\}/,
-      )?.[1] ?? "",
-    ),
-  ]);
+  const palette = tokens(css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] ?? "");
+  expect(palette.get("pageBg")).toBe("#050407");
+  expect(palette.get("cardBg")).toBe("#0a090c");
+  expect(palette.get("infoBg")).toBe("#141214");
+  expect(palette.get("fg")).toBe("#ece6dc");
   const failures: string[] = [];
-  for (const [theme, palette] of [
-    ["dark", dark],
-    ["light", light],
-  ] as const) {
-    for (const text of TEXT_TOKENS) {
-      for (const background of BACKGROUND_TOKENS) {
-        const fg = palette.get(text);
-        const bg = palette.get(background);
-        expect(fg, `${theme} --${text}`).toBeDefined();
-        expect(bg, `${theme} --${background}`).toBeDefined();
-        const ratio = contrast(fg ?? "", bg ?? "");
-        if (ratio < 4.5)
-          failures.push(
-            `${theme}: --${text} ${fg} on --${background} ${bg} = ${ratio.toFixed(2)}:1`,
-          );
-      }
+  for (const text of TEXT_TOKENS) {
+    for (const background of BACKGROUND_TOKENS) {
+      const fg = palette.get(text);
+      const bg = palette.get(background);
+      expect(fg, `--${text}`).toBeDefined();
+      expect(bg, `--${background}`).toBeDefined();
+      const ratio = contrast(fg ?? "", bg ?? "");
+      if (ratio < 4.5)
+        failures.push(
+          `--${text} ${fg} on --${background} ${bg} = ${ratio.toFixed(2)}:1`,
+        );
     }
   }
   expect(failures).toEqual([]);

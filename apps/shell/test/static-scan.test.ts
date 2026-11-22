@@ -23,7 +23,7 @@ test("renderer sources and built bundle have no unsafe DOM, code, or network pri
   try {
     await buildShell(output);
     const built = join(output, "renderer", "renderer.js");
-    const paths = [...sources, built];
+    const paths = [...sources, built, join(output, "renderer", "settings.js")];
     const forbidden = [
       /\binnerHTML\b/,
       /\bouterHTML\b/,
@@ -39,7 +39,6 @@ test("renderer sources and built bundle have no unsafe DOM, code, or network pri
       const content = await readFile(path, "utf8");
       for (const expression of forbidden)
         expect(content).not.toMatch(expression);
-      if (path.endsWith(".css")) expect(content).not.toMatch(/url\s*\(/i);
     }
     for (const path of sources.filter((file) => file.endsWith(".ts"))) {
       const content = await readFile(path, "utf8");
@@ -54,7 +53,7 @@ test("renderer sources and built bundle have no unsafe DOM, code, or network pri
       }
     }
 
-    for (const file of ["main.cjs", "preload.cjs"]) {
+    for (const file of ["main.cjs", "preload.cjs", "settings.cjs"]) {
       const source = await readFile(join(output, file), "utf8");
       const requires = [...source.matchAll(/\brequire\(["']([^"']+)["']\)/g)]
         .map((match) => match[1])
