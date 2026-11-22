@@ -9,6 +9,7 @@ import {
   type Permission,
 } from "@mars/integration-trust";
 import { type McpAuthentication, selectMcpAuthentication } from "./credentials";
+import type { McpPackageStore } from "./package-store";
 import {
   buildDescriptorHash,
   matchesMcpToolEvidence,
@@ -55,6 +56,7 @@ export interface InvokeMcpToolRequest {
 }
 
 export interface TrustedMcpLoaderOptions {
+  packageStore?: McpPackageStore;
   /** Runtime gate from `@mars/integration-trust`. Loader never holds `admin`. */
   gate: IntegrationGate;
   /** Host-owned server registry. Default-deny: no ambient discovery. */
@@ -142,7 +144,12 @@ export function createTrustedMcpLoader(
     authentication?: McpAuthentication,
   ): Promise<ActiveConnection> {
     signal.throwIfAborted();
-    const executable = await verifyMcpConfig(server, artifact.evidence, signal);
+    const verifiedConfig = await verifyMcpConfig(
+      server,
+      artifact.evidence,
+      signal,
+      options.packageStore,
+    );
     signal.throwIfAborted();
     let current = connections.get(server.id);
     if (
@@ -185,11 +192,7 @@ export function createTrustedMcpLoader(
       }
     }
     signal.throwIfAborted();
-    const transport = createMcpTransport(
-      server.transport.type === "stdio" && executable
-        ? { ...server.transport, command: executable }
-        : server.transport,
-    );
+    const transport = createMcpTransport(verifiedConfig);
     const pending = (async (): Promise<ActiveConnection> => {
       try {
         const descriptor = await transport.initialize({
