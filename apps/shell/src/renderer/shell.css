@@ -114,6 +114,10 @@ input[type="checkbox"] {
 textarea {
   resize: vertical;
 }
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
 input,
 textarea,
 select {
