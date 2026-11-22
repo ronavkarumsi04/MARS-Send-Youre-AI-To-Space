@@ -50,7 +50,10 @@ import {
   SpecialistTaskRouter,
 } from "@mars/specialists";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
-import { WorkspaceModifiedError } from "@mars/workspaces";
+import {
+  createLocalWorkspaceProvider,
+  WorkspaceModifiedError,
+} from "@mars/workspaces";
 import {
   artifactRef,
   baseModel,
@@ -116,6 +119,94 @@ const task = (taskId = "task"): Task => ({
   artifacts: [],
 });
 const cleanup: (() => Promise<void>)[] = [];
+test("task file reads use private workspace policy and public byte guards", async () => {
+  const f = await fixture();
+  const source = join(f.root, "source");
+  await mkdir(source);
+  await writeFile(join(source, "hello.txt"), "hello\n");
+  await writeFile(join(source, "empty.txt"), "");
+  await writeFile(join(source, "private.txt"), f.root);
+  await writeFile(join(source, "large.txt"), "x".repeat(3 * 1024 * 1024));
+  await symlink("hello.txt", join(source, "link.txt"));
+  const provider = await createLocalWorkspaceProvider({
+    sourceRoot: source,
+    rootDir: join(f.root, "provider"),
+    artifacts: {
+      put: (_ctx, bytes, mediaType) =>
+        f.store.artifacts.put(context(), bytes, mediaType),
+      get: (_ctx, ref) => f.store.artifacts.get(context(), ref),
+    },
+    approveCommand: () => false,
+  });
+  cleanup.push(() => provider.close());
+  const providerContext = (ctx: RequestContext): RequestContext => ({
+    ...ctx,
+    scope: { owner_id: ctx.scope.owner_id, project_id: ctx.scope.project_id },
+  });
+  const prepared = await provider.prepare(providerContext(context()), "task");
+  const api = await f.makeHost(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      workspaceOverrides: {
+        read: (ctx, ref, path) =>
+          provider.read(providerContext(ctx), ref, path),
+        reopen: async () => prepared,
+      },
+    },
+  );
+  cleanup.push(() => api.close());
+  await api.create(context(), task());
+  const foreignContext = {
+    ...context(),
+    scope: { ...scope, owner_id: "foreign" },
+  };
+  await f.store.create(foreignContext, {
+    ...task("foreign-task"),
+    scope: foreignContext.scope,
+  });
+  await expect(
+    api.file(context(), "foreign-task", "hello.txt"),
+  ).rejects.toThrow();
+  expect(await api.file?.(context(), "task", "hello.txt")).toEqual({
+    path: "hello.txt",
+    data_base64: Buffer.from("hello\n").toString("base64"),
+    media_type: "application/octet-stream",
+    size: 6,
+    sha256: createHash("sha256").update("hello\n").digest("hex"),
+  });
+  expect(await api.file?.(context(), "task", "empty.txt")).toMatchObject({
+    size: 0,
+    data_base64: "",
+  });
+  for (const path of [
+    "../hello.txt",
+    "/etc/passwd",
+    ".env",
+    "node_modules/a",
+    "missing.txt",
+    "link.txt",
+  ])
+    await expect(api.file?.(context(), "task", path)).rejects.toThrow();
+  await expect(api.file?.(context(), "missing", "hello.txt")).rejects.toThrow();
+  await expect(
+    api.file?.(
+      { ...context(), scope: { ...scope, owner_id: "foreign" } },
+      "task",
+      "hello.txt",
+    ),
+  ).rejects.toThrow();
+  await expect(
+    api.file?.(context(), "task", "private.txt"),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  await expect(
+    api.file?.(context(), "task", "large.txt"),
+  ).rejects.toMatchObject({ code: "too_large" });
+});
 test("workbench event revision matches the package version", async () => {
   const manifest = await Bun.file(
     new URL("../package.json", import.meta.url),

@@ -1,5 +1,22 @@
 # Local workbench RPC transport
 
+## Task workspace file reads
+
+`tasks.file {task_id, path}` returns `{path, data_base64, media_type, size,
+sha256}` inside the standard `{result}` envelope. `path` is relative to the
+task's existing private workspace, never the source checkout or a host root;
+`size` is the decoded byte length and `sha256` is the content SHA-256.
+The local provider returns `application/octet-stream` (no MIME sniffing).
+Empty files return empty base64 and size zero. The method uses the same bearer
+authentication, context scope and task access checks as `tasks.diff`, plus
+provider read validation: no absolute/traversal, secret, ignored or symlink
+paths, and provider file-size limits. Raw bytes and response metadata are
+checked for host-private roots; matching content is rejected, not redacted.
+Base64 plus envelope must fit the 4 MiB response limit, otherwise `too_large`;
+there is no paging or truncation. Hosts without this optional operation return
+`unavailable`. There is no directory-tree/list RPC. See
+[Editor integration](EDITOR_INTEGRATION.md) for UI ownership and remaining gaps.
+
 `@mars/workbench` provides `serveWorkbench({ api, token, port? })`. `api` implements the exported `WorkbenchOperations` interface. This package is the HTTP boundary, **not** a task runner: it does not open a database, create workspaces, approve integrations, or start a second agent loop. The durable-task/workspace/Oh My Pi host adapter and CLI startup remain separate integration work.
 
 The server binds only `127.0.0.1` (default port 7331, `0` selects an ephemeral port). Supply a cryptographically random, URL-safe bearer token of 32–256 characters from host-owned state, outside any agent workspace. Length validation does not establish entropy. Never put the token in a workspace file, query string, or log. There is no unauthenticated health route.

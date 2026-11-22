@@ -1,5 +1,15 @@
 # HANDOFF
 
+## Editor workbench groundwork
+
+Added read-only `tasks.file {task_id, path}` for a task's private workspace,
+reusing provider path policy, task/scope authorization, host-private byte
+rejection and bounded base64 responses. Tree listing remains out of scope.
+`documentation/EDITOR_INTEGRATION.md` compares Monaco and Code OSS and recommends
+a read-only Monaco viewer first. Shell UI/IPC/CSP changes belong to David
+upstream; this fork changes no `apps/shell` files. Offline host/provider and HTTP
+contract tests cover the new read surface; no renderer integration is claimed.
+
 Execution budget hardening: the model bridge bounds aggregate text and tool-call metadata before releasing any tool calls, and caps paid output reservations to remaining USD. Launch writes and rewrites reject serialized records over the same 128 KiB limit used by readers, before publishing state; failed starts surface `too_large` and dispose their runtime. Regression coverage is offline with injected SSE responses; no live-provider acceptance is claimed. `packages/execution/src/runtime.ts` is unchanged.
 
 Dependency upgrade: all workspace `@oh-my-pi/*` packages are now pinned to **18.20.0**. Earlier 18.14.0 references below describe historical research and PR observations; see `documentation/SOURCE_REGISTER.md` for current provenance.

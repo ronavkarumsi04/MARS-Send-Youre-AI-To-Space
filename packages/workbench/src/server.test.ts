@@ -241,6 +241,48 @@ function fixture(overrides: Partial<WorkbenchOperations> = {}) {
   return { server, api, calls, url, send };
 }
 
+test("tasks.file HTTP contract is scoped, validated and optional", async () => {
+  const result = {
+    path: "hello.txt",
+    data_base64: "",
+    media_type: "application/octet-stream",
+    size: 0,
+    sha256: artifact.sha256,
+  };
+  const { send } = fixture({
+    async file(ctx, taskId, path) {
+      expect(ctx).toMatchObject(context);
+      expect(taskId).toBe("task");
+      expect(path).toBe(result.path);
+      return result;
+    },
+  });
+  const request = {
+    method: "tasks.file",
+    context,
+    params: { task_id: "task", path: result.path },
+  };
+  const response = await send(request);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ result });
+  expect(
+    (
+      await send({
+        ...request,
+        context: { ...context, scope: { ...scope, owner_id: "foreign" } },
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (await send({ ...request, params: { ...request.params, path: "" } }))
+      .status,
+  ).toBe(400);
+  expect((await send(request, { authorization: "Bearer wrong" })).status).toBe(
+    401,
+  );
+  expect((await fixture().send(request)).status).toBe(503);
+});
+
 test("loopback RPC requires authentication even for describe and never reflects tokens", async () => {
   const { send, calls, server } = fixture();
   expect(server.hostname).toBe("127.0.0.1");
