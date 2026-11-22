@@ -423,8 +423,8 @@ export async function exportVault(
 ): Promise<ExportReport> {
   const context = RequestContextSchema.safeParse(ctx);
   if (!context.success) throw new VaultError("invalid_context");
-  const vaultDir = resolve(options.vaultDir);
-  await assertVaultDirectory(vaultDir, [
+  const requestedVaultDir = resolve(options.vaultDir);
+  const vaultDir = await assertVaultDirectory(requestedVaultDir, [
     ...(options.privateRoots ?? []),
     options.skills.root,
   ]);

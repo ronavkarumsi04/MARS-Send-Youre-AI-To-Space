@@ -369,7 +369,7 @@ export async function realpathExisting(path: string): Promise<string> {
 export async function assertVaultDirectory(
   vaultDir: string,
   privateRoots: readonly string[],
-): Promise<void> {
+): Promise<string> {
   const vault = await realpathExisting(vaultDir);
   for (const root of privateRoots) {
     const resolved = resolve(root);
@@ -383,4 +383,5 @@ export async function assertVaultDirectory(
       )
         throw new VaultPathError("private_root");
   }
+  return vault;
 }

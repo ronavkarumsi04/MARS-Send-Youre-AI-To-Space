@@ -955,6 +955,26 @@ test("review: a vault that is a symlink into a private root is refused", async (
   ).rejects.toMatchObject({ code: "private_root" });
 });
 
+test("hardening: export, scan and import accept a symlinked vault root", async () => {
+  if (process.platform === "win32") return;
+  const { common, vaultDir, root } = await fixture();
+  mkdirSync(vaultDir);
+  const linked = join(root, "vault-alias");
+  symlinkSync(vaultDir, linked, "dir");
+  const aliased = { ...common, vaultDir: linked };
+
+  const exported = await exportVault(ctx, aliased);
+  expect(exported.written).toBeGreaterThan(0);
+  expect((await vaultStatus(ctx, aliased)).vault_dir).toBe(vaultDir);
+
+  writeFileSync(
+    join(vaultDir, "facts/fact-plain.md"),
+    read(vaultDir, "facts/fact-plain.md").replace("Fridays", "Mondays"),
+  );
+  const imported = await importVault(ctx, { ...aliased, actor: "tester" });
+  expect(imported.proposals.memory).toHaveLength(1);
+});
+
 test("review: an untracked note that is a symlink is refused, not proposed", async () => {
   if (process.platform === "win32") return;
   const { common, vaultDir, state, memory, skills } = await fixture();
