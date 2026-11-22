@@ -109,7 +109,8 @@ test("task model failure stays distinct from offline workbench and opens native 
   expect(doc.root.textContent).not.toContain("Workbench is unavailable");
   by("data-focus-key", "task-add-key")?.click();
   expect(opened).toBe(1);
-  expect(by("data-panel", "settings")).toBeDefined();
+  expect(by("data-panel", "settings")).toBeUndefined();
+  expect(by("data-action", "start-task")).toBeDefined();
 });
 
 test("failed read-only launch keeps its own approvals when switching tasks and retrying", async () => {

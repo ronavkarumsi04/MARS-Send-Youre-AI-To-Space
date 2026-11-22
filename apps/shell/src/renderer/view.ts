@@ -402,7 +402,6 @@ function approvalAndLifecycleCard(
           )
         : null;
     modelHelp?.addEventListener("click", () => {
-      state.onPage?.("settings");
       state.assistant?.onSettings?.();
     });
     const modelSelect = h(
@@ -575,19 +574,22 @@ function approvalAndLifecycleCard(
       paidConsentBox,
       h(doc, "div", { class: "action-buttons" }, startBtn, cancelBtn),
       notice,
-      error,
+      modelHelp ? null : error,
       modelHelp
         ? h(
             doc,
             "div",
-            { class: "connect-notice" },
+            { class: "connect-notice", role: "alert" },
             h(
               doc,
               "p",
               {},
-              "No OpenRouter key is configured. Add one in Settings, then return here to start this task.",
+              "No OpenRouter key is configured. Add a key to start this task.",
             ),
             modelHelp,
+            state.settingsError
+              ? h(doc, "p", { class: "error" }, state.settingsError)
+              : null,
           )
         : null,
     );
@@ -1394,7 +1396,7 @@ export function renderShell(
         "p",
         { class: "muted" },
         teamChatAvailable
-          ? `${state.teamChat?.label ?? "READY"} · ${state.teamChat?.conversations.length ?? 0} channel${state.teamChat?.conversations.length === 1 ? "" : "s"}`
+          ? `${state.teamChat?.label === "FIXTURE" ? "Local demo" : "Team workspace"} · ${state.teamChat?.conversations.length ?? 0} conversation${state.teamChat?.conversations.length === 1 ? "" : "s"}`
           : "team chat unavailable",
       ),
     ),

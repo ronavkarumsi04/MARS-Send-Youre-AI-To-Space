@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import {
   app,
   BrowserWindow,
@@ -254,11 +254,10 @@ export async function createDesktop(
       },
       { type: "separator" },
       { label: "Model Settings…", click: showModelSettings },
-      desktopExtensionsMenu(
-        { dialog, ipcMain },
-        window,
-        activeWorkbench,
-        () => source,
+      desktopExtensionsMenu({ dialog, ipcMain }, window, activeWorkbench, () =>
+        source === demo
+          ? "demo-project"
+          : `${basename(source) || source}\nFolder: ${source}`,
       ),
       { type: "separator" },
       { role: "close" },

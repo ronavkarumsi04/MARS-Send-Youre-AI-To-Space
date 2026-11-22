@@ -477,6 +477,14 @@ export function createController(
         assistantWorkspace = result.workspace;
         settingsError = undefined;
       }
+      if (!changed && !assistantState.configured && result.configured) {
+        for (const launch of launchForms.values()) {
+          if (launch.modelUnavailable) {
+            delete launch.modelUnavailable;
+            delete launch.actionError;
+          }
+        }
+      }
       assistantState = {
         ...assistantState,
         sessions:
