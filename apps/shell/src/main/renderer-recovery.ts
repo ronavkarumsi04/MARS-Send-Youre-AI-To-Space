@@ -1,5 +1,6 @@
 export const RENDERER_RECOVERY_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>MARS recovery</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>MARS recovery</title>
+<link rel="stylesheet" href="./shell.css"></head>
 <body><main><h1>MARS could not restore its window</h1>
 <p>The renderer stopped repeatedly. Quit and reopen MARS to try again.</p>
 </main></body></html>`;

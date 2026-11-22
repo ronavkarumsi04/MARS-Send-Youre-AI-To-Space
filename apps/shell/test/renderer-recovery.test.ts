@@ -1,5 +1,35 @@
 import { expect, test } from "bun:test";
-import { createRendererRecovery } from "../src/main/renderer-recovery";
+import { readFile } from "node:fs/promises";
+import {
+  createRendererRecovery,
+  RENDERER_RECOVERY_HTML,
+} from "../src/main/renderer-recovery";
+import { appResponseHeaders, resolveAppAsset } from "../src/main/security";
+
+test("recovery page uses readable theme colors through a CSP-allowed stylesheet", async () => {
+  const href = RENDERER_RECOVERY_HTML.match(
+    /<link rel="stylesheet" href="([^"]+)"/,
+  )?.[1];
+  expect(href).toBe("./shell.css");
+  const url = new URL(href ?? "", "mars-shell://app/recovery.html");
+  expect(url.origin).toBe(new URL("mars-shell://app/recovery.html").origin);
+  expect(resolveAppAsset(url.href)?.mediaType).toBe("text/css; charset=utf-8");
+  const policy = appResponseHeaders()["Content-Security-Policy"];
+  expect(policy.split("; ").find((rule) => rule.startsWith("style-src"))).toBe(
+    "style-src 'self'",
+  );
+  expect(policy).not.toContain("unsafe-inline");
+  expect(RENDERER_RECOVERY_HTML).not.toMatch(/<style\b|\sstyle\s*=|<script\b/i);
+  const css = await readFile(
+    new URL("../src/renderer/shell.css", import.meta.url),
+    "utf8",
+  );
+  const root = css.match(/:root\s*\{([^}]+)\}/)?.[1] ?? "";
+  expect(root).toContain("--fg: #ece6dc;");
+  expect(root).toContain("--pageBg: #050407;");
+  expect(root).toContain("color: var(--fg);");
+  expect(root).toContain("background: var(--pageBg);");
+});
 
 test("renderer recovery reloads crashes, caps retries, and leaves a static terminal state", () => {
   const actions: string[] = [];
