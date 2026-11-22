@@ -1,13 +1,18 @@
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SandboxUnavailableError } from "@mars/workspaces";
 import {
   type CandidateEvaluator,
   createFixtureEvaluator,
   type EvaluationRequest,
 } from "./evaluators";
 import { createScriptedProposer, type ProposalContext } from "./proposers";
-import { createProcessSandbox } from "./sandbox";
+import {
+  createEvolutionDockerSandbox,
+  createProcessSandbox,
+  type EvolutionDockerSandboxOptions,
+} from "./sandbox";
 import type { MutationProposal, RunConfigInput } from "./schemas";
 import {
   EvolutionService,
@@ -18,6 +23,25 @@ import {
 export const BASE_POLICY = '{"default":0.3,"effort":1}';
 export const BETTER_POLICY = '{"default":0.9,"effort":1}';
 export const HIDDEN_ANSWER = "SECRET-ANSWER-f1-do-not-train";
+
+export async function optionalEvolutionDockerSandbox(
+  options?: EvolutionDockerSandboxOptions,
+): Promise<EvolutionServiceOptions["sandbox"] | null> {
+  let sandbox: EvolutionServiceOptions["sandbox"];
+  try {
+    sandbox = createEvolutionDockerSandbox(options);
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
+  try {
+    await sandbox.verify();
+    return sandbox;
+  } catch (error) {
+    if (error instanceof SandboxUnavailableError) return null;
+    throw error;
+  }
+}
 
 export function replaceLine(
   path: string,

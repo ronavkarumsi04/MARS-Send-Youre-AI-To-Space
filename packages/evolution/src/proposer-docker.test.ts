@@ -14,12 +14,17 @@ import {
   type ProposalContext,
 } from "./proposers";
 import {
-  createEvolutionDockerSandbox,
   createProcessSandbox,
   DEFAULT_EVOLUTION_DOCKER_IMAGE,
 } from "./sandbox";
 import { EvolutionService } from "./service";
-import { createFixture, runConfig } from "./test-support";
+import {
+  createFixture,
+  optionalEvolutionDockerSandbox,
+  runConfig,
+} from "./test-support";
+
+const dockerSandbox = await optionalEvolutionDockerSandbox();
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "mars-evo-m5b-"));
@@ -68,6 +73,55 @@ test("offline proposer tests load without Docker on PATH", async () => {
   const output = new TextDecoder().decode(result.stderr);
   expect(result.exitCode).toBe(0);
   expect(output).toContain("1 pass");
+});
+
+test("optional Docker sandbox requires a non-root uid and gid even with a verified image", async () => {
+  await withTempDir(async (dir) => {
+    const dockerPath = join(dir, "docker");
+    await writeFile(
+      dockerPath,
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  version) echo 29.0.0 ;;",
+        `  image) echo '${JSON.stringify([DEFAULT_EVOLUTION_DOCKER_IMAGE])}' ;;`,
+        "  *) exit 1 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    expect(
+      await optionalEvolutionDockerSandbox({
+        dockerPath,
+        user: { uid: 1000, gid: 1000 },
+      }),
+    ).not.toBeNull();
+    expect(
+      await optionalEvolutionDockerSandbox({
+        dockerPath,
+        user: { uid: 0, gid: 1000 },
+      }),
+    ).toBeNull();
+    expect(
+      await optionalEvolutionDockerSandbox({
+        dockerPath,
+        user: { uid: 1000, gid: 0 },
+      }),
+    ).toBeNull();
+  });
+});
+
+test("optional Docker sandbox skips when the configured binary is missing", async () => {
+  await withTempDir(async (dir) => {
+    const dockerPath = join(dir, "docker");
+    expect(
+      await optionalEvolutionDockerSandbox({
+        dockerPath,
+        user: { uid: 1000, gid: 1000 },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("model proposer unit tests", () => {
@@ -518,14 +572,6 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
       }
     });
   });
-
-  const docker = Bun.which("docker");
-  const hasPinnedDockerImage =
-    docker !== null &&
-    Bun.spawnSync(
-      [docker, "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exitCode === 0;
 
   test("createModelProposer attaches measured usage to the ledger and enforces run budget", async () => {
     await withTempDir(async (dir) => {
@@ -1158,9 +1204,10 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
-  test.skipIf(!hasPinnedDockerImage)(
+  test.skipIf(!dockerSandbox)(
     "Docker-sandboxed candidate build (--network=none) runs end-to-end with promotion and rollback",
     async () => {
+      if (!dockerSandbox) throw new Error("Docker sandbox was not verified");
       await withTempDir(async (dir) => {
         const baseDir = join(dir, "base");
         await seedHarness(baseDir);
@@ -1206,7 +1253,7 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
           workDir: join(dir, "work"),
           evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
           proposer: createModelProposer({ client }),
-          sandbox: createEvolutionDockerSandbox(),
+          sandbox: dockerSandbox,
         });
         try {
           await service.startRun({

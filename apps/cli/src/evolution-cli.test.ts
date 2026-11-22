@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  createEvolutionDockerSandbox,
   createFixtureEvaluator,
   createModelProposer,
   createProcessSandbox,
@@ -15,6 +14,7 @@ import {
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
 import {
   createFixture,
+  optionalEvolutionDockerSandbox,
   replaceLine,
   runConfig,
 } from "../../../packages/evolution/src/test-support";
@@ -323,19 +323,14 @@ test("live-smoke credits a legitimate solver patch on selection and held-out tas
   await checkBundledLiveSmokeScores(sandbox, "test-image");
 });
 
-const docker = Bun.which("docker");
-const hasPinnedSmokeImage =
-  docker !== null &&
-  Bun.spawnSync([docker, "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE], {
-    stdout: "ignore",
-    stderr: "ignore",
-  }).exitCode === 0;
+const smokeDockerSandbox = await optionalEvolutionDockerSandbox();
 
-test.skipIf(!hasPinnedSmokeImage)(
+test.skipIf(!smokeDockerSandbox)(
   "live-smoke scores legitimate and forged solver bundles built in Docker",
   async () => {
+    if (!smokeDockerSandbox) throw new Error("Docker sandbox was not verified");
     await checkBundledLiveSmokeScores(
-      createEvolutionDockerSandbox(),
+      smokeDockerSandbox,
       DEFAULT_EVOLUTION_DOCKER_IMAGE,
     );
   },
