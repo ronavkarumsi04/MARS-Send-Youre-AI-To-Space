@@ -3,9 +3,10 @@ import { type FileHandle, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   descriptorPath,
-  realpathExisting,
   removeFileInside,
+  type VaultRoot,
   verifyOpenedInside,
+  verifyVaultRoot,
 } from "./paths";
 
 interface DurableHandle {
@@ -34,7 +35,7 @@ export async function replaceDurably(
   target: string,
   text: string,
   io: DurableIO = { open, rename },
-  containment?: { vaultDir: string; beforeOpen?: () => Promise<void> },
+  containment?: { root: VaultRoot; beforeOpen?: () => Promise<void> },
 ): Promise<void> {
   if (containment)
     return replaceInsideDurably(temporary, target, text, containment);
@@ -66,9 +67,10 @@ async function replaceInsideDurably(
   temporary: string,
   target: string,
   text: string,
-  options: { vaultDir: string; beforeOpen?: () => Promise<void> },
+  options: { root: VaultRoot; beforeOpen?: () => Promise<void> },
 ): Promise<void> {
-  const realVault = await realpathExisting(options.vaultDir);
+  const root = options.root;
+  await verifyVaultRoot(root);
   const parent = await open(
     dirname(target),
     constants.O_RDONLY |
@@ -81,19 +83,19 @@ async function replaceInsideDurably(
   const tempPath = join(parentPath, basename(temporary));
   const targetPath = join(parentPath, basename(target));
   try {
-    await verifyOpenedInside(realVault, dirname(target), parent);
+    await verifyOpenedInside(root, dirname(target), parent);
     await options.beforeOpen?.();
     if (process.platform !== "linux")
-      await verifyOpenedInside(realVault, dirname(target), parent);
+      await verifyOpenedInside(root, dirname(target), parent);
     file = await open(tempPath, "wx", 0o600);
-    await verifyOpenedInside(realVault, temporary, file);
-    await verifyOpenedInside(realVault, dirname(target), parent);
+    await verifyOpenedInside(root, temporary, file);
+    await verifyOpenedInside(root, dirname(target), parent);
     await file.writeFile(text);
     await file.sync();
     await rename(tempPath, targetPath);
     renamed = true;
-    await verifyOpenedInside(realVault, target, file);
-    await verifyOpenedInside(realVault, dirname(target), parent);
+    await verifyOpenedInside(root, target, file);
+    await verifyOpenedInside(root, dirname(target), parent);
     try {
       await parent.sync();
     } catch (error) {
@@ -104,7 +106,7 @@ async function replaceInsideDurably(
       )
         throw error;
     }
-    await verifyOpenedInside(realVault, dirname(target), parent);
+    await verifyOpenedInside(root, dirname(target), parent);
   } finally {
     try {
       if (file && !renamed) {
@@ -112,7 +114,7 @@ async function replaceInsideDurably(
         if (process.platform === "linux") await rm(tempPath, { force: true });
         else
           await removeFileInside(
-            realVault,
+            root,
             temporary,
             undefined,
             await file.stat(),

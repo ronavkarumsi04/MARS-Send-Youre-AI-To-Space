@@ -7,9 +7,12 @@ import { readManifest, skillNotePath } from "./export";
 import { type ParsedNote, parseNote, sha256 } from "./notes";
 import {
   assertVaultDirectory,
+  pinVaultRoot,
   readNoteInside,
   resolveInside,
   VaultPathError,
+  type VaultRoot,
+  verifyVaultRoot,
 } from "./paths";
 import {
   DERIVED_KINDS,
@@ -52,6 +55,11 @@ export interface VaultScan {
 
 const CANDIDATE_DIRS = ["facts", "skills"] as const;
 
+type ScanOptions = VaultStores & {
+  vaultDir: string;
+  privateRoots?: readonly string[];
+};
+
 async function listMarkdown(dir: string, prefix: string): Promise<string[]> {
   let names: string[];
   try {
@@ -90,7 +98,7 @@ function declaresMarsKind(text: string): boolean {
  */
 export async function scanVault(
   ctx: RequestContext,
-  options: VaultStores & { vaultDir: string; privateRoots?: readonly string[] },
+  options: ScanOptions,
 ): Promise<VaultScan> {
   if (!RequestContextSchema.safeParse(ctx).success)
     throw new VaultError("invalid_context");
@@ -99,7 +107,25 @@ export async function scanVault(
     ...(options.privateRoots ?? []),
     options.skills.root,
   ]);
-  const manifest = await readManifest(vaultDir);
+  let root: VaultRoot;
+  try {
+    root = await pinVaultRoot(vaultDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      throw new VaultError("no_manifest");
+    throw error;
+  }
+  return scanVaultPinned(ctx, options, root);
+}
+
+export async function scanVaultPinned(
+  ctx: RequestContext,
+  options: ScanOptions,
+  root: VaultRoot,
+): Promise<VaultScan> {
+  await verifyVaultRoot(root);
+  const vaultDir = root.path;
+  const manifest = await readManifest(root);
   if (!manifest) throw new VaultError("no_manifest");
   if (canonicalJson(manifest.scope) !== canonicalJson(ctx.scope))
     throw new VaultError(
@@ -108,6 +134,7 @@ export async function scanVault(
     );
   const snapshot = await options.memory.snapshot(ctx);
   const skillsRevision = await options.skills.getRevision();
+  await verifyVaultRoot(root);
   const notes: ScannedNote[] = [];
   const trackedPaths = new Set<string>();
   for (const tracked of [...manifest.notes].sort((a, b) =>
@@ -136,7 +163,7 @@ export async function scanVault(
     }
     let text: string;
     try {
-      text = await readNoteInside(vaultDir, absolute, tracked.path);
+      text = await readNoteInside(root, absolute, tracked.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         notes.push({ ...base, state: "deleted", note: null, reason: null });
@@ -184,16 +211,13 @@ export async function scanVault(
   }
   let untracked = 0;
   for (const dir of CANDIDATE_DIRS) {
+    await verifyVaultRoot(root);
     for (const path of await listMarkdown(join(vaultDir, dir), dir)) {
       if (trackedPaths.has(path)) continue;
       const expected: NoteKind = dir === "facts" ? "memory_fact" : "skill";
       let text: string;
       try {
-        text = await readNoteInside(
-          vaultDir,
-          resolveInside(vaultDir, path),
-          path,
-        );
+        text = await readNoteInside(root, resolveInside(vaultDir, path), path);
       } catch (error) {
         if (error instanceof VaultPathError) {
           notes.push({
@@ -283,6 +307,7 @@ export async function scanVault(
       });
     }
   }
+  await verifyVaultRoot(root);
   return {
     vaultDir,
     manifest,

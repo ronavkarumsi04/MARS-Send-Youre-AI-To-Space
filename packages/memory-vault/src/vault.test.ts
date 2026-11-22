@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -23,6 +25,7 @@ import {
   exportVault,
   importVault,
   parseNote,
+  scanVault,
   VAULT_MANIFEST_FILE,
   type VaultGraphArtifact,
   VaultManifestSchema,
@@ -30,6 +33,7 @@ import {
 } from "./index";
 import {
   contains,
+  pinVaultRoot,
   readFileNoFollow,
   readNoteInside,
   VAULT_MAX_FILE_BYTES,
@@ -975,6 +979,54 @@ test("hardening: export, scan and import accept a symlinked vault root", async (
   expect(imported.proposals.memory).toHaveLength(1);
 });
 
+test("race: export rejects root rebinding after its snapshot starts", async () => {
+  const { common, vaultDir, root, memory } = await fixture();
+  await exportVault(ctx, common);
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  const snapshot = memory.snapshot.bind(memory);
+  memory.snapshot = async (context) => {
+    const value = await snapshot(context);
+    renameSync(vaultDir, join(root, "moved-vault"));
+    symlinkSync(outside, vaultDir, "dir");
+    return value;
+  };
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "path_escape",
+  });
+  expect(readdirSync(outside)).toEqual([]);
+});
+
+for (const operation of ["scan", "import"] as const) {
+  test(`race: ${operation} rejects root rebinding without reading outside notes`, async () => {
+    const { common, vaultDir, root, memory } = await fixture();
+    await exportVault(ctx, common);
+    const outside = join(root, "outside");
+    cpSync(vaultDir, outside, { recursive: true });
+    writeFileSync(
+      join(outside, "facts/fact-plain.md"),
+      read(outside, "facts/fact-plain.md").replace("Fridays", "Mondays"),
+    );
+    const snapshot = memory.snapshot.bind(memory);
+    let swapped = false;
+    memory.snapshot = async (context) => {
+      const value = await snapshot(context);
+      if (!swapped) {
+        swapped = true;
+        renameSync(vaultDir, join(root, "moved-vault"));
+        symlinkSync(outside, vaultDir, "dir");
+      }
+      return value;
+    };
+    const result =
+      operation === "scan"
+        ? scanVault(ctx, common)
+        : importVault(ctx, { ...common, actor: "tester" });
+    await expect(result).rejects.toMatchObject({ code: "path_escape" });
+    expect(await memory.listProposals(ctx, "pending")).toEqual([]);
+  });
+}
+
 test("review: an untracked note that is a symlink is refused, not proposed", async () => {
   if (process.platform === "win32") return;
   const { common, vaultDir, state, memory, skills } = await fixture();
@@ -1229,7 +1281,11 @@ test("containment: notes directly in the vault root are accepted", async () => {
   writeFileSync(join(vaultDir, "root.md"), "root note");
   expect(contains(vaultDir, vaultDir)).toBe(true);
   expect(
-    await readNoteInside(vaultDir, join(vaultDir, "root.md"), "root.md"),
+    await readNoteInside(
+      await pinVaultRoot(vaultDir),
+      join(vaultDir, "root.md"),
+      "root.md",
+    ),
   ).toBe("root note");
 });
 
@@ -1264,7 +1320,11 @@ test("bounds: generated notes and manifests cannot exceed their read limit", asy
   const manifest = join(vaultDir, VAULT_MANIFEST_FILE);
   writeFileSync(manifest, "original manifest");
   await expect(
-    writeAtomic(vaultDir, manifest, "é".repeat(VAULT_MAX_FILE_BYTES / 2 + 1)),
+    writeAtomic(
+      await pinVaultRoot(vaultDir),
+      manifest,
+      "é".repeat(VAULT_MAX_FILE_BYTES / 2 + 1),
+    ),
   ).rejects.toMatchObject({ code: "file_too_large" });
   expect(readFileSync(manifest, "utf8")).toBe("original manifest");
 });

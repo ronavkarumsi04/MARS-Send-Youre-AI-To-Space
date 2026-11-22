@@ -45,7 +45,10 @@ being read. Oversized notes are reported as invalid; an oversized manifest
 fails with `file_too_large`.
 
 Opened note, manifest, temporary-file, lock and directory handles are checked
-before use. Linux checks `/proc/self/fd` containment and anchors replacement
+before use. Each operation pins the canonical vault root and its device/inode;
+helpers retain that boundary and reject a replaced or rebound root. Root
+symlink aliases are resolved only at entry. Linux checks `/proc/self/fd`
+containment and anchors replacement
 and deletion paths to verified directory handles. Other platforms recheck
 resolved parents and device/inode identity; pathname races after that final
 check remain possible there. An unlink can still race a same-name replacement.

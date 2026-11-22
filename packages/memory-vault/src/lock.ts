@@ -1,14 +1,17 @@
 import { constants } from "node:fs";
-import { mkdir, open, lstat as stat } from "node:fs/promises";
+import { open, lstat as stat } from "node:fs/promises";
 import { join } from "node:path";
 import { VaultError } from "./errors";
 import {
   descriptorPath,
+  pinVaultRoot,
   readFileNoFollow,
   realpathExisting,
   removeFileInside,
   VaultPathError,
+  type VaultRoot,
   verifyOpenedInside,
+  verifyVaultRoot,
 } from "./paths";
 
 export const VAULT_LOCK_FILE = ".mars-vault.lock";
@@ -28,15 +31,13 @@ function alive(pid: number): boolean {
   }
 }
 
-async function stale(path: string, realVault: string): Promise<boolean> {
+async function stale(path: string, root: VaultRoot): Promise<boolean> {
   try {
     const info = await stat(path);
     const age = Date.now() - info.mtimeMs;
     let record: unknown;
     try {
-      record = JSON.parse(
-        await readFileNoFollow(path, VAULT_LOCK_FILE, realVault),
-      );
+      record = JSON.parse(await readFileNoFollow(path, VAULT_LOCK_FILE, root));
     } catch (error) {
       if (error instanceof SyntaxError) return age > VAULT_LOCK_LIMITS.stale_ms;
       if (
@@ -61,18 +62,18 @@ async function stale(path: string, realVault: string): Promise<boolean> {
 async function removeOwned(
   path: string,
   owned: { ino: number; dev: number },
-  realVault: string,
+  root: VaultRoot,
 ): Promise<void> {
   try {
     const current = await stat(path);
     if (owned.ino === current.ino && owned.dev === current.dev)
-      await removeFileInside(realVault, path, undefined, owned);
+      await removeFileInside(root, path, undefined, owned);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
-async function reap(path: string, realVault: string): Promise<void> {
+async function reap(path: string, root: VaultRoot): Promise<void> {
   const guard = `${path}.reap`;
   let file: Awaited<ReturnType<typeof open>>;
   try {
@@ -81,8 +82,7 @@ async function reap(path: string, realVault: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       try {
         const owned = await stat(guard);
-        if (await stale(guard, realVault))
-          await removeOwned(guard, owned, realVault);
+        if (await stale(guard, root)) await removeOwned(guard, owned, root);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -92,18 +92,17 @@ async function reap(path: string, realVault: string): Promise<void> {
   }
   const owned = await file.stat();
   try {
-    await verifyOpenedInside(realVault, guard, file);
+    await verifyOpenedInside(root, guard, file);
     await file.writeFile(JSON.stringify({ pid: process.pid }));
     try {
       const locked = await stat(path);
-      if (await stale(path, realVault))
-        await removeOwned(path, locked, realVault);
+      if (await stale(path, root)) await removeOwned(path, locked, root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   } finally {
     try {
-      await removeOwned(guard, owned, realVault);
+      await removeOwned(guard, owned, root);
     } finally {
       await file.close();
     }
@@ -113,7 +112,7 @@ async function reap(path: string, realVault: string): Promise<void> {
 async function acquire(
   vaultDir: string,
   deadline: number,
-  realVault: string,
+  root: VaultRoot,
 ): Promise<() => Promise<void>> {
   const path = join(vaultDir, VAULT_LOCK_FILE);
   for (;;) {
@@ -123,7 +122,7 @@ async function acquire(
       file = await open(path, "wx", 0o600);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await reap(path, realVault);
+      await reap(path, root);
       if (Date.now() >= deadline)
         throw new VaultError(
           "vault_locked",
@@ -134,7 +133,7 @@ async function acquire(
     }
     const owned = await file.stat();
     try {
-      await verifyOpenedInside(realVault, path, file);
+      await verifyOpenedInside(root, path, file);
       await file.writeFile(JSON.stringify({ pid: process.pid }));
       const current = await stat(path);
       if (owned.ino !== current.ino || owned.dev !== current.dev) {
@@ -143,14 +142,14 @@ async function acquire(
       }
       return async () => {
         try {
-          await removeOwned(path, owned, realVault);
+          await removeOwned(path, owned, root);
         } finally {
           await file.close();
         }
       };
     } catch (error) {
       try {
-        await removeOwned(path, owned, realVault);
+        await removeOwned(path, owned, root);
       } finally {
         await file.close();
       }
@@ -161,13 +160,18 @@ async function acquire(
 }
 
 export async function withVaultLock<T>(
-  vaultDir: string,
-  action: () => Promise<T>,
+  vault: string | VaultRoot,
+  action: (root: VaultRoot) => Promise<T>,
   options: { timeout_ms?: number; beforeOpen?: () => Promise<void> } = {},
 ): Promise<T> {
   const deadline =
     Date.now() + (options.timeout_ms ?? VAULT_LOCK_LIMITS.timeout_ms);
-  const key = await realpathExisting(vaultDir);
+  const root =
+    typeof vault === "string"
+      ? await pinVaultRoot(await realpathExisting(vault), true)
+      : vault;
+  await verifyVaultRoot(root);
+  const key = root.path;
   const previous = pending.get(key) ?? Promise.resolve();
   let releaseLocal = () => {};
   const current = new Promise<void>((resolve) => {
@@ -194,7 +198,7 @@ export async function withVaultLock<T>(
     ]);
     clearTimeout(timer);
     if (Date.now() >= deadline) throw new VaultError("vault_locked");
-    await mkdir(key, { recursive: true, mode: 0o700 });
+    await verifyVaultRoot(root);
     const directory = await open(
       key,
       constants.O_RDONLY |
@@ -202,16 +206,16 @@ export async function withVaultLock<T>(
         (constants.O_NOFOLLOW ?? 0),
     );
     try {
-      await verifyOpenedInside(key, key, directory);
+      await verifyOpenedInside(root, key, directory);
       await options.beforeOpen?.();
-      await verifyOpenedInside(key, key, directory);
+      await verifyOpenedInside(root, key, directory);
       const release = await acquire(
         descriptorPath(directory, key),
         deadline,
-        key,
+        root,
       );
       try {
-        return await action();
+        return await action(root);
       } finally {
         await release();
       }
