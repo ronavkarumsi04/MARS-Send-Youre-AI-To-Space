@@ -267,7 +267,11 @@ export function createController(
                   render();
               },
               onConsent: (consent) => {
-                assistantState = { ...assistantState, consent };
+                assistantState = {
+                  ...assistantState,
+                  consent,
+                  validation: undefined,
+                };
                 render();
               },
               onSend: () => void sendAssistant(),
@@ -279,6 +283,7 @@ export function createController(
                   ...assistantState,
                   activeId: globalThis.crypto.randomUUID(),
                   draft: "",
+                  validation: undefined,
                   error: undefined,
                 };
                 render();
@@ -290,6 +295,7 @@ export function createController(
                   ...assistantState,
                   activeId,
                   draft: "",
+                  validation: undefined,
                   error: undefined,
                 };
                 render();
@@ -405,6 +411,7 @@ export function createController(
       (focusKey === "workbench-retry"
         ? (keyed("refresh") ?? keyed("assistant-input"))
         : undefined) ??
+      (focusKey === "connect-model" ? keyed("assistant-input") : undefined) ??
       keyed(HEADING_FOCUS_KEY);
     target?.focus({ preventScroll: Boolean(library) });
     if (
@@ -452,6 +459,9 @@ export function createController(
           changed || version === historyVersion
             ? result.sessions
             : assistantState.sessions,
+        ...(assistantState.configured !== result.configured
+          ? { validation: undefined }
+          : {}),
         configured: result.configured,
         canConfigure: result.canConfigure,
         loading: false,
@@ -548,11 +558,8 @@ export function createController(
     if (!assistantState.configured || !assistantState.consent) {
       assistantState = {
         ...assistantState,
-        error: !assistantState.configured
-          ? assistantState.canConfigure === false
-            ? "Set OPENROUTER_API_KEY and restart the attached app to start chatting."
-            : "Connect a model to start chatting."
-          : "Allow this conversation to be sent to OpenRouter below, then send your message.",
+        error: undefined,
+        validation: !assistantState.configured ? "key" : "consent",
       };
       render();
       return;
@@ -564,6 +571,7 @@ export function createController(
       ...assistantState,
       busy: true,
       pending: { id: activeId, text },
+      validation: undefined,
       error: undefined,
     };
     render();

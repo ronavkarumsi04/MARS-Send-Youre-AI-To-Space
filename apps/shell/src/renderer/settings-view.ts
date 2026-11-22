@@ -25,7 +25,7 @@ export function renderSettings(
         ? "Checking…"
         : "Status unavailable"
       : model.configured
-        ? "Key configured"
+        ? "Key present"
         : "No key added";
   return h(
     doc,
@@ -79,7 +79,9 @@ export function renderSettings(
           "p",
           {},
           model.canConfigure === true
-            ? "One API key powers chat and agent tasks. Chat uses OpenRouter’s free model route."
+            ? model.configured
+              ? "MARS has a key. Saving it checks the format, not whether OpenRouter accepts it. No request is sent just to test it."
+              : "One API key powers chat and agent tasks. Chat uses OpenRouter’s free model route."
             : model.canConfigure === false
               ? "This app is attached to a workbench. Set OPENROUTER_API_KEY in the environment that launches MARS, then restart the app."
               : "Connect to your workbench to check model settings. In the installed app, you can also use Project → Model Settings.",

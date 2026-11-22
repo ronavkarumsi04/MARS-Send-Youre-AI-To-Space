@@ -308,7 +308,7 @@ test.each([false, true])(
     button("Tasks")?.click();
     button("Settings")?.click();
     expect(doc.root.textContent).toContain(
-      configured ? "Key configured" : "No key added",
+      configured ? "Key present" : "No key added",
     );
     expect(button("Tasks")?.getAttribute("aria-pressed")).toBe("false");
     button(configured ? "Manage API key" : "Add API key")?.click();

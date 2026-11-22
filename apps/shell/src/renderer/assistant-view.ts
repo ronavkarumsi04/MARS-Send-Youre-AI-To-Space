@@ -11,6 +11,7 @@ export type AssistantViewState = {
   busy: boolean;
   loading: boolean;
   error?: string | undefined;
+  validation?: "key" | "consent" | undefined;
   pending?: { id: string; text: string } | undefined;
   onDraft?: (draft: string) => void;
   onConsent?: (consent: boolean) => void;
@@ -37,6 +38,22 @@ export function renderAssistant(
   doc: ShellDocument,
   state: AssistantViewState,
 ): ShellElement {
+  const validation =
+    state.validation === "key" && !state.configured
+      ? state.canConfigure === false
+        ? "Set OPENROUTER_API_KEY and restart the attached app to start chatting."
+        : "Connect a model to start chatting."
+      : state.validation === "consent" && state.configured && !state.consent
+        ? "Allow this conversation to be sent to OpenRouter, then send your message."
+        : undefined;
+  const error = state.error ?? validation;
+  const connect = action(
+    doc,
+    "Connect model",
+    "connect-action",
+    state.onSettings,
+  );
+  connect.setAttribute("data-focus-key", "connect-model");
   const session = state.sessions.find((item) => item.id === state.activeId);
   const messages = [
     ...(session?.messages ?? []),
@@ -264,17 +281,15 @@ export function renderAssistant(
                   : "Set OPENROUTER_API_KEY in the environment that launches MARS, then restart the attached app.",
               ),
             ),
-            state.canConfigure
-              ? action(doc, "Connect model", "connect-action", state.onSettings)
-              : null,
+            state.canConfigure ? connect : null,
           )
         : null,
-      state.error
+      error
         ? h(
             doc,
             "div",
             { class: "chat-error", role: "alert" },
-            state.error,
+            error,
             state.onRetryLoad
               ? action(doc, "Retry chat", "retry", state.onRetryLoad)
               : null,

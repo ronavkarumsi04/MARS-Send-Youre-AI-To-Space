@@ -17,23 +17,23 @@
     </header>
     <main>
       <div class="setup-step">MODEL CONNECTION / OPENROUTER</div>
-      <h1>Connect your model</h1>
+      <h1 id="key-heading">Connect your model</h1>
       <p>Use one OpenRouter key for chat and agent tasks. MARS uses it to sign in to OpenRouter, not as part of your prompts.</p>
       <div class="key-help">
-        <p><strong>1. Create your key</strong></p>
-        <p>Sign in to OpenRouter, choose Create API key, and copy it.</p>
+        <p><strong id="key-step">1. Create your key</strong></p>
+        <p>Visit <strong>openrouter.ai/settings/keys</strong>, choose Create API key, and copy it.</p>
         <button id="get-key" type="button">Open OpenRouter key settings ↗</button>
       </div>
       <form>
-        <label for="model-key">2. Paste your OpenRouter API key</label>
+        <label id="key-label" for="model-key">2. Paste your OpenRouter API key</label>
         <input id="model-key" type="password" maxlength="512" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false" required aria-describedby="model-status key-privacy" />
         <p id="model-status" role="status" aria-live="polite"></p>
         <div class="model-actions">
           <button type="submit">Save &amp; connect</button>
-          <button id="clear-key" type="button" disabled>Remove key</button>
+          <button id="clear-key" type="button" disabled>Remove from MARS</button>
         </div>
       </form>
-      <p id="key-privacy">Stored in your system’s secure storage when available; otherwise used only until MARS quits. Updating the key reconnects your workspace.</p>
+      <p id="key-privacy">Stored in your system’s secure storage when available; otherwise used only until MARS quits. Saving checks the format only. Removing a key from MARS does not revoke it at OpenRouter.</p>
       <p>Chat uses OpenRouter’s free route. Agent tasks use the host’s default model unless you explicitly choose a paid one.</p>
     </main>
     <script type="module" src="./settings.js"></script>

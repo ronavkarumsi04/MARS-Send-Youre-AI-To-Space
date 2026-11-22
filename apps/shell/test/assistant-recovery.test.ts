@@ -215,9 +215,33 @@ test("model refresh preserves drafts while a workspace switch resets chat and co
   await ctl.load();
   field("assistant-input").value = "unsent first project draft";
   field("assistant-input").dispatch("input");
+  const submit = () =>
+    findAll(doc.root, (el) => el.tagName === "FORM")[0]?.dispatch("submit");
+  submit();
+  expect(doc.root.textContent).toContain("Connect a model to start chatting");
+  field("connect-model").focus();
+  field("connect-model").click();
+  await Bun.sleep(0);
+  expect(doc.activeElement).toBe(field("connect-model"));
   configured = true;
   await ctl.load();
+  expect(doc.root.textContent).not.toContain(
+    "Connect a model to start chatting",
+  );
   expect(field("assistant-input").value).toBe("unsent first project draft");
+  submit();
+  expect(doc.root.textContent).toContain("Allow this conversation");
+  field("chat-consent").checked = true;
+  field("chat-consent").dispatch("change");
+  expect(doc.root.textContent).not.toContain("Allow this conversation");
+  field("chat-consent").checked = false;
+  field("chat-consent").dispatch("change");
+  submit();
+  configured = false;
+  await ctl.load();
+  expect(doc.root.textContent).not.toContain("Allow this conversation");
+  configured = true;
+  await ctl.load();
   field("chat-consent").checked = true;
   field("chat-consent").dispatch("change");
   workspace = "b";

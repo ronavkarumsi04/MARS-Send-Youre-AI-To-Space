@@ -30,6 +30,26 @@ if (settings && form && input && save && clear && status) {
     save,
     clear,
     status,
+    showKeyMode: (present) => {
+      const labels = [
+        [
+          "#key-heading",
+          present ? "Manage your API key" : "Connect your model",
+        ],
+        ["#key-step", present ? "Get a replacement key" : "1. Create your key"],
+        [
+          "#key-label",
+          present
+            ? "Paste a replacement OpenRouter API key"
+            : "2. Paste your OpenRouter API key",
+        ],
+        ["[type=submit]", present ? "Replace key" : "Save & connect"],
+      ] as const;
+      for (const [selector, label] of labels) {
+        const el = document.querySelector(selector);
+        if (el) el.textContent = label;
+      }
+    },
   });
   void initialize();
   document

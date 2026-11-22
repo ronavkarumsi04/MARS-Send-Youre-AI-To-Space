@@ -1283,10 +1283,17 @@ p {
   margin-left: auto;
   padding: 4px 10px;
 }
+#close-settings:is(:hover, :focus-visible) {
+  background: var(--paperInk);
+  color: var(--paper);
+}
 .model-settings {
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .model-settings .masthead {
+  flex: none;
   background: var(--paper);
   color: var(--paperInk);
   height: 40px;
@@ -1294,6 +1301,9 @@ p {
   letter-spacing: 0.06em;
 }
 .model-settings main {
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
   max-width: 630px;
   margin: 0 auto;
   padding: 30px;
