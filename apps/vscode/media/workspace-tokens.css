@@ -5,33 +5,59 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: Geist;
+  src: url("./Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 body:has(.workspace-rail) {
   color-scheme: dark;
   --page: #050407;
-  --card: #0a090c;
-  --surface: #141214;
+  --card: #0e0d10;
+  --surface: #19171b;
   --text: #ece6dc;
   --accent: #ece6dc;
   --edge: #8a847c;
-  --divider: #39353a;
-  --quiet: #aca69d;
+  --divider: #363238;
+  --quiet: #aaa49c;
   --selected: #29252b;
-  --success: #a2cf99;
+  --success: #b0cfaa;
   --error: #fd929d;
   --button-hover: color-mix(in srgb, var(--accent) 88%, var(--card));
   --primary-text: var(--page);
   --selection: #5a17b0;
   --selection-text: #ffffff;
+  --paper: #ece6dc;
+  --paper-ink: #18161a;
+  --paper-quiet: #625e58;
+  --paper-edge: #c8c1b7;
+  --paper-hover: #ded7cb;
+  --paper-action-hover: #302c32;
+  --paper-error: #a1293c;
+  --paper-scheme: light;
+  --welcome-glow: #211c2080;
+  --welcome-label: #cab596;
+  --prompt-number: #cfb994;
+  --composer-background: var(--page);
+  --composer-ink: var(--text);
+  --composer-muted: var(--quiet);
+  --composer-edge: var(--edge);
+  --composer-radius: 14px;
+  --prompt-radius: 9px;
   --orbit-art-filter: grayscale(1);
-  --radius: 5px;
-  --display: Switzer, "General Sans", system-ui, sans-serif;
-  --body: "General Sans", system-ui, sans-serif;
+  --radius: 2px;
+  --display: Switzer, "General Sans", Geist, system-ui, sans-serif;
+  --body: "General Sans", Geist, system-ui, sans-serif;
+  --numeral: var(--display);
   --mono: "Commit Mono", ui-monospace, monospace;
-  --display-weight: 500;
+  --display-weight: 550;
   --body-weight: 400;
+  --numeral-weight: 600;
   --mono-weight: 400;
   --emphasis-weight: 600;
-  --space: clamp(16px, 4vw, 30px);
+  --space: clamp(16px, 4vw, 38px);
 }
 
 body:is(.vscode-high-contrast, .vscode-high-contrast-light):has(
@@ -53,6 +79,28 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light):has(
   --primary-text: var(--text);
   --selection: Highlight;
   --selection-text: HighlightText;
+  --paper: var(--vscode-editor-background);
+  --paper-ink: var(--vscode-editor-foreground);
+  --paper-quiet: var(--vscode-editor-foreground);
+  --paper-edge: var(--vscode-contrastBorder, var(--vscode-editor-foreground));
+  --paper-hover: var(--vscode-editor-background);
+  --paper-action-hover: var(--vscode-editor-foreground);
+  --paper-error: var(--vscode-errorForeground);
+  --paper-scheme: light dark;
+  --welcome-glow: transparent;
+  --welcome-label: var(--text);
+  --prompt-number: var(--text);
+}
+
+#app:has(.workspace-rail) :is(.workspace-rail, .model-connection) {
+  --vscode-focusBorder: var(--paper-ink);
+  --vscode-button-background: var(--paper-ink);
+  --vscode-button-foreground: var(--paper);
+  --vscode-button-hoverBackground: var(--paper-action-hover);
+  --vscode-button-secondaryBackground: var(--paper);
+  --vscode-button-secondaryForeground: var(--paper-ink);
+  --vscode-button-secondaryHoverBackground: var(--paper-hover);
+  --vscode-button-border: var(--paper-edge);
 }
 
 #app:has(.workspace-rail) {

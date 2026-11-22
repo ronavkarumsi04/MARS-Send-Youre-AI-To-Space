@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { modelNavigation, renderSettings } from "../src/webview/workspaceViews";
+import {
+  modelNavigation,
+  renderExtensions,
+  renderSettings,
+} from "../src/webview/workspaceViews";
 
 class TestElement {
   dataset: Record<string, string> = {};
@@ -93,6 +97,25 @@ test("Settings leads with model setup and links to Project extensions", () => {
     ]);
     elements
       .find((element) => element.dataset.focusKey === "settings-extensions")
+      ?.click();
+    expect(opened).toBe(true);
+  });
+});
+
+test("the numbered Extensions guide retains its Skills dashboard link", () => {
+  withDocument(() => {
+    let opened = false;
+    const extensions = renderExtensions(() => {
+      opened = true;
+    });
+    const elements = (extensions as unknown as TestElement).descendants();
+    expect(
+      elements
+        .filter((element) => element.tagName === "article")
+        .map((article) => article.children[0]?.children[0]?.textContent),
+    ).toEqual(["01", "02", "03"]);
+    elements
+      .find((element) => element.dataset.focusKey === "extensions-skills")
       ?.click();
     expect(opened).toBe(true);
   });

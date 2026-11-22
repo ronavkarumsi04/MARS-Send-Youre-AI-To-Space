@@ -864,7 +864,7 @@ function taskContent(s: ViewState): HTMLElement {
   newTask.create.disabled = !connected || s.busy !== null;
   return h(
     "section",
-    { class: "task-content workspace-content" },
+    { class: "task-workbench" },
     taskStatus(s),
     connected ? newTask.details : "",
     connected ? renderTasks(s) : "",
@@ -913,6 +913,8 @@ function navAction(label: string, target: WorkbenchPage): HTMLButtonElement {
   const entry = button(label, `nav-${target}`, () => openPage(target), {
     secondary: true,
   });
+  entry.classList.add("workspace-destination");
+  entry.dataset.destination = target;
   if (page === target) entry.setAttribute("aria-current", "page");
   return entry;
 }
@@ -953,14 +955,24 @@ function navigation(): HTMLElement {
   return h(
     "aside",
     { class: "workspace-rail" },
-    h("p", { class: "workspace-brand" }, "✳ MARS"),
+    h(
+      "div",
+      { class: "workspace-identity" },
+      h(
+        "div",
+        { class: "workspace-wordmark" },
+        h("span", { class: "workspace-brand-orbit" }),
+        h("p", { class: "workspace-brand" }, "MARS"),
+      ),
+      h("p", { class: "workspace-tagline" }, "YOUR IDEAS. IN ORBIT."),
+    ),
     h(
       "nav",
       { class: "workspace-nav", label: "MARS workspace" },
-      navAction("✧ Chat", "chat"),
-      navAction("◎ Agent tasks", "tasks"),
-      navAction("◇ Extensions", "extensions"),
-      navAction("⚙ Settings", "settings"),
+      navAction("Chat", "chat"),
+      navAction("Tasks", "tasks"),
+      navAction("Extensions", "extensions"),
+      navAction("Settings", "settings"),
       modelNavigation(chat.configured, chat.loading, openModelSettings),
     ),
     h(
@@ -1028,9 +1040,13 @@ function renderPage(): [HTMLElement, HTMLElement?] {
   if (page === "tasks")
     return [
       toolbar("Agent tasks", "◎ Agent"),
-      state
-        ? taskContent(state)
-        : h("p", { class: "workspace-content" }, "Connecting to workbench…"),
+      h(
+        "section",
+        { class: "workspace-content task-content" },
+        h("p", { class: "eyebrow" }, "02 / AGENT WORKBENCH"),
+        h("h1", {}, "Agent tasks"),
+        state ? taskContent(state) : h("p", {}, "Connecting to workbench…"),
+      ),
     ];
   if (page === "settings")
     return [
