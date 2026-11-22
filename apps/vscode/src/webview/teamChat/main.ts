@@ -47,7 +47,17 @@ let composerConversation: string | null = null;
 /** Saved conversation id to re-select on first render; cleared once applied. */
 let pendingRestore: string | null | undefined;
 type SavedLink = { viewerId: string; conversationId: string; linkId: string };
-let savedLinks: SavedLink[] = [];
+const saved = vscode.getState() as
+  | { conversationId?: unknown; links?: SavedLink[] }
+  | undefined;
+const savedLinks = Array.isArray(saved?.links)
+  ? saved.links.filter(
+      (link) =>
+        typeof link?.viewerId === "string" &&
+        typeof link.conversationId === "string" &&
+        typeof link.linkId === "string",
+    )
+  : [];
 let composerError: string | null = null;
 let previewDraftId: string | null = null;
 let confirmedDraftId: string | null = null;
@@ -690,7 +700,13 @@ function evidenceCard(card: EvidenceShareCardView, label: string): HTMLElement {
       {},
       `Task ${card.run_status} · revision ${card.task_revision} · ${card.verified ? "Verified" : "Not verified"} · attested by ${card.attested_by}`,
     ),
-    card.verified_reason ? h("p", {}, card.verified_reason) : null,
+    card.verified_reason
+      ? h(
+          "p",
+          {},
+          `Verification reason: ${card.verified_reason === "missing" ? "No verification record was included." : card.verified_reason}`,
+        )
+      : null,
     card.diff_sha256
       ? h("p", { class: "mono" }, `Diff SHA-256: ${card.diff_sha256}`)
       : null,
@@ -1077,8 +1093,12 @@ function shareForm(linkId: string): HTMLElement {
     "form",
     {},
     labelled("Summary", summary),
-    labelled("Include diff digest", diff),
-    labelled("Include recent verification checks", checks),
+    h(
+      "div",
+      { class: "share-options" },
+      h("label", {}, diff, "Include diff digest"),
+      h("label", {}, checks, "Include recent verification checks"),
+    ),
     button("Preview evidence", "share-preview", () => {
       if (!form.reportValidity() || !summary.value.trim()) return;
       post({
@@ -1101,6 +1121,40 @@ function shareForm(linkId: string): HTMLElement {
   );
   form.addEventListener("submit", (event) => event.preventDefault());
   return form;
+}
+
+function renderSavedLinks(
+  s: TeamChatViewState,
+  conversationId: string,
+): HTMLElement | null {
+  if (!s.capabilities.links) return null;
+  const links = savedLinks.filter(
+    (item) =>
+      item.viewerId === s.viewer.user_id &&
+      item.conversationId === conversationId,
+  );
+  if (!links.length) return null;
+  return h(
+    "section",
+    { label: "Linked tasks" },
+    h("strong", {}, "Linked tasks"),
+    h(
+      "ul",
+      { class: "linked-tasks" },
+      ...links.map(({ linkId }) =>
+        h(
+          "li",
+          {},
+          button(
+            `Inspect task link ${linkId}`,
+            `linked-task-reopen-${linkId}`,
+            () => post({ type: "taskLinkInspect", linkId }),
+            { secondary: true, disabled: s.task_link?.link.link_id === linkId },
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 function renderHandoff(
@@ -1157,27 +1211,11 @@ function renderHandoff(
       taskForm,
     );
   }
-  if (!link) {
-    const saved = savedLinks.find(
-      (item) =>
-        item.viewerId === s.viewer.user_id &&
-        item.conversationId === selected.conversation.conversation_id,
-    );
-    return saved && s.capabilities.links
-      ? h(
-          "div",
-          { class: "composer handoff" },
-          button(
-            "Inspect last linked task",
-            "linked-task-reopen",
-            () => {
-              post({ type: "taskLinkInspect", linkId: saved.linkId });
-            },
-            { secondary: true },
-          ),
-        )
+  const savedList = renderSavedLinks(s, selected.conversation.conversation_id);
+  if (!link)
+    return savedList
+      ? h("div", { class: "composer handoff" }, savedList)
       : null;
-  }
   const linkId = link.link.link_id;
   const canShare =
     s.capabilities.shares &&
@@ -1188,6 +1226,7 @@ function renderHandoff(
   return h(
     "section",
     { class: "composer handoff", label: "Task link status" },
+    savedList,
     h("strong", {}, `Linked task: ${link.link.status}`),
     link.link.task_revision === null
       ? null
@@ -1660,14 +1699,15 @@ function render(): void {
       conversationId: linked.link.conversation_id,
       linkId: linked.link.link_id,
     };
-    savedLinks = [
-      item,
-      ...savedLinks.filter(
+    if (
+      !savedLinks.some(
         (entry) =>
           entry.viewerId === item.viewerId &&
-          entry.conversationId !== item.conversationId,
-      ),
-    ].slice(0, 20);
+          entry.conversationId === item.conversationId &&
+          entry.linkId === item.linkId,
+      )
+    )
+      savedLinks.push(item);
   }
   if (selectedId !== composerConversation) {
     composerConversation = selectedId;
@@ -1752,17 +1792,6 @@ function render(): void {
   target?.focus();
   if (pendingRestore === undefined) {
     // First render: read the saved selection before anything overwrites it.
-    const saved = vscode.getState() as
-      | { conversationId?: unknown; links?: SavedLink[] }
-      | undefined;
-    if (Array.isArray(saved?.links) && !savedLinks.length) {
-      savedLinks = saved.links.filter(
-        (link) =>
-          link?.viewerId === s.viewer.user_id &&
-          typeof link.linkId === "string",
-      );
-      if (savedLinks.length) queueMicrotask(render);
-    }
     pendingRestore =
       typeof saved?.conversationId === "string" &&
       saved.conversationId !== selectedId &&

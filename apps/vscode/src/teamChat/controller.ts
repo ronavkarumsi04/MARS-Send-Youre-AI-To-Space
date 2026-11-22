@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   AGENT_MAX_MESSAGES,
   SHARE_MAX_VERIFY_EVENT_IDS,
@@ -151,7 +152,7 @@ export class TeamChatController {
   private agentDraft: (AgentDraft & { conversationId: string }) | null = null;
   private agentRequestState: AgentRequestView | null = null;
   private taskLinkDraftState: TaskLinkDraftView | null = null;
-  private pendingLinkedTask: Task | null = null;
+  private pendingLinkedTask: { task: Task; requestId: string } | null = null;
   private taskLinkState: TaskLinkView | null = null;
   private sharePreviewState: EvidenceSharePreviewView | null = null;
   private shareResultState: EvidenceShareView | null = null;
@@ -1410,30 +1411,38 @@ export class TeamChatController {
       );
       if (!built.ok) return this.handoffError(built.reason);
       this.pendingLinkedTask = {
-        ...built.task,
-        provenance: {
-          source: "team_chat",
-          conversation_id: link.data.conversation_id,
-          message_ids: link.data.provenance.map(({ message_id }) => message_id),
-          reference_ids: link.data.reference_ids,
+        requestId: randomUUID(),
+        task: {
+          ...built.task,
+          provenance: {
+            source: "team_chat",
+            conversation_id: link.data.conversation_id,
+            message_ids: link.data.provenance.map(
+              ({ message_id }) => message_id,
+            ),
+            reference_ids: link.data.reference_ids,
+          },
         },
       };
     }
-    const task = this.pendingLinkedTask;
+    const { task, requestId } = this.pendingLinkedTask;
     if (!sameScope(task.scope, scope))
       return this.handoffError(
         "Reconnect to the original Workbench to retry this task.",
       );
     const confirmed = await this.service.taskLinkConfirm(this.viewer, {
       link_id: message.linkId,
-      workbench: { scope, task_id: task.task_id, request_id: task.task_id },
+      workbench: { scope, task_id: task.task_id, request_id: requestId },
       target: {},
     });
     if (!confirmed.ok) return this.failed(confirmed.code);
     this.taskLinkState = { view: "requester", link: confirmed.value };
     let created: Task;
     try {
-      created = await client.create(task, { launchKey: link.data.launch_key });
+      created = await client.create(task, {
+        launchKey: link.data.launch_key,
+        requestId,
+      });
     } catch {
       return this.handoffError(
         "Workbench did not acknowledge the task. Retry uses the same task and request.",

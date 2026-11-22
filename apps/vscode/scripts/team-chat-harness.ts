@@ -104,6 +104,7 @@ async function main(): Promise<void> {
   await writeFile(page, html);
   const results: string[] = [];
   for (const scenario of SCENARIOS) {
+    const verify = scenario.name === "handoff";
     const png = join(out, `team-chat-${scenario.name}.png`);
     const proc = Bun.spawn(
       [
@@ -116,14 +117,26 @@ async function main(): Promise<void> {
         `--window-size=${scenario.width},${scenario.height}`,
         "--virtual-time-budget=4000",
         `--screenshot=${png}`,
+        ...(verify ? ["--dump-dom"] : []),
         `file://${page}?scenario=${scenario.name}`,
       ],
-      { stdout: "ignore", stderr: "pipe" },
+      { stdout: verify ? "pipe" : "ignore", stderr: "pipe" },
     );
+    const dom = proc.stdout ? await new Response(proc.stdout).text() : "";
     const code = await proc.exited;
     if (code !== 0) {
       const err = await new Response(proc.stderr).text();
       throw new Error(`chrome failed for ${scenario.name}: ${err.slice(-400)}`);
+    }
+    if (verify) {
+      if (!dom.includes('data-harness-done="true"'))
+        throw new Error(
+          dom.match(/data-harness-error="([^"]*)"/)?.[1] ??
+            "handoff scenario did not finish",
+        );
+      console.log(
+        "handoff scenario: two saved task links; first task's evidence published",
+      );
     }
     results.push(png);
   }

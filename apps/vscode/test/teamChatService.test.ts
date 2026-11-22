@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { ResultShare } from "@mars/contracts";
+import { type ResultShare, TaskSchema } from "@mars/contracts";
 import { succeed } from "@mars/team-chat";
-import { RpcError } from "../src/rpc";
+import { MarsClient } from "../src/client";
+import { RpcError, type RpcRequest } from "../src/rpc";
 import { TeamClient } from "../src/teamChat/client";
 import { TeamChatController } from "../src/teamChat/controller";
 import type { AgentDraft, TeamChatViewState } from "../src/teamChat/messages";
@@ -120,10 +121,32 @@ function setup(
 
 test("task handoff keeps drafts local, replays the same launch and publishes only reviewed evidence", async () => {
   const workbench = fakeHandoffWorkbench();
+  const createRequests: RpcRequest[] = [];
+  const workbenchClient = new MarsClient(
+    {
+      async send(request) {
+        if (request.method === "workbench.describe") return workbench.server;
+        if (request.method !== "tasks.create")
+          throw new Error("unexpected RPC");
+        createRequests.push(request);
+        const task = TaskSchema.parse(request.params.task);
+        const launchKey = request.params.launch_key;
+        if (typeof launchKey !== "string")
+          throw new Error("missing launch key");
+        return workbench.create(task, { launchKey });
+      },
+    },
+    () => "unrelated-generated-request-id",
+  );
+  await workbenchClient.describe();
+  const handoffWorkbench = {
+    ...workbench,
+    create: workbenchClient.create.bind(workbenchClient),
+  };
   let connected = false;
   const { server, controller, dm, last } = setup({
     capabilities: HANDOFF_CAPABILITIES,
-    workbench: () => (connected ? workbench : undefined),
+    workbench: () => (connected ? handoffWorkbench : undefined),
   });
   const handle = (message: Parameters<typeof controller.handleMessage>[0]) =>
     controller.handleMessage(message);
@@ -173,6 +196,26 @@ test("task handoff keeps drafts local, replays the same launch and publishes onl
   expect(workbench.tasks.size).toBe(1);
   expect(workbench.creates).toHaveLength(2);
   expect(workbench.creates[0]).toEqual(workbench.creates[1]);
+  const bindings = server.calls.filter(
+    (request) => request.method === "tasks.link_confirm",
+  );
+  expect(createRequests).toHaveLength(2);
+  expect(bindings).toHaveLength(2);
+  expect(createRequests[0]).toEqual(createRequests[1]);
+  for (const [index, request] of createRequests.entries()) {
+    const taskId = TaskSchema.parse(request.params.task).task_id;
+    if (!request.context) throw new Error("missing Workbench request context");
+    const { request_id: requestId, scope } = request.context;
+    expect(requestId).not.toBe(taskId);
+    expect(requestId).not.toBe("unrelated-generated-request-id");
+    const expectedBinding = {
+      scope,
+      task_id: taskId,
+      request_id: requestId,
+    };
+    expect(bindings[index]?.params.workbench).toEqual(expectedBinding);
+    expect(server.links.get(linkId)?.workbench).toEqual(expectedBinding);
+  }
   expect(workbench.creates[0]?.launchKey).toBe(
     server.links.get(linkId)?.launch_key,
   );

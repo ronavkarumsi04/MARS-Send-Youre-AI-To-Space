@@ -57,22 +57,37 @@ async function run(): Promise<void> {
     await click(key("linked-task-cancel"));
     if (document.querySelector('[aria-label="Task link draft"]'))
       throw new Error("harness: cancelled task draft is still open");
-    await click(create);
-    for (const [field, value] of Object.entries({
-      request: "Prepare the release",
-      criteria: "Review the release checklist",
-      tokens: "1000",
-      usd: "0",
-      seconds: "60",
-      depth: "0",
-      concurrency: "1",
-    })) {
-      const input = await waitFor<HTMLInputElement | HTMLTextAreaElement>(
-        key(`linked-task-${field}`),
-      );
-      input.value = value;
+    async function createTask(request: string): Promise<string> {
+      await click(create);
+      for (const [field, value] of Object.entries({
+        request,
+        criteria: "Review the release checklist",
+        tokens: "1000",
+        usd: "0",
+        seconds: "60",
+        depth: "0",
+        concurrency: "1",
+      })) {
+        const input = await waitFor<HTMLInputElement | HTMLTextAreaElement>(
+          key(`linked-task-${field}`),
+        );
+        input.value = value;
+      }
+      await click(key("linked-task-confirm"));
+      await waitFor(key("linked-task-close"));
+      const linkId = controller.snapshot().task_link?.link.link_id;
+      if (!linkId) throw new Error("harness: created task has no link");
+      await click(key("linked-task-close"));
+      return linkId;
     }
-    await click(key("linked-task-confirm"));
+    const first = await createTask("Prepare the release");
+    const second = await createTask("Write release notes");
+    if (
+      first === second ||
+      document.querySelectorAll('[aria-label="Linked tasks"] li').length !== 2
+    )
+      throw new Error("harness: expected two distinct saved task links");
+    await click(key(`linked-task-reopen-${first}`));
     await click(key("share-evidence"));
     const summary = await waitFor<HTMLTextAreaElement>(key("share-summary"));
     summary.value = "Release checklist reviewed.";
@@ -91,9 +106,13 @@ async function run(): Promise<void> {
     await click(key("share-preview"));
     await click(key("share-publish"));
     const card = await waitFor('[aria-label="Shared evidence"]');
-    if (!card.textContent?.includes(summary.value))
+    if (
+      !card.textContent?.includes(summary.value) ||
+      !card.textContent.includes("No verification record was included.") ||
+      controller.snapshot().share_result?.link_id !== first
+    )
       throw new Error(
-        "harness: published evidence card is missing the reviewed summary",
+        "harness: expected the first task's reviewed evidence and verification reason",
       );
     return;
   }

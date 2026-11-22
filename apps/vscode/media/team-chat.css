@@ -406,6 +406,29 @@ select {
 .handoff label:has(textarea) {
   grid-column: 1 / -1;
 }
+.linked-tasks,
+.share-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.linked-tasks {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 0;
+}
+.share-options {
+  grid-column: 1 / -1;
+}
+.share-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.share-options input {
+  margin: 0;
+}
 .evidence-card p {
   overflow-wrap: anywhere;
 }
