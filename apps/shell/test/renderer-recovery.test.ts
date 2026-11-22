@@ -15,6 +15,7 @@ test("recovery page uses readable theme colors through a CSP-allowed stylesheet"
   expect(url.origin).toBe(new URL("mars-shell://app/recovery.html").origin);
   expect(resolveAppAsset(url.href)?.mediaType).toBe("text/css; charset=utf-8");
   const policy = appResponseHeaders()["Content-Security-Policy"];
+  if (!policy) throw new Error("recovery CSP missing");
   expect(policy.split("; ").find((rule) => rule.startsWith("style-src"))).toBe(
     "style-src 'self'",
   );
