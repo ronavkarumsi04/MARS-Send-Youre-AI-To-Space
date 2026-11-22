@@ -16,6 +16,7 @@ import type {
 import { type Chat, renderChat } from "./assistantView";
 import { button, h } from "./dom";
 import { renderOutput } from "./output";
+import { restoreWorkbenchState, type WorkbenchPage } from "./workbenchState";
 import { renderExtensions, renderSettings, toolbar } from "./workspaceViews";
 
 interface VsCodeApi {
@@ -28,17 +29,17 @@ interface VsCodeApi {
 declare function acquireVsCodeApi(): VsCodeApi;
 
 const vscode = acquireVsCodeApi();
+const saved = restoreWorkbenchState(vscode.getState());
 const app = document.getElementById("app") as HTMLElement;
 let state: ViewState | null = null;
-type Page = "chat" | "tasks" | "extensions" | "settings";
-let page: Page = "chat";
+let page = saved.page;
 let modelBusy = false;
 let modelError: string | undefined;
 let historyOpen = false;
 const chat: Chat = {
   sessions: [],
-  activeId: crypto.randomUUID(),
-  draft: "",
+  activeId: saved.activeId ?? crypto.randomUUID(),
+  draft: saved.chatDraft,
   configured: false,
   consent: false,
   loading: true,
@@ -216,15 +217,10 @@ const newTask = (() => {
       },
     });
   });
-  const saved = vscode.getState() as
-    | { request?: unknown; criteria?: unknown }
-    | undefined;
-  if (typeof saved?.request === "string") request.value = saved.request;
-  if (typeof saved?.criteria === "string") criteria.value = saved.criteria;
-  const persist = () =>
-    vscode.setState({ request: request.value, criteria: criteria.value });
-  request.addEventListener("input", persist);
-  criteria.addEventListener("input", persist);
+  request.value = saved.request;
+  criteria.value = saved.criteria;
+  request.addEventListener("input", persistWorkbenchState);
+  criteria.addEventListener("input", persistWorkbenchState);
   details.append(
     summary,
     field("Request", request),
@@ -245,7 +241,7 @@ const newTask = (() => {
     ),
     create,
   );
-  return { details, request, create, persist };
+  return { details, request, criteria, create };
 })();
 
 const steerBox = focusKey(h("textarea"), "steer-instruction");
@@ -871,8 +867,19 @@ function taskContent(s: ViewState): HTMLElement {
   );
 }
 
-function openPage(next: Page): void {
+function persistWorkbenchState(): void {
+  vscode.setState({
+    request: newTask.request.value,
+    criteria: newTask.criteria.value,
+    chatDraft: chat.draft,
+    activeId: chat.activeId,
+    page,
+  });
+}
+
+function openPage(next: WorkbenchPage): void {
   page = next;
+  persistWorkbenchState();
   render();
 }
 
@@ -887,10 +894,7 @@ function setConversation(id: string): void {
 }
 
 function openTask(text?: string): void {
-  if (text !== undefined) {
-    newTask.request.value = text.slice(0, 20_000);
-    newTask.persist();
-  }
+  if (text !== undefined) newTask.request.value = text.slice(0, 20_000);
   newTask.details.open = true;
   openPage("tasks");
   app
@@ -900,7 +904,7 @@ function openTask(text?: string): void {
     ?.focus();
 }
 
-function navAction(label: string, target: Page): HTMLButtonElement {
+function navAction(label: string, target: WorkbenchPage): HTMLButtonElement {
   const entry = button(label, `nav-${target}`, () => openPage(target), {
     secondary: true,
   });
@@ -989,7 +993,10 @@ function updateChat(message: AssistantUpdate): void {
   if (message.sessions) chat.sessions = message.sessions;
   if (message.completesSend) {
     delete chat.pending;
-    if (!message.error) chat.draft = "";
+    if (!message.error) {
+      chat.draft = "";
+      persistWorkbenchState();
+    }
     if (message.error) chat.error = message.error;
   } else {
     modelBusy = false;
@@ -1043,6 +1050,7 @@ function renderPage(): [HTMLElement, HTMLElement?] {
     renderChat(chat, {
       draft: (value) => {
         chat.draft = value;
+        persistWorkbenchState();
       },
       consent: (value) => {
         chat.consent = value;
