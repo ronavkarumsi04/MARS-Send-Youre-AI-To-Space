@@ -2004,6 +2004,21 @@ function checkDelegationPolicy(
   if (input.peers && input.peers.length > limits.max_recipients)
     invalidInput("Too many peers");
   const writePaths = validWritePaths(delegation.writePaths, approvals.write);
+  if (member.parent_agent_id !== null) {
+    const parentPaths = parseJson(member.write_paths_json, StringListSchema);
+    if (
+      writePaths.some(
+        (path) =>
+          !parentPaths.some(
+            (parent) => path === parent || path.startsWith(`${parent}/`),
+          ),
+      )
+    )
+      throw new CollaborationError(
+        "forbidden",
+        "Write paths exceed parent authority",
+      );
+  }
   const resolvedPeers = resolveDelegationPeers(
     store,
     room,
