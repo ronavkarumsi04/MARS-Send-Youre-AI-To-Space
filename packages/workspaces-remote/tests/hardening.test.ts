@@ -18,6 +18,31 @@ const budget = {
   max_concurrency: 1,
 };
 
+test("over-depth directories do not strand checkpoint restore", async () => {
+  const fx = await remoteFixture({ limits: { maxDepth: 2 } });
+  try {
+    const ws = await fx.provider.prepare(context, "depth-restore");
+    const checkpoint = await fx.provider.checkpoint(context, ws);
+    const executed = await fx.provider.execute(
+      context,
+      ws,
+      ["mkdir", "-p", "src/deep/beyond"],
+      budget,
+    );
+    const restored = await fx.provider.restore(
+      context,
+      checkpoint,
+      executed.workspace.revision,
+    );
+    expect((await fx.provider.diff(context, restored)).files).toEqual([]);
+    expect((await fx.provider.inspect(context, ws.workspace_id)).revision).toBe(
+      restored.revision,
+    );
+  } finally {
+    await fx.close();
+  }
+});
+
 test("remote scan directories cannot escape the local mirror", async () => {
   let forge = false;
   let injected = false;

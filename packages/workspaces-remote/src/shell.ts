@@ -159,7 +159,8 @@ export function parseScan(
       validate(path);
     } catch {
       skipped.push({ path, reason: "unsupported-name" });
-      blocked.add(path);
+      if (entry.type === "d") skippedPrefixes.push(`${path}/`);
+      else blocked.add(path);
       continue;
     }
     if (entry.type === "d") {
