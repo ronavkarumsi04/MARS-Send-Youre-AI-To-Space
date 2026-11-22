@@ -1,6 +1,22 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  readlink,
+  realpath,
+  rm,
+} from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const KEEP = /[A-Za-z0-9._-]/;
@@ -126,7 +142,10 @@ export function resolveInside(vaultDir: string, notePath: string): string {
 export async function readFileNoFollow(
   absolute: string,
   label: string,
+  vaultDir?: string,
+  beforeOpen?: () => Promise<void>,
 ): Promise<string> {
+  await beforeOpen?.();
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(
@@ -140,6 +159,7 @@ export async function readFileNoFollow(
     throw error;
   }
   try {
+    if (vaultDir) await verifyOpenedInside(vaultDir, absolute, handle);
     const stat = await handle.stat();
     if (!stat.isFile())
       throw new VaultPathError("path_escape", `${label} is not a regular file`);
@@ -174,6 +194,7 @@ export async function readNoteInside(
   vaultDir: string,
   absolute: string,
   label: string,
+  beforeOpen?: () => Promise<void>,
 ): Promise<string> {
   const [realVault, realParent] = await Promise.all([
     realpathExisting(vaultDir),
@@ -184,7 +205,137 @@ export async function readNoteInside(
       "path_escape",
       `${label} resolves outside the vault`,
     );
-  return readFileNoFollow(absolute, label);
+  return readFileNoFollow(absolute, label, realVault, beforeOpen);
+}
+
+export function descriptorPath(handle: FileHandle, fallback: string): string {
+  return process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : fallback;
+}
+
+export async function makeDirectoryInside(
+  vaultDir: string,
+  absolute: string,
+  beforeCreate?: (path: string) => Promise<void>,
+): Promise<void> {
+  const realVault = await realpathExisting(vaultDir);
+  if (!contains(resolve(vaultDir), resolve(absolute)))
+    throw new VaultPathError("path_escape");
+  const flags =
+    constants.O_RDONLY |
+    (constants.O_DIRECTORY ?? 0) |
+    (constants.O_NOFOLLOW ?? 0);
+  let current = resolve(vaultDir);
+  let directory = await open(current, flags);
+  try {
+    await verifyOpenedInside(realVault, current, directory);
+    for (const part of relative(current, absolute).split(sep).filter(Boolean)) {
+      const next = join(current, part);
+      await beforeCreate?.(next);
+      await verifyOpenedInside(realVault, current, directory);
+      const anchored = join(descriptorPath(directory, current), part);
+      try {
+        await mkdir(anchored, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const child = await open(anchored, flags);
+      try {
+        await verifyOpenedInside(realVault, next, child);
+      } catch (error) {
+        await child.close();
+        throw error;
+      }
+      const previous = directory;
+      directory = child;
+      current = next;
+      await previous.close();
+    }
+  } finally {
+    await directory.close();
+  }
+}
+
+export async function verifyOpenedInside(
+  realVault: string,
+  absolute: string,
+  handle: FileHandle,
+): Promise<void> {
+  const reject = () =>
+    new VaultPathError(
+      "path_escape",
+      "opened path escapes or changed inside the vault",
+    );
+  try {
+    if (process.platform === "linux") {
+      const opened = await readlink(`/proc/self/fd/${handle.fd}`);
+      if (!isAbsolute(opened) || !contains(realVault, opened)) throw reject();
+    }
+    const owned = await handle.stat();
+    const realParent = await realpath(
+      owned.isDirectory() ? absolute : dirname(absolute),
+    );
+    if (!contains(realVault, realParent)) throw reject();
+    const current = await lstat(
+      owned.isDirectory() ? absolute : join(realParent, basename(absolute)),
+    );
+    if (current.isSymbolicLink()) throw reject();
+    if (owned.dev !== current.dev || owned.ino !== current.ino)
+      throw Object.assign(reject(), { cause: { code: "ESTALE" } });
+  } catch (error) {
+    if (error instanceof VaultPathError) throw error;
+    if (
+      ["ENOENT", "ENOTDIR", "ELOOP"].includes(
+        (error as NodeJS.ErrnoException).code ?? "",
+      )
+    )
+      throw Object.assign(reject(), { cause: error });
+    throw error;
+  }
+}
+
+export async function removeFileInside(
+  vaultDir: string,
+  absolute: string,
+  beforeOpen?: () => Promise<void>,
+  expected?: { dev: number; ino: number },
+): Promise<void> {
+  const realVault = await realpathExisting(vaultDir);
+  const parentPath = await realpath(dirname(absolute));
+  const parent = await open(
+    parentPath,
+    constants.O_RDONLY |
+      (constants.O_DIRECTORY ?? 0) |
+      (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    await verifyOpenedInside(realVault, parentPath, parent);
+    await beforeOpen?.();
+    const path = join(
+      descriptorPath(parent, dirname(absolute)),
+      basename(absolute),
+    );
+    const file = await open(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      await verifyOpenedInside(realVault, absolute, file);
+      const owned = await file.stat();
+      if (
+        expected &&
+        (owned.dev !== expected.dev || owned.ino !== expected.ino)
+      )
+        return;
+      await verifyOpenedInside(realVault, parentPath, parent);
+      // A same-name replacement can still race the final identity check and unlink.
+      // Without /proc fd paths, a parent swap can also race this final unlink.
+      await rm(path);
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await parent.close();
+  }
 }
 
 /**

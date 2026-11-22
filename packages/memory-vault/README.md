@@ -44,6 +44,12 @@ Note and manifest reads are limited to 16 MiB, including files that grow while
 being read. Oversized notes are reported as invalid; an oversized manifest
 fails with `file_too_large`.
 
+Opened note, manifest, temporary-file, lock and directory handles are checked
+before use. Linux checks `/proc/self/fd` containment and anchors replacement
+and deletion paths to verified directory handles. Other platforms recheck
+resolved parents and device/inode identity; pathname races after that final
+check remain possible there. An unlink can still race a same-name replacement.
+
 Full documentation: `documentation/MEMORY_VAULT.md`. Tests are offline
 (`bun test packages/memory-vault`), `model_requests: 0`; no live Obsidian or
 model run was performed.

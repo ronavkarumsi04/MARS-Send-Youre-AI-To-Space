@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, rm } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { canonicalJson, RequestContextSchema } from "@mars/memory";
@@ -13,9 +13,10 @@ import {
   contains,
   encodeSegment,
   encodeSourcePath,
-  readFileNoFollow,
+  makeDirectoryInside,
   readNoteInside,
   realpathExisting,
+  removeFileInside,
   resolveInside,
   VAULT_MAX_FILE_BYTES,
   VaultPathError,
@@ -83,7 +84,8 @@ export async function readManifest(
 ): Promise<VaultManifest | undefined> {
   let text: string;
   try {
-    text = await readFileNoFollow(
+    text = await readNoteInside(
+      vaultDir,
       join(vaultDir, VAULT_MANIFEST_FILE),
       VAULT_MANIFEST_FILE,
     );
@@ -130,7 +132,7 @@ export async function writeAtomic(
       "path_escape",
       `${relative(vaultDir, absolute)} resolves outside the vault`,
     );
-  await mkdir(dirname(absolute), { recursive: true, mode: 0o700 });
+  await makeDirectoryInside(vaultDir, dirname(absolute));
   try {
     if ((await lstat(absolute)).isSymbolicLink())
       throw new VaultPathError(
@@ -152,12 +154,7 @@ export async function writeAtomic(
     dirname(absolute),
     `.${basename(absolute)}.${randomBytes(6).toString("hex")}.tmp`,
   );
-  try {
-    await replaceDurably(temporary, absolute, text);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  await replaceDurably(temporary, absolute, text, undefined, { vaultDir });
   return true;
 }
 
@@ -652,7 +649,7 @@ async function exportVaultLocked(
       stale.file_digest !== undefined &&
       sha256(current) === stale.file_digest
     ) {
-      await rm(absolute, { force: true });
+      await removeFileInside(vaultDir, absolute);
       removed += 1;
     } else {
       // The edited note stays tracked (as retained) so the next import can
