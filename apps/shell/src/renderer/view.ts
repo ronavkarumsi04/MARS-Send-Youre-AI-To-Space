@@ -269,7 +269,12 @@ function taskList(
           { class: "provenance", "data-provenance": "task request" },
           "untrusted · task request",
         ),
-        h(doc, "span", { class: "session-request" }, firstLine(task.request)),
+        h(
+          doc,
+          "span",
+          { class: "session-request", title: task.request },
+          firstLine(task.request),
+        ),
         h(
           doc,
           "span",
@@ -518,7 +523,7 @@ function approvalAndLifecycleCard(
       doc,
       "section",
       { class: "action-card", "data-card": "approval-card" },
-      heading(doc, "Approvals & Launch Consent"),
+      heading(doc, "Approvals & launch consent"),
       h(
         doc,
         "fieldset",
@@ -620,7 +625,7 @@ function approvalAndLifecycleCard(
       doc,
       "section",
       { class: "action-card", "data-card": "lifecycle-card" },
-      heading(doc, "Task Controls"),
+      heading(doc, "Task controls"),
       h(doc, "div", { class: "action-buttons" }, resumeBtn, cancelBtn),
       notice,
       error,
@@ -631,7 +636,7 @@ function approvalAndLifecycleCard(
     const steerInput = h(doc, "input", {
       type: "text",
       class: "steer-input",
-      placeholder: "Send steering instruction to running task…",
+      placeholder: "Steer the task…",
       value: launch.steerDraft,
       "aria-label": "Steer instruction",
       "data-control": "steer-input",
@@ -678,7 +683,7 @@ function approvalAndLifecycleCard(
       doc,
       "section",
       { class: "action-card", "data-card": "lifecycle-card" },
-      heading(doc, "Active Task Controls"),
+      heading(doc, "Active task controls"),
       h(doc, "div", { class: "steer-row" }, steerInput, steerBtn, cancelBtn),
       notice,
       error,
@@ -722,7 +727,7 @@ function promptComposer(
   const criteriaInput = h(doc, "input", {
     type: "text",
     class: "composer-criteria",
-    placeholder: "Optional acceptance criteria (comma-separated)",
+    placeholder: "Criteria, comma-separated (optional)",
     value: composer.criteria,
     "aria-label": "Acceptance criteria",
     "data-control": "composer-criteria",
@@ -926,17 +931,21 @@ function taskInspector(doc: ShellDocument, task: Task): ShellElement {
     untrusted(doc, task.request, "task request"),
     h(doc, "h3", { class: "minor-title" }, "Acceptance criteria"),
     h(doc, "div", { class: "criteria-list" }, ...criteria),
+    h(doc, "h3", { class: "minor-title" }, "Budget"),
     h(
       doc,
       "dl",
       { class: "budget" },
-      h(doc, "dt", {}, "Budget"),
-      h(
-        doc,
-        "dd",
-        {},
-        `${task.budget.max_tokens} tokens · $${task.budget.max_usd} · ${task.budget.max_duration_ms} ms · depth ${task.budget.max_depth} · concurrency ${task.budget.max_concurrency}`,
-      ),
+      h(doc, "dt", {}, "Tokens"),
+      h(doc, "dd", {}, String(task.budget.max_tokens)),
+      h(doc, "dt", {}, "Cost limit"),
+      h(doc, "dd", {}, `$${task.budget.max_usd}`),
+      h(doc, "dt", {}, "Duration"),
+      h(doc, "dd", {}, `${task.budget.max_duration_ms} ms`),
+      h(doc, "dt", {}, "Depth"),
+      h(doc, "dd", {}, String(task.budget.max_depth)),
+      h(doc, "dt", {}, "Concurrency"),
+      h(doc, "dd", {}, String(task.budget.max_concurrency)),
     ),
   );
 }
@@ -1066,7 +1075,7 @@ function changesSection(doc: ShellDocument, state: ShellState): ShellElement {
       doc,
       "div",
       { class: "export-card", "data-card": "patch-export" },
-      h(doc, "strong", {}, "Verified Patch Export"),
+      h(doc, "strong", {}, "Verified patch export"),
       canExport
         ? h(
             doc,
@@ -1231,6 +1240,7 @@ export function renderShell(
       {
         type: "button",
         class: `${className}${selected ? " selected" : ""}`,
+        title: text,
         ...(className === "details-toggle"
           ? { "data-focus-key": "task-details" }
           : {}),
@@ -1314,7 +1324,7 @@ export function renderShell(
         ? [
             h(doc, "h2", { class: "sidebar-label" }, "Conversations"),
             navButton(
-              "+  New conversation",
+              "New conversation",
               false,
               () => state.assistant?.onNew?.(),
               "new-conversation",
@@ -1400,12 +1410,17 @@ export function renderShell(
                     state.verification,
                     state.verificationError,
                   ),
-                  refresh,
-                  navButton(
-                    state.inspectorOpen ? "Hide details" : "Task details",
-                    Boolean(state.inspectorOpen),
-                    () => state.onToggleInspector?.(),
-                    "details-toggle",
+                  h(
+                    doc,
+                    "div",
+                    { class: "task-actions" },
+                    refresh,
+                    navButton(
+                      state.inspectorOpen ? "Hide details" : "Task details",
+                      Boolean(state.inspectorOpen),
+                      () => state.onToggleInspector?.(),
+                      "details-toggle",
+                    ),
                   ),
                 ),
                 approvalAndLifecycleCard(doc, state),
