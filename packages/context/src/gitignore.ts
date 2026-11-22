@@ -81,16 +81,33 @@ function globSource(pattern: string): string {
   let result = "";
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index] ?? "";
-    if (character === "*" && pattern[index + 1] === "*") {
+    if (character === "\\" && index + 1 < pattern.length) {
       index += 1;
-      if (pattern[index + 1] === "/") {
-        index += 1;
-        result += "(?:.*/)?";
-      } else {
-        result += ".*";
-      }
+      result += (pattern[index] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     } else if (character === "*") {
-      result += "[^/]*";
+      let last = index;
+      while (pattern[last + 1] === "*") last += 1;
+      const next = last + 1;
+      const globstar =
+        last > index && (index === 0 || pattern[index - 1] === "/");
+      if (globstar && next === pattern.length) {
+        result += ".*";
+        index = last;
+      } else if (globstar && pattern[next] === "/") {
+        result += "(?:.*/)?";
+        index = next;
+      } else if (
+        globstar &&
+        pattern[next] === "\\" &&
+        pattern[next + 1] === "/"
+      ) {
+        // Git only lets a bare "/" after the stars match zero directories.
+        result += ".*/";
+        index = next + 1;
+      } else {
+        result += "[^/]*";
+        index = last;
+      }
     } else if (character === "?") {
       result += "[^/]";
     } else if (character === "[") {

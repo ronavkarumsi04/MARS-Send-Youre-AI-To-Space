@@ -100,3 +100,34 @@ describe(".gitignore matching", () => {
     expect(result.stats.skipped.gitignored).toBe(4);
   });
 });
+
+describe(".gitignore escapes", () => {
+  test("a backslash makes the next glob character literal", () => {
+    const rules = [{ prefix: "", rules: parseGitignore("foo\\*.txt\nq\\?\n") }];
+    expect(isGitignored("foo*.txt", false, rules)).toBe(true);
+    expect(isGitignored("foobar.txt", false, rules)).toBe(false);
+    expect(isGitignored("q?", false, rules)).toBe(true);
+    expect(isGitignored("qx", false, rules)).toBe(false);
+  });
+
+  test("stars not bounded by slashes stay within one path segment", () => {
+    const rules = [
+      { prefix: "", rules: parseGitignore("src/**\\.ts\nlib/a**b\n") },
+    ];
+    expect(isGitignored("src/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("src/deep/x.ts", false, rules)).toBe(false);
+    expect(isGitignored("lib/axxb", false, rules)).toBe(true);
+    expect(isGitignored("lib/a/b", false, rules)).toBe(false);
+  });
+
+  test("a run of stars or an escaped slash still forms a globstar", () => {
+    const rules = [
+      { prefix: "", rules: parseGitignore("a/***/x.ts\nb/**\\/y.ts\n") },
+    ];
+    expect(isGitignored("a/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("a/p/q/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("b/y.ts", false, rules)).toBe(false);
+    expect(isGitignored("b/p/y.ts", false, rules)).toBe(true);
+    expect(isGitignored("b/p/q/y.ts", false, rules)).toBe(true);
+  });
+});
