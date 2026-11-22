@@ -75,6 +75,10 @@ export async function buildShell(outdir: string): Promise<void> {
     resolve(root, "src/renderer/shell.css"),
     resolve(rendererDir, "shell.css"),
   );
+  await copyFile(
+    resolve(root, "src/renderer/chat.css"),
+    resolve(rendererDir, "chat.css"),
+  );
   for (const icon of ["orbit.svg", "navigation.svg"])
     await copyFile(resolve(root, "assets", icon), resolve(rendererDir, icon));
   for (const face of [

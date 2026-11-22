@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -16,6 +17,7 @@ import { createDesktop } from "./desktop";
 import {
   registerAssistantBridge,
   registerBridge,
+  registerClipboardBridge,
   registerTeamChatBridge,
 } from "./ipc";
 import {
@@ -123,6 +125,11 @@ app.on("ready", async () => {
   mainWindow = window;
   const openRenderer = installRendererRecovery(window);
   const senderPolicy = { trustedOrigin, trustedContents: window.webContents };
+  registerClipboardBridge(
+    ipcMain,
+    (text) => clipboard.writeText(text),
+    senderPolicy,
+  );
   const newBridge = () =>
     createReconnectingBridge({
       resolve: () => (desktop ? desktop.resolve() : resolveConnection()),

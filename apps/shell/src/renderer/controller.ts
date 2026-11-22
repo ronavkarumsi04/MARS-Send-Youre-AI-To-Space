@@ -166,6 +166,11 @@ export function createController(
   let assistantState = emptyAssistant();
   // Only shelved drafts live here. No draft is written to disk or sent to the model.
   const assistantDrafts = new Map<string, string>();
+  let artifactTriggerKey: string | undefined;
+  const scrollPositions = new Map<
+    string | null,
+    readonly [number, number, boolean]
+  >();
   let draftWorkspace: string | undefined;
   const selectChat = (id: string) => {
     if (assistantState.busy || assistantState.loading) return;
@@ -175,6 +180,7 @@ export function createController(
     assistantDrafts.delete(id);
     page = "chat";
     closeTeamChat();
+    artifactTriggerKey = undefined;
     assistantState = {
       ...assistantState,
       activeId: id,
@@ -182,6 +188,8 @@ export function createController(
       consent: false,
       validation: undefined,
       error: undefined,
+      artifactId: undefined,
+      artifactMode: "preview",
     };
     render();
   };
@@ -352,6 +360,30 @@ export function createController(
                 render();
               },
               onSend: () => void sendAssistant(),
+              onArtifact: (id) => {
+                if (id && !assistantState.artifactId)
+                  artifactTriggerKey =
+                    doc.activeElement?.getAttribute("data-focus-key") ??
+                    `artifact:${id}`;
+                assistantState = {
+                  ...assistantState,
+                  artifactId: id,
+                  artifactMode: "preview",
+                };
+                render();
+                const target = id
+                  ? root.querySelectorAll("[data-artifact-heading]")[0]
+                  : Array.from(root.querySelectorAll("[data-focus-key]")).find(
+                      (el) =>
+                        el.getAttribute("data-focus-key") ===
+                        artifactTriggerKey,
+                    );
+                target?.focus({ preventScroll: true });
+              },
+              onArtifactMode: (mode) => {
+                assistantState = { ...assistantState, artifactMode: mode };
+                render();
+              },
               onSettings: () => void assistantSettings(),
               onNew: () => selectChat(globalThis.crypto.randomUUID()),
               onSelect: selectChat,
@@ -469,12 +501,17 @@ export function createController(
     };
     const scrollPanes = () =>
       Array.from(root.querySelectorAll("[data-scroll-key]"));
-    const scroll = new Map(
-      scrollPanes().map((el) => [
-        el.getAttribute("data-scroll-key"),
-        [el.scrollLeft, el.scrollTop] as const,
-      ]),
-    );
+    for (const el of scrollPanes()) {
+      // display:none panes report zero metrics. Keep their last visible state
+      // until the narrow artifact workspace gives the conversation back.
+      if (el.clientHeight === 0) continue;
+      scrollPositions.set(el.getAttribute("data-scroll-key"), [
+        el.scrollLeft,
+        el.scrollTop,
+        el.getAttribute("data-chat-scroll") !== null &&
+          (el.scrollHeight ?? 0) - (el.clientHeight ?? 0) - el.scrollTop < 80,
+      ]);
+    }
     const nextTaskKey = state.selectedTask && taskKey(state.selectedTask);
     const details = () =>
       Array.from(root.querySelectorAll("[data-disclosure-key]"));
@@ -500,9 +537,23 @@ export function createController(
           detail.setAttribute("open", "");
       }
     }
-    for (const pane of scrollPanes()) {
-      const position = scroll.get(pane.getAttribute("data-scroll-key"));
+    const panes = scrollPanes();
+    const mountedKeys = new Set(
+      panes.map((pane) => pane.getAttribute("data-scroll-key")),
+    );
+    for (const key of scrollPositions.keys())
+      if (!mountedKeys.has(key)) scrollPositions.delete(key);
+    for (const pane of panes) {
+      if (pane.clientHeight === 0) continue;
+      const position = scrollPositions.get(
+        pane.getAttribute("data-scroll-key"),
+      );
       if (position) [pane.scrollLeft, pane.scrollTop] = position;
+      if (
+        pane.getAttribute("data-chat-scroll") !== null &&
+        (!position || position[2])
+      )
+        pane.scrollTop = pane.scrollHeight ?? 0;
     }
     if (!focusKey || !focusAttr) return;
     const targets = Array.from(root.querySelectorAll(`[${focusAttr}]`));

@@ -98,3 +98,19 @@ test("only exact same-origin assets resolve and preferences stay sandboxed", asy
     'url("./orbit.svg")',
   ]);
 });
+
+test("every linked shell stylesheet is explicitly served by the app protocol", async () => {
+  const html = await readFile(
+    new URL("../src/renderer/index.html", import.meta.url),
+    "utf8",
+  );
+  const files = [
+    ...html.matchAll(/<link\s+rel="stylesheet"\s+href="\.\/([^"]+)"/g),
+  ].map((match) => match[1]);
+  expect(files).toContain("chat.css");
+  for (const file of files) {
+    expect(resolveAppAsset(`mars-shell://app/${file}`)?.mediaType, file).toBe(
+      "text/css; charset=utf-8",
+    );
+  }
+});

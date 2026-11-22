@@ -10,6 +10,8 @@ export interface ShellElement {
   disabled?: boolean;
   scrollTop: number;
   scrollLeft: number;
+  readonly scrollHeight?: number;
+  readonly clientHeight?: number;
   selectionStart?: number | null;
   selectionEnd?: number | null;
   selectionDirection?: "forward" | "backward" | "none" | null;
@@ -48,20 +50,25 @@ type Child = ShellElement | ShellText | string | number | null | undefined;
 
 const TAGS = new Set([
   "article",
+  "blockquote",
   "aside",
   "button",
+  "code",
   "dd",
   "details",
   "div",
   "dl",
   "dt",
   "fieldset",
+  "em",
   "footer",
   "form",
   "header",
   "h1",
   "h2",
   "h3",
+  "h4",
+  "hr",
   "input",
   "label",
   "legend",
@@ -78,6 +85,12 @@ const TAGS = new Set([
   "span",
   "strong",
   "summary",
+  "table",
+  "tbody",
+  "td",
+  "th",
+  "thead",
+  "tr",
   "textarea",
   "time",
   "ul",

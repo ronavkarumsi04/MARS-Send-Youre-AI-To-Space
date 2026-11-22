@@ -1,5 +1,7 @@
 import type { AssistantSession } from "../shared/assistant";
+import { type ArtifactMode, renderArtifactWorkspace } from "./artifact-view";
 import { h, type ShellDocument, type ShellElement } from "./dom";
+import { chatArtifacts, copyButton, renderMarkdown } from "./rich-content";
 
 export type AssistantViewState = {
   sessions: AssistantSession[];
@@ -14,6 +16,10 @@ export type AssistantViewState = {
   error?: string | undefined;
   validation?: "key" | "consent" | undefined;
   pending?: { id: string; text: string } | undefined;
+  artifactId?: string | undefined;
+  artifactMode?: ArtifactMode | undefined;
+  onArtifact?: ((id: string | undefined) => void) | undefined;
+  onArtifactMode?: ((mode: ArtifactMode) => void) | undefined;
   onDraft?: (draft: string) => void;
   onConsent?: (consent: boolean) => void;
   onSend?: () => void;
@@ -63,18 +69,25 @@ export function renderAssistant(
       : []),
   ];
   const empty = messages.length === 0;
+  const artifacts = chatArtifacts(messages);
+  const selectedArtifact = artifacts.find(
+    (item) => item.id === state.artifactId,
+  );
   const input = h(doc, "textarea", {
     id: "assistant-composer-input",
     rows: "2",
     maxlength: "8000",
     class: "assistant-input",
     "aria-label": "Message MARS",
-    placeholder: "Ask MARS a question…",
+    placeholder: "Message MARS…",
     "data-focus-key": "assistant-input",
     disabled: state.busy || state.loading,
   });
   input.value = state.draft;
-  input.addEventListener("input", () => state.onDraft?.(input.value ?? ""));
+  input.addEventListener("input", () => {
+    state.onDraft?.(input.value ?? "");
+    updateSend();
+  });
   input.addEventListener("keydown", (event) => {
     const key = event as typeof event & {
       key?: string;
@@ -92,8 +105,17 @@ export function renderAssistant(
     "assistant-send",
     state.onSend,
   );
-  send.disabled =
-    state.busy || state.loading || !state.configured || !state.consent;
+  const updateSend = () => {
+    send.disabled =
+      state.busy ||
+      state.loading ||
+      !state.configured ||
+      !state.consent ||
+      !(input.value ?? "").trim();
+  };
+  updateSend();
+  send.setAttribute("aria-label", "Send message");
+  send.setAttribute("data-focus-key", "assistant-send");
   const consent = h(doc, "input", {
     type: "checkbox",
     "aria-label": "Share this chat with OpenRouter",
@@ -113,8 +135,8 @@ export function renderAssistant(
       "Help me break down a coding project into a clear implementation plan.",
     ],
     [
-      "Talk through code",
-      "I want to understand some code. What should I share so we can walk through it together?",
+      "Create an artifact",
+      "Help me create a project brief. Ask what I am building, then return the finished document in a fenced markdown block named brief.md so I can open it as an artifact.",
     ],
   ];
   const quickStarts = empty
@@ -122,12 +144,13 @@ export function renderAssistant(
         doc,
         "div",
         { class: "suggestion-grid" },
-        ...suggestions.map(([title, prompt], index) => {
+        ...suggestions.map(([title, prompt]) => {
           const suggestion = action(doc, "", "suggestion", () => {
             const draft = input.value ?? "";
             const next = draft ? `${draft}\n\n${prompt}` : (prompt ?? "");
             if (next.length > 8000) return;
             input.value = next;
+            updateSend();
             state.onDraft?.(next);
             doc.getElementById("assistant-composer-input")?.focus();
           });
@@ -144,12 +167,6 @@ export function renderAssistant(
           updateSuggestion();
           input.addEventListener("input", updateSuggestion);
           suggestion.append(
-            h(
-              doc,
-              "span",
-              { class: "suggestion-number", "aria-hidden": "true" },
-              `0${index + 1}`,
-            ),
             h(doc, "span", {}, title ?? ""),
             h(
               doc,
@@ -186,12 +203,12 @@ export function renderAssistant(
     event.preventDefault?.();
     state.onSend?.();
   });
-  return h(
+  const conversation = h(
     doc,
-    "main",
+    "section",
     {
-      class: `main assistant-main${empty ? " is-empty" : ""}`,
-      "data-panel": "assistant",
+      class: "assistant-conversation",
+      "aria-label": "Chat",
     },
     h(
       doc,
@@ -205,7 +222,25 @@ export function renderAssistant(
         h(doc, "span", {}, "/"),
         h(doc, "strong", {}, session?.title ?? "New conversation"),
       ),
-      h(doc, "span", { class: "mode-badge" }, "Chat"),
+      artifacts.length
+        ? (() => {
+            const button = action(
+              doc,
+              `Artifacts · ${artifacts.length}`,
+              "artifacts-toggle",
+              () =>
+                state.onArtifact?.(
+                  selectedArtifact ? undefined : artifacts[0]?.id,
+                ),
+            );
+            button.setAttribute(
+              "aria-expanded",
+              String(Boolean(selectedArtifact)),
+            );
+            button.setAttribute("data-focus-key", "artifacts-toggle");
+            return button;
+          })()
+        : h(doc, "span", { class: "mode-badge" }, "Chat"),
     ),
     h(
       doc,
@@ -215,6 +250,9 @@ export function renderAssistant(
         role: "log",
         "aria-label": "Assistant conversation",
         "aria-live": "polite",
+        "aria-busy": String(state.busy || state.loading),
+        "data-scroll-key": `chat:${state.activeId}`,
+        "data-chat-scroll": "true",
       },
       ...(empty
         ? [
@@ -228,7 +266,6 @@ export function renderAssistant(
                 { class: "orbit-mark", "aria-hidden": "true" },
                 "✳",
               ),
-              h(doc, "p", { class: "eyebrow" }, "MARS  /  ASSISTANT"),
               h(doc, "h1", {}, "Where should we start?"),
               h(
                 doc,
@@ -238,7 +275,7 @@ export function renderAssistant(
               ),
             ),
           ]
-        : messages.map((message) =>
+        : messages.map((message, messageIndex) =>
             h(
               doc,
               "article",
@@ -259,10 +296,21 @@ export function renderAssistant(
                   { class: "message-author" },
                   message.role === "user" ? "You" : "MARS",
                 ),
-                h(doc, "pre", { class: "message-content" }, message.content),
                 message.role === "assistant"
-                  ? action(doc, "Make a task  ↗", "message-handoff", () =>
-                      state.onTask?.(message.content),
+                  ? renderMarkdown(doc, message.content, {
+                      messageIndex,
+                      onArtifact: state.onArtifact,
+                    })
+                  : h(doc, "p", { class: "message-content" }, message.content),
+                message.role === "assistant"
+                  ? h(
+                      doc,
+                      "div",
+                      { class: "message-actions" },
+                      copyButton(doc, message.content, "Copy response"),
+                      action(doc, "Make a task  ↗", "message-handoff", () =>
+                        state.onTask?.(message.content),
+                      ),
                     )
                   : null,
               ),
@@ -273,7 +321,8 @@ export function renderAssistant(
             doc,
             "p",
             { class: "thinking", role: "status" },
-            "✧  MARS is thinking…",
+            h(doc, "span", { class: "thinking-dot", "aria-hidden": "true" }),
+            "MARS is thinking…",
           )
         : null,
     ),
@@ -334,5 +383,24 @@ export function renderAssistant(
       ),
       quickStarts,
     ),
+  );
+  return h(
+    doc,
+    "main",
+    {
+      class: `main assistant-main${empty ? " is-empty" : ""}${selectedArtifact ? " has-artifact" : ""}`,
+      "data-panel": "assistant",
+    },
+    conversation,
+    selectedArtifact
+      ? renderArtifactWorkspace(doc, {
+          artifacts,
+          activeId: selectedArtifact.id,
+          mode: state.artifactMode ?? "preview",
+          onSelect: state.onArtifact,
+          onMode: state.onArtifactMode,
+          onClose: () => state.onArtifact?.(undefined),
+        })
+      : null,
   );
 }

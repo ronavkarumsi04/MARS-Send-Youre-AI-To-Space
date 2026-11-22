@@ -1,5 +1,6 @@
 import { fail } from "@mars/team-chat";
 import { ASSISTANT_CHANNEL } from "../shared/assistant";
+import { CLIPBOARD_CHANNEL, MAX_COPY_LENGTH } from "../shared/clipboard";
 import { BRIDGE_CHANNEL, bridgeFailure } from "../shared/methods";
 import { TEAM_CHAT_CHANNEL } from "../shared/team-chat";
 import type { createAssistant } from "./assistant";
@@ -66,6 +67,27 @@ export function registerAssistantBridge(
       return await assistant.call(payload);
     } catch {
       return { ok: false, error: "Chat is unavailable. Please try again." };
+    }
+  });
+}
+
+export function registerClipboardBridge(
+  ipcMain: IpcMainLike,
+  writeText: (text: string) => void,
+  options: SenderOptions,
+): void {
+  ipcMain.handle(CLIPBOARD_CHANNEL, (event, payload) => {
+    if (
+      !trustedSender(event, { ...options, pathname: "/index.html" }) ||
+      typeof payload !== "string" ||
+      payload.length > MAX_COPY_LENGTH
+    )
+      return { ok: false };
+    try {
+      writeText(payload);
+      return { ok: true };
+    } catch {
+      return { ok: false };
     }
   });
 }

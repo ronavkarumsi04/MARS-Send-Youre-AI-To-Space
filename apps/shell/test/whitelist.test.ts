@@ -2,6 +2,7 @@ import { expect, mock, test } from "bun:test";
 import { RpcRequestSchema } from "../../../packages/workbench/src/protocol";
 import { createBridge } from "../src/main/bridge";
 import { type IpcEventLike, registerBridge } from "../src/main/ipc";
+import { CLIPBOARD_CHANNEL, type ClipboardApi } from "../src/shared/clipboard";
 import {
   BRIDGE_CHANNEL,
   BRIDGE_GLOBAL,
@@ -63,10 +64,14 @@ test("the preload exposes exactly the frozen workbench and team chat bridges", a
     },
   }));
   await import("../src/preload/preload");
-  expect(exposed).toHaveLength(3);
+  expect(exposed).toHaveLength(4);
   expect(exposed[0]?.[0]).toBe(BRIDGE_GLOBAL);
   expect(exposed[1]?.[0]).toBe("marsAssistant");
   expect(exposed[2]?.[0]).toBe(TEAM_CHAT_GLOBAL);
+  expect(exposed[3]?.[0]).toBe("marsClipboard");
+  const clipboard = exposed[3]?.[1] as ClipboardApi;
+  expect(Object.isFrozen(clipboard)).toBe(true);
+  expect(Object.keys(clipboard)).toEqual(["writeText"]);
   const api = exposed[0]?.[1] as Record<
     string,
     (params: unknown) => Promise<unknown>
@@ -82,6 +87,7 @@ test("the preload exposes exactly the frozen workbench and team chat bridges", a
   await api["tasks.list"]?.({});
   await api["tasks.journal"]?.({ task_id: "fixture", entry_ids: [] });
   await teamApi["team.state"]?.({});
+  await clipboard.writeText("exact source");
   expect(calls).toEqual([
     [BRIDGE_CHANNEL, { method: "tasks.list", params: {} }],
     [
@@ -92,6 +98,7 @@ test("the preload exposes exactly the frozen workbench and team chat bridges", a
       },
     ],
     [TEAM_CHAT_CHANNEL, { method: "team.state", params: {} }],
+    [CLIPBOARD_CHANNEL, "exact source"],
   ]);
   mock.restore();
 });
