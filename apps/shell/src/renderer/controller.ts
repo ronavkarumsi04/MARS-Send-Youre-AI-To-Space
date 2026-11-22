@@ -27,6 +27,7 @@ import {
   MAX_REQUIRED_CHECKS,
   renderShell,
   type ShellState,
+  type WorkspacePage,
 } from "./view";
 
 const TEXT_MEDIA_TYPES = new Set(["application/json", "application/x-ndjson"]);
@@ -121,7 +122,8 @@ export function createController(
       : "The verified installer is not available in this build.",
     available: Boolean(extensions),
   };
-  let page: "chat" | "tasks" | "extensions" = assistant ? "chat" : "tasks";
+  let page: WorkspacePage = assistant ? "chat" : "tasks";
+  let settingsError: string | undefined;
   let inspectorOpen = false;
   let assistantState: AssistantViewState = {
     sessions: [],
@@ -171,6 +173,7 @@ export function createController(
     state = {
       ...state,
       page,
+      settingsError,
       inspectorOpen,
       onToggleInspector: () => {
         inspectorOpen = !inspectorOpen;
@@ -385,13 +388,15 @@ export function createController(
 
   const assistantSettings = async () => {
     if (!assistant) return;
+    settingsError = undefined;
     try {
       const result = await assistant.request({ action: "settings" });
-      if (!result.ok)
-        assistantState = { ...assistantState, error: result.error };
+      if (!result.ok) settingsError = result.error;
     } catch {
-      assistantState = { ...assistantState, error: "Could not open settings." };
+      settingsError = "Could not open model settings.";
     }
+    if (page === "chat" && settingsError)
+      assistantState = { ...assistantState, error: settingsError };
     render();
   };
 

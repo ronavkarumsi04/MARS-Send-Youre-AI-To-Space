@@ -34,7 +34,57 @@ test("attached workbench without a key explains environment setup without offeri
         el.tagName === "BUTTON" && el.textContent.includes("Connect model"),
     ),
   ).toHaveLength(0);
+  findAll(
+    doc.root,
+    (el) => el.tagName === "BUTTON" && el.textContent.includes("Settings"),
+  )[0]?.click();
+  expect(
+    findAll(doc.root, (el) => el.getAttribute("data-panel") === "settings"),
+  ).toHaveLength(1);
+  expect(doc.root.textContent).toContain("OPENROUTER_API_KEY");
+  expect(doc.root.textContent).not.toContain("Add API key");
 });
+
+test.each([false, true])(
+  "installed Settings shows key state and opens secure entry (configured: %s)",
+  async (configured) => {
+    const doc = new MiniDocument();
+    const calls: string[] = [];
+    const ctl = createController(
+      fakeBridge(await loadFixtureData()),
+      doc,
+      doc.root,
+      undefined,
+      {
+        request: async (req) => {
+          calls.push(req.action);
+          return { ok: true, canConfigure: true, configured, sessions: [] };
+        },
+      },
+    );
+    await ctl.load();
+    const button = (label: string) =>
+      findAll(
+        doc.root,
+        (el) => el.tagName === "BUTTON" && el.textContent.includes(label),
+      )[0];
+    button("Tasks")?.click();
+    button("Settings")?.click();
+    expect(doc.root.textContent).toContain(
+      configured ? "Key configured" : "No key added",
+    );
+    expect(button("Tasks")?.getAttribute("aria-pressed")).toBe("false");
+    button(configured ? "Manage API key" : "Add API key")?.click();
+    expect(calls).toEqual(["load", "settings"]);
+    expect(
+      findAll(doc.root, (el) => el.getAttribute("type") === "password"),
+    ).toHaveLength(0);
+    button("Browse extensions")?.click();
+    expect(
+      findAll(doc.root, (el) => el.getAttribute("data-panel") === "extensions"),
+    ).toHaveLength(1);
+  },
+);
 
 test("changing credentials invalidates a pending turn without blocking the next credential or saving a late reply", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mars-change-key-"));

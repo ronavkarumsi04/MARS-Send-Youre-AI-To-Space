@@ -15,6 +15,7 @@ import type {
 import { type AssistantViewState, renderAssistant } from "./assistant-view";
 import { h, type ShellDocument, type ShellElement } from "./dom";
 import { type ExtensionState, renderExtensions } from "./extensions-view";
+import { renderSettings } from "./settings-view";
 import { STATUS_LABEL, VERIFICATION_LABEL } from "./strings";
 import { renderTeamChatPane, type TeamChatViewState } from "./team-chat-view";
 import { renderTranscript } from "./transcript";
@@ -67,12 +68,14 @@ export type ExportViewState = {
   verifiedSha256?: boolean;
 };
 
+export type WorkspacePage = "chat" | "tasks" | "extensions" | "settings";
 export type ShellState = {
-  page?: "chat" | "tasks" | "extensions";
+  page?: WorkspacePage;
+  settingsError?: string | undefined;
   assistant?: AssistantViewState;
   extensions?: ExtensionState;
   inspectorOpen?: boolean;
-  onPage?: (page: "chat" | "tasks" | "extensions") => void;
+  onPage?: (page: WorkspacePage) => void;
   onToggleInspector?: () => void;
   describe?: DescribeResult;
   tasks: Task[];
@@ -1314,7 +1317,7 @@ export function renderShell(
       : null,
     navButton(
       "▤  Tasks",
-      state.page !== "extensions" && !isChat && !state.teamChat?.open,
+      (!state.page || state.page === "tasks") && !state.teamChat?.open,
       () => state.onPage?.("tasks"),
     ),
     state.assistant
@@ -1323,6 +1326,17 @@ export function renderShell(
           state.page === "extensions" && !state.teamChat?.open,
           () => state.onPage?.("extensions"),
         )
+      : null,
+    state.assistant
+      ? (() => {
+          const settings = navButton(
+            "⚙  Settings",
+            state.page === "settings" && !state.teamChat?.open,
+            () => state.onPage?.("settings"),
+          );
+          settings.setAttribute("data-focus-key", "nav-settings");
+          return settings;
+        })()
       : null,
     h(doc, "h2", { class: "sidebar-label" }, "RECENT CONVERSATIONS"),
     ...(state.assistant?.sessions ?? []).map((session) =>
@@ -1349,16 +1363,6 @@ export function renderShell(
       "section",
       { class: "team-chat sidebar-bottom" },
       teamChatBtn,
-      state.assistant?.canConfigure
-        ? navButton(
-            state.assistant.configured
-              ? "⚙  Model settings"
-              : "⚙  Connect model",
-            false,
-            () => state.assistant?.onSettings?.(),
-            "nav-item model-settings-button",
-          )
-        : null,
       h(
         doc,
         "p",
@@ -1378,53 +1382,61 @@ export function renderShell(
           { class: "main" },
           renderTeamChatPane(doc, state.teamChat),
         )
-      : state.page === "extensions"
-        ? renderExtensions(doc, state.extensions)
-        : isChat && state.assistant
-          ? renderAssistant(doc, state.assistant)
-          : h(
-              doc,
-              "main",
-              { class: "main" },
-              h(
+      : state.page === "settings" && state.assistant
+        ? renderSettings(
+            doc,
+            state.assistant,
+            state.settingsError,
+            () => state.onPage?.("extensions"),
+            () => state.onRefresh?.(),
+          )
+        : state.page === "extensions"
+          ? renderExtensions(doc, state.extensions)
+          : isChat && state.assistant
+            ? renderAssistant(doc, state.assistant)
+            : h(
                 doc,
-                "div",
-                { class: "main-toolbar" },
-                taskHeader(
+                "main",
+                { class: "main" },
+                h(
                   doc,
-                  task,
-                  state.verification,
-                  state.verificationError,
+                  "div",
+                  { class: "main-toolbar" },
+                  taskHeader(
+                    doc,
+                    task,
+                    state.verification,
+                    state.verificationError,
+                  ),
+                  refresh,
+                  navButton(
+                    state.inspectorOpen ? "Hide details" : "Task details",
+                    Boolean(state.inspectorOpen),
+                    () => state.onToggleInspector?.(),
+                    "details-toggle",
+                  ),
                 ),
-                refresh,
-                navButton(
-                  state.inspectorOpen ? "Hide details" : "Task details",
-                  Boolean(state.inspectorOpen),
-                  () => state.onToggleInspector?.(),
-                  "details-toggle",
-                ),
-              ),
-              approvalAndLifecycleCard(doc, state),
-              h(
-                doc,
-                "section",
-                { class: "transcript", role: "log", "aria-live": "polite" },
-                state.eventsError
-                  ? unavailable(doc, state.eventsError)
-                  : h(
-                      doc,
-                      "div",
-                      { class: "transcript-entries" },
-                      ...renderTranscript(
+                approvalAndLifecycleCard(doc, state),
+                h(
+                  doc,
+                  "section",
+                  { class: "transcript", role: "log", "aria-live": "polite" },
+                  state.eventsError
+                    ? unavailable(doc, state.eventsError)
+                    : h(
                         doc,
-                        state.transcript,
-                        state.events.length,
-                        state.eventsCapped,
+                        "div",
+                        { class: "transcript-entries" },
+                        ...renderTranscript(
+                          doc,
+                          state.transcript,
+                          state.events.length,
+                          state.eventsCapped,
+                        ),
                       ),
-                    ),
-              ),
-              promptComposer(doc, state),
-            );
+                ),
+                promptComposer(doc, state),
+              );
 
   const inspector = h(
     doc,
@@ -1468,7 +1480,7 @@ export function renderShell(
     doc,
     "div",
     {
-      class: `app-shell${isChat || state.page === "extensions" || state.teamChat?.open || !state.inspectorOpen ? " inspector-hidden" : ""}`,
+      class: `app-shell${isChat || state.page === "extensions" || state.page === "settings" || state.teamChat?.open || !state.inspectorOpen ? " inspector-hidden" : ""}`,
     },
     masthead,
     sidebar,
