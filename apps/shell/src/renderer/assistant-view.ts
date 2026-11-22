@@ -165,7 +165,7 @@ export function renderAssistant(
                 "✳",
               ),
               h(doc, "p", { class: "eyebrow" }, "MARS  /  ASSISTANT"),
-              h(doc, "h1", {}, "Start a", h(doc, "span", {}, "conversation.")),
+              h(doc, "h1", {}, "Start a ", h(doc, "span", {}, "conversation.")),
               h(
                 doc,
                 "p",
