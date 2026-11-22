@@ -640,15 +640,10 @@ export class EvolutionService {
     if (now >= deadline_ms)
       fail("deadline_exceeded", `run ${runId} passed its deadline`);
     this.store.verifyLedger(runId);
-    const ledgerKey = `${subject.id}/${split}/${key}`;
+    // Unsettled reservations remain charged; retries are separate attempts.
+    const ledgerKey = `${subject.id}/${split}/${key}/${randomUUID()}`;
     this.store.transaction(() => {
       this.store.assertLease(runId, lease, this.now());
-      if (
-        this.store
-          .ledger(runId)
-          .some((row) => row.kind === "reserve" && row.key === ledgerKey)
-      )
-        return;
       const spent = this.spent(runId);
       if (
         spent.tokens + budget.max_tokens > config.budget.max_tokens ||

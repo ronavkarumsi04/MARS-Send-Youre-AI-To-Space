@@ -8,6 +8,7 @@ import {
   MemoryArtifacts,
   sampleManifest,
 } from "../../evaluation/src/test-support";
+import { EvolutionError } from "./errors";
 import { createFixtureEvaluator, createHarborEvaluator } from "./evaluators";
 import { createScriptedProposer } from "./proposers";
 import { createProcessSandbox } from "./sandbox";
@@ -186,6 +187,73 @@ test("hardening 3: ignored evaluator cancellation rejects late results", async (
   expect(s.store.listSelectionEvaluations("run-1", "initial")).toHaveLength(0);
   await Bun.sleep(100);
 });
+
+test.each(["ignored", "cooperative"])(
+  "timed-out evaluations require fresh budget on resume (%s cancellation)",
+  async (cancellation) => {
+    const f = await fixture();
+    const base = createFixtureEvaluator();
+    let actualSpend = 0;
+    const s = await f.open({
+      evaluator: {
+        ...base,
+        async evaluate(request, signal) {
+          actualSpend += request.budget.max_usd;
+          if (cancellation === "cooperative") {
+            await new Promise<never>((_resolve, reject) => {
+              const abort = () =>
+                reject(new EvolutionError("deadline_exceeded", "aborted"));
+              signal.addEventListener("abort", abort, { once: true });
+              if (signal.aborted) abort();
+            });
+          }
+          const outcome = await base.evaluate(request, signal);
+          await Bun.sleep(80);
+          return { ...outcome, cost_usd: request.budget.max_usd };
+        },
+      },
+    });
+    cleanups.push(async () => s.close());
+    const config = runConfig({
+      budget: {
+        max_tokens: 1_000_000,
+        max_usd: 2,
+        max_duration_ms: 3_600_000,
+        max_depth: 10,
+        max_concurrency: 1,
+      },
+      evaluation_budget: {
+        max_tokens: 1000,
+        max_usd: 1,
+        max_duration_ms: 20,
+        max_depth: 0,
+        max_concurrency: 1,
+      },
+    });
+    await f.start(s, config);
+    const statuses = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      statuses.push((await s.run("run-1")).status);
+      await Bun.sleep(100);
+    }
+    const reservations = s.store
+      .ledger("run-1")
+      .filter((row) => row.kind === "reserve");
+    const reservedSpend = reservations.reduce((sum, row) => sum + row.usd, 0);
+    expect(actualSpend).toBeLessThanOrEqual(config.budget.max_usd);
+    expect(reservedSpend).toBe(actualSpend);
+    expect(statuses).toEqual([
+      "deadline_exceeded",
+      "deadline_exceeded",
+      "budget_exhausted",
+      "budget_exhausted",
+    ]);
+    expect(s.store.listSelectionEvaluations("run-1", "initial")).toHaveLength(
+      0,
+    );
+    expect(() => s.store.verifyLedger("run-1")).not.toThrow();
+  },
+);
 
 test("hardening 4: successful process builds terminate background descendants", async () => {
   const f = await fixture();
