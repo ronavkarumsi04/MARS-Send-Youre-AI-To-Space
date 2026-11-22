@@ -299,6 +299,15 @@ test.skipIf(!PACKAGED_ELECTRON)(
       expect(describe.result?.workspaceLabel).toBe("demo-project");
       expect(
         await cdp.evaluate(
+          "window.marsExtensions.list().then(entries => entries.map(e => [e.kind, e.installed]))",
+        ),
+      ).toEqual([
+        ["mcp", false],
+        ["skill", false],
+        ["plugin", false],
+      ]);
+      expect(
+        await cdp.evaluate(
           "document.fonts.load('12px \"Commit Mono\"').then(fonts => fonts.length)",
         ),
       ).toBe(1);

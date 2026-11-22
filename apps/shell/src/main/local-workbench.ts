@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -7,6 +7,11 @@ import {
   type ConnectionResult,
   loadConnectionFile,
 } from "@mars/contracts/connection-file";
+import {
+  type ExtensionAction,
+  ExtensionReply,
+  REPLY_PREFIX,
+} from "../runtime/extension-wire";
 
 type WorkbenchOptions = {
   resources: string;
@@ -45,6 +50,10 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
   const messages = createInterface({ input: child.stdout, terminal: false });
   const ready = Promise.withResolvers<boolean>();
   const exited = Promise.withResolvers<void>();
+  let pending:
+    | { token: string; finish(value: string[] | null): void }
+    | undefined;
+  let stopping = false;
   const timer = setTimeout(() => {
     ready.resolve(false);
     child.kill("SIGKILL");
@@ -53,12 +62,22 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
     if (line === "MARS_WORKBENCH_READY") {
       clearTimeout(timer);
       ready.resolve(true);
+    } else if (pending && line.startsWith(REPLY_PREFIX)) {
+      try {
+        const reply = ExtensionReply.parse(
+          JSON.parse(line.slice(REPLY_PREFIX.length)),
+        );
+        if (reply.token === pending.token) pending.finish(reply.installed);
+      } catch {
+        /* Ignore unrelated child output. */
+      }
     }
   });
   const onExit = () => {
     clearTimeout(timer);
     ready.resolve(false);
     exited.resolve();
+    pending?.finish(null);
   };
   child.once("error", onExit);
   child.once("close", onExit);
@@ -79,6 +98,35 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
 
   return {
     exited: exited.promise,
+    async extensionAction(request: ExtensionAction): Promise<string[]> {
+      if (
+        !(await ready.promise) ||
+        stopping ||
+        child.exitCode !== null ||
+        child.signalCode ||
+        pending
+      )
+        throw new Error("Extensions are unavailable.");
+      return new Promise((resolve, reject) => {
+        const token = randomUUID();
+        const finish = (value: string[] | null) => {
+          if (pending?.token !== token) return;
+          clearTimeout(deadline);
+          pending = undefined;
+          if (value === null)
+            reject(new Error("Could not verify or apply extension."));
+          else resolve(value);
+        };
+        const deadline = setTimeout(() => finish(null), 30_000);
+        pending = { token, finish };
+        child.stdin.write(
+          `${JSON.stringify({ token, request })}\n`,
+          (error) => {
+            if (error) finish(null);
+          },
+        );
+      });
+    },
     async connection(): Promise<ConnectionResult> {
       if (!(await ready.promise) || child.exitCode !== null || child.signalCode)
         return unavailable;
@@ -86,6 +134,7 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
       return path ? loadConnectionFile(path) : unavailable;
     },
     async stop(): Promise<void> {
+      stopping = true;
       child.stdin.end();
       const deadline = setTimeout(() => child.kill("SIGKILL"), 7500);
       try {

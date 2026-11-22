@@ -3,6 +3,8 @@ import { createInterface } from "node:readline";
 import { loadModelRegistry } from "@mars/providers";
 import { createWorkbenchService } from "@mars/workbench";
 import { z } from "zod";
+import { ExtensionRequest, REPLY_PREFIX } from "./extension-wire";
+import { projectExtensions } from "./extensions";
 
 const StartSchema = z
   .object({
@@ -30,10 +32,13 @@ async function serve(): Promise<void> {
     const { source, state, openRouterKey } = StartSchema.parse(
       JSON.parse(line),
     );
+    const scope = { owner_id: "local", project_id: basename(state) };
+    const extensions = projectExtensions(source, state, scope);
     const service = await createWorkbenchService({
       sourceRoot: source,
       stateRoot: state,
-      scope: { owner_id: "local", project_id: basename(state) },
+      scope,
+      mcp: extensions.runtime,
       port: 0,
       registry: await loadModelRegistry({
         cwd: source,
@@ -44,10 +49,42 @@ async function serve(): Promise<void> {
         },
       }),
     });
+    // Operator-only control pipe, never exposed as model tools or loopback RPC.
+    let pending: Promise<void> | undefined;
+    const onCommand = (line: string) => {
+      let command: z.infer<typeof ExtensionRequest>;
+      try {
+        command = ExtensionRequest.parse(JSON.parse(line));
+      } catch {
+        return;
+      }
+      const { token, request } = command;
+      const reply = (installed: string[] | null) => {
+        process.stdout.write(
+          `${REPLY_PREFIX}${JSON.stringify({ token, installed })}\n`,
+        );
+      };
+      if (pending) {
+        reply(null);
+        return;
+      }
+      pending = (
+        request.action === "list"
+          ? extensions.list()
+          : extensions.install(request.id).then(() => [request.id])
+      )
+        .then(reply, () => reply(null))
+        .finally(() => {
+          pending = undefined;
+        });
+    };
+    input.on("line", onCommand);
     try {
       process.stdout.write("MARS_WORKBENCH_READY\n");
       await stopped;
     } finally {
+      input.off("line", onCommand);
+      await pending;
       await service.close();
     }
   } finally {

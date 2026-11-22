@@ -106,6 +106,13 @@ async function stageWorkbench(resources: string, scratch: string) {
       connectionScope: connected.connection.scope,
     }).call("workbench.describe", {});
     if (!result.ok) throw new Error("Packaged workbench did not answer RPC.");
+    await host.extensionAction({ action: "install", id: "mars-release-kit" });
+    if (
+      !(await host.extensionAction({ action: "list" })).includes(
+        "mars-release-kit",
+      )
+    )
+      throw new Error("Packaged extension catalog is unavailable.");
   } finally {
     await host.stop();
   }
