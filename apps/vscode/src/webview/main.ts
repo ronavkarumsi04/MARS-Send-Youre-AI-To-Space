@@ -1046,7 +1046,12 @@ function renderPage(): [HTMLElement, HTMLElement?] {
           settings: () => vscode.postMessage({ type: "openSettings" }),
           importConnection: () =>
             vscode.postMessage({ type: "importConnection" }),
-          extensions: () => openPage("extensions"),
+          extensions: () => {
+            openPage("extensions");
+            app
+              .querySelector<HTMLElement>('[data-focus-key="nav-extensions"]')
+              ?.focus();
+          },
         },
         state ? taskStatus(state) : undefined,
       ),
