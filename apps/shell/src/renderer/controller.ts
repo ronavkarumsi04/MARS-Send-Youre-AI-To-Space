@@ -182,6 +182,8 @@ export function createController(
       consent: false,
       validation: undefined,
       error: undefined,
+      artifactId: undefined,
+      artifactMode: "preview",
     };
     render();
   };
@@ -352,6 +354,27 @@ export function createController(
                 render();
               },
               onSend: () => void sendAssistant(),
+              onArtifact: (id) => {
+                const previous = assistantState.artifactId;
+                assistantState = {
+                  ...assistantState,
+                  artifactId: id,
+                  artifactMode: "preview",
+                };
+                render();
+                const target = id
+                  ? root.querySelectorAll("[data-artifact-heading]")[0]
+                  : Array.from(root.querySelectorAll("[data-focus-key]")).find(
+                      (el) =>
+                        el.getAttribute("data-focus-key") ===
+                        `artifact:${previous}`,
+                    );
+                target?.focus({ preventScroll: true });
+              },
+              onArtifactMode: (mode) => {
+                assistantState = { ...assistantState, artifactMode: mode };
+                render();
+              },
               onSettings: () => void assistantSettings(),
               onNew: () => selectChat(globalThis.crypto.randomUUID()),
               onSelect: selectChat,
@@ -472,7 +495,12 @@ export function createController(
     const scroll = new Map(
       scrollPanes().map((el) => [
         el.getAttribute("data-scroll-key"),
-        [el.scrollLeft, el.scrollTop] as const,
+        [
+          el.scrollLeft,
+          el.scrollTop,
+          el.getAttribute("data-chat-scroll") !== null &&
+            (el.scrollHeight ?? 0) - (el.clientHeight ?? 0) - el.scrollTop < 80,
+        ] as const,
       ]),
     );
     const nextTaskKey = state.selectedTask && taskKey(state.selectedTask);
@@ -503,6 +531,11 @@ export function createController(
     for (const pane of scrollPanes()) {
       const position = scroll.get(pane.getAttribute("data-scroll-key"));
       if (position) [pane.scrollLeft, pane.scrollTop] = position;
+      if (
+        pane.getAttribute("data-chat-scroll") !== null &&
+        (!position || position[2])
+      )
+        pane.scrollTop = pane.scrollHeight ?? 0;
     }
     if (!focusKey || !focusAttr) return;
     const targets = Array.from(root.querySelectorAll(`[${focusAttr}]`));

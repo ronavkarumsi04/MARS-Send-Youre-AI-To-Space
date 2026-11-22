@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { ASSISTANT_CHANNEL, type AssistantApi } from "../shared/assistant";
+import { CLIPBOARD_CHANNEL, type ClipboardApi } from "../shared/clipboard";
 import { MODEL_CHANGED } from "../shared/desktop-model";
 import {
   BRIDGE_CHANNEL,
@@ -53,5 +54,11 @@ if (typeof contextBridge?.exposeInMainWorld === "function") {
   contextBridge.exposeInMainWorld(
     TEAM_CHAT_GLOBAL,
     createTeamChatPreloadApi(invoke),
+  );
+  contextBridge.exposeInMainWorld(
+    "marsClipboard",
+    Object.freeze({
+      writeText: (text: string) => ipcRenderer.invoke(CLIPBOARD_CHANNEL, text),
+    } satisfies ClipboardApi),
   );
 }

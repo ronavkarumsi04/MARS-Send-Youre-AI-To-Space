@@ -334,7 +334,7 @@ test("session switching reloads the selected task and tampered artifact text is 
   const tampered = findAll(
     document.root,
     (element) =>
-      element.getAttribute("class") === "artifact" &&
+      element.getAttribute("class")?.split(" ").includes("artifact") === true &&
       element.textContent.includes("artifact-tampered-text"),
   )[0];
   expect(tampered?.textContent).toContain("rejected: sha256 mismatch");
@@ -342,7 +342,7 @@ test("session switching reloads the selected task and tampered artifact text is 
   const invalidUtf8 = findAll(
     document.root,
     (element) =>
-      element.getAttribute("class") === "artifact" &&
+      element.getAttribute("class")?.split(" ").includes("artifact") === true &&
       element.textContent.includes("artifact-invalid-utf8"),
   )[0];
   expect(invalidUtf8?.textContent).toContain("not valid UTF-8 · not rendered");

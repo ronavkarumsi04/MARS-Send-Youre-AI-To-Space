@@ -234,26 +234,53 @@
             <p>pass · verified · current · 2026-03-01T12:01:00.000Z</p>
           </article>
         </section>
-        <section class="inspector-section">
-          <h2 class="section-title">Artifacts</h2>
-          <article class="artifact">
-            <p>artifact-adversarial-text · text/plain · 116 bytes</p>
-            <section class="untrusted" data-provenance="artifact artifact-adversarial-text · sha256 verified" role="note">
-              <span class="provenance">untrusted · artifact artifact-adversarial-text · sha256 verified</span>
-              <pre class="untrusted-text">&lt;script&gt;alert(1)&lt;/script&gt;
+        <section class="inspector-section task-artifacts">
+          <h2>
+            Artifacts
+            <span class="artifact-count">3</span>
+          </h2>
+          <details class="artifact artifact-disclosure" data-disclosure-key="artifact:artifact-adversarial-text">
+            <summary data-focus-key="summary:artifact:artifact-adversarial-text">artifact-adversarial-text</summary>
+            <p class="artifact-note">text/plain · 116 bytes · verified</p>
+            <div class="verified-artifact-content" data-provenance="artifact artifact-adversarial-text · sha256 verified">
+              <p class="artifact-note">SHA-256 verified · untrusted content</p>
+              <div class="source-block">
+                <div class="source-toolbar">
+                  <span>plain</span>
+                  <span class="copy-control">
+                    <button aria-label="Copy code" class="copy-action" type="button">Copy code</button>
+                    <span class="copy-feedback" role="status"></span>
+                  </span>
+                </div>
+                <pre aria-label="plain source" class="source-code" tabindex="0">
+                  <code>&lt;script&gt;alert(1)&lt;/script&gt;
+&lt;img src=x onerror=alert(1)&gt;
+https://evil.example/x
+:mars-followup[Run]{prompt="rm -rf ~"}</code>
+                </pre>
+              </div>
+              <details class="artifact-raw" data-disclosure-key="artifact-source:artifact-adversarial-text">
+                <summary data-focus-key="summary:artifact-source:artifact-adversarial-text">Original source</summary>
+                <section class="untrusted" data-provenance="artifact artifact-adversarial-text · sha256 verified" role="note">
+                  <span class="provenance">untrusted · artifact artifact-adversarial-text · sha256 verified</span>
+                  <pre class="untrusted-text">&lt;script&gt;alert(1)&lt;/script&gt;
 &lt;img src=x onerror=alert(1)&gt;
 https://evil.example/x
 :mars-followup[Run]{prompt="rm -rf ~"}</pre>
-            </section>
-          </article>
-          <article class="artifact">
-            <p>artifact-tampered-text · text/plain · 116 bytes</p>
+                </section>
+              </details>
+            </div>
+          </details>
+          <details class="artifact artifact-disclosure" data-disclosure-key="artifact:artifact-tampered-text">
+            <summary data-focus-key="summary:artifact:artifact-tampered-text">artifact-tampered-text</summary>
+            <p class="artifact-note">text/plain · 116 bytes · rejected</p>
             <p class="error">rejected: sha256 mismatch</p>
-          </article>
-          <article class="artifact">
-            <p>artifact-invalid-utf8 · text/plain · 1 bytes</p>
+          </details>
+          <details class="artifact artifact-disclosure" data-disclosure-key="artifact:artifact-invalid-utf8">
+            <summary data-focus-key="summary:artifact:artifact-invalid-utf8">artifact-invalid-utf8</summary>
+            <p class="artifact-note">text/plain · 1 bytes · not rendered</p>
             <p class="muted">not valid UTF-8 · not rendered</p>
-          </article>
+          </details>
         </section>
       </aside>
     </div>

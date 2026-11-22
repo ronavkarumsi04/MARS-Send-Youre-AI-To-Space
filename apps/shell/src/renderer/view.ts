@@ -1,9 +1,4 @@
-import type {
-  ArtifactRef,
-  EventEnvelope,
-  Task,
-  VerificationView,
-} from "@mars/contracts";
+import type { EventEnvelope, Task, VerificationView } from "@mars/contracts";
 import type { TranscriptProjection } from "@mars/ui-core";
 import type {
   DescribeResult,
@@ -12,7 +7,11 @@ import type {
   InspectResult,
   PatchExportResult,
 } from "../shared/methods";
+import { type ArtifactView, renderTaskArtifacts } from "./artifact-view";
 import { type AssistantViewState, renderAssistant } from "./assistant-view";
+
+export type { ArtifactView } from "./artifact-view";
+
 import { disclosure, h, type ShellDocument, type ShellElement } from "./dom";
 import { type ExtensionState, renderExtensions } from "./extensions-view";
 import { renderSettings } from "./settings-view";
@@ -20,13 +19,6 @@ import { STATUS_LABEL, VERIFICATION_LABEL } from "./strings";
 import { renderTeamChatPane, type TeamChatViewState } from "./team-chat-view";
 import { renderTranscript } from "./transcript";
 import { untrusted } from "./untrusted";
-
-export type ArtifactView = {
-  ref: ArtifactRef;
-  content?: string;
-  status: "verified" | "rejected" | "not rendered";
-  message?: string;
-};
 
 export type ApprovalsState = {
   read: boolean;
@@ -1172,49 +1164,6 @@ function evidenceSection(
   );
 }
 
-function artifactsSection(
-  doc: ShellDocument,
-  artifacts: ArtifactView[],
-): ShellElement {
-  const rows = artifacts.map((artifact) => {
-    const { ref } = artifact;
-    const content =
-      artifact.status === "verified" && artifact.content !== undefined
-        ? untrusted(
-            doc,
-            artifact.content,
-            `artifact ${ref.artifact_id} · sha256 verified`,
-          )
-        : h(
-            doc,
-            "p",
-            { class: artifact.status === "rejected" ? "error" : "muted" },
-            artifact.status === "rejected"
-              ? "rejected: sha256 mismatch"
-              : (artifact.message ?? "not rendered"),
-          );
-    return h(
-      doc,
-      "article",
-      { class: "artifact" },
-      h(
-        doc,
-        "p",
-        {},
-        `${ref.artifact_id} · ${ref.media_type} · ${ref.byte_length} bytes`,
-      ),
-      content,
-    );
-  });
-  return h(
-    doc,
-    "section",
-    { class: "inspector-section" },
-    heading(doc, "Artifacts"),
-    ...(rows.length ? rows : [h(doc, "p", {}, "No artifacts.")]),
-  );
-}
-
 export function renderShell(
   doc: ShellDocument,
   state: ShellState,
@@ -1506,7 +1455,7 @@ export function renderShell(
     verificationSection(doc, state.verification, state.verificationError),
     changesSection(doc, state),
     evidenceSection(doc, state.evidence, state.evidenceError),
-    artifactsSection(doc, state.artifacts),
+    renderTaskArtifacts(doc, state.artifacts),
   );
 
   const footer = h(
