@@ -85,6 +85,8 @@ export function renderExtensions(
       class: "main extensions-main",
       "data-panel": "extensions",
       "data-library-scroll": "true",
+      tabindex: "-1",
+      "data-focus-key": "extension-library",
     },
     h(
       doc,
@@ -140,7 +142,7 @@ export function renderExtensions(
             {
               type: "button",
               class: "connect-action",
-              disabled: state?.busy === true,
+              "aria-disabled": String(state?.busy === true),
               "data-focus-key": `extension-${item.id}`,
               "aria-label": item.installed
                 ? `Open task composer for ${item.name}`
@@ -152,11 +154,12 @@ export function renderExtensions(
                 : "Draft a task"
               : "Add to project",
           );
-          add.addEventListener("click", () =>
+          add.addEventListener("click", () => {
+            if (state?.busy) return;
             item.installed
               ? state?.onDraftTask?.(example)
-              : state?.onInstall?.(item.id),
-          );
+              : state?.onInstall?.(item.id);
+          });
           return h(
             doc,
             "article",

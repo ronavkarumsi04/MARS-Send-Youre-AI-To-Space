@@ -256,12 +256,18 @@ export function createController(
       onToggleInspector: () => {
         inspectorOpen = !inspectorOpen;
         render();
+        if (
+          inspectorOpen &&
+          globalThis.matchMedia?.("(max-width: 900px)").matches
+        )
+          root.querySelectorAll("[data-inspector-heading]")[0]?.focus();
       },
       onPage: (next) => {
         page = next;
         teamState = { ...teamState, open: false };
         if (next === "extensions") void refreshExtensions();
         render();
+        if (next === "extensions") libraryScroller()?.focus();
       },
       extensions: {
         ...extensionState,
@@ -581,6 +587,12 @@ export function createController(
       };
     }
     render();
+    if (
+      installId &&
+      page === "extensions" &&
+      doc.activeElement?.getAttribute(FOCUS_KEY) === `extension-${installId}`
+    )
+      doc.activeElement.scrollIntoView?.({ block: "nearest" });
   };
 
   const sendAssistant = async () => {
@@ -1753,14 +1765,13 @@ export function createController(
       };
       if (verification.ok) nextState.verification = verification.value;
       else nextState.verificationError = verification.error;
+      const mayHaveNoOutput =
+        inspected.status === "pending" || inspected.status === "cancelled";
       if (diff.ok) nextState.diff = diff.value;
-      else if (inspected.status !== "cancelled" || diff.kind !== "not_found")
+      else if (!mayHaveNoOutput || diff.kind !== "not_found")
         nextState.diffError = diff.error;
       if (evidence.ok) nextState.evidence = evidence.value;
-      else if (
-        inspected.status !== "cancelled" ||
-        evidence.kind !== "not_found"
-      )
+      else if (!mayHaveNoOutput || evidence.kind !== "not_found")
         nextState.evidenceError = evidence.error;
       if (!events.ok) nextState.eventsError = events.error;
       state = nextState;

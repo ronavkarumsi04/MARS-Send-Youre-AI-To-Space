@@ -920,7 +920,16 @@ function taskInspector(doc: ShellDocument, task: Task): ShellElement {
     doc,
     "section",
     { class: "inspector-section" },
-    heading(doc, "Task"),
+    h(
+      doc,
+      "h2",
+      {
+        tabindex: "-1",
+        "data-inspector-heading": "true",
+        "data-focus-key": "inspector-heading",
+      },
+      "Task",
+    ),
     h(doc, "h3", { class: "minor-title" }, "Request"),
     untrusted(doc, task.request, "task request"),
     h(doc, "h3", { class: "minor-title" }, "Acceptance criteria"),

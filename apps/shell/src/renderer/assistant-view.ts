@@ -64,6 +64,7 @@ export function renderAssistant(
   ];
   const empty = messages.length === 0;
   const input = h(doc, "textarea", {
+    id: "assistant-composer-input",
     rows: "2",
     maxlength: "8000",
     class: "assistant-input",
@@ -128,6 +129,7 @@ export function renderAssistant(
             if (next.length > 8000) return;
             input.value = next;
             state.onDraft?.(next);
+            doc.getElementById("assistant-composer-input")?.focus();
           });
           // The live composer does not re-render on each keystroke.
           const updateSuggestion = () => {

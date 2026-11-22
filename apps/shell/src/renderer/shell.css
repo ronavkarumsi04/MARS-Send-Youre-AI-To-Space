@@ -935,6 +935,17 @@ p {
 }
 .consent-card {
   border-color: var(--warning);
+  display: grid;
+  gap: 8px;
+}
+.paid-model-label {
+  display: grid;
+  gap: 5px;
+}
+.settings-block:first-of-type .settings-action:focus-visible,
+.library-item .connect-action:focus-visible {
+  outline: 3px solid var(--paperInk);
+  outline-offset: 3px;
 }
 .composer-textarea,
 .composer-criteria,
@@ -1972,4 +1983,67 @@ p {
 .eyebrow,
 .settings-content .settings-index {
   font-family: "Barlow Condensed", "Commit Mono", monospace;
+}
+
+/* Keep the thread chooser and composer in view on a small laptop window. */
+@media (max-width: 650px) {
+  .team-header {
+    gap: 6px;
+    padding: 8px 12px;
+  }
+  .team-header h1 {
+    font-size: 24px;
+  }
+  .team-search {
+    padding: 6px 12px;
+  }
+  .team-layout {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .team-conversations {
+    flex: none;
+    max-height: 95px;
+    border: 0;
+  }
+  .team-conversations .eyebrow {
+    margin: 5px 12px 0;
+  }
+  .team-conv-list {
+    flex-direction: row;
+    padding: 4px 8px;
+    overflow-x: auto;
+  }
+  .team-conv-item {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    padding: 3px;
+  }
+  .team-conv-btn {
+    display: flex;
+    align-items: center;
+    padding: 5px;
+  }
+  .team-conv-item button:focus-visible {
+    outline-offset: 0;
+  }
+  .team-thread {
+    flex: 1;
+    min-height: 0;
+    padding: 6px 12px;
+    gap: 5px;
+  }
+  .team-composer {
+    flex-wrap: nowrap;
+    padding: 4px;
+  }
+  .team-composer-input {
+    flex: 1;
+    min-height: 36px;
+    height: 38px;
+  }
+  .team-thread .composer-footnote {
+    margin: 0;
+  }
 }

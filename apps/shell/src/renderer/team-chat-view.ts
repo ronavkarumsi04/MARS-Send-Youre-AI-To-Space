@@ -273,6 +273,7 @@ export function renderTeamChatPane(
         type: "button",
         class: `team-conv-btn${selected ? " selected" : ""}`,
         "data-conversation-id": conv.conversation_id,
+        "data-focus-key": `team-conversation-${conv.conversation_id}`,
         "aria-pressed": selected ? "true" : "false",
       },
       h(doc, "span", { class: "team-conv-name" }, title),
@@ -296,6 +297,7 @@ export function renderTeamChatPane(
         type: "button",
         class: "team-pin-btn",
         "data-pin-conversation": conv.conversation_id,
+        "data-focus-key": `team-pin-${conv.conversation_id}`,
         "aria-label": `${conv.pinned ? "Unpin" : "Pin"} ${title}`,
       },
       conv.pinned ? "Unpin" : "Pin",
@@ -319,12 +321,25 @@ export function renderTeamChatPane(
     const searchBtn = h(
       doc,
       "button",
-      { type: "button", class: "team-search-btn" },
+      {
+        type: "button",
+        class: "team-search-btn",
+        "data-focus-key": "team-search-submit",
+      },
       "Search",
     );
-    searchBtn.addEventListener("click", () =>
-      state.onSearch?.(searchInput.value ?? ""),
-    );
+    const search = () => state.onSearch?.(searchInput.value ?? "");
+    searchBtn.addEventListener("click", search);
+    searchInput.addEventListener("keydown", (event) => {
+      const key = event as typeof event & {
+        key?: string;
+        isComposing?: boolean;
+      };
+      if (key.key === "Enter" && !key.isComposing) {
+        event.preventDefault?.();
+        search();
+      }
+    });
     searchSection = h(
       doc,
       "div",

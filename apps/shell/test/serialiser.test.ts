@@ -128,10 +128,9 @@ test("pending task details stay visible when workspace sections are unavailable"
     '<h1 data-focus-key="heading" tabindex="-1">Task overview</h1>',
   );
   expect(snapshot).toContain("Pending sample task.");
-  expect(snapshot).toContain("unavailable · Workbench resource was not found.");
-  expect(
-    snapshot.match(/unavailable · Workbench resource was not found\./g),
-  ).toHaveLength(2);
+  expect(snapshot).toContain("No diff files.");
+  expect(snapshot).toContain("No evidence records.");
+  expect(snapshot).not.toContain("Workbench resource was not found.");
 });
 
 test("verification and event failures are section-local", async () => {
