@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { controller, scenario } from "./stub";
+import { controller, reloaded, reloadWebview, scenario } from "./stub";
 import "../../src/webview/teamChat/main";
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -44,8 +44,62 @@ async function pressEnter(): Promise<void> {
   await tick();
 }
 
+/** Second half of the handoff scenario: a fresh webview that only has its saved state. */
+async function shareFirstSavedLink(): Promise<void> {
+  const saved = Array.from(
+    (
+      await waitFor('[aria-label="Linked tasks"]')
+    ).querySelectorAll<HTMLElement>("[data-focus-key]"),
+  ).map((element) => element.dataset.focusKey ?? "");
+  if (saved.length !== 2 || controller.snapshot().task_link)
+    throw new Error("harness: reload did not restore both saved task links");
+  const first = (saved[0] ?? "").replace("linked-task-reopen-", "");
+  await click(key(`linked-task-reopen-${first}`));
+  await click(key("share-evidence"));
+  const summary = await waitFor<HTMLTextAreaElement>(key("share-summary"));
+  summary.value = "Release checklist reviewed.";
+  // A task that has not run has no evidence: the panel says so and previews nothing.
+  await click(key("share-preview"));
+  const blocked = await waitFor(".notice, [role=alert]");
+  if (
+    !blocked.textContent?.includes("Start this task in Workbench first") ||
+    document.querySelector('[aria-label="Private evidence preview"]')
+  )
+    throw new Error("harness: pending task offered an evidence preview");
+  (
+    globalThis as unknown as { __runLinkedTasks: () => void }
+  ).__runLinkedTasks();
+  await click(key("share-preview"));
+  await waitFor('[aria-label="Private evidence preview"]');
+  if (document.querySelector('[aria-label="Shared evidence"]')) {
+    throw new Error("harness: evidence posted before confirmation");
+  }
+  await click(key("share-cancel"));
+  if (
+    document.querySelector('[aria-label="Private evidence preview"]') ||
+    document.querySelector('[aria-label="Shared evidence"]')
+  ) {
+    throw new Error("harness: cancelled evidence remained visible");
+  }
+  await click(key("share-preview"));
+  await click(key("share-publish"));
+  const card = await waitFor('[aria-label="Shared evidence"]');
+  if (
+    !card.textContent?.includes(summary.value) ||
+    !card.textContent.includes("No verification record was included.") ||
+    controller.snapshot().share_result?.link_id !== first
+  )
+    throw new Error(
+      "harness: expected the first task's reviewed evidence and verification reason",
+    );
+}
+
+/** Set when this evaluation handed over to a reloaded webview, which reports the result. */
+let handedOver = false;
+
 async function run(): Promise<void> {
   if (scenario === "handoff") {
+    if (reloaded) return shareFirstSavedLink();
     const create = '[data-focus-key^="task-draft-"]';
     await click(create);
     const draft = await waitFor('[aria-label="Task link draft"] blockquote');
@@ -87,33 +141,9 @@ async function run(): Promise<void> {
       document.querySelectorAll('[aria-label="Linked tasks"] li').length !== 2
     )
       throw new Error("harness: expected two distinct saved task links");
-    await click(key(`linked-task-reopen-${first}`));
-    await click(key("share-evidence"));
-    const summary = await waitFor<HTMLTextAreaElement>(key("share-summary"));
-    summary.value = "Release checklist reviewed.";
-    await click(key("share-preview"));
-    await waitFor('[aria-label="Private evidence preview"]');
-    if (document.querySelector('[aria-label="Shared evidence"]')) {
-      throw new Error("harness: evidence posted before confirmation");
-    }
-    await click(key("share-cancel"));
-    if (
-      document.querySelector('[aria-label="Private evidence preview"]') ||
-      document.querySelector('[aria-label="Shared evidence"]')
-    ) {
-      throw new Error("harness: cancelled evidence remained visible");
-    }
-    await click(key("share-preview"));
-    await click(key("share-publish"));
-    const card = await waitFor('[aria-label="Shared evidence"]');
-    if (
-      !card.textContent?.includes(summary.value) ||
-      !card.textContent.includes("No verification record was included.") ||
-      controller.snapshot().share_result?.link_id !== first
-    )
-      throw new Error(
-        "harness: expected the first task's reviewed evidence and verification reason",
-      );
+    // Reopening must work from saved state alone, so reload before sharing.
+    handedOver = true;
+    reloadWebview();
     return;
   }
   if (scenario === "service") {
@@ -238,7 +268,7 @@ async function selectPicker(): Promise<void> {
 
 run().then(
   () => {
-    document.documentElement.dataset.harnessDone = "true";
+    if (!handedOver) document.documentElement.dataset.harnessDone = "true";
   },
   (error: unknown) => {
     document.documentElement.dataset.harnessError = String(error);

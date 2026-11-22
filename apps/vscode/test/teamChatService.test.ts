@@ -36,6 +36,9 @@ function setup(
     workbench?: ConstructorParameters<
       typeof TeamChatController
     >[0]["workbench"];
+    onTaskCreated?: ConstructorParameters<
+      typeof TeamChatController
+    >[0]["onTaskCreated"];
   } = {},
 ) {
   const server = new FakeTeamServer(options);
@@ -95,6 +98,7 @@ function setup(
     ...(realtime ? { realtime } : {}),
     viewer: "service",
     ...(options.workbench ? { workbench: options.workbench } : {}),
+    ...(options.onTaskCreated ? { onTaskCreated: options.onTaskCreated } : {}),
     pageSize: options.pageSize ?? 50,
     ...(options.maxLoaded !== undefined
       ? { maxLoaded: options.maxLoaded }
@@ -144,9 +148,11 @@ test("task handoff keeps drafts local, replays the same launch and publishes onl
     create: workbenchClient.create.bind(workbenchClient),
   };
   let connected = false;
+  const adopted: string[] = [];
   const { server, controller, dm, last } = setup({
     capabilities: HANDOFF_CAPABILITIES,
     workbench: () => (connected ? handoffWorkbench : undefined),
+    onTaskCreated: (task) => adopted.push(task.task_id),
   });
   const handle = (message: Parameters<typeof controller.handleMessage>[0]) =>
     controller.handleMessage(message);
@@ -236,6 +242,20 @@ test("task handoff keeps drafts local, replays the same launch and publishes onl
     includeDiffDigest: true,
     includeChecks: false,
   };
+  // The Workbench view is told about the task once, even though create was retried.
+  const taskId = server.links.get(linkId)?.workbench?.task_id;
+  expect(taskId).toBeDefined();
+  expect([...new Set(adopted)]).toEqual([taskId as string]);
+
+  // A pending task has no workspace: the real host cannot reopen one, so nothing is previewed.
+  await handle(preview);
+  expect(last().share_preview).toBeNull();
+  expect(last().notice?.text).toContain("Start this task in Workbench first");
+  expect(server.calls.some((call) => call.method === "shares.preview")).toBe(
+    false,
+  );
+  workbench.run(taskId as string);
+
   await handle(preview);
   expect(last().share_preview?.card.summary).toBe(summary);
   const cancelledDigest = last().share_preview?.preview_sha256;

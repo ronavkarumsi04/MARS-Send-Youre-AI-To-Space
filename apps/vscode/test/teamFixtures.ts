@@ -742,6 +742,16 @@ export function fakeHandoffWorkbench() {
     changeDiff: () => {
       diff = "b".repeat(64);
     },
+    /** Run a task: only then does the real Workbench have a workspace to reopen. */
+    run(taskId: string) {
+      const task = tasks.get(taskId);
+      if (!task) throw new Error("unknown task");
+      tasks.set(taskId, {
+        ...task,
+        status: "completed",
+        revision: task.revision + 1,
+      });
+    },
     async create(task: Task, options?: { launchKey?: string } | AbortSignal) {
       const launchKey =
         options && "launchKey" in options ? options.launchKey : undefined;
@@ -761,6 +771,8 @@ export function fakeHandoffWorkbench() {
     },
     async evidence(taskId: string) {
       const task = await this.inspect(taskId);
+      // Like `workspace.reopen` on the real host: a task that never ran has no workspace.
+      if (task.status === "pending") throw rpc("not-found", "not_found", 404);
       return {
         task_revision: task.revision,
         workspace: {

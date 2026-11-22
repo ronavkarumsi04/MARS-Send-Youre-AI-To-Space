@@ -15,19 +15,25 @@ import {
 const params = new URLSearchParams(window.location.search);
 export const scenario = params.get("scenario") ?? "inbox";
 
-let saved: unknown;
+/** What outlives a webview reload: the team server, the Workbench and the saved webview state. */
+interface Shared {
+  server: FakeTeamServer;
+  workbench: ReturnType<typeof fakeHandoffWorkbench>;
+  saved: unknown;
+}
+const prior = (globalThis as { __harnessShared?: Shared }).__harnessShared;
+/** True in the second evaluation of this bundle, after `reloadWebview`. */
+export const reloaded = prior !== undefined;
+let saved: unknown = prior?.saved;
+/** False once this evaluation's webview was replaced; its late messages are dropped. */
+let live = true;
 
 /**
  * The "service" scenario drives the real `RpcTeamService` + `TeamRealtime`
  * against an in-page stubbed team server (no network, no token outside this
  * page): the same code path the extension host runs.
  */
-function serviceController(): TeamChatController {
-  const handoff = scenario === "handoff";
-  const server = new FakeTeamServer(
-    handoff ? { capabilities: HANDOFF_CAPABILITIES } : {},
-  );
-  const workbench = fakeHandoffWorkbench();
+function seed(server: FakeTeamServer): void {
   server.seedDm("user_ada", "user_grace", [
     "Hi Ada, the launch key evidence is in the review now.",
     "Thanks! Looking at it this afternoon.",
@@ -41,6 +47,18 @@ function serviceController(): TeamChatController {
       "Pinning this one for the week.",
     ],
   );
+}
+
+function serviceController(): TeamChatController {
+  const handoff = scenario === "handoff";
+  const server =
+    prior?.server ??
+    new FakeTeamServer(handoff ? { capabilities: HANDOFF_CAPABILITIES } : {});
+  const workbench = prior?.workbench ?? fakeHandoffWorkbench();
+  Object.assign(globalThis, {
+    __harnessShared: { server, workbench, saved } satisfies Shared,
+  });
+  if (!prior) seed(server);
   const client = new TeamClient(server.transport("user_ada"));
   const service = new RpcTeamService(client);
   let controller: TeamChatController | undefined;
@@ -68,7 +86,12 @@ function serviceController(): TeamChatController {
     ...(handoff ? { workbench: () => workbench } : {}),
     pageSize: 50,
   });
-  Object.assign(globalThis, { __teamServer: server });
+  Object.assign(globalThis, {
+    __teamServer: server,
+    __runLinkedTasks: () => {
+      for (const taskId of workbench.tasks.keys()) workbench.run(taskId);
+    },
+  });
   return controller;
 }
 
@@ -83,11 +106,33 @@ export const controller =
 Object.assign(globalThis, {
   acquireVsCodeApi: () => ({
     postMessage: (message: unknown) => {
-      void controller.handleMessage(message);
+      if (live) void controller.handleMessage(message);
     },
     getState: () => saved,
     setState: (state: unknown) => {
+      if (!live) return;
       saved = state;
+      const shared = (globalThis as { __harnessShared?: Shared })
+        .__harnessShared;
+      if (shared) shared.saved = state;
     },
   }),
 });
+
+/**
+ * Reload the webview as VS Code does: drop the DOM and every module variable,
+ * then run the bundle again with only `getState()` and the server carried over.
+ * The extension-host controller is recreated too, so nothing it held survives.
+ */
+export function reloadWebview(): void {
+  live = false;
+  controller.dispose();
+  const app = document.getElementById("app");
+  const bundle = document.querySelector<HTMLScriptElement>("script[src]");
+  if (!app || !bundle) throw new Error("harness: nothing to reload");
+  app.replaceWith(app.cloneNode(false));
+  const script = document.createElement("script");
+  script.nonce = bundle.nonce ?? "";
+  script.src = bundle.src;
+  document.body.append(script);
+}

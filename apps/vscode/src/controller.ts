@@ -761,6 +761,14 @@ export class WorkbenchController {
     await this.select(created.task_id);
   }
 
+  /** List a task another view created on this server; select it only when nothing is open. */
+  async adoptTask(task: Task): Promise<void> {
+    if (!this.client) return;
+    this.replaceTask(task);
+    this.emit();
+    if (!this.selection) await this.select(task.task_id);
+  }
+
   async start(
     taskId: string,
     approvals: Approvals,

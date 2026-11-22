@@ -504,6 +504,7 @@ class TeamChatViewProvider
       realtime,
       viewer: "service",
       workbench: () => this.workbench.active?.currentClient,
+      onTaskCreated: (task) => void this.workbench.active?.adoptTask(task),
       pageSize: 50,
     });
     return controller;

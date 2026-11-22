@@ -135,7 +135,7 @@ async function main(): Promise<void> {
             "handoff scenario did not finish",
         );
       console.log(
-        "handoff scenario: two saved task links; first task's evidence published",
+        "handoff scenario: two task links restored after a webview reload; first task's evidence published once it ran",
       );
     }
     results.push(png);

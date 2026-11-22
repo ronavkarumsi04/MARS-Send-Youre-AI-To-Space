@@ -36,6 +36,12 @@ export {
   mentionCandidates,
   parseMarsInvocation,
 } from "./mentions";
+export {
+  parseSavedTaskLinks,
+  rememberTaskLink,
+  type SavedTaskLink,
+  savedTaskLinksFor,
+} from "./savedLinks";
 export * from "./schemas";
 export {
   type AgentPreviewItemView,

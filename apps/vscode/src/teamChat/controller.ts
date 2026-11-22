@@ -27,6 +27,7 @@ import {
 } from "@mars/team-chat";
 import type { MarsClient } from "../client";
 import { sameScope } from "../protocol";
+import { isRpcError } from "../rpc";
 import { buildPendingTask } from "../taskFactory";
 import {
   type AgentDraft,
@@ -55,6 +56,8 @@ export interface TeamChatControllerOptions {
   workbench?: () =>
     | Pick<MarsClient, "server" | "create" | "inspect" | "evidence">
     | undefined;
+  /** A task created from chat, so the Workbench view can list it without a manual refresh. */
+  onTaskCreated?: (task: Task) => void;
   service?: TeamService;
   realtime?: TeamRealtimeSource;
   viewer?: string;
@@ -1448,6 +1451,7 @@ export class TeamChatController {
         "Workbench did not acknowledge the task. Retry uses the same task and request.",
       );
     }
+    this.options.onTaskCreated?.(created);
     const result = await this.service.taskLinkCreated(this.viewer, {
       link_id: message.linkId,
       task_revision: created.revision,
@@ -1502,6 +1506,13 @@ export class TeamChatController {
     }
     try {
       const task = await client.inspect(binding.task_id);
+      // A task that never ran has no workspace, so Workbench has no evidence to return.
+      if (task.status === "pending") {
+        this.handoffError(
+          "Start this task in Workbench first. Evidence exists once it has run.",
+        );
+        return null;
+      }
       const evidence = await client.evidence(binding.task_id);
       if (task.revision !== evidence.task_revision) {
         this.handoffError(
@@ -1510,8 +1521,12 @@ export class TeamChatController {
         return null;
       }
       return { evidence, run_status: task.status };
-    } catch {
-      this.handoffError("Could not load evidence from the task's Workbench.");
+    } catch (error) {
+      this.handoffError(
+        isRpcError(error, "not-found")
+          ? "Workbench has no workspace for this task, so there is no evidence to share."
+          : "Could not load evidence from the task's Workbench.",
+      );
       return null;
     }
   }

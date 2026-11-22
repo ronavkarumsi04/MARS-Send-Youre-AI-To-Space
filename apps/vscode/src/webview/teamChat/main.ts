@@ -16,10 +16,13 @@ import {
   mentionOptionId,
   nextPickerStatus,
   parseMarsInvocation,
+  parseSavedTaskLinks,
   pickerAnnouncement,
   ReactionEmojiSchema,
   type ReferenceView,
   reduceComposer,
+  rememberTaskLink,
+  savedTaskLinksFor,
 } from "@mars/team-chat";
 import type {
   PendingSend,
@@ -46,18 +49,11 @@ let composer: ComposerState = EMPTY_COMPOSER;
 let composerConversation: string | null = null;
 /** Saved conversation id to re-select on first render; cleared once applied. */
 let pendingRestore: string | null | undefined;
-type SavedLink = { viewerId: string; conversationId: string; linkId: string };
 const saved = vscode.getState() as
-  | { conversationId?: unknown; links?: SavedLink[] }
+  | { conversationId?: unknown; links?: unknown }
+  | null
   | undefined;
-const savedLinks = Array.isArray(saved?.links)
-  ? saved.links.filter(
-      (link) =>
-        typeof link?.viewerId === "string" &&
-        typeof link.conversationId === "string" &&
-        typeof link.linkId === "string",
-    )
-  : [];
+let savedLinks = parseSavedTaskLinks(saved?.links);
 let composerError: string | null = null;
 let previewDraftId: string | null = null;
 let confirmedDraftId: string | null = null;
@@ -1128,11 +1124,7 @@ function renderSavedLinks(
   conversationId: string,
 ): HTMLElement | null {
   if (!s.capabilities.links) return null;
-  const links = savedLinks.filter(
-    (item) =>
-      item.viewerId === s.viewer.user_id &&
-      item.conversationId === conversationId,
-  );
+  const links = savedTaskLinksFor(savedLinks, s.viewer.user_id, conversationId);
   if (!links.length) return null;
   return h(
     "section",
@@ -1693,22 +1685,12 @@ function render(): void {
     ?.focusKey;
   const selectedId = s.selected?.conversation.conversation_id ?? null;
   const linked = s.task_link;
-  if (linked?.view === "requester" && linked.link.task_revision !== null) {
-    const item = {
+  if (linked?.view === "requester" && linked.link.task_revision !== null)
+    savedLinks = rememberTaskLink(savedLinks, {
       viewerId: s.viewer.user_id,
       conversationId: linked.link.conversation_id,
       linkId: linked.link.link_id,
-    };
-    if (
-      !savedLinks.some(
-        (entry) =>
-          entry.viewerId === item.viewerId &&
-          entry.conversationId === item.conversationId &&
-          entry.linkId === item.linkId,
-      )
-    )
-      savedLinks.push(item);
-  }
+    });
   if (selectedId !== composerConversation) {
     composerConversation = selectedId;
     composer = EMPTY_COMPOSER;
