@@ -214,7 +214,7 @@ export function createLiveSmokeEvaluator(image: string): CandidateEvaluator {
   };
 }
 
-async function seedLiveSmokeBase(baseDir: string): Promise<void> {
+export async function seedLiveSmokeBase(baseDir: string): Promise<void> {
   await mkdir(join(baseDir, "harness"), { recursive: true });
   await mkdir(join(baseDir, "protected"), { recursive: true });
   await writeFile(

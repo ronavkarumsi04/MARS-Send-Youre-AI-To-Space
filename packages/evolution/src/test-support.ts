@@ -9,7 +9,11 @@ import {
 import { createScriptedProposer, type ProposalContext } from "./proposers";
 import { createProcessSandbox } from "./sandbox";
 import type { MutationProposal, RunConfigInput } from "./schemas";
-import { EvolutionService, type StartRunInput } from "./service";
+import {
+  EvolutionService,
+  type EvolutionServiceOptions,
+  type StartRunInput,
+} from "./service";
 
 export const BASE_POLICY = '{"default":0.3,"effort":1}';
 export const BETTER_POLICY = '{"default":0.9,"effort":1}';
@@ -95,6 +99,7 @@ export interface Fixture {
   contexts: ProposalContext[];
   open(options?: {
     evaluator?: CandidateEvaluator;
+    sandbox?: EvolutionServiceOptions["sandbox"];
     holder?: string;
     leaseTtlMs?: number;
     propose?: (context: ProposalContext) => MutationProposal;
@@ -168,7 +173,7 @@ export async function createFixture(
           contexts.push(context);
           return (options.propose ?? propose)(context);
         }),
-        sandbox: createProcessSandbox(),
+        sandbox: options.sandbox ?? createProcessSandbox(),
         protectedControlPaths: [controlFile],
         hiddenAnswerPaths: [join(controlDir, "hidden")],
         ...(options.holder ? { holder: options.holder } : {}),

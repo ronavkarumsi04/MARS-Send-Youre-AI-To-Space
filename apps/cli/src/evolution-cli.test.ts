@@ -1,12 +1,15 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import {
+  createEvolutionDockerSandbox,
   createFixtureEvaluator,
   createModelProposer,
   createProcessSandbox,
+  DEFAULT_EVOLUTION_DOCKER_IMAGE,
   EvolutionService,
+  type EvolutionServiceOptions,
   runOfflineDemo,
 } from "@mars/evolution";
 import { loadModelRegistry, ModelRouter } from "@mars/providers";
@@ -21,6 +24,7 @@ import {
   EvolutionUsageError,
   rollbackSmokePromotion,
   runEvolution,
+  seedLiveSmokeBase,
 } from "./evolution";
 
 const entrypoint = join(import.meta.dir, "main.ts");
@@ -245,26 +249,42 @@ test.each([
   },
 );
 
-test("live-smoke credits a legitimate solver patch on selection and held-out tasks", async () => {
+async function checkBundledLiveSmokeScores(
+  sandbox: EvolutionServiceOptions["sandbox"],
+  image: string,
+): Promise<void> {
   const baseline =
     "export function solve(_task, input) { return input.trim(); }";
-  const fixed = String.raw`export function solve(task, input) { return task.includes('slug') ? input.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : input.trim().replace(/\s+/g, ' '); }`;
-  const fixture = await createFixture(() => ({
-    hypothesis: "Normalize all whitespace",
-    patch: replaceLine("harness/solver.mjs", baseline, fixed),
+  const fixed = `export { normalize as solve } from './normalize.mjs';`;
+  const forged = `export function solve() { console.log('"hello world"'); return 'wrong'; }`;
+  const fixture = await createFixture(({ child_index }) => ({
+    hypothesis:
+      child_index === 0 ? "Normalize input" : "Change the solver output",
+    patch: replaceLine(
+      "harness/solver.mjs",
+      baseline,
+      child_index === 0 ? fixed : forged,
+    ),
   }));
   roots.push(fixture.root);
+  await seedLiveSmokeBase(fixture.baseDir);
   await writeFile(
     join(fixture.baseDir, "harness", "solver.mjs"),
     `${baseline}\n`,
   );
+  await writeFile(
+    join(fixture.baseDir, "harness", "normalize.mjs"),
+    String.raw`export function normalize(task, input) { return task.includes('slug') ? input.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : input.trim().replace(/\s+/g, ' '); }`,
+  );
   const service = await fixture.open({
-    evaluator: createLiveSmokeEvaluator("test-image"),
+    evaluator: createLiveSmokeEvaluator(image),
+    sandbox,
   });
   try {
     await fixture.start(
       service,
       runConfig({
+        children_per_generation: 2,
         selection: { stages: [{ tasks: ["sel-trim-collapse"] }], repeats: 1 },
         final_test: {
           tasks: ["final-mixed-spaces", "final-punct-slug"],
@@ -274,9 +294,13 @@ test("live-smoke credits a legitimate solver patch on selection and held-out tas
       }),
     );
     await service.run("run-1");
+    const candidates = service.lineage("run-1");
     expect(
-      service.lineage("run-1").find((row) => row.parent_id !== null)?.score,
-    ).toBe(1);
+      candidates.find((row) => row.candidate_id === "g1-c0"),
+    ).toMatchObject({ state: "evaluated", score: 1 });
+    expect(
+      candidates.find((row) => row.candidate_id === "g1-c1"),
+    ).toMatchObject({ state: "evaluated", score: 0 });
     const decision = await service.promote({
       run_id: "run-1",
       idempotency_key: "promote",
@@ -285,7 +309,38 @@ test("live-smoke credits a legitimate solver patch on selection and held-out tas
   } finally {
     service.close();
   }
+}
+
+test("live-smoke credits a legitimate solver patch on selection and held-out tasks after the production Bun build", async () => {
+  const sandbox = createProcessSandbox({
+    path: [
+      dirname(process.execPath),
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+    ].join(delimiter),
+  });
+  await checkBundledLiveSmokeScores(sandbox, "test-image");
 });
+
+const docker = Bun.which("docker");
+const hasPinnedSmokeImage =
+  docker !== null &&
+  Bun.spawnSync([docker, "image", "inspect", DEFAULT_EVOLUTION_DOCKER_IMAGE], {
+    stdout: "ignore",
+    stderr: "ignore",
+  }).exitCode === 0;
+
+test.skipIf(!hasPinnedSmokeImage)(
+  "live-smoke scores legitimate and forged solver bundles built in Docker",
+  async () => {
+    await checkBundledLiveSmokeScores(
+      createEvolutionDockerSandbox(),
+      DEFAULT_EVOLUTION_DOCKER_IMAGE,
+    );
+  },
+  30_000,
+);
 
 test("live-smoke settles HTTP 429 and cooldown skips without charging estimated tokens", async () => {
   const fixture = await createFixture(() => ({ hypothesis: "unused" }));
