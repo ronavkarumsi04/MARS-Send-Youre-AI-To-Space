@@ -297,6 +297,15 @@ for line in sys.stdin:
       reviewId = /mars mcp approve ([a-z0-9-]+)/.exec(refreshed)?.[1];
       if (!reviewId) throw new Error(refreshed);
     }
+    if (scenario === "writable database") {
+      await writeFile(join(cwd, "new-module.cjs"), "module.exports = 1;");
+      await expect(run(["approve", reviewId])).rejects.toThrow("drift");
+      const refreshed = await run(["reapprove", "demo"], ["yes"]);
+      expect(refreshed).toContain("changed before approval");
+      expect(refreshed).not.toContain(reviewId);
+      reviewId = /mars mcp approve ([a-z0-9-]+)/.exec(refreshed)?.[1];
+      if (!reviewId) throw new Error(refreshed);
+    }
     await run(["approve", reviewId]);
     expect(await run(["list"])).not.toContain("is paused");
     expect(await run(["reapprove", "demo"])).toContain(

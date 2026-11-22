@@ -495,23 +495,26 @@ async function handleReapprove(
     | Pick<Grant, "permissions" | "credential_bindings">
     | undefined;
   if (config.transport.launch) {
-    const pending = reviews.find(
-      (r) =>
-        r.review_id === config.migration_review_id && r.state === "pending",
+    const migration = reviews.find(
+      (r) => r.review_id === config.migration_review_id,
     );
-    if (!pending) {
+    const drifted =
+      migration?.state === "superseded" &&
+      reviews.at(-1)?.state === "pending" &&
+      !activeGrant(grants);
+    if (!migration || (migration.state !== "pending" && !drifted)) {
       out(
         "This server already uses protected launch settings. Use mars mcp list to see its approval status.",
       );
       return;
     }
-    if (Date.parse(pending.expires_at) > Date.now())
-      return next(pending.review_id);
+    if (!drifted && Date.parse(migration.expires_at) > Date.now())
+      return next(migration.review_id);
     out(
-      `Your review expired, but your file choices are saved. ${LAUNCH_WARNING}`,
+      `${drifted ? "The server changed before approval" : "Your review expired"}, but your file choices are saved. ${LAUNCH_WARNING}`,
     );
     await confirmMigrationRefresh(options.ask);
-    authorization = pending;
+    authorization = migration;
   } else {
     authorization = activeGrant(grants);
     if (!authorization)
