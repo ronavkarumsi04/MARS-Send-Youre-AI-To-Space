@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { controller, scenario } from "./stub";
+import { controller, reloaded, reloadWebview, scenario } from "./stub";
 import "../../src/webview/teamChat/main";
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -44,7 +44,108 @@ async function pressEnter(): Promise<void> {
   await tick();
 }
 
+/** Second half of the handoff scenario: a fresh webview that only has its saved state. */
+async function shareFirstSavedLink(): Promise<void> {
+  const saved = Array.from(
+    (
+      await waitFor('[aria-label="Linked tasks"]')
+    ).querySelectorAll<HTMLElement>("[data-focus-key]"),
+  ).map((element) => element.dataset.focusKey ?? "");
+  if (saved.length !== 2 || controller.snapshot().task_link)
+    throw new Error("harness: reload did not restore both saved task links");
+  const first = (saved[0] ?? "").replace("linked-task-reopen-", "");
+  await click(key(`linked-task-reopen-${first}`));
+  await click(key("share-evidence"));
+  const summary = await waitFor<HTMLTextAreaElement>(key("share-summary"));
+  summary.value = "Release checklist reviewed.";
+  // A task that has not run has no evidence: the panel says so and previews nothing.
+  await click(key("share-preview"));
+  const blocked = await waitFor(".notice, [role=alert]");
+  if (
+    !blocked.textContent?.includes("Start this task in Workbench first") ||
+    document.querySelector('[aria-label="Private evidence preview"]')
+  )
+    throw new Error("harness: pending task offered an evidence preview");
+  (
+    globalThis as unknown as { __runLinkedTasks: () => void }
+  ).__runLinkedTasks();
+  await click(key("share-preview"));
+  await waitFor('[aria-label="Private evidence preview"]');
+  if (document.querySelector('[aria-label="Shared evidence"]')) {
+    throw new Error("harness: evidence posted before confirmation");
+  }
+  await click(key("share-cancel"));
+  if (
+    document.querySelector('[aria-label="Private evidence preview"]') ||
+    document.querySelector('[aria-label="Shared evidence"]')
+  ) {
+    throw new Error("harness: cancelled evidence remained visible");
+  }
+  await click(key("share-preview"));
+  await click(key("share-publish"));
+  const card = await waitFor('[aria-label="Shared evidence"]');
+  if (
+    !card.textContent?.includes(summary.value) ||
+    !card.textContent.includes("No verification record was included.") ||
+    controller.snapshot().share_result?.link_id !== first
+  )
+    throw new Error(
+      "harness: expected the first task's reviewed evidence and verification reason",
+    );
+}
+
+/** Set when this evaluation handed over to a reloaded webview, which reports the result. */
+let handedOver = false;
+
 async function run(): Promise<void> {
+  if (scenario === "handoff") {
+    if (reloaded) return shareFirstSavedLink();
+    const create = '[data-focus-key^="task-draft-"]';
+    await click(create);
+    const draft = await waitFor('[aria-label="Task link draft"] blockquote');
+    if (
+      !draft.textContent?.includes("Release checklist") &&
+      !draft.textContent?.includes("launch key evidence")
+    )
+      throw new Error("harness: task draft missing the selected excerpt");
+    await click(key("linked-task-cancel"));
+    if (document.querySelector('[aria-label="Task link draft"]'))
+      throw new Error("harness: cancelled task draft is still open");
+    async function createTask(request: string): Promise<string> {
+      await click(create);
+      for (const [field, value] of Object.entries({
+        request,
+        criteria: "Review the release checklist",
+        tokens: "1000",
+        usd: "0",
+        seconds: "60",
+        depth: "0",
+        concurrency: "1",
+      })) {
+        const input = await waitFor<HTMLInputElement | HTMLTextAreaElement>(
+          key(`linked-task-${field}`),
+        );
+        input.value = value;
+      }
+      await click(key("linked-task-confirm"));
+      await waitFor(key("linked-task-close"));
+      const linkId = controller.snapshot().task_link?.link.link_id;
+      if (!linkId) throw new Error("harness: created task has no link");
+      await click(key("linked-task-close"));
+      return linkId;
+    }
+    const first = await createTask("Prepare the release");
+    const second = await createTask("Write release notes");
+    if (
+      first === second ||
+      document.querySelectorAll('[aria-label="Linked tasks"] li').length !== 2
+    )
+      throw new Error("harness: expected two distinct saved task links");
+    // Reopening must work from saved state alone, so reload before sharing.
+    handedOver = true;
+    reloadWebview();
+    return;
+  }
   if (scenario === "service") {
     // Real adapter over the in-page stub: wait for the inbox, send through
     // messages.send, then let a poll deliver another member's message.
@@ -89,6 +190,24 @@ async function run(): Promise<void> {
       await selectPicker();
       await click(key("reply-msg_dm_4"));
       return;
+    case "attachment-only": {
+      await typeInComposer("@style.css:14-23");
+      await selectPicker();
+      await waitFor(".chip.draft");
+      await pressEnter();
+      const alert = await waitFor(".composer-error:not([hidden])");
+      const send = await waitFor<HTMLButtonElement>(key("send"));
+      if (
+        !send.disabled ||
+        !document.querySelector(".chip.draft") ||
+        !alert.textContent?.includes("Add a message")
+      ) {
+        throw new Error(
+          "harness: attachment-only draft should remain editable",
+        );
+      }
+      return;
+    }
     case "panel":
     case "narrow":
       await click(key("conv-conv_group_release"));
@@ -149,7 +268,7 @@ async function selectPicker(): Promise<void> {
 
 run().then(
   () => {
-    document.documentElement.dataset.harnessDone = "true";
+    if (!handedOver) document.documentElement.dataset.harnessDone = "true";
   },
   (error: unknown) => {
     document.documentElement.dataset.harnessError = String(error);

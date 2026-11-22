@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { RpcError } from "../src/rpc";
+import { type ResultShare, TaskSchema } from "@mars/contracts";
+import { succeed } from "@mars/team-chat";
+import { MarsClient } from "../src/client";
+import { RpcError, type RpcRequest } from "../src/rpc";
 import { TeamClient } from "../src/teamChat/client";
 import { TeamChatController } from "../src/teamChat/controller";
-import type { TeamChatViewState } from "../src/teamChat/messages";
+import type { AgentDraft, TeamChatViewState } from "../src/teamChat/messages";
 import {
   parseSseBlock,
   type StreamFetchLike,
@@ -13,6 +16,8 @@ import {
   FAKE_TEAM_TOKEN,
   type FakeTeamOptions,
   FakeTeamServer,
+  fakeHandoffWorkbench,
+  HANDOFF_CAPABILITIES,
 } from "./teamFixtures";
 
 const ADA = "user_ada";
@@ -28,6 +33,12 @@ function setup(
     fetch?: StreamFetchLike;
     pageSize?: number;
     maxLoaded?: number;
+    workbench?: ConstructorParameters<
+      typeof TeamChatController
+    >[0]["workbench"];
+    onTaskCreated?: ConstructorParameters<
+      typeof TeamChatController
+    >[0]["onTaskCreated"];
   } = {},
 ) {
   const server = new FakeTeamServer(options);
@@ -86,6 +97,8 @@ function setup(
     service,
     ...(realtime ? { realtime } : {}),
     viewer: "service",
+    ...(options.workbench ? { workbench: options.workbench } : {}),
+    ...(options.onTaskCreated ? { onTaskCreated: options.onTaskCreated } : {}),
     pageSize: options.pageSize ?? 50,
     ...(options.maxLoaded !== undefined
       ? { maxLoaded: options.maxLoaded }
@@ -110,6 +123,189 @@ function setup(
   };
 }
 
+test("task handoff keeps drafts local, replays the same launch and publishes only reviewed evidence", async () => {
+  const workbench = fakeHandoffWorkbench();
+  const createRequests: RpcRequest[] = [];
+  const workbenchClient = new MarsClient(
+    {
+      async send(request) {
+        if (request.method === "workbench.describe") return workbench.server;
+        if (request.method !== "tasks.create")
+          throw new Error("unexpected RPC");
+        createRequests.push(request);
+        const task = TaskSchema.parse(request.params.task);
+        const launchKey = request.params.launch_key;
+        if (typeof launchKey !== "string")
+          throw new Error("missing launch key");
+        return workbench.create(task, { launchKey });
+      },
+    },
+    () => "unrelated-generated-request-id",
+  );
+  await workbenchClient.describe();
+  const handoffWorkbench = {
+    ...workbench,
+    create: workbenchClient.create.bind(workbenchClient),
+  };
+  let connected = false;
+  const adopted: string[] = [];
+  const { server, controller, dm, last } = setup({
+    capabilities: HANDOFF_CAPABILITIES,
+    workbench: () => (connected ? handoffWorkbench : undefined),
+    onTaskCreated: (task) => adopted.push(task.task_id),
+  });
+  const handle = (message: Parameters<typeof controller.handleMessage>[0]) =>
+    controller.handleMessage(message);
+  await handle({ type: "ready" });
+  await handle({ type: "selectConversation", conversationId: dm });
+  const message = last().selected?.messages[0];
+  if (!message) throw new Error("missing source message");
+  const initialCount = server.messages.length;
+  const draft = {
+    type: "taskLinkDraft",
+    conversationId: dm,
+    messageIds: [message.message_id],
+    referenceIds: [],
+  };
+  await handle(draft);
+  expect(last().task_link_draft?.excerpts[0]?.excerpt).toBe(message.body);
+  await handle({ type: "clearTaskLink" });
+  expect(last().task_link_draft).toBeNull();
+  expect(workbench.creates).toHaveLength(0);
+  expect(server.messages).toHaveLength(initialCount);
+
+  await handle(draft);
+  const linkId = last().task_link_draft?.link.link_id;
+  if (!linkId) throw new Error("missing draft link");
+  const confirm = {
+    type: "taskLinkConfirm",
+    linkId,
+    request: "Prepare the release",
+    acceptanceCriteria: ["Review the release checklist"],
+    budget: {
+      max_tokens: 1000,
+      max_usd: 0,
+      max_duration_ms: 60_000,
+      max_depth: 0,
+      max_concurrency: 1,
+    },
+  };
+  await handle(confirm);
+  expect(last().notice?.text).toContain("Connect to a MARS Workbench");
+  expect(last().task_link_draft?.link.link_id).toBe(linkId);
+  connected = true;
+  workbench.loseNextAcknowledgement();
+  await handle(confirm);
+  expect(last().notice?.text).toContain("Retry uses the same task");
+  expect(last().task_link_draft?.link.link_id).toBe(linkId);
+  await handle(confirm);
+  expect(workbench.tasks.size).toBe(1);
+  expect(workbench.creates).toHaveLength(2);
+  expect(workbench.creates[0]).toEqual(workbench.creates[1]);
+  const bindings = server.calls.filter(
+    (request) => request.method === "tasks.link_confirm",
+  );
+  expect(createRequests).toHaveLength(2);
+  expect(bindings).toHaveLength(2);
+  expect(createRequests[0]).toEqual(createRequests[1]);
+  for (const [index, request] of createRequests.entries()) {
+    const taskId = TaskSchema.parse(request.params.task).task_id;
+    if (!request.context) throw new Error("missing Workbench request context");
+    const { request_id: requestId, scope } = request.context;
+    expect(requestId).not.toBe(taskId);
+    expect(requestId).not.toBe("unrelated-generated-request-id");
+    const expectedBinding = {
+      scope,
+      task_id: taskId,
+      request_id: requestId,
+    };
+    expect(bindings[index]?.params.workbench).toEqual(expectedBinding);
+    expect(server.links.get(linkId)?.workbench).toEqual(expectedBinding);
+  }
+  expect(workbench.creates[0]?.launchKey).toBe(
+    server.links.get(linkId)?.launch_key,
+  );
+  expect(workbench.creates[0]?.task.provenance?.message_ids).toEqual([
+    message.message_id,
+  ]);
+  expect(last().task_link?.link).toMatchObject({
+    status: "created",
+    task_revision: 0,
+  });
+  expect(last().task_link_draft).toBeNull();
+
+  const summary = "Private release result";
+  const preview = {
+    type: "sharePreview",
+    linkId,
+    summary,
+    includeDiffDigest: true,
+    includeChecks: false,
+  };
+  // The Workbench view is told about the task once, even though create was retried.
+  const taskId = server.links.get(linkId)?.workbench?.task_id;
+  expect(taskId).toBeDefined();
+  expect([...new Set(adopted)]).toEqual([taskId as string]);
+
+  // A pending task has no workspace: the real host cannot reopen one, so nothing is previewed.
+  await handle(preview);
+  expect(last().share_preview).toBeNull();
+  expect(last().notice?.text).toContain("Start this task in Workbench first");
+  expect(server.calls.some((call) => call.method === "shares.preview")).toBe(
+    false,
+  );
+  workbench.run(taskId as string);
+
+  await handle(preview);
+  expect(last().share_preview?.card.summary).toBe(summary);
+  const cancelledDigest = last().share_preview?.preview_sha256;
+  await handle({ type: "clearShare" });
+  await handle({ type: "shareCreate", linkId, previewSha256: cancelledDigest });
+  expect(last().share_preview).toBeNull();
+  expect(server.messages).toHaveLength(initialCount);
+
+  await handle(preview);
+  const reviewed = last().share_preview?.preview_sha256;
+  expect(reviewed).toBeDefined();
+  await handle({ type: "shareCreate", linkId, previewSha256: "0".repeat(64) });
+  expect(server.calls.some((call) => call.method === "shares.create")).toBe(
+    false,
+  );
+  await handle({ type: "shareCreate", linkId, previewSha256: reviewed });
+  expect(last().share_result?.summary).toBe(summary);
+  expect(server.messages).toHaveLength(initialCount + 1);
+
+  await handle(preview);
+  const oldEvidence = last().share_preview?.preview_sha256;
+  workbench.changeDiff();
+  await handle({ type: "shareCreate", linkId, previewSha256: oldEvidence });
+  expect(last().notice?.text).toContain("no longer matches the preview");
+  expect(server.messages).toHaveLength(initialCount + 1);
+  await handle(preview);
+  await handle({
+    type: "shareCreate",
+    linkId,
+    previewSha256: last().share_preview?.preview_sha256,
+  });
+  expect(server.messages).toHaveLength(initialCount + 2);
+
+  const teammate = new RpcTeamService(new TeamClient(server.transport(GRACE)));
+  const reloaded = await teammate.openConversation(GRACE, dm, { limit: 50 });
+  if (!reloaded.ok) throw new Error(reloaded.code);
+  const cards = reloaded.value.messages.filter(
+    ({ kind }) => kind === "result_card",
+  );
+  expect(cards.map(({ payload }) => payload?.summary)).toEqual([
+    summary,
+    summary,
+  ]);
+  expect(cards[0]?.payload).toMatchObject({
+    stale: true,
+    superseded_by: cards[1]?.payload?.share_id,
+  });
+  expect(cards[1]?.payload?.stale).toBe(false);
+});
+
 async function until(check: () => boolean, tries = 200): Promise<void> {
   for (let i = 0; i < tries; i++) {
     if (check()) return;
@@ -119,6 +315,75 @@ async function until(check: () => boolean, tries = 200): Promise<void> {
 }
 
 describe("TeamClient", () => {
+  test("share creation unwraps the published card and rejects mismatched responses", async () => {
+    const server = new FakeTeamServer();
+    server.seedDm(GRACE, ADA, ["Verification completed"]);
+    const [message] = server.messages;
+    if (!message) throw new Error("missing seeded message");
+    const digest = "a".repeat(64);
+    const share: ResultShare = {
+      link_id: "link_1",
+      requester_id: ADA,
+      attested_by: ADA,
+      summary: message.body,
+      run_status: "completed",
+      verified: false,
+      verified_reason: "missing",
+      task_revision: 1,
+      workspace: {
+        workspace_id: "ws_1",
+        provider: "git-worktree",
+        revision: "r1",
+      },
+      diff_sha256: null,
+      evidence_event_id: null,
+      evidence_sha256: digest,
+      verify_records: [],
+      export_status: "not_exported",
+      git_status: "unknown",
+      share_id: "share_1",
+      message_id: message.message_id,
+      preview_sha256: digest,
+      stale: false,
+      superseded_by: null,
+      created_at: message.created_at,
+    };
+    const envelope = { ...message, kind: "result_card", payload: share };
+    let response: unknown = envelope;
+    const transport = server.transport(ADA);
+    const client = new TeamClient({
+      async send(request, signal) {
+        if (request.method === "shares.create") return response;
+        return transport.send(request, signal);
+      },
+    });
+    const input = {
+      link_id: share.link_id,
+      evidence: {},
+      run_status: share.run_status,
+      selection: {
+        summary: share.summary,
+        include_diff_digest: false,
+        verify_event_ids: [],
+      },
+      preview_sha256: digest,
+    };
+    await client.describe();
+    expect(await client.shareCreate(input)).toEqual(share);
+    for (const invalid of [
+      { ...envelope, author_id: GRACE },
+      { ...envelope, payload: undefined },
+      { ...envelope, payload: { ...share, message_id: "different_message" } },
+      { ...envelope, payload: { ...share, link_id: "different_link" } },
+      { ...envelope, payload: { ...share, preview_sha256: "b".repeat(64) } },
+    ]) {
+      response = invalid;
+      await expect(client.shareCreate(input)).rejects.toMatchObject({
+        kind: "protocol",
+      });
+    }
+  });
+
   test("validates every result and rejects records for another tenant or user", async () => {
     const server = new FakeTeamServer();
     server.seedDm(ADA, GRACE, ["hello"]);
@@ -183,6 +448,313 @@ describe("TeamClient", () => {
 });
 
 describe("RpcTeamService through the controller", () => {
+  test("mention snapshots coalesce asynchronous HEAD and origin reads and track checkout changes", async () => {
+    const server = new FakeTeamServer();
+    server.members.add(ADA);
+    const transport = server.transport(ADA);
+    const queries: unknown[] = [];
+    const client = new TeamClient({
+      async send(request, signal) {
+        switch (request.method) {
+          case "team.describe": {
+            const result = (await transport.send(request, signal)) as {
+              capabilities: object;
+            };
+            return {
+              ...result,
+              capabilities: { ...result.capabilities, references: true },
+            };
+          }
+          case "repos.list":
+            return [
+              {
+                repo_id: "project",
+                label: "Project",
+                team_id: "team_fixture",
+                revision: 1,
+              },
+            ];
+          case "references.search_paths":
+            queries.push(request.params);
+            return { state: "unavailable" };
+          default:
+            return transport.send(request, signal);
+        }
+      },
+    });
+    let now = 1;
+    let roots = ["/tmp/project", "/tmp/renamed"];
+    const old = "a".repeat(40);
+    const other = "b".repeat(40);
+    const next = "c".repeat(40);
+    let head = old;
+    let origin = "https://forge.example/project.git";
+    let reads = 0;
+    const service = new RpcTeamService(client, {
+      workspaceRoots: () => roots,
+      now: () => now,
+      readGit: async (dir, args) => {
+        reads++;
+        return args[0] === "rev-parse"
+          ? dir === "/tmp/renamed"
+            ? head
+            : other
+          : dir === "/tmp/renamed"
+            ? origin
+            : "https://forge.example/other.git";
+      },
+    });
+    await service.listConversations();
+    expect(service.mentionIndex().repos).toEqual([]);
+    service.mentionIndex();
+    expect(reads).toBe(0);
+    await until(() => service.mentionIndex().repos[0]?.commit_sha === old);
+    expect(reads).toBe(4);
+    service.mentionIndex();
+    expect(reads).toBe(4);
+    head = next;
+    now += 2001;
+    const result = await service.searchPaths(ADA, {
+      repo_id: "project",
+      commit_sha: old,
+      query: "file",
+    });
+    expect(result).toEqual(succeed([]));
+    expect(queries).toEqual([
+      { repo_id: "project", commit_sha: next, query: "file" },
+    ]);
+    expect(reads).toBe(8);
+    expect(service.mentionIndex().repos[0]?.commit_sha).toBe(next);
+    origin = "https://forge.example/elsewhere.git";
+    now += 2001;
+    await until(() => service.mentionIndex().repos[0]?.commit_sha === other);
+    expect(reads).toBe(12);
+    roots = ["/tmp/renamed"];
+    expect(service.mentionIndex().repos[0]?.commit_sha).toBe(next);
+  });
+
+  test("coalesces path prefixes without holding up sends and drops stale results", async () => {
+    const { controller, service, last, group } = setup();
+    await controller.handleMessage({ type: "ready" });
+    const commit = "a".repeat(40);
+    const calls: string[] = [];
+    let finishOld!: () => void;
+    const old = new Promise<void>((resolve) => {
+      finishOld = resolve;
+    });
+    let oldFinished = false;
+    service.searchPaths = async (_viewer, input) => {
+      calls.push(input.query);
+      if (input.query === "src") {
+        await old;
+        oldFinished = true;
+      }
+      return succeed([
+        { repo_id: "repo", commit_sha: commit, path: input.query, rank: 1 },
+      ]);
+    };
+    const search = (query: string) =>
+      controller.handleMessage({
+        type: "searchPaths",
+        searchId: query,
+        repositories: [{ repoId: "repo", commitSha: commit }],
+        query,
+      });
+    await search("s");
+    await search("sr");
+    await search("src");
+    await until(() => calls.length > 0);
+    expect(calls).toEqual(["src"]);
+    await controller.handleMessage({
+      type: "send",
+      conversationId: group,
+      clientMessageId: "search-does-not-block",
+      body: "Send while search is in flight",
+      replyTo: null,
+      references: [],
+    });
+    expect(last().selected?.messages.at(-1)?.body).toBe(
+      "Send while search is in flight",
+    );
+    await search("src-next");
+    await until(() => last().path_search_id === "src-next");
+    finishOld();
+    await until(() => oldFinished);
+    expect(last().path_search_id).toBe("src-next");
+    expect(last().path_search?.map((m) => m.path)).toEqual(["src-next"]);
+    controller.dispose();
+  });
+
+  test.each([false, true])(
+    "unconfirmed @MARS invocations cannot be sent through ordinary chat (agent enabled: %s)",
+    async (agent) => {
+      const { controller, server, group, last } = setup({
+        capabilities: { stream: false, reactions: false, search: false, agent },
+      });
+      server.join(group, "mars.ops");
+      await controller.handleMessage({ type: "ready" });
+      expect(last().mention_index.users?.map((user) => user.handle)).toContain(
+        "mars.ops",
+      );
+      const before = server.messages.length;
+      for (const [index, body] of [
+        "@MARS, can you summarize the selected transport details?",
+        " \t@mArS: summarize",
+        "@mars? What changed?",
+        "@MARS. Summarize this",
+        "@MARS.Summarize this",
+      ].entries()) {
+        const clientMessageId = `unconfirmed_${index}`;
+        await controller.handleMessage({
+          type: "send",
+          conversationId: group,
+          clientMessageId,
+          body,
+          replyTo: null,
+          references: [],
+        });
+        expect(last().notice?.text).toContain("Preview and confirm");
+        expect(last().pending).toEqual([]);
+        await controller.handleMessage({ type: "retrySend", clientMessageId });
+        expect(server.messages).toHaveLength(before);
+      }
+      const body = "@MARSHALL and @mars.ops, please email dev@mars.example.";
+      await controller.handleMessage({
+        type: "send",
+        conversationId: group,
+        clientMessageId: "ordinary",
+        body,
+        replyTo: null,
+        references: [],
+      });
+      expect(server.messages).toHaveLength(before + 1);
+      expect(server.messages.at(-1)?.body).toBe(body);
+      const literal = "Is @MARS enabled here?";
+      await controller.handleMessage({
+        type: "send",
+        conversationId: group,
+        clientMessageId: "literal",
+        body: literal,
+        replyTo: null,
+        references: [],
+      });
+      if (agent) {
+        expect(last().notice?.text).toContain("Preview and confirm");
+        expect(server.messages).toHaveLength(before + 1);
+      } else {
+        expect(server.messages).toHaveLength(before + 2);
+        expect(server.messages.at(-1)?.body).toBe(literal);
+      }
+    },
+  );
+
+  test("@MARS preview and cancel do not post the question or create references", async () => {
+    const { controller, service, group, last } = setup();
+    await controller.handleMessage({ type: "ready" });
+    const prior = last().selected?.messages[0]?.message_id;
+    if (!prior) throw new Error("no prior message");
+    const digest = "a".repeat(64);
+    const selections: Parameters<typeof service.agentPreview>[1][] = [];
+    const requests: typeof selections = [];
+    service.agentPreview = async (_viewer, input) => {
+      selections.push(input);
+      return succeed({
+        conversation_id: group,
+        audience: "conversation",
+        items: input.message_ids.map((message_id) => ({
+          kind: "message",
+          message_id,
+          flagged: null,
+          bytes: 7,
+        })),
+        participant_count: 3,
+        restricted_reference_ids: [],
+        model: { model_id: "free-model", tier: "free" },
+        preview_sha256: digest,
+      });
+    };
+    service.agentRequest = async (_viewer, input) => {
+      requests.push(input);
+      return succeed({
+        request_id: "request",
+        conversation_id: group,
+        team_id: "team_fixture",
+        requester_id: ADA,
+        idempotency_key: input.idempotency_key,
+        audience: "conversation",
+        reference_ids: [],
+        preview_sha256: input.preview_sha256,
+        model_id: "free-model",
+        status: "pending",
+        dropped_citations: 0,
+        reason_code: null,
+        answer: null,
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      });
+    };
+    const send = service.sendMessage.bind(service);
+    const sends: Parameters<typeof send>[1][] = [];
+    service.sendMessage = (viewer, input) => {
+      sends.push(input);
+      return send(viewer, { ...input, references: [] });
+    };
+    const draft: AgentDraft = {
+      clientMessageId: "draft",
+      body: "@MARS, can you summarize the selected transport details?",
+      replyTo: prior,
+      references: [
+        {
+          kind: "range",
+          repo_id: "repo",
+          path: "src/private.ts",
+          commit_sha: "a".repeat(40),
+          line_start: 3,
+          line_end: 4,
+          symbol: null,
+        },
+      ],
+    };
+    const preview = () =>
+      controller.handleMessage({
+        type: "agentPreview",
+        conversationId: group,
+        messageIds: [prior],
+        referenceIds: [],
+        draft,
+      });
+    const confirm = () =>
+      controller.handleMessage({
+        type: "agentConfirmDraft",
+        clientMessageId: draft.clientMessageId,
+        idempotencyKey: "test-request",
+        previewSha256: digest,
+      });
+    await preview();
+    expect(last().agent_draft).toEqual({ ...draft, conversationId: group });
+    expect(last().agent_preview?.items.map((item) => item.message_id)).toEqual([
+      prior,
+    ]);
+    expect(selections).toEqual([
+      { conversation_id: group, message_ids: [prior], reference_ids: [] },
+    ]);
+    expect(sends).toEqual([]);
+    expect(last().pending).toEqual([]);
+    await controller.handleMessage({ type: "clearAgent" });
+    await confirm();
+    expect(last().agent_draft).toBeNull();
+    expect(sends).toEqual([]);
+    expect(requests).toEqual([]);
+    await preview();
+    await confirm();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.references).toEqual(draft.references);
+    const posted = last().selected?.messages.at(-1);
+    if (!posted) throw new Error("no posted question");
+    expect(posted.body).toBe(draft.body);
+    expect(requests[0]?.message_ids).toEqual([prior, posted.message_id]);
+  });
+
   test("ready lists conversations with the server-derived identity and no fixture viewers", async () => {
     const { controller, last, dm, group } = setup();
     await controller.handleMessage({ type: "ready" });
@@ -212,7 +784,7 @@ describe("RpcTeamService through the controller", () => {
     expect(selected?.conversation.unread_count).toBe(2);
     expect(selected?.conversation.first_unread_sequence).toBe(1);
     expect(selected?.divider_sequence).toBe(1);
-    expect(state.mention_index).toEqual({ repos: [] });
+    expect(state.mention_index.repos).toEqual([]);
   });
 
   test("the team token never appears in any emitted view state", async () => {

@@ -204,7 +204,7 @@ test("verification errors never present a successful or unverified verdict", asy
 
   const header = findAll(
     document.root,
-    (element) => element.tagName === "HEADER",
+    (element) => element.getAttribute("class") === "task-header",
   )[0];
   expect(header?.textContent).toContain("Verification unavailable");
   expect(header?.textContent).not.toContain("Unverified");

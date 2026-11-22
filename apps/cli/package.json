@@ -12,6 +12,8 @@
     "@mars/evaluation": "workspace:*",
     "@mars/evolution": "workspace:*",
     "@mars/execution": "workspace:*",
+    "@mars/integration-trust": "workspace:*",
+    "@mars/mcp-client": "workspace:*",
     "@mars/memory": "workspace:*",
     "@mars/memory-vault": "workspace:*",
     "@mars/output-format": "workspace:*",
@@ -27,6 +29,7 @@
     "@mars/workbench": "workspace:*",
     "@mars/workspaces-remote": "workspace:*",
     "@oh-my-pi/pi-tui": "18.20.0",
+    "quickjs-emscripten": "0.32.0",
     "zod": "3.25.76"
   }
 }

@@ -6,6 +6,7 @@ export interface ProviderErrorOptions {
   retryAfterMs?: number;
   /** The adapter's own request timeout fired; never set for caller aborts or HTTP errors. */
   timedOut?: boolean;
+  definitelyNoGeneration?: boolean;
   cause?: unknown;
 }
 
@@ -15,6 +16,7 @@ export class ProviderError extends Error {
   readonly retryable: boolean;
   readonly retryAfterMs: number | undefined;
   readonly timedOut: boolean;
+  readonly definitelyNoGeneration: boolean;
 
   constructor(
     providerId: string,
@@ -28,6 +30,7 @@ export class ProviderError extends Error {
     this.retryable = options.retryable;
     this.retryAfterMs = options.retryAfterMs;
     this.timedOut = options.timedOut ?? false;
+    this.definitelyNoGeneration = options.definitelyNoGeneration ?? false;
   }
 }
 
@@ -41,11 +44,13 @@ export class NoModelAvailableError extends Error {
   readonly attempts: RoutingAttempt[];
   /** The last provider attempt ended in its request timeout. */
   readonly timedOut: boolean;
+  readonly definitelyNoGeneration: boolean;
 
   constructor(
     skipped: SkippedModel[],
     attempts: RoutingAttempt[] = [],
     timedOut = false,
+    definitelyNoGeneration = attempts.length === 0,
   ) {
     const details = skipped.length
       ? skipped.map(({ modelId, reason }) => `${modelId}: ${reason}`).join("; ")
@@ -55,5 +60,6 @@ export class NoModelAvailableError extends Error {
     this.skipped = skipped;
     this.attempts = attempts;
     this.timedOut = timedOut;
+    this.definitelyNoGeneration = definitelyNoGeneration;
   }
 }

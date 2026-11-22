@@ -223,6 +223,7 @@ export function assertOk(providerId: string, response: Response): void {
     {
       status: response.status,
       retryable,
+      definitelyNoGeneration: response.status === 429,
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     },
   );

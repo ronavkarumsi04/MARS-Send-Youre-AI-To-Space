@@ -34,9 +34,19 @@ mars team serve --state /private/mars-team --port 7332 --team team-local \
   `team.metrics`), the rest are `member`s. Tokens are generated once and reused
   across restarts; new users get new tokens. `--auth-provider none` starts a
   service nobody can authenticate to (smoke only). One of the two is required.
+- For `--auth-provider github`, manual team membership uses the immutable
+  GitHub numeric account ID prefixed with `gh_`, not the GitHub login. For
+  example, use `--members gh_12345` and `--repo-access site=gh_12345`. The
+  same identity applies to `revoke`, `readmit`, and `grant`, and is required
+  even when `--github-allowed-ids` is omitted.
 - `--repo ID=DIR` registers a host-trusted checkout in the `@mars/code-refs`
   registry and the team store; access defaults to every dev user unless
   `--repo-access ID=user,user` narrows it. The team store never holds a path.
+- `--remote-repo ID=URL` caches commits separately for each repository ID and
+  URL. Changing the URL starts a separate mirror. Git remotes do not provide
+  a stable repository ID, and shared commit hashes cannot distinguish a
+  repository from a fork. A commit found only in the old cache is therefore
+  not available through the new URL.
 - `--enable` turns the kill switch on at start; without it the service starts
   **disabled** (see §2). `--agent-model ID` lets `agent.*` queue requests with
   the reference port backed by the store; the `@mars/team-agent` worker is not

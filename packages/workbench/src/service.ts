@@ -237,6 +237,7 @@ export interface WorkbenchServiceOptions {
   /** OmniRoute provider target; absent means no OmniRoute models exist. */
   omniroute?: WorkbenchOmniRouteOptions;
   runtimeFactory?: WorkbenchHostOptions["runtimeFactory"];
+  mcp?: WorkbenchHostOptions["mcp"];
 }
 
 export interface WorkbenchService {
@@ -637,6 +638,7 @@ export async function createWorkbenchService(
           })
         : undefined;
     host = await createWorkbenchHost({
+      ...(options.mcp ? { mcp: options.mcp } : {}),
       scope,
       workspaceLabel: basename(source),
       stateRoot: hostRoot,

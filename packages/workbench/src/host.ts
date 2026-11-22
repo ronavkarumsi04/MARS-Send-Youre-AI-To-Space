@@ -309,6 +309,7 @@ export interface WorkbenchHostOptions {
   conventions?: WorkbenchConventions;
   hostPrivateRoots?: string[];
   runtimeFactory?: (options: RuntimeSessionOptions) => Promise<RuntimeSession>;
+  mcp?: RuntimeSessionOptions["mcp"];
 }
 
 export type WorkbenchHostApi = WorkbenchOperations &
@@ -2688,6 +2689,7 @@ export async function createWorkbenchHost(
     let deadline = launch.provisionalDeadline;
     const editFormat = await editFormatFor(context, taskId, launch.modelId);
     const runtime = await runtimeFactory({
+      ...(options.mcp ? { mcp: options.mcp } : {}),
       ...foregroundBudget(context, taskId),
       ...editFormat,
       deadline: launch.provisionalDeadline,
@@ -3314,6 +3316,7 @@ export async function createWorkbenchHost(
           launch.model_id,
         );
         runtime = await runtimeFactory({
+          ...(options.mcp ? { mcp: options.mcp } : {}),
           ...foregroundBudget(context, running.task_id),
           ...editFormat,
           deadline: await fixedDeadline(context, running),

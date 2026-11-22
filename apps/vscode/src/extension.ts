@@ -417,9 +417,18 @@ class TeamChatViewProvider
   private service: RpcTeamService | undefined;
   private view: vscode.WebviewView | undefined;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  private readonly workspaceListener =
+    vscode.workspace.onDidChangeWorkspaceFolders(() =>
+      this.controller?.refreshMentionIndex(),
+    );
+
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly workbench: WorkbenchViewProvider,
+  ) {}
 
   dispose(): void {
+    this.workspaceListener.dispose();
     this.controller?.dispose();
     this.controller = undefined;
     this.service = undefined;
@@ -465,9 +474,15 @@ class TeamChatViewProvider
         timeoutMs: settings().timeoutMs,
       }),
     );
-    const service = new RpcTeamService(client);
-    this.service = service;
     let controller: TeamChatController | undefined;
+    const service = new RpcTeamService(client, {
+      workspaceRoots: () =>
+        (vscode.workspace.workspaceFolders ?? []).map(
+          (folder) => folder.uri.fsPath,
+        ),
+      onWorkspaceGitChanged: () => controller?.refreshMentionIndex(),
+    });
+    this.service = service;
     const realtime = new TeamRealtime({
       client,
       streamUrl: endpoint.rpcUrl.replace(/\/v1\/rpc$/, TEAM_STREAM_PATH),
@@ -488,6 +503,8 @@ class TeamChatViewProvider
       service,
       realtime,
       viewer: "service",
+      workbench: () => this.workbench.active?.currentClient,
+      onTaskCreated: (task) => void this.workbench.active?.adoptTask(task),
       pageSize: 50,
     });
     return controller;
@@ -622,7 +639,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let teamChat: TeamChatViewProvider | undefined;
   const registerTeamChat = () => {
     if (teamChat || !teamChatEnabled()) return;
-    teamChat = new TeamChatViewProvider(context);
+    teamChat = new TeamChatViewProvider(context, provider);
     context.subscriptions.push(
       teamChat,
       vscode.window.registerWebviewViewProvider(TEAM_CHAT_VIEW_ID, teamChat),

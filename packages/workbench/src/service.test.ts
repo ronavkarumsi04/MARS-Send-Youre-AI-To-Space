@@ -227,6 +227,35 @@ test.skipIf(process.platform !== "linux")(
   },
 );
 
+test("Team Chat handoff against the real service: a replayed launch creates one task, and evidence exists only once the task has a workspace", async () => {
+  const f = await fixture();
+  const { client } = await f.start(async () =>
+    sse({ content: "Fixture complete" }),
+  );
+  const pending = task();
+  const launch = { launchKey: "launch-link_1", requestId: randomUUID() };
+  const created = await client.create(pending, launch);
+  expect(await client.create(pending, launch)).toEqual(created);
+  expect(await client.list()).toHaveLength(1);
+  // No workspace is prepared until the task starts, so there is nothing to reopen.
+  await expect(client.evidence(created.task_id)).rejects.toMatchObject({
+    kind: "not-found",
+    status: 404,
+  });
+  await client.start(created.task_id, {
+    expectedRevision: created.revision,
+    approvals: { read: true, write: false, execute: false },
+  });
+  const done = await eventually(
+    () => client.inspect(created.task_id),
+    (value) => value.status === "completed",
+  );
+  const evidence = await client.evidence(created.task_id);
+  expect(evidence.task_revision).toBe(done.revision);
+  expect(evidence.diff_sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(evidence.verify_records).toEqual([]);
+});
+
 test("HTTP reports actionable model setup errors and the same pending task starts after configuration is fixed", async () => {
   const f = await fixture();
   const unavailable = await loadModelRegistry({
