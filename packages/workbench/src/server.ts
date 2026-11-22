@@ -273,6 +273,9 @@ function errorCode(error: unknown): RpcErrorCode {
         return "conflict";
       case "not_found":
         return "not_found";
+      case "limit_exceeded":
+      case "too_large":
+        return "too_large";
       case "unsafe_path":
       case "policy":
       case "permission_denied":

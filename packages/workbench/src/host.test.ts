@@ -50,10 +50,7 @@ import {
   SpecialistTaskRouter,
 } from "@mars/specialists";
 import { createTaskStore, type DurableTaskStore } from "@mars/tasks";
-import {
-  createLocalWorkspaceProvider,
-  WorkspaceModifiedError,
-} from "@mars/workspaces";
+import { WorkspaceModifiedError } from "@mars/workspaces";
 import {
   artifactRef,
   baseModel,
@@ -119,113 +116,6 @@ const task = (taskId = "task"): Task => ({
   artifacts: [],
 });
 const cleanup: (() => Promise<void>)[] = [];
-test("task file reads use private workspace policy and public byte guards", async () => {
-  const f = await fixture();
-  const source = join(f.root, "source");
-  await mkdir(source);
-  await writeFile(join(source, "hello.txt"), "hello\n");
-  await writeFile(join(source, "empty.txt"), "");
-  await writeFile(join(source, "private.txt"), f.root);
-  await writeFile(join(source, "large.txt"), "x".repeat(3 * 1024 * 1024));
-  await mkdir(join(source, "inside"));
-  await writeFile(join(source, "inside", "secret.txt"), "inside\n");
-  const outside = await mkdtemp(join(tmpdir(), "mars-file-outside-"));
-  cleanup.push(() => rm(outside, { recursive: true, force: true }));
-  await writeFile(join(outside, "secret.txt"), "outside\n");
-  const provider = await createLocalWorkspaceProvider({
-    sourceRoot: source,
-    rootDir: join(f.root, "provider"),
-    artifacts: {
-      put: (_ctx, bytes, mediaType) =>
-        f.store.artifacts.put(context(), bytes, mediaType),
-      get: (_ctx, ref) => f.store.artifacts.get(context(), ref),
-    },
-    approveCommand: () => false,
-  });
-  cleanup.push(() => provider.close());
-  const providerContext = (ctx: RequestContext): RequestContext => ({
-    ...ctx,
-    scope: { owner_id: ctx.scope.owner_id, project_id: ctx.scope.project_id },
-  });
-  const prepared = await provider.prepare(providerContext(context()), "task");
-  const tree = await provider.workspacePath(
-    providerContext(context()),
-    prepared,
-  );
-  await symlink("hello.txt", join(tree, "link.txt"));
-  await symlink(join(outside, "secret.txt"), join(tree, "outside.txt"));
-  await symlink(outside, join(tree, "linkdir"));
-  await symlink(join(tree, "inside"), join(tree, "inside-linkdir"));
-  const api = await f.makeHost(
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
-      workspaceOverrides: {
-        read: (ctx, ref, path) =>
-          provider.read(providerContext(ctx), ref, path),
-        reopen: async () => prepared,
-      },
-    },
-  );
-  cleanup.push(() => api.close());
-  await api.create(context(), task());
-  const foreignContext = {
-    ...context(),
-    scope: { ...scope, owner_id: "foreign" },
-  };
-  await f.store.create(foreignContext, {
-    ...task("foreign-task"),
-    scope: foreignContext.scope,
-  });
-  await expect(
-    api.file(context(), "foreign-task", "hello.txt"),
-  ).rejects.toThrow();
-  expect(await api.file?.(context(), "task", "hello.txt")).toEqual({
-    path: "hello.txt",
-    data_base64: Buffer.from("hello\n").toString("base64"),
-    media_type: "application/octet-stream",
-    size: 6,
-    sha256: createHash("sha256").update("hello\n").digest("hex"),
-  });
-  expect(await api.file?.(context(), "task", "empty.txt")).toMatchObject({
-    size: 0,
-    data_base64: "",
-  });
-  for (const path of [
-    "../hello.txt",
-    "/etc/passwd",
-    ".env",
-    "node_modules/a",
-    "link.txt",
-    "outside.txt",
-    "linkdir/secret.txt",
-    "inside-linkdir/secret.txt",
-  ])
-    await expect(api.file(context(), "task", path)).rejects.toMatchObject({
-      code: "policy",
-    });
-  await expect(
-    api.file(context(), "task", "missing.txt"),
-  ).rejects.toMatchObject({ code: "not_found" });
-  await expect(api.file?.(context(), "missing", "hello.txt")).rejects.toThrow();
-  await expect(
-    api.file?.(
-      { ...context(), scope: { ...scope, owner_id: "foreign" } },
-      "task",
-      "hello.txt",
-    ),
-  ).rejects.toThrow();
-  await expect(
-    api.file?.(context(), "task", "private.txt"),
-  ).rejects.toMatchObject({ code: "forbidden" });
-  await expect(
-    api.file?.(context(), "task", "large.txt"),
-  ).rejects.toMatchObject({ code: "too_large" });
-});
 test("workbench event revision matches the package version", async () => {
   const manifest = await Bun.file(
     new URL("../package.json", import.meta.url),

@@ -16,6 +16,46 @@ Base64 plus envelope must fit the 4 MiB response limit, otherwise `too_large`;
 there is no paging or truncation. Hosts without this optional operation return
 `unavailable`. There is no directory-tree/list RPC.
 
+### Read confinement and limits
+
+`tasks.file` uses the local provider's `readBytes(context, workspace, path,
+maxBytes)`, not the artifact-producing `read`. The host computes the raw-byte
+bound from the 4 MiB JSON envelope including path, hash and base64 overhead
+(slightly below 3 MiB); the provider also applies its own file limit. Oversize
+files are rejected before reading, and growth is bounded during reading. No
+artifact is stored on success or refusal. `limit_exceeded` and `too_large` map
+to HTTP 413 across RPC methods, rather than leaking a provider error as HTTP 500.
+
+Separate pathname walks and dev/inode comparisons do **not** bind an opened file
+to the workspace root under concurrent parent replacement. Bun/Node's portable
+filesystem API does not expose directory-relative `openat`/`openat2`. Instead,
+this bounded reader supports Linux with trusted procfs: it holds the workspace
+root directory descriptor, then opens each next component relative to the held
+descriptor via `/proc/self/fd/<fd>/<component>`, using `O_NOFOLLOW` at every
+component and `O_DIRECTORY` on parents. Descriptors remain open until completion;
+swapping a pathname for a symlink cannot redirect the held parent descriptor.
+The root and its ancestors are host-owned private provider state, not writable
+by tasks. This relies on the OS/procfs and that host-state boundary, not on a
+later `realpath` check. It is not a sandbox against a same-user process that can
+alter host-private state or mounts.
+
+Regular files with `nlink != 1` are refused, including hardlinks to outside
+files. Handle stats are checked before and after reading for link count and
+content-change indicators; this is not a revision-matched immutable snapshot.
+Unsupported platforms or unavailable procfs fail closed; remote providers
+without `readBytes` return `unavailable`, with no artifact-read fallback.
+Missing/changing nested components may return policy/403 rather than 404.
+The legacy artifact `read` retains pathname rechecks (now also rejecting
+hardlinks), not this confinement guarantee; snapshot/write/remove paths remain
+separate hardening work.
+
+Workbench enforces task/scope authorization, relative paths, secret/ignore
+filters, symlink/hardlink denial, bounds and host-private raw-byte/metadata
+rejection. The denylist is not a secret detector. Selected-file permissions and
+short-lived project/task/revision/file handles belong to the later shell IPC
+design; this operator-token API does not add renderer selection state or claim
+per-file capabilities. No renderer or shell changes are included here.
+
 `@mars/workbench` provides `serveWorkbench({ api, token, port? })`. `api` implements the exported `WorkbenchOperations` interface. This package is the HTTP boundary, **not** a task runner: it does not open a database, create workspaces, approve integrations, or start a second agent loop. The durable-task/workspace/Oh My Pi host adapter and CLI startup remain separate integration work.
 
 The server binds only `127.0.0.1` (default port 7331, `0` selects an ephemeral port). Supply a cryptographically random, URL-safe bearer token of 32–256 characters from host-owned state, outside any agent workspace. Length validation does not establish entropy. Never put the token in a workspace file, query string, or log. There is no unauthenticated health route.

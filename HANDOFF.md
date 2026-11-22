@@ -2,6 +2,14 @@
 
 ## Task workspace file RPC groundwork
 
+`tasks.file` now uses bounded, non-storing, descriptor-anchored reads on Linux
+with trusted procfs, refusing symlinks and multi-link regular files; unsupported
+platforms fail closed. The root/ancestor directories must remain host-owned.
+Real-service tests prepare three tasks, add live links in their private trees,
+and race parent swaps against HTTP reads. Provider tests verify zero artifact
+writes. Size errors map consistently to HTTP 413. See `WORKBENCH_RPC.md` for
+the legacy read-path limits and the shell-side selection/handle boundary.
+
 Workspace file reads now revalidate component policy and opened-file identity
 before reading bytes, including parent-swap regression tests. This hardens the
 read path, not all concurrent filesystem mutations: snapshot traversal and

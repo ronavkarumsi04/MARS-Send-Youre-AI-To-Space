@@ -269,6 +269,26 @@ test.each(["../x", ".env"])(
   },
 );
 
+test.each(["limit_exceeded", "too_large"])(
+  "tasks.file maps %s to HTTP 413",
+  async (code) => {
+    const { send } = fixture({
+      async file() {
+        throw Object.assign(new Error("private detail"), { code });
+      },
+    });
+    const response = await send({
+      method: "tasks.file",
+      context,
+      params: { task_id: "task", path: "large.txt" },
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: { code: "too_large" },
+    });
+  },
+);
+
 test("tasks.file HTTP contract is scoped, validated and optional", async () => {
   const result = {
     path: "hello.txt",

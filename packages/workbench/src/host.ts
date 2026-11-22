@@ -208,6 +208,7 @@ const artifactResponseFits = (bytes: number, mediaType: string) =>
 export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
 export interface WorkspaceHost extends ExecutionProvider {
+  readBytes?: LocalWorkspaceProvider["readBytes"];
   search?: LocalWorkspaceProvider["search"];
   reopen(context: RequestContext, taskId: string): Promise<WorkspaceRef>;
   cwd(context: RequestContext, workspace: WorkspaceRef): Promise<string>;
@@ -3462,23 +3463,31 @@ export async function createWorkbenchHost(
       checkContext(context);
       await options.store.inspect(context, taskId);
       const workspace = await options.workspace.reopen(context, taskId);
-      const ref = await options.workspace.read(context, workspace, path);
+      if (!options.workspace.readBytes) throw new WorkbenchError("unavailable");
       const metadata = {
         path,
         data_base64: "",
-        media_type: ref.media_type,
-        size: ref.byte_length,
-        sha256: ref.sha256,
+        media_type: "application/octet-stream",
+        size: MAX_RESPONSE_BYTES,
+        sha256: "0".repeat(64),
       };
-      if (
-        4 * Math.ceil(ref.byte_length / 3) +
-          Buffer.byteLength(JSON.stringify({ result: metadata })) >
-        MAX_RESPONSE_BYTES
-      )
-        throw new WorkbenchError("too_large");
-      const bytes = await options.store.artifacts.get(context, ref);
+      const maxBytes =
+        3 *
+        Math.floor(
+          (MAX_RESPONSE_BYTES -
+            Buffer.byteLength(JSON.stringify({ result: metadata }))) /
+            4,
+        );
+      const bytes = await options.workspace.readBytes(
+        context,
+        workspace,
+        path,
+        maxBytes,
+      );
       const result = {
         ...metadata,
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
         data_base64: Buffer.from(bytes).toString("base64"),
       };
       const patterns = await privatePatterns(context, taskId);

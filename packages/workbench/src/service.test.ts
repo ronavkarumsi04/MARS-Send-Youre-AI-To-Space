@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  link,
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -173,6 +176,146 @@ async function fixture(contextWindow = 32000) {
   }
   return { base, source, root, registry, launches, start };
 }
+
+test.skipIf(process.platform !== "linux")(
+  "task file HTTP reads use real task workspaces under concurrent mutation",
+  async () => {
+    const f = await fixture();
+    await writeFile(join(f.source, "hello.txt"), "hello\n");
+    await writeFile(join(f.source, "empty.txt"), "");
+    await writeFile(join(f.source, "private.txt"), f.source);
+    const { client, service, connection } = await f.start(async () =>
+      sse({ content: "Done" }),
+    );
+    const tasks = [];
+    for (let index = 0; index < 3; index++) {
+      const created = await client.create(task());
+      tasks.push(created);
+      await client.start(created.task_id, {
+        expectedRevision: 0,
+        approvals: { read: true, write: false, execute: false },
+      });
+      await eventually(
+        () => client.inspect(created.task_id),
+        (view) => view.status === "completed",
+      );
+    }
+    const rpc = async (taskId: string, path: string, requestScope = scope) => {
+      const response = await fetch(`${service.url}/v1/rpc`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tasks.file",
+          context: {
+            schema_version: 1,
+            scope: requestScope,
+            request_id: randomUUID(),
+          },
+          params: { task_id: taskId, path },
+        }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const selected = tasks[0];
+    const tree = f.launches[0]?.cwd;
+    if (!selected || !tree) throw new Error("Expected real prepared workspace");
+    for (const [index, launch] of f.launches.entries())
+      await writeFile(join(launch.cwd, "task.txt"), `task-${index}`);
+    for (const [index, created] of tasks.entries()) {
+      const response = await rpc(created.task_id, "task.txt");
+      expect(response.status).toBe(200);
+      expect(
+        Buffer.from(response.body.result.data_base64, "base64").toString(),
+      ).toBe(`task-${index}`);
+    }
+    const success = await rpc(selected.task_id, "hello.txt");
+    expect(success.status).toBe(200);
+    expect(success.body.result).toEqual({
+      path: "hello.txt",
+      data_base64: Buffer.from("hello\n").toString("base64"),
+      media_type: "application/octet-stream",
+      size: 6,
+      sha256: createHash("sha256").update("hello\n").digest("hex"),
+    });
+    expect(
+      (await rpc(selected.task_id, "empty.txt")).body.result,
+    ).toMatchObject({ size: 0, data_base64: "" });
+    const outside = join(f.base, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "file.txt"), "outside\n");
+    await mkdir(join(tree, "parent"));
+    await writeFile(join(tree, "parent", "file.txt"), "inside\n");
+    await symlink("hello.txt", join(tree, "link.txt"));
+    await symlink(join(outside, "file.txt"), join(tree, "outside.txt"));
+    await symlink(outside, join(tree, "outside-dir"));
+    await symlink(join(tree, "parent"), join(tree, "inside-dir"));
+    await link(join(outside, "file.txt"), join(tree, "hard.txt"));
+    for (const path of [
+      "../hello.txt",
+      "/etc/passwd",
+      ".env",
+      "node_modules/a",
+      "link.txt",
+      "outside.txt",
+      "outside-dir/file.txt",
+      "inside-dir/file.txt",
+      "hard.txt",
+    ]) {
+      const response = await rpc(selected.task_id, path);
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("forbidden");
+    }
+    expect((await rpc(selected.task_id, "missing.txt")).status).toBe(404);
+    expect((await rpc("missing-task", "hello.txt")).status).toBe(404);
+    expect(
+      (
+        await rpc(selected.task_id, "hello.txt", {
+          ...scope,
+          owner_id: "foreign",
+        })
+      ).status,
+    ).toBe(403);
+    expect((await rpc(selected.task_id, "private.txt")).status).toBe(403);
+    await writeFile(join(tree, "large.txt"), "x".repeat(3 * 1024 * 1024));
+    expect((await rpc(selected.task_id, "large.txt")).status).toBe(413);
+    let running = true;
+    let swaps = 0;
+    const mutate = (async () => {
+      while (running) {
+        await rename(join(tree, "parent"), join(tree, "saved-parent"));
+        await symlink(outside, join(tree, "parent"));
+        await rm(join(tree, "parent"));
+        await rename(join(tree, "saved-parent"), join(tree, "parent"));
+        swaps++;
+      }
+    })();
+    try {
+      const responses = await Promise.all(
+        Array.from({ length: 150 }, () =>
+          rpc(selected.task_id, "parent/file.txt"),
+        ),
+      );
+      for (const response of responses) {
+        if (response.status === 200)
+          expect(
+            Buffer.from(response.body.result.data_base64, "base64").toString(),
+          ).toBe("inside\n");
+        else {
+          expect(response.status).toBe(403);
+          expect(response.body.error.code).toBe("forbidden");
+        }
+      }
+    } finally {
+      running = false;
+      await mutate;
+    }
+    expect(swaps).toBeGreaterThan(0);
+  },
+  20000,
+);
 
 test.skipIf(process.platform !== "linux")(
   "actual SDK receives a confined read-approved repository map through authenticated HTTP",
