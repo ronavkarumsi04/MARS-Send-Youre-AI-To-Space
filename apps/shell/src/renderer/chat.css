@@ -12,7 +12,7 @@
   grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.05fr);
 }
 .assistant-conversation .breadcrumb {
-  font: 12px / 1.5 var(--body);
+  font: var(--text-xs) / 1.5 var(--body);
   overflow: hidden;
 }
 .assistant-conversation :where(.breadcrumb strong) {
@@ -24,7 +24,8 @@
   color: var(--muted);
 }
 .assistant-scroll {
-  padding: 18px max(32px, calc((100% - 760px) / 2)) 36px;
+  padding: var(--space-4)
+    max(var(--space-8), calc((100% - var(--readable-width)) / 2)) var(--space-8);
   scrollbar-gutter: stable;
 }
 .assistant-main.is-empty {
@@ -38,57 +39,58 @@
 }
 .is-empty .assistant-scroll {
   margin-top: auto;
-  padding: 30px 24px 20px;
+  padding: var(--space-8) var(--space-6) var(--space-5);
 }
 .assistant-welcome h1 {
-  font-size: clamp(32px, 3.5vw, 52px);
+  font-size: clamp(var(--text-2xl), 3.2vw, var(--text-hero));
+  line-height: var(--leading-heading);
   letter-spacing: -0.035em;
 }
 .assistant-welcome .orbit-mark {
-  height: 50px;
-  margin-bottom: 22px;
+  height: var(--space-8);
+  margin-bottom: var(--space-5);
 }
 .assistant-compose-wrap {
-  width: min(calc(100% - 64px), 760px);
-  padding-bottom: 20px;
+  width: min(calc(100% - 64px), var(--readable-width));
+  padding-bottom: var(--space-5);
 }
 .assistant-composer {
   border-radius: var(--compose-radius);
   padding: var(--compose-padding);
 }
 .assistant-input {
-  font-size: 15px;
+  font-size: var(--text-base);
   caret-color: var(--accent);
 }
 .assistant-composer-tools {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: none;
 }
 .composer-mode,
 .composer-model {
-  font: 11px / 1.4 var(--body);
+  font: var(--text-caption) / 1.4 var(--body);
   text-transform: none;
   letter-spacing: normal;
 }
 .assistant-send {
-  min-height: 36px;
+  min-height: var(--control);
   min-width: 78px;
   border-radius: var(--compose-inner-radius);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .composer-footnote,
 .chat-cost {
-  font: 10px / 1.6 var(--body);
+  font: var(--text-micro) / 1.6 var(--body);
 }
 .suggestion-grid {
-  gap: 8px;
-  margin-top: 22px;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
 }
 .suggestion {
-  padding: 12px;
+  padding: var(--space-3);
   border-radius: var(--radius-lg);
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--muted);
   background: var(--cardBg);
 }
@@ -96,13 +98,13 @@
   color: var(--fg);
 }
 .assistant-message {
-  gap: 12px;
+  gap: var(--space-3);
   border-bottom: 0;
-  padding: 24px 0;
+  padding: var(--space-6) 0;
 }
 .assistant-message.message-user {
   justify-content: flex-end;
-  padding-block: 18px 6px;
+  padding-block: var(--space-4) var(--space-1);
 }
 .message-user :where(.message-avatar, .message-author) {
   display: none;
@@ -112,13 +114,13 @@
   max-width: 88%;
 }
 .message-user .message-content {
-  padding: 13px 18px;
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--borderMuted);
   border-radius: var(--radius-xl) var(--radius-xl) var(--radius-sm)
     var(--radius-xl);
   background: var(--blueSoft);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.7;
 }
 .message-assistant .message-avatar {
@@ -130,8 +132,8 @@
   background: url("./orbit.svg") center / contain no-repeat;
 }
 .message-author {
-  margin: 4px 0 14px;
-  font: 600 12px / 1.5 var(--body);
+  margin: var(--space-1) 0 var(--space-3);
+  font: 600 var(--text-xs) / 1.5 var(--body);
   text-transform: none;
   letter-spacing: 0.02em;
 }
@@ -139,15 +141,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 18px;
+  gap: var(--space-1);
+  margin-top: var(--space-4);
 }
 .message-actions button {
   min-height: 32px;
-  padding: 6px 8px;
+  padding: var(--space-1) var(--space-2);
   border-color: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 .message-actions .message-handoff {
   margin: 0;
@@ -156,19 +158,19 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .copy-feedback {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 .thinking {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding-left: 40px;
-  font: 12px / 1.5 var(--body);
+  gap: var(--space-2);
+  padding-left: var(--space-8);
+  font: var(--text-xs) / 1.5 var(--body);
 }
 .thinking-dot {
   width: 7px;
@@ -184,7 +186,7 @@
 }
 .rich-content {
   min-width: 0;
-  font: 14px / 1.8 var(--body);
+  font: var(--text-base) / var(--leading-body) var(--body);
   overflow-wrap: anywhere;
 }
 .rich-content > :first-child {
@@ -194,13 +196,13 @@
   margin-bottom: 0;
 }
 .rich-content p {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-4);
   white-space: pre-wrap;
 }
 .rich-content h2,
 .rich-content h3,
 .rich-content h4 {
-  margin: 28px 0 12px;
+  margin: var(--space-6) 0 var(--space-3);
   font-family: var(--display);
   line-height: 1.35;
   letter-spacing: -0.02em;
@@ -208,22 +210,22 @@
   text-wrap: balance;
 }
 .rich-content h2 {
-  font-size: 24px;
+  font-size: var(--text-xl);
 }
 .rich-content h3 {
-  font-size: 19px;
+  font-size: var(--text-lg);
 }
 .rich-content h4 {
-  font-size: 16px;
+  font-size: var(--text-md);
 }
 .rich-content ul,
 .rich-content ol {
-  margin: 12px 0 20px;
-  padding-left: 24px;
+  margin: var(--space-3) 0 var(--space-5);
+  padding-left: var(--space-6);
 }
 .rich-content li {
-  margin: 6px 0;
-  padding-left: 4px;
+  margin: var(--space-1) 0;
+  padding-left: var(--space-1);
 }
 .rich-content li::marker {
   color: var(--muted);
@@ -232,13 +234,13 @@
   font: 0.85em / 1.65 var(--mono);
 }
 .rich-content :not(pre) > code {
-  padding: 2px 5px;
+  padding: 2px var(--space-1);
   background: var(--selectedBg);
   border-radius: var(--radius-min);
 }
 .rich-content blockquote {
-  margin: 18px 0;
-  padding: 16px 20px;
+  margin: var(--space-4) 0;
+  padding: var(--space-4) var(--space-5);
   border: 1px solid var(--borderMuted);
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -247,16 +249,16 @@
 .rich-content hr {
   border: 0;
   border-top: 1px solid var(--borderMuted);
-  margin: 24px 0;
+  margin: var(--space-6) 0;
 }
 .rich-table-wrap {
   overflow: auto;
-  margin: 20px 0;
+  margin: var(--space-5) 0;
 }
 .rich-content table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  font-size: var(--text-xs);
   text-align: left;
 }
 .rich-content th {
@@ -265,18 +267,18 @@
 .rich-content th,
 .rich-content td {
   border-bottom: 1px solid var(--borderMuted);
-  padding: 10px 14px 10px 0;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
   vertical-align: top;
   min-width: 90px;
 }
 .artifact-card {
   display: flex;
   width: 100%;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: center;
   text-align: left;
-  margin: 20px 0;
-  padding: 18px;
+  margin: var(--space-5) 0;
+  padding: var(--space-4);
   background: var(--cardBg);
   border: 1px solid var(--borderMuted);
   border-radius: var(--radius-lg);
@@ -306,24 +308,24 @@
   flex: 1;
   min-width: 0;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--space-1);
 }
 .artifact-card-label strong {
-  font-size: 13px;
+  font-size: var(--text-sm);
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 .artifact-card-label small {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
 }
 .artifact-card-open {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
 }
 .artifacts-toggle {
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--text-caption);
   border-radius: var(--radius-sm);
 }
 .artifacts-toggle[aria-expanded="true"] {
@@ -342,9 +344,9 @@
 .artifact-workspace-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   min-height: 67px;
-  padding: 12px 20px;
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--borderMuted);
 }
 .artifact-workspace-header .file-mark {
@@ -361,7 +363,7 @@
   min-width: 0;
   margin: 0;
   flex: 1;
-  font: 500 13px / 1.4 var(--body);
+  font: 500 var(--text-sm) / 1.4 var(--body);
   overflow-wrap: anywhere;
 }
 .artifact-close {
@@ -395,31 +397,31 @@
 .artifact-switcher {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 20px 0;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5) 0;
 }
 .artifact-select {
   flex: 1;
   width: 0;
   min-width: 0;
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-2);
+  font-size: var(--text-xs);
   border-radius: var(--radius-sm);
 }
 .artifact-switcher > span {
-  font-size: 10px;
+  font-size: var(--text-micro);
   white-space: nowrap;
 }
 .artifact-toolbar {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
+  padding: var(--space-3) var(--space-5);
 }
 .artifact-modes {
   --mode-radius: var(--radius);
-  --mode-padding: 3px;
+  --mode-padding: var(--space-1);
   display: inline-flex;
   border: 1px solid var(--borderMuted);
   padding: var(--mode-padding);
@@ -428,12 +430,12 @@
 .artifact-mode {
   min-height: 30px;
   border: none;
-  padding: 5px 12px;
+  padding: var(--space-1) var(--space-3);
   border-radius: max(
     var(--radius-min),
     calc(var(--mode-radius) - var(--mode-padding))
   );
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
 }
 .artifact-mode[aria-pressed="true"] {
@@ -442,11 +444,11 @@
 }
 .artifact-toolbar .copy-action,
 .source-toolbar .copy-action {
-  padding: 6px 8px;
+  padding: var(--space-1) var(--space-2);
   min-height: 30px;
   border-color: transparent;
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
 }
 .artifact-toolbar .copy-control {
@@ -465,20 +467,20 @@
   color: var(--paperInk);
 }
 .artifact-document {
-  padding: 38px 36px;
+  padding: var(--space-8) var(--space-8);
 }
 .artifact-document .rich-content {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .artifact-document .rich-content h2 {
-  font-size: 28px;
-  margin-top: 32px;
+  font-size: var(--text-xl);
+  margin-top: var(--space-8);
 }
 .artifact-document .rich-content h2:first-child {
   margin-top: 0;
 }
 .artifact-document .rich-content h3 {
-  font-size: 20px;
+  font-size: var(--text-lg);
 }
 .artifact-document .rich-content :not(pre) > code {
   background: var(--paperLine);
@@ -501,21 +503,21 @@
 }
 .artifact-status {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
-  padding: 12px 20px;
+  padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--borderMuted);
   color: var(--muted);
-  font: 10px / 1.4 var(--body);
+  font: var(--text-micro) / 1.4 var(--body);
 }
 .artifact-status span:last-child {
   margin-left: auto;
 }
 .source-block {
   --source-radius: var(--radius-lg);
-  --source-padding: 8px;
+  --source-padding: var(--space-2);
   min-width: 0;
-  margin: 16px 0;
+  margin: var(--space-4) 0;
   color: var(--fg);
   background: var(--pageBg);
   border: 1px solid var(--borderMuted);
@@ -527,10 +529,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   padding: var(--source-padding);
   border-bottom: 1px solid var(--borderMuted);
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--muted);
 }
 .source-toolbar .copy-action {
@@ -542,10 +544,10 @@
 .source-code {
   overflow: auto;
   margin: 0;
-  padding: 20px;
+  padding: var(--space-5);
   white-space: pre;
   tab-size: 2;
-  font: 12px / 1.8 var(--mono);
+  font: var(--text-xs) / 1.8 var(--mono);
 }
 .source-code code {
   font: inherit;
@@ -567,8 +569,8 @@
   overflow: visible;
 }
 .artifact-note {
-  padding: 0 20px;
-  font-size: 11px;
+  padding: 0 var(--space-5);
+  font-size: var(--text-caption);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -578,25 +580,25 @@
   align-items: center;
 }
 .artifact-count {
-  font: 11px / 1.5 var(--body);
+  font: var(--text-caption) / 1.5 var(--body);
   color: var(--muted);
 }
 .artifact-disclosure {
   --disclosure-radius: var(--radius-xl);
-  --disclosure-padding: 12px;
+  --disclosure-padding: var(--space-3);
   padding: var(--disclosure-padding);
   border-radius: var(--disclosure-radius);
 }
 .artifact-disclosure > summary {
   cursor: pointer;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .artifact-disclosure .artifact-note {
   padding: 0;
 }
 .artifact-disclosure .artifact-document {
-  padding: 20px;
+  padding: var(--space-5);
   background: var(--paper);
   color: var(--paperInk);
   border-radius: max(
@@ -605,25 +607,25 @@
   );
 }
 .artifact-raw {
-  margin-top: 12px;
-  font-size: 11px;
+  margin-top: var(--space-3);
+  font-size: var(--text-caption);
 }
 .artifact-raw summary {
   cursor: pointer;
   color: var(--muted);
 }
 .has-artifact .workspace-toolbar {
-  padding-inline: 24px;
-  gap: 12px;
+  padding-inline: var(--space-6);
+  gap: var(--space-3);
 }
 .has-artifact .breadcrumb {
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 .has-artifact .breadcrumb > span {
   display: none;
 }
 .has-artifact .assistant-scroll {
-  padding-inline: 24px;
+  padding-inline: var(--space-6);
 }
 .has-artifact .assistant-compose-wrap {
   width: calc(100% - 48px);
@@ -651,18 +653,18 @@
     min-height: 57px;
   }
   .assistant-scroll {
-    padding-inline: 24px;
+    padding-inline: var(--space-6);
   }
   .assistant-compose-wrap {
     width: calc(100% - 48px);
   }
   .artifact-document {
-    padding: 30px;
+    padding: var(--space-8);
   }
 }
 @media (max-width: 650px) {
   .assistant-scroll {
-    padding-inline: 16px;
+    padding-inline: var(--space-4);
   }
   .assistant-compose-wrap {
     width: calc(100% - 32px);
@@ -671,33 +673,33 @@
     display: none;
   }
   .assistant-welcome h1 {
-    font-size: 32px;
+    font-size: var(--text-2xl);
   }
   .welcome-subtitle {
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   .artifact-toolbar,
   .artifact-workspace-header {
-    padding-inline: 16px;
+    padding-inline: var(--space-4);
   }
   .artifact-document {
-    padding: 24px;
+    padding: var(--space-6);
   }
   .source-code {
-    font-size: 11px;
-    padding: 16px;
+    font-size: var(--text-caption);
+    padding: var(--space-4);
   }
 }
 @media (max-height: 780px) {
   .assistant-compose-wrap {
-    padding-bottom: 10px;
+    padding-bottom: var(--space-2);
   }
   .is-empty .assistant-scroll {
-    padding-top: 12px;
+    padding-top: var(--space-3);
   }
   .assistant-welcome .orbit-mark {
     height: 32px;
-    margin-bottom: 14px;
+    margin-bottom: var(--space-3);
   }
 }
 @media (prefers-reduced-motion: reduce) {
