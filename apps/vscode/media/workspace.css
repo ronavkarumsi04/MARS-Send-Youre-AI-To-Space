@@ -1,10 +1,3 @@
-@font-face {
-  font-family: "Commit Mono";
-  src: url("./CommitMono-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-display: swap;
-}
-
 body:has(.workspace-rail) {
   margin: 0;
   padding: 0;
@@ -17,9 +10,12 @@ body:has(.workspace-rail) {
   min-height: 100vh;
   color: var(--text);
   background: var(--page);
-  font:
-    13px / 1.45 system-ui,
-    sans-serif;
+  font: var(--body-weight) 13px / 1.45 var(--body);
+}
+
+#app:has(.workspace-rail) ::selection {
+  color: var(--selection-text);
+  background: var(--selection);
 }
 
 #app:has(.workspace-rail) * {
@@ -45,7 +41,8 @@ body:has(.workspace-rail) {
   margin: 0 0 16px;
   color: var(--accent);
   font-size: 19px;
-  font-weight: 500;
+  font-family: var(--display);
+  font-weight: var(--display-weight);
   letter-spacing: -0.025em;
 }
 
@@ -79,6 +76,10 @@ body:has(.workspace-rail) {
   border-color: var(--divider);
 }
 
+.workspace-nav [data-focus-key="nav-model"] {
+  margin-top: 6px;
+}
+
 .chat-history {
   max-height: 45vh;
   overflow: auto;
@@ -89,7 +90,7 @@ body:has(.workspace-rail) {
 .eyebrow,
 .mode-badge,
 .extension-state {
-  font: 400 10px / 1.5 var(--mono);
+  font: var(--mono-weight) 10px / 1.5 var(--mono);
   letter-spacing: 0.06em;
 }
 
@@ -143,7 +144,7 @@ body:has(.workspace-rail) {
 .breadcrumb strong {
   overflow: hidden;
   color: var(--text);
-  font-weight: 500;
+  font-weight: var(--display-weight);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -208,7 +209,8 @@ body:has(.workspace-rail) {
 .workspace-content h1 {
   margin: 0;
   font-size: clamp(26px, 4.2vw, 44px);
-  font-weight: 450;
+  font-family: var(--display);
+  font-weight: var(--display-weight);
   letter-spacing: -0.045em;
   line-height: 1.16;
 }
@@ -256,14 +258,14 @@ body:has(.workspace-rail) {
 .extension-library,
 .extension-category {
   border: 1px solid var(--divider);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--surface);
 }
 
 .assistant-composer {
   padding: 12px;
   border-color: var(--edge);
-  border-radius: 14px;
+  border-radius: var(--radius);
 }
 
 .assistant-composer:focus-within {
@@ -363,7 +365,7 @@ body:has(.workspace-rail) {
 
 .message-author {
   margin: 3px 0 7px;
-  font-weight: 600;
+  font-weight: var(--emphasis-weight);
 }
 
 .message-content {
@@ -382,6 +384,11 @@ body:has(.workspace-rail) {
 
 .workspace-content h1 {
   font-size: clamp(24px, 3.5vw, 34px);
+}
+
+.workspace-content :is(h2, h3, h4) {
+  font-family: var(--display);
+  font-weight: var(--display-weight);
 }
 
 .model-settings {

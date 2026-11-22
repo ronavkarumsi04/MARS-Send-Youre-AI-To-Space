@@ -17,7 +17,12 @@ import { type Chat, renderChat } from "./assistantView";
 import { button, h } from "./dom";
 import { renderOutput } from "./output";
 import { restoreWorkbenchState, type WorkbenchPage } from "./workbenchState";
-import { renderExtensions, renderSettings, toolbar } from "./workspaceViews";
+import {
+  modelNavigation,
+  renderExtensions,
+  renderSettings,
+  toolbar,
+} from "./workspaceViews";
 
 interface VsCodeApi {
   postMessage(
@@ -912,6 +917,11 @@ function navAction(label: string, target: WorkbenchPage): HTMLButtonElement {
   return entry;
 }
 
+function openModelSettings(): void {
+  openPage("settings");
+  app.querySelector<HTMLElement>('[data-focus-key="set-model-key"]')?.focus();
+}
+
 function navigation(): HTMLElement {
   const history = h("details", { class: "chat-history" });
   history.open = historyOpen;
@@ -951,6 +961,7 @@ function navigation(): HTMLElement {
       navAction("◎ Agent tasks", "tasks"),
       navAction("◇ Extensions", "extensions"),
       navAction("⚙ Settings", "settings"),
+      modelNavigation(chat.configured, chat.loading, openModelSettings),
     ),
     h(
       "div",
@@ -1056,12 +1067,7 @@ function renderPage(): [HTMLElement, HTMLElement?] {
         chat.consent = value;
       },
       send: sendChat,
-      settings: () => {
-        openPage("settings");
-        app
-          .querySelector<HTMLElement>('[data-focus-key="set-model-key"]')
-          ?.focus();
-      },
+      settings: openModelSettings,
       task: openTask,
     }),
   ];

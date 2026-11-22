@@ -1,21 +1,36 @@
+@font-face {
+  font-family: "Commit Mono";
+  src: url("./CommitMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 body:has(.workspace-rail) {
   color-scheme: dark;
-  --page: #15171b;
-  --card: #101216;
-  --surface: #1b1e23;
-  --text: #eeeef0;
-  --accent: #e5b69a;
-  --edge: #5e626e;
-  --divider: #2c3038;
-  --quiet: #a4a7b3;
-  --selected: #25282e;
-  --success: #9ac9ad;
-  --error: #f8a5ab;
-  --button-hover: color-mix(in srgb, var(--accent) 82%, var(--text));
-  --primary-text: var(--card);
-  --orbit-art-filter: none;
-  --radius: 8px;
+  --page: #050407;
+  --card: #0a090c;
+  --surface: #141214;
+  --text: #ece6dc;
+  --accent: #ece6dc;
+  --edge: #8a847c;
+  --divider: #39353a;
+  --quiet: #aca69d;
+  --selected: #29252b;
+  --success: #a2cf99;
+  --error: #fd929d;
+  --button-hover: color-mix(in srgb, var(--accent) 88%, var(--card));
+  --primary-text: var(--page);
+  --selection: #5a17b0;
+  --selection-text: #ffffff;
+  --orbit-art-filter: grayscale(1);
+  --radius: 5px;
+  --display: Switzer, "General Sans", system-ui, sans-serif;
+  --body: "General Sans", system-ui, sans-serif;
   --mono: "Commit Mono", ui-monospace, monospace;
+  --display-weight: 500;
+  --body-weight: 400;
+  --mono-weight: 400;
+  --emphasis-weight: 600;
   --space: clamp(16px, 4vw, 30px);
 }
 
@@ -36,10 +51,12 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light):has(
   --error: var(--vscode-errorForeground);
   --button-hover: var(--surface);
   --primary-text: var(--text);
+  --selection: Highlight;
+  --selection-text: HighlightText;
 }
 
 #app:has(.workspace-rail) {
-  --vscode-font-family: system-ui, sans-serif;
+  --vscode-font-family: var(--body);
   --vscode-editor-font-family: var(--mono);
   --vscode-foreground: var(--text);
   --vscode-descriptionForeground: var(--quiet);

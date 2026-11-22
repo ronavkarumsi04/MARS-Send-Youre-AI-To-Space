@@ -15,6 +15,29 @@ export function toolbar(title: string, tag: string): HTMLElement {
   );
 }
 
+export function modelNavigation(
+  configured: boolean,
+  loading: boolean,
+  openSettings: () => void,
+): HTMLButtonElement {
+  return button(
+    loading
+      ? "Checking model…"
+      : configured
+        ? "Model connected"
+        : "Connect model",
+    "nav-model",
+    openSettings,
+    {
+      secondary: loading || configured,
+      disabled: loading,
+      title: configured
+        ? "Manage the saved OpenRouter key"
+        : "Open model settings",
+    },
+  );
+}
+
 export function renderSettings(
   configured: boolean,
   loading: boolean,
