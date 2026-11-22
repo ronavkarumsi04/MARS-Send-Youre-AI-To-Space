@@ -240,7 +240,7 @@ export function renderTeamChatPane(
         doc,
         "h1",
         { "data-focus-key": "heading", tabindex: "-1" },
-        "Team Chat",
+        "Team chat",
       ),
       state.label
         ? h(
@@ -277,7 +277,7 @@ export function renderTeamChatPane(
         "data-focus-key": `team-conversation-${conv.conversation_id}`,
         "aria-pressed": selected ? "true" : "false",
       },
-      h(doc, "span", { class: "team-conv-name" }, title),
+      h(doc, "span", { class: "team-conv-name", title }, title),
       conv.pinned ? h(doc, "span", { class: "entry-badge" }, "pinned") : null,
       conv.unread_count > 0
         ? h(

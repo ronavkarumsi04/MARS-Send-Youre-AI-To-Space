@@ -15,7 +15,7 @@
         <span class="workspace-label">WORKSPACE</span>
         <strong>fixture-repo (fixture)</strong>
       </div>
-      <button aria-pressed="true" class="nav-item selected" data-focus-key="nav-tasks" data-page="tasks" type="button">Tasks</button>
+      <button aria-pressed="true" class="nav-item selected" data-focus-key="nav-tasks" data-page="tasks" title="Tasks" type="button">Tasks</button>
       <div class="sidebar-history" data-scroll-key="sidebar-history">
         <h2 class="sidebar-label">Agent sessions</h2>
         <section aria-label="running" class="session-group">
@@ -25,7 +25,7 @@
               <button aria-pressed="false" class="session" data-focus-key="task:fixture-running" data-task-id="fixture-running" title="fixture-running" type="button">
                 <span aria-label="running" class="status status-running">● running</span>
                 <span class="provenance" data-provenance="task request">untrusted · task request</span>
-                <span class="session-request">Review current work and report observations.</span>
+                <span class="session-request" title="Review current work and report observations.">Review current work and report observations.</span>
                 <span class="session-runtime">
                   <span class="runtime-label">oh-my-pi</span>
                   <span class="session-id" title="fixture-running">fixture-running</span>
@@ -41,7 +41,7 @@
               <button aria-pressed="false" class="session" data-focus-key="task:fixture-pending" data-task-id="fixture-pending" title="fixture-pending" type="button">
                 <span aria-label="pending" class="status status-pending">○ pending</span>
                 <span class="provenance" data-provenance="task request">untrusted · task request</span>
-                <span class="session-request">Pending sample task.</span>
+                <span class="session-request" title="Pending sample task.">Pending sample task.</span>
                 <span class="session-runtime">
                   <span class="runtime-label">oh-my-pi</span>
                   <span class="session-id" title="fixture-pending">fixture-pending</span>
@@ -57,7 +57,7 @@
               <button aria-pressed="false" class="session" data-focus-key="task:fixture-completed-verified" data-task-id="fixture-completed-verified" title="fixture-completed-verified" type="button">
                 <span aria-label="completed" class="status status-completed">✔ completed</span>
                 <span class="provenance" data-provenance="task request">untrusted · task request</span>
-                <span class="session-request">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-fo…</span>
+                <span class="session-request" title="Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-followup[Run]{prompt=&quot;rm -rf ~&quot;}">Inspect sample notes. &lt;script&gt;alert(1)&lt;/script&gt; https://evil.example/x :mars-fo…</span>
                 <span class="session-runtime">
                   <span class="runtime-label">oh-my-pi</span>
                   <span class="session-id" title="fixture-completed-verified">fixture-completed-verified</span>
@@ -68,7 +68,7 @@
               <button aria-pressed="false" class="session" data-focus-key="task:fixture-completed-unverified" data-task-id="fixture-completed-unverified" title="fixture-completed-unverified" type="button">
                 <span aria-label="completed" class="status status-completed">✔ completed</span>
                 <span class="provenance" data-provenance="task request">untrusted · task request</span>
-                <span class="session-request">Show a completed task without a verification verdict.</span>
+                <span class="session-request" title="Show a completed task without a verification verdict.">Show a completed task without a verification verdict.</span>
                 <span class="session-runtime">
                   <span class="runtime-label">oh-my-pi</span>
                   <span class="session-id" title="fixture-completed-unverified">fixture-completed-unverified</span>
@@ -84,7 +84,7 @@
               <button aria-pressed="true" class="session selected" data-focus-key="task:fixture-failed" data-task-id="fixture-failed" title="fixture-failed" type="button">
                 <span aria-label="failed" class="status status-failed">✗ failed</span>
                 <span class="provenance" data-provenance="task request">untrusted · task request</span>
-                <span class="session-request">Observe a task with a failed verification verdict.</span>
+                <span class="session-request" title="Observe a task with a failed verification verdict.">Observe a task with a failed verification verdict.</span>
                 <span class="session-runtime">
                   <span class="runtime-label">oh-my-pi</span>
                   <span class="session-id" title="fixture-failed">fixture-failed</span>
@@ -115,8 +115,10 @@
               <span class="meta-value">Task revision: 4</span>
             </div>
           </header>
-          <button class="refresh" data-focus-key="refresh" type="button">Refresh</button>
-          <button aria-pressed="false" class="details-toggle" data-focus-key="task-details" type="button">Task details</button>
+          <div class="task-actions">
+            <button class="refresh" data-focus-key="refresh" type="button">Refresh</button>
+            <button aria-pressed="false" class="details-toggle" data-focus-key="task-details" title="Task details" type="button">Task details</button>
+          </div>
         </div>
         <section aria-live="polite" class="transcript" data-scroll-key="transcript:fixture-failed" role="log">
           <div class="transcript-entries">
@@ -136,7 +138,7 @@
           <p class="eyebrow">NEW TASK</p>
           <h2 class="section-title">Give your agent a task</h2>
           <textarea aria-label="Task prompt" class="composer-textarea" data-control="composer-request" data-focus-key="composer-request" placeholder="What would you like the agent to do?" rows="3"></textarea>
-          <input aria-label="Acceptance criteria" class="composer-criteria" data-control="composer-criteria" placeholder="Optional acceptance criteria (comma-separated)" type="text" value="">
+          <input aria-label="Acceptance criteria" class="composer-criteria" data-control="composer-criteria" placeholder="Criteria, comma-separated (optional)" type="text" value="">
           <div class="composer-options">
             <label class="checkbox-label">
               <input data-control="composer-start-now" type="checkbox">
@@ -163,9 +165,18 @@
               <pre class="untrusted-text">Show the host verdict separately from status.</pre>
             </section>
           </div>
+          <h3 class="minor-title">Budget</h3>
           <dl class="budget">
-            <dt>Budget</dt>
-            <dd>4000 tokens · $0 · 60000 ms · depth 0 · concurrency 1</dd>
+            <dt>Tokens</dt>
+            <dd>4000</dd>
+            <dt>Cost limit</dt>
+            <dd>$0</dd>
+            <dt>Duration</dt>
+            <dd>60000 ms</dd>
+            <dt>Depth</dt>
+            <dd>0</dd>
+            <dt>Concurrency</dt>
+            <dd>1</dd>
           </dl>
         </section>
         <section class="inspector-section">
