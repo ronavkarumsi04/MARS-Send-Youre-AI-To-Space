@@ -16,6 +16,7 @@ import { join, relative } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
 import { createMemoryStore, type DurableMemoryStore } from "@mars/memory";
 import { SkillStore } from "@mars/skills";
+import { writeAtomic } from "./export";
 import {
   encodeSegment,
   encodeSourcePath,
@@ -1221,6 +1222,31 @@ test("bounds: byte limits accept empty files and exact-limit UTF-8 content", asy
   const content = "é".repeat(VAULT_MAX_FILE_BYTES / 2);
   writeFileSync(path, content);
   expect(await readFileNoFollow(path, "limit.md")).toBe(content);
+});
+
+test("bounds: generated notes and manifests cannot exceed their read limit", async () => {
+  const { common, vaultDir, memory } = await fixture();
+  const snapshot = memory.snapshot.bind(memory);
+  memory.snapshot = async (context) => {
+    const current = await snapshot(context);
+    return {
+      ...current,
+      entries: current.entries.map((entry) => ({
+        ...entry,
+        fact: "é".repeat(VAULT_MAX_FILE_BYTES / 2),
+      })),
+    };
+  };
+  await expect(exportVault(ctx, common)).rejects.toMatchObject({
+    code: "file_too_large",
+  });
+  expect(existsSync(join(vaultDir, "facts/fact-plain.md"))).toBe(false);
+  const manifest = join(vaultDir, VAULT_MANIFEST_FILE);
+  writeFileSync(manifest, "original manifest");
+  await expect(
+    writeAtomic(vaultDir, manifest, "é".repeat(VAULT_MAX_FILE_BYTES / 2 + 1)),
+  ).rejects.toMatchObject({ code: "file_too_large" });
+  expect(readFileSync(manifest, "utf8")).toBe("original manifest");
 });
 
 test("review: readFileNoFollow refuses links and non-files even at open time", async () => {

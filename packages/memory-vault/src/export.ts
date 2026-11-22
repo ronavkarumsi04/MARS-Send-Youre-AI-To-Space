@@ -17,6 +17,7 @@ import {
   readNoteInside,
   realpathExisting,
   resolveInside,
+  VAULT_MAX_FILE_BYTES,
   VaultPathError,
 } from "./paths";
 import {
@@ -108,11 +109,16 @@ export async function readManifest(
  * inside the real vault directory, and the target may not be a symlink, so a
  * planted link inside the vault cannot redirect the export elsewhere.
  */
-async function writeAtomic(
+export async function writeAtomic(
   vaultDir: string,
   absolute: string,
   text: string,
 ): Promise<boolean> {
+  if (Buffer.byteLength(text, "utf8") > VAULT_MAX_FILE_BYTES)
+    throw new VaultPathError(
+      "file_too_large",
+      "generated file exceeds the vault read limit",
+    );
   // Resolve links before creating anything so a symlinked directory inside
   // the vault cannot make mkdir build a tree outside it.
   const [realVault, realParent] = await Promise.all([
