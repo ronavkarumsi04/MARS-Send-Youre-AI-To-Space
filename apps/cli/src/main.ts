@@ -15,6 +15,7 @@ import { cliErrorMessage } from "./cli-errors";
 import { runCommands } from "./commands";
 import { runDatasets } from "./datasets";
 import { runEvolution } from "./evolution";
+import { requestsHelp } from "./help";
 import { runMcp } from "./mcp";
 import { runMemory } from "./memory";
 import { omnirouteDoctorReport } from "./omniroute";
@@ -266,9 +267,23 @@ const REDACTED_FAILURES = new Map<string | undefined, string>([
 
 const command = process.argv[2];
 try {
-  if (command === "doctor") {
+  const help = requestsHelp(command, process.argv.slice(3));
+  const args = help ? ["--help"] : process.argv.slice(3);
+  if (["--help", "-h", "help"].includes(command ?? "")) {
+    console.log(
+      "Usage: bun apps/cli/src/main.ts <doctor|smoke|models|serve|session|render|commands|vault|mcp|memory|skills|team|evolution|datasets|specialists|bench>",
+    );
+  } else if (command === "doctor" && help) {
+    console.log(
+      "Usage: mars doctor [--team-state DIR] [--agent-server URL] [--agent-server-key-env NAME] [--agent-server-root DIR] [--agent-server-allow-insecure-http] [--vllm URL] [--vllm-allow-remote] [--vllm-api-key-env NAME]",
+    );
+  } else if (command === "smoke" && help) {
+    console.log(
+      "Usage: mars smoke\nInitialize the execution SDK and native search without model requests.",
+    );
+  } else if (command === "doctor") {
     const doctorArgs = parseArgs({
-      args: process.argv.slice(3),
+      args,
       strict: true,
       options: {
         "team-state": { type: "string" },
@@ -360,34 +375,36 @@ try {
   } else if (command === "smoke") {
     console.log(JSON.stringify(await probeExecution(), null, 2));
   } else if (command === "models") {
-    await runModels(process.argv.slice(3));
+    await runModels(args);
   } else if (command === "session") {
-    await runSession(process.argv.slice(3));
+    await runSession(args);
   } else if (command === "render") {
-    await runRender(process.argv.slice(3));
+    await runRender(args);
   } else if (command === "commands") {
-    await runCommands(process.argv.slice(3));
+    await runCommands(args);
   } else if (command === "serve") {
-    const serve = splitVllmServeArgs(process.argv.slice(3));
+    const serve = splitVllmServeArgs(args);
     await runServer(serve.args, serve.vllm ? { vllm: serve.vllm } : {});
   } else if (command === "vault") {
-    await runVault(process.argv.slice(3));
+    await runVault(args);
   } else if (command === "mcp") {
-    await runMcp(process.argv.slice(3));
+    await runMcp(args);
   } else if (command === "memory") {
-    await runMemory(process.argv.slice(3));
+    await runMemory(args);
   } else if (command === "skills") {
-    await runSkills(process.argv.slice(3));
+    await runSkills(args);
   } else if (command === "team") {
-    await runTeam(process.argv.slice(3));
+    await runTeam(args);
   } else if (command === "evolution") {
-    await runEvolution(process.argv.slice(3));
+    await runEvolution(args);
   } else if (command === "datasets") {
-    await runDatasets(process.argv.slice(3));
+    await runDatasets(args);
   } else if (command === "bench") {
-    await runBench(process.argv.slice(3));
+    await runBench(args);
   } else if (command === "specialists") {
-    if (process.argv[3] === "evaluate") {
+    if (help) {
+      console.log(SPECIALISTS_EVAL_USAGE);
+    } else if (process.argv[3] === "evaluate") {
       await runSpecialistsEvaluate(process.argv.slice(4));
     } else {
       console.error(SPECIALISTS_EVAL_USAGE);

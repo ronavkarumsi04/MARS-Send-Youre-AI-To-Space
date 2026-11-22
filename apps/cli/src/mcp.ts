@@ -604,7 +604,11 @@ export async function runMcp(
 ): Promise<void> {
   const out = options.stdout ?? ((line: string) => console.log(line));
   const subcommand = args[0];
-  if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+  if (subcommand === "--help" || subcommand === "-h") {
+    out(MCP_USAGE);
+    return;
+  }
+  if (!subcommand) {
     throw new CliUsageError(MCP_USAGE);
   }
   const rest = args.slice(1);
