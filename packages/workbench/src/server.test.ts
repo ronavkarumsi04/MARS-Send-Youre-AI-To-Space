@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { EventEnvelope, Scope, Task } from "@mars/contracts";
+import {
+  DEFAULT_WORKSPACE_LIMITS,
+  validateRelativePath,
+} from "@mars/workspaces";
 import { MarsClient } from "../../../apps/vscode/src/client";
 import { HttpRpcTransport } from "../../../apps/vscode/src/rpc";
 import {
@@ -240,6 +244,30 @@ function fixture(overrides: Partial<WorkbenchOperations> = {}) {
     });
   return { server, api, calls, url, send };
 }
+
+test.each(["../x", ".env"])(
+  "tasks.file rejects workspace policy denial for %s over HTTP",
+  async (path) => {
+    const { send } = fixture({
+      async file(_context, _taskId, requestedPath) {
+        validateRelativePath(requestedPath, DEFAULT_WORKSPACE_LIMITS);
+        throw new Error("Expected workspace policy rejection");
+      },
+    });
+    const response = await send({
+      method: "tasks.file",
+      context,
+      params: { task_id: "task", path },
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "forbidden",
+        message: "The workbench request is not permitted.",
+      },
+    });
+  },
+);
 
 test("tasks.file HTTP contract is scoped, validated and optional", async () => {
   const result = {

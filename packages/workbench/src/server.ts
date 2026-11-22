@@ -274,6 +274,7 @@ function errorCode(error: unknown): RpcErrorCode {
       case "not_found":
         return "not_found";
       case "unsafe_path":
+      case "policy":
       case "permission_denied":
       case "scope_denied":
         return "forbidden";
