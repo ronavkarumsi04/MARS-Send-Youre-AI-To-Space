@@ -39,6 +39,7 @@ export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 export class EventPoller {
   private readonly controller = new AbortController();
   private wake: AbortController | undefined;
+  private poked = false;
   private loop: Promise<void> | undefined;
   private lastId: string | undefined;
   private readonly seen = new Set<string>();
@@ -73,6 +74,7 @@ export class EventPoller {
 
   /** Ends the current backoff early, e.g. after the user steers the task. */
   poke(): void {
+    this.poked = true;
     this.wake?.abort();
   }
 
@@ -123,10 +125,19 @@ export class EventPoller {
         if (FATAL.has(rpc.kind)) break;
         delay = Math.min(delay * 2, this.max);
       }
+      if (this.poked) {
+        this.poked = false;
+        delay = this.min;
+        continue;
+      }
       this.wake = new AbortController();
       const both = AbortSignal.any([signal, this.wake.signal]);
       await this.sleep(delay, both);
       this.wake = undefined;
+      if (this.poked) {
+        this.poked = false;
+        delay = this.min;
+      }
     }
     this.options.onStatus?.("stopped");
   }

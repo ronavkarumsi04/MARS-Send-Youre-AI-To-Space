@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { MarsClient } from "../src/client";
 import { RpcError } from "../src/rpc";
 import { SkillsController, type SkillsState } from "../src/skillsController";
-import { FakeServer } from "./fixtures";
+import { FakeServer, flush } from "./fixtures";
 
 const proposal = (id: string, cleared: boolean, status = "pending") => ({
   proposal_id: id,
@@ -70,6 +70,48 @@ async function setup() {
     },
   });
   return { server, controller, states, confirms, answers, client };
+}
+
+for (const target of ["another server", "disconnected"] as const) {
+  for (const fails of [false, true]) {
+    test(`Skills discards stale ${fails ? "errors" : "results"} after switching to ${target}`, async () => {
+      const old = await setup();
+      const next = await setup();
+      next.server.on("skills.list", () => []);
+      next.server.on("skills.proposals.list", () => []);
+      let current: MarsClient | undefined = old.client;
+      const states: SkillsState[] = [];
+      const controller = new SkillsController({
+        client: () => current,
+        post: (state) => states.push(state),
+        ui: { confirm: async () => true, prompt: async () => undefined },
+      });
+      const gate = Promise.withResolvers<void>();
+      const skills = old.client.skills.bind(old.client);
+      old.client.skills = async () => {
+        await gate.promise;
+        if (fails) throw new Error("old server failed");
+        return skills();
+      };
+      const loading = controller.refresh();
+      await flush();
+      current = target === "another server" ? next.client : undefined;
+      await controller.refresh();
+      const switched = states.length;
+      gate.resolve();
+      await loading;
+      expect(states.at(-1)).toMatchObject({
+        connected: target === "another server",
+        skills: [],
+        proposals: [],
+        busy: null,
+      });
+      expect(
+        states.slice(switched).some((state) => state.skills.length > 0),
+      ).toBe(false);
+      expect(states.at(-1)?.notice?.kind).not.toBe("error");
+    });
+  }
 }
 
 test("Skills view lists skills and proposals, and accepts through the gate", async () => {

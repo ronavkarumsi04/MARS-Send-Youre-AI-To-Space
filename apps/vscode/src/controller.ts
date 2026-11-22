@@ -92,6 +92,7 @@ interface Selection {
   verification: VerificationBadge | null;
   watch: WatchRecordView[];
   refreshing: boolean;
+  reloadPending: boolean;
 }
 
 const MAX_WATCH_RECORDS = 5;
@@ -168,6 +169,7 @@ export class WorkbenchController {
   private selection: Selection | undefined;
   private poller: EventPoller | undefined;
   private generation = 0;
+  private connectSeq = 0;
   private verificationSeq = 0;
   private busy: string | null = null;
   private notice: Notice | null = null;
@@ -214,7 +216,15 @@ export class WorkbenchController {
   async handleMessage(raw: unknown): Promise<boolean> {
     const parsed = WebviewMessageSchema.safeParse(raw);
     if (!parsed.success || this.disposedFlag) return false;
-    await this.dispatch(parsed.data);
+    try {
+      await this.dispatch(parsed.data);
+    } catch {
+      this.setNotice(
+        "error",
+        "Unable to complete the requested action. Please try again.",
+      );
+      this.emit();
+    }
     return true;
   }
 
@@ -424,13 +434,14 @@ export class WorkbenchController {
   // ---------------------------------------------------------- connection
 
   async connect(): Promise<void> {
+    const sequence = ++this.connectSeq;
     this.stopPolling();
     this.setClient(undefined);
     this.server = undefined;
     this.connection = disconnected("connecting", null);
     this.emit();
     const result = await this.options.connect();
-    if (this.disposedFlag) return;
+    if (this.disposedFlag || sequence !== this.connectSeq) return;
     if (!result.ok) {
       this.connection = disconnected(result.status, result.message);
       this.emit();
@@ -440,6 +451,7 @@ export class WorkbenchController {
     this.inflight.add(controller);
     try {
       const server = await result.client.describe(controller.signal);
+      if (this.disposedFlag || sequence !== this.connectSeq) return;
       const previous = this.identity;
       if (
         previous &&
@@ -462,6 +474,7 @@ export class WorkbenchController {
       };
       this.notice = null;
     } catch (error) {
+      if (this.disposedFlag || sequence !== this.connectSeq) return;
       const rpc = error instanceof RpcError ? error : undefined;
       const status: ConnectionStatus =
         rpc?.kind === "unauthorized"
@@ -625,6 +638,7 @@ export class WorkbenchController {
       verification: null,
       watch: [],
       refreshing: false,
+      reloadPending: false,
     };
     this.startPolling(generation, taskId);
     this.emit();
@@ -706,7 +720,11 @@ export class WorkbenchController {
 
   private async reloadSelected(): Promise<void> {
     const selected = this.selection;
-    if (!selected || selected.refreshing) return;
+    if (!selected) return;
+    if (selected.refreshing) {
+      selected.reloadPending = true;
+      return;
+    }
     const { generation } = selected;
     const taskId = selected.task.task_id;
     selected.refreshing = true;
@@ -719,6 +737,14 @@ export class WorkbenchController {
       selected.refreshing = false;
     }
     this.emit();
+    if (
+      selected.reloadPending &&
+      this.selection === selected &&
+      !this.disposedFlag
+    ) {
+      selected.reloadPending = false;
+      await this.reloadSelected();
+    }
   }
 
   // ---------------------------------------------------------- lifecycle

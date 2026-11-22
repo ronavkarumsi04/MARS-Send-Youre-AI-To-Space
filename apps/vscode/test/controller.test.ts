@@ -62,6 +62,118 @@ async function connectedWithTask(
 }
 
 describe("connection states", () => {
+  for (const delayed of ["connect", "describe"] as const) {
+    test(`a superseded ${delayed} cannot replace the latest connection`, async () => {
+      const first = harness();
+      const second = harness();
+      const old = await first.connect();
+      const latest = await second.connect();
+      if (!old.ok || !latest.ok) throw new Error("Expected clients");
+      const gate = Promise.withResolvers<void>();
+      if (delayed === "describe")
+        old.client.describe = async () => {
+          await gate.promise;
+          return { ...describeResult, workspaceLabel: "old" };
+        };
+      let calls = 0;
+      const ctx = setup({
+        connect: async () => {
+          if (++calls > 1) return { ...latest, server: "http://second" };
+          if (delayed === "connect") await gate.promise;
+          return { ...old, server: "http://first" };
+        },
+      });
+      try {
+        const stale = ctx.controller.connect();
+        await flush();
+        await ctx.controller.connect();
+        const posted = ctx.states.length;
+        gate.resolve();
+        await stale;
+        expect(ctx.controller.currentClient).toBe(latest.client);
+        expect(ctx.last().connection.server).toBe("http://second");
+        expect(ctx.states).toHaveLength(posted);
+        expect(first.server.methods()).not.toContain("tasks.list");
+      } finally {
+        ctx.controller.dispose();
+      }
+    });
+  }
+
+  test("updates received during an inspect queue another reload", async () => {
+    const ctx = await connectedWithTask("running");
+    const first = Promise.withResolvers<ReturnType<typeof makeTask>>();
+    let inspections = 0;
+    const client = ctx.controller.currentClient;
+    if (!client) throw new Error("Expected client");
+    client.inspect = async () => {
+      inspections++;
+      if (inspections === 1) return first.promise;
+      return makeTask({ status: "completed", revision: 2 });
+    };
+    try {
+      ctx.server.events.push(
+        makeEvent("reload-1", { event_type: "task.updated" }),
+      );
+      ctx.controller.activePoller?.poke();
+      await flush(10);
+      expect(inspections).toBe(1);
+      ctx.server.events.push(
+        makeEvent("reload-2", { event_type: "task.updated" }),
+      );
+      ctx.controller.activePoller?.poke();
+      await flush(10);
+      expect(
+        ctx
+          .last()
+          .selected?.events.some((event) => event.event_id === "reload-2"),
+      ).toBe(true);
+      first.resolve(makeTask({ status: "running", revision: 1 }));
+      await flush(10);
+      expect(inspections).toBe(2);
+      expect(ctx.last().selected?.task).toMatchObject({
+        status: "completed",
+        revision: 2,
+      });
+    } finally {
+      ctx.controller.dispose();
+    }
+  });
+
+  for (const operation of ["copyText", "openArtifact"] as const) {
+    test(`${operation} host failures resolve with a safe error notice`, async () => {
+      const ctx = setup();
+      const artifact = artifactFor("hello");
+      ctx.server.tasks.set("task-1", makeTask({ artifacts: [artifact.ref] }));
+      ctx.server.artifacts.set(artifact.ref.artifact_id, artifact.data_base64);
+      await ctx.controller.handleMessage({ type: "ready" });
+      await ctx.controller.handleMessage({
+        type: "selectTask",
+        taskId: "task-1",
+      });
+      ctx.ui[operation] = async () => {
+        throw new Error("private /host/path");
+      };
+      try {
+        expect(
+          await ctx.controller.handleMessage(
+            operation === "copyText"
+              ? { type: "copyText", text: "hello" }
+              : {
+                  type: "openArtifact",
+                  taskId: "task-1",
+                  artifactId: artifact.ref.artifact_id,
+                },
+          ),
+        ).toBe(true);
+        expect(ctx.last().notice?.kind).toBe("error");
+        expect(ctx.last().notice?.text).not.toContain("/host/path");
+      } finally {
+        ctx.controller.dispose();
+      }
+    });
+  }
+
   test("connects, describes without context and lists tasks", async () => {
     const ctx = setup();
     ctx.server.tasks.set("task-1", makeTask());
@@ -1019,6 +1131,18 @@ describe("verified patch flow", () => {
     expect(ctx.saved).toHaveLength(1);
     expect(Buffer.from(ctx.saved[0]?.bytes ?? []).toString("utf8")).toBe(patch);
     expect(ctx.last().notice?.text).toContain("round trip passed");
+
+    ctx.ui.savePatch = async () => {
+      throw new Error("private /host/path");
+    };
+    expect(
+      await ctx.controller.handleMessage({
+        type: "exportPatch",
+        taskId: "task-1",
+      }),
+    ).toBe(true);
+    expect(ctx.last().notice?.kind).toBe("error");
+    expect(ctx.last().notice?.text).not.toContain("/host/path");
 
     ctx.server.on("tasks.export", () => {
       throw new RpcError("conflict", "moved", "revision_conflict", 409);
