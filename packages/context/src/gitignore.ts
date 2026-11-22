@@ -84,22 +84,29 @@ function globSource(pattern: string): string {
     if (character === "\\" && index + 1 < pattern.length) {
       index += 1;
       result += (pattern[index] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    } else if (
-      character === "*" &&
-      pattern[index + 1] === "*" &&
-      (index === 0 || pattern[index - 1] === "/") &&
-      (index + 2 === pattern.length || pattern[index + 2] === "/")
-    ) {
-      index += 1;
-      if (pattern[index + 1] === "/") {
-        index += 1;
-        result += "(?:.*/)?";
-      } else {
-        result += ".*";
-      }
     } else if (character === "*") {
-      while (pattern[index + 1] === "*") index += 1;
-      result += "[^/]*";
+      let last = index;
+      while (pattern[last + 1] === "*") last += 1;
+      const next = last + 1;
+      const globstar =
+        last > index && (index === 0 || pattern[index - 1] === "/");
+      if (globstar && next === pattern.length) {
+        result += ".*";
+        index = last;
+      } else if (globstar && pattern[next] === "/") {
+        result += "(?:.*/)?";
+        index = next;
+      } else if (
+        globstar &&
+        pattern[next] === "\\" &&
+        pattern[next + 1] === "/"
+      ) {
+        result += "(?:.*/)?";
+        index = next + 1;
+      } else {
+        result += "[^/]*";
+        index = last;
+      }
     } else if (character === "?") {
       result += "[^/]";
     } else if (character === "[") {

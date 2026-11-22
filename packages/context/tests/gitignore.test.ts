@@ -119,4 +119,14 @@ describe(".gitignore escapes", () => {
     expect(isGitignored("lib/axxb", false, rules)).toBe(true);
     expect(isGitignored("lib/a/b", false, rules)).toBe(false);
   });
+
+  test("a run of stars or an escaped slash still forms a globstar", () => {
+    const rules = [
+      { prefix: "", rules: parseGitignore("a/***/x.ts\nb/**\\/y.ts\n") },
+    ];
+    expect(isGitignored("a/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("a/p/q/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("b/y.ts", false, rules)).toBe(true);
+    expect(isGitignored("b/p/q/y.ts", false, rules)).toBe(true);
+  });
 });
