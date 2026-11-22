@@ -1199,12 +1199,31 @@ export function renderShell(
       ),
     );
   }
+  if (state.error) {
+    const retry = h(
+      doc,
+      "button",
+      { type: "button", class: "retry", "data-focus-key": REFRESH_FOCUS_KEY },
+      "Retry",
+    );
+    retry.addEventListener("click", () => state.onRefresh?.());
+    masthead.append(
+      h(
+        doc,
+        "span",
+        { class: "workspace-alert", role: "alert" },
+        `Workbench unavailable: ${state.error}`,
+      ),
+      retry,
+    );
+  }
   const task = state.selectedTask;
   const navButton = (
     text: string,
     selected: boolean,
     callback: () => void,
     className = "nav-item",
+    disabled = false,
   ) => {
     const button = h(
       doc,
@@ -1213,6 +1232,7 @@ export function renderShell(
         type: "button",
         class: `${className}${selected ? " selected" : ""}`,
         "aria-pressed": String(selected),
+        disabled,
       },
       text,
     );
@@ -1282,10 +1302,11 @@ export function renderShell(
     ),
     state.assistant
       ? navButton(
-          "＋  New conversation",
+          "+  New conversation",
           false,
           () => state.assistant?.onNew?.(),
           "new-conversation",
+          state.assistant.busy,
         )
       : null,
     state.assistant
@@ -1310,6 +1331,7 @@ export function renderShell(
         isChat && session.id === state.assistant?.activeId,
         () => state.assistant?.onSelect?.(session.id),
         "conversation-item",
+        state.assistant?.busy,
       ),
     ),
     state.assistant && state.assistant.sessions.length === 0
@@ -1382,9 +1404,6 @@ export function renderShell(
                   "details-toggle",
                 ),
               ),
-              state.error
-                ? h(doc, "p", { class: "error", role: "alert" }, state.error)
-                : null,
               approvalAndLifecycleCard(doc, state),
               h(
                 doc,

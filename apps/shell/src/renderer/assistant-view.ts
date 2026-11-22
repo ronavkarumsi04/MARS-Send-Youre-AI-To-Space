@@ -15,6 +15,7 @@ export type AssistantViewState = {
   onConsent?: (consent: boolean) => void;
   onSend?: () => void;
   onSettings?: () => void;
+  onRetryLoad?: () => void;
   onNew?: () => void;
   onSelect?: (id: string) => void;
   onTask?: (text: string) => void;
@@ -257,7 +258,15 @@ export function renderAssistant(
           )
         : null,
       state.error
-        ? h(doc, "p", { class: "chat-error", role: "alert" }, state.error)
+        ? h(
+            doc,
+            "div",
+            { class: "chat-error", role: "alert" },
+            state.error,
+            state.onRetryLoad
+              ? action(doc, "Retry chat", "retry", state.onRetryLoad)
+              : null,
+          )
         : null,
       form,
       state.configured

@@ -144,6 +144,14 @@ button:disabled {
     8px 0 var(--borderMuted),
     16px 0 var(--borderMuted);
 }
+.workspace-alert {
+  color: var(--error);
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .sidebar,
 .main,

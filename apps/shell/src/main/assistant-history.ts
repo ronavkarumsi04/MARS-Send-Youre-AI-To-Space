@@ -23,7 +23,8 @@ export async function readHistory(path: string): Promise<AssistantSession[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const db = new DatabaseSync(path, { readOnly: true });
+  // A read can require a write to roll back a hot journal after a crash.
+  const db = new DatabaseSync(path);
   try {
     // A second instance may have just created the database for its first send.
     if (

@@ -191,6 +191,9 @@ export function createController(
         ? {
             assistant: {
               ...assistantState,
+              ...(!assistantLoaded && !assistantState.loading && !state.error
+                ? { onRetryLoad: () => void load() }
+                : {}),
               onDraft: (draft) => {
                 assistantState = { ...assistantState, draft };
                 if (
@@ -350,15 +353,17 @@ export function createController(
 
   const loadAssistant = async () => {
     if (!assistant || assistantLoaded) return;
-    assistantLoaded = true;
+    assistantState = { ...assistantState, loading: true };
     try {
       const result = await assistant.request({ action: "load" });
+      assistantLoaded = result.ok;
       assistantState = result.ok
         ? {
             ...assistantState,
             sessions: result.sessions,
             configured: result.configured,
             loading: false,
+            error: undefined,
             activeId: result.sessions[0]?.id ?? assistantState.activeId,
           }
         : { ...assistantState, loading: false, error: result.error };
@@ -366,7 +371,7 @@ export function createController(
       assistantState = {
         ...assistantState,
         loading: false,
-        error: "Could not load chat. Reopen MARS to retry.",
+        error: "Could not load your conversations.",
       };
     }
     render();
@@ -1572,13 +1577,12 @@ export function createController(
   };
 
   const load = () => {
-    void loadAssistant();
     loadRequested = true;
     if (!loadPromise) {
       loadPromise = (async () => {
         while (loadRequested) {
           loadRequested = false;
-          await loadOnce();
+          await Promise.all([loadAssistant(), loadOnce()]);
         }
       })().finally(() => {
         loadPromise = undefined;
