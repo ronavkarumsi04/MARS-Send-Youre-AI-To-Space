@@ -1,4 +1,4 @@
-/* Conversation and artifact workspace extend the shell's Bold ink/paper system. */
+/* Conversation and artifact workspace extend the shell's navy/orange system. */
 .assistant-main > .assistant-conversation {
   display: flex;
   flex: 1 1 auto;
@@ -28,7 +28,13 @@
   scrollbar-gutter: stable;
 }
 .assistant-main.is-empty {
-  background: var(--pageBg);
+  background:
+    radial-gradient(
+      ellipse at 75% 25%,
+      rgba(240, 122, 42, 0.04),
+      transparent 60%
+    ), radial-gradient(ellipse at 35% 65%, var(--blueSoft), transparent 65%),
+    var(--pageBg);
 }
 .is-empty .assistant-scroll {
   margin-top: auto;
@@ -52,7 +58,7 @@
 }
 .assistant-input {
   font-size: 15px;
-  caret-color: var(--paperInk);
+  caret-color: var(--accent);
 }
 .assistant-composer-tools {
   margin-top: 8px;
@@ -109,7 +115,7 @@
   padding: 13px 18px;
   border: 1px solid var(--borderMuted);
   border-radius: 18px 18px 4px 18px;
-  background: var(--infoBg);
+  background: var(--blueSoft);
   color: var(--fg);
   font-size: 14px;
   line-height: 1.7;
@@ -167,7 +173,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--paper);
+  background: var(--accent);
   animation: thinking-pulse 1.5s ease-in-out infinite;
 }
 @keyframes thinking-pulse {

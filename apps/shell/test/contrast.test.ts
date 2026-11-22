@@ -6,6 +6,7 @@ const CSS_PATH = new URL("../src/renderer/shell.css", import.meta.url);
 const TEXT_TOKENS = [
   "fg",
   "accent",
+  "blue",
   "success",
   "error",
   "warning",
@@ -62,4 +63,37 @@ test("the MARS desktop palette maintains WCAG 1.4.3 contrast", async () => {
     }
   }
   expect(failures).toEqual([]);
+});
+
+test("input placeholders use opaque muted text with AA contrast on navy surfaces", async () => {
+  const css = await readFile(CSS_PATH, "utf8");
+  const palette = tokens(css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] ?? "");
+  const placeholder = css.match(/^::placeholder\s*\{([^}]+)\}/m)?.[1] ?? "";
+  expect(placeholder).toContain("color: var(--muted);");
+  expect(placeholder).toContain("opacity: 1;");
+  for (const background of ["pageBg", "cardBg", "infoBg"]) {
+    expect(
+      contrast(palette.get("muted") ?? "", palette.get(background) ?? ""),
+    ).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("primary actions, selection and retained document surfaces maintain AA contrast", async () => {
+  const css = await readFile(CSS_PATH, "utf8");
+  const palette = tokens(css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] ?? "");
+  for (const [foreground, background] of [
+    ["pageBg", "accent"],
+    ["pageBg", "warning"],
+    ["paperInk", "paper"],
+    ["paperMuted", "paper"],
+  ]) {
+    const fg = palette.get(foreground ?? "");
+    const bg = palette.get(background ?? "");
+    expect(fg).toBeDefined();
+    expect(bg).toBeDefined();
+    expect(contrast(fg ?? "", bg ?? "")).toBeGreaterThanOrEqual(4.5);
+  }
+  expect(
+    contrast("#ffffff", palette.get("accentStrong") ?? ""),
+  ).toBeGreaterThanOrEqual(4.5);
 });

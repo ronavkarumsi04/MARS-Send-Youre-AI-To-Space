@@ -27,7 +27,7 @@ test("recovery page uses readable theme colors through a CSP-allowed stylesheet"
   );
   const root = css.match(/:root\s*\{([^}]+)\}/)?.[1] ?? "";
   expect(root).toContain("--fg: #ece6dc;");
-  expect(root).toContain("--pageBg: #050407;");
+  expect(root).toContain("--pageBg: #070b14;");
   expect(root).toContain("color: var(--fg);");
   expect(root).toContain("background: var(--pageBg);");
 });
