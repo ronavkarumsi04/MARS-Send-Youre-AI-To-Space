@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -243,7 +244,7 @@ if (Bun.version !== expectedBun)
   throw new Error(`Use Bun ${expectedBun} to package MARS.`);
 await mkdir(output, { recursive: true });
 // Stage outside the checkout so missing dependencies cannot resolve from its node_modules.
-const stage = await mkdtemp(join(tmpdir(), "mars-desktop-"));
+const stage = await mkdtemp(join(await realpath(tmpdir()), "mars-desktop-"));
 try {
   await (process.platform === "darwin"
     ? packageMac(stage)
