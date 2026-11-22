@@ -74,7 +74,7 @@ To expose approved tools in agent sessions, start `mars serve --mcp-state-dir <d
 
 `mars mcp` provides a host-owned CLI backed by `createHostMcpControlPlane` (storing the trust store, server registry, and 32-byte HMAC approval key in a host-owned state directory outside workspaces, defaulting to `$XDG_STATE_HOME/mars/integration-trust` or `~/.local/state/mars/integration-trust`):
 
-Server registrations are isolated by scope. If upgrading from a build with a shared registry, run review and approval again in each intended scope; unscoped registrations are not imported automatically. New stdio reviews bind both the resolved executable and the optional entrypoint.
+Server registrations are isolated by scope. If upgrading from a build with a shared registry, run review and approval again in each intended scope; unscoped registrations are not imported automatically. New stdio reviews bind the resolved executable, the optional entrypoint, and the contents of every argument that names an existing file (resolved against the server's `cwd`), so editing a script launched as `bun run server.ts` requires re-approval even without `--entrypoint`. Approved servers whose arguments name files drift once after upgrading and need to be reviewed and approved again.
 
 ```sh
 # List registered servers, pending reviews, and active grants (empty by default)

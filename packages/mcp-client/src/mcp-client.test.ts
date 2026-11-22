@@ -508,6 +508,42 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(await Bun.file(marker).exists()).toBe(false);
   });
 
+  it("detects an edited script passed as an argument without spawning it or requiring an entrypoint", async () => {
+    const dir = await makeTempDir("mars-stdio-script-arg-");
+    const script = join(dir, "server.ts");
+    const marker = join(dir, "spawned");
+    const fixtureSrc = await readFile(STDIO_FIXTURE, "utf8");
+    await writeFile(script, fixtureSrc, "utf8");
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "edited-script-arg",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        cwd: dir,
+        args: ["run", "server.ts"],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    expect((await cp.loader.admitServer(ctx, config.id)).server_id).toBe(
+      config.id,
+    );
+    await cp.loader.closeServer(config.id);
+    await writeFile(
+      script,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "SPAWNED");\n${fixtureSrc}`,
+      "utf8",
+    );
+    await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
+      code: "drift",
+    });
+    expect(await Bun.file(marker).exists()).toBe(false);
+  });
+
   it("detects stdio descriptor drift on per-dispatch re-probe, supersedes grant, and requires re-approval", async () => {
     const modeDir = await makeTempDir("mars-stdio-mode-");
     const modeFile = join(modeDir, "mode.json");
@@ -527,7 +563,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       transport: {
         type: "stdio",
         command: BUN_BIN,
-        args: ["run", STDIO_FIXTURE, "--mode-file", modeFile],
+        args: ["run", STDIO_FIXTURE, `--mode-file=${modeFile}`],
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -568,6 +604,16 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(oldGrant?.state).toBe("superseded");
     const pendingReview = inspected.reviews.find((r) => r.state === "pending");
     expect(pendingReview).toBeDefined();
+    // Only the live descriptor drifted; static artifact hashes are unchanged.
+    expect(pendingReview?.evidence.config_sha256).toBe(
+      firstGrant.evidence.config_sha256,
+    );
+    expect(pendingReview?.evidence.dependency_sha256).toBe(
+      firstGrant.evidence.dependency_sha256,
+    );
+    expect(pendingReview?.evidence.tools).not.toEqual(
+      firstGrant.evidence.tools,
+    );
 
     // Verify hash-chained audit log integrity
     const { state } = await cp.readState();

@@ -2,7 +2,7 @@
  * Real local stdio MCP server fixture for end-to-end tests.
  * Reads newline-delimited JSON-RPC 2.0 messages on stdin and writes responses on stdout.
  *
- * Supports dynamic drift simulation via `--mode-file <path>` containing JSON:
+ * Supports dynamic drift simulation via `--mode-file=<path>` containing JSON:
  *   { "version": "1.0.0", "extraTool": false, "mutateSchema": false }
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -15,8 +15,8 @@ interface ModeConfig {
 }
 
 function getModeFile(): string | undefined {
-  const idx = process.argv.indexOf("--mode-file");
-  return idx >= 0 ? process.argv[idx + 1] : undefined;
+  const flag = process.argv.find((arg) => arg.startsWith("--mode-file="));
+  return flag?.slice("--mode-file=".length);
 }
 
 function readMode(): ModeConfig {
