@@ -42,6 +42,15 @@ export class ExecutionLimitError extends Error {
   }
 }
 
+export class NoEligibleModelError extends Error {
+  constructor() {
+    super(
+      "No eligible configured model; configure a tool-capable free model or explicitly select a priced, user-authorized paid model.",
+    );
+    this.name = "NoEligibleModelError";
+  }
+}
+
 export function selectExecutionModel(
   registry: ModelProviderRegistry,
   requested?: string,
@@ -67,9 +76,7 @@ export function selectExecutionModel(
       continue;
     return model;
   }
-  throw new Error(
-    "No eligible configured model; configure a tool-capable free model or explicitly select a priced, user-authorized paid model.",
-  );
+  throw new NoEligibleModelError();
 }
 
 function textContent(content: Context["messages"][number]["content"]): string {
