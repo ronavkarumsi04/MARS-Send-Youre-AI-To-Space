@@ -1,7 +1,10 @@
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SandboxUnavailableError } from "@mars/workspaces";
+import {
+  DockerSandboxPrerequisiteError,
+  DockerSandboxRootUserError,
+} from "@mars/workspaces";
 import {
   type CandidateEvaluator,
   createFixtureEvaluator,
@@ -31,14 +34,14 @@ export async function optionalEvolutionDockerSandbox(
   try {
     sandbox = createEvolutionDockerSandbox(options);
   } catch (error) {
-    if (error instanceof TypeError) return null;
+    if (error instanceof DockerSandboxRootUserError) return null;
     throw error;
   }
   try {
     await sandbox.verify();
     return sandbox;
   } catch (error) {
-    if (error instanceof SandboxUnavailableError) return null;
+    if (error instanceof DockerSandboxPrerequisiteError) return null;
     throw error;
   }
 }

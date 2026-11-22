@@ -75,21 +75,33 @@ test("offline proposer tests load without Docker on PATH", async () => {
   expect(output).toContain("1 pass");
 });
 
+async function writeDockerInspectionFixture(
+  dockerPath: string,
+  inspect: string,
+) {
+  await writeFile(
+    dockerPath,
+    [
+      "#!/bin/sh",
+      'if [ "$*" = "version --format {{.Server.Version}}" ]; then',
+      "  echo 29.0.0",
+      `elif [ "$*" = 'image inspect --format {{json .RepoDigests}} ${DEFAULT_EVOLUTION_DOCKER_IMAGE}' ]; then`,
+      `  ${inspect}`,
+      "else",
+      "  exit 2",
+      "fi",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+}
+
 test("optional Docker sandbox requires a non-root uid and gid even with a verified image", async () => {
   await withTempDir(async (dir) => {
     const dockerPath = join(dir, "docker");
-    await writeFile(
+    await writeDockerInspectionFixture(
       dockerPath,
-      [
-        "#!/bin/sh",
-        'case "$1" in',
-        "  version) echo 29.0.0 ;;",
-        `  image) echo '${JSON.stringify([DEFAULT_EVOLUTION_DOCKER_IMAGE])}' ;;`,
-        "  *) exit 1 ;;",
-        "esac",
-        "",
-      ].join("\n"),
-      { mode: 0o700 },
+      `echo '${JSON.stringify([DEFAULT_EVOLUTION_DOCKER_IMAGE])}'`,
     );
     expect(
       await optionalEvolutionDockerSandbox({
@@ -109,6 +121,27 @@ test("optional Docker sandbox requires a non-root uid and gid even with a verifi
         user: { uid: 1000, gid: 0 },
       }),
     ).toBeNull();
+  });
+});
+
+test("optional Docker sandbox skips a missing image but fails an installed digest mismatch", async () => {
+  await withTempDir(async (dir) => {
+    const dockerPath = join(dir, "docker");
+    const options = { dockerPath, user: { uid: 1000, gid: 1000 } };
+    await writeDockerInspectionFixture(
+      dockerPath,
+      `echo 'Error response from daemon: No such image: ${DEFAULT_EVOLUTION_DOCKER_IMAGE}' >&2; exit 1`,
+    );
+    expect(await optionalEvolutionDockerSandbox(options)).toBeNull();
+
+    const wrongDigest = `oven/bun@sha256:${"a".repeat(64)}`;
+    await writeDockerInspectionFixture(
+      dockerPath,
+      `echo '${JSON.stringify([wrongDigest])}'`,
+    );
+    await expect(optionalEvolutionDockerSandbox(options)).rejects.toThrow(
+      "Docker image inspection did not verify the pinned repository digest",
+    );
   });
 });
 
