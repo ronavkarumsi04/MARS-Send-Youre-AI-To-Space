@@ -26,10 +26,17 @@ export function extensionController(
       if (!active)
         throw new Error("Open a local project to manage extensions.");
       const installed = await active.extensionAction({ action: "list" });
-      return CATALOG.map(({ assets: _, ...entry }) => ({
-        ...entry,
-        installed: installed.includes(entry.id),
-      }));
+      return CATALOG.map(
+        ({ id, name, kind, version, description, permissions }) => ({
+          id,
+          name,
+          kind,
+          version,
+          description,
+          permissions,
+          installed: installed.includes(id),
+        }),
+      );
     },
     async install(id) {
       const entry = findExtension(id);
@@ -87,26 +94,35 @@ export function desktopExtensionsMenu(
   });
   return {
     label: "Add Verified Extension",
-    submenu: CATALOG.map((entry) => ({
-      label: `${entry.name} (${entry.kind === "mcp" ? "MCP server" : entry.kind})…`,
-      click: async () => {
-        const result = await api.install(entry.id);
-        if (window.isDestroyed() || result === "cancelled") return;
-        await dialog.showMessageBox(
-          window,
-          result === "installed"
-            ? {
-                type: "info",
-                message: `${entry.name} is ready for new tasks in this project.`,
-              }
-            : {
-                type: "warning",
-                message: "Extension not added",
-                detail:
-                  "Check that a local project is open and that no existing skill has different content under the same name, then try again.",
-              },
-        );
-      },
+    submenu: (
+      [
+        ["mcp", "MCP servers — tools"],
+        ["skill", "Skills — instructions"],
+        ["plugin", "Plugins — bundles"],
+      ] as const
+    ).map(([kind, label]) => ({
+      label,
+      submenu: CATALOG.filter((entry) => entry.kind === kind).map((entry) => ({
+        label: `${entry.name}…`,
+        click: async () => {
+          const result = await api.install(entry.id);
+          if (window.isDestroyed() || result === "cancelled") return;
+          await dialog.showMessageBox(
+            window,
+            result === "installed"
+              ? {
+                  type: "info",
+                  message: `${entry.name} is ready for new tasks in this project.`,
+                }
+              : {
+                  type: "warning",
+                  message: "Extension not added",
+                  detail:
+                    "Check that a local project is open and that no existing skill has different content under the same name, then try again.",
+                },
+          );
+        },
+      })),
     })),
   };
 }

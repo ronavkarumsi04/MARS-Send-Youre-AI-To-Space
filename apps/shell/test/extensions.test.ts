@@ -9,6 +9,7 @@ import {
   desktopExtensionsMenu,
   extensionController,
 } from "../src/main/extensions";
+import { CATALOG } from "../src/runtime/extension-catalog";
 import type { ExtensionAction } from "../src/runtime/extension-wire";
 import { projectExtensions } from "../src/runtime/extensions";
 
@@ -45,7 +46,7 @@ test("skills and declarative plugins install atomically into the project skill s
   const revision = await store.getRevision();
   await open().install(plugin);
   expect(await store.getRevision()).toBe(revision);
-  expect(await open().list()).toEqual([skill, plugin]);
+  expect(await open().list()).toEqual([skill, "mars-test-handoff", plugin]);
   expect((await store.list()).map((s) => s.name).sort()).toEqual([
     skill,
     "mars-test-handoff",
@@ -63,6 +64,75 @@ test("skills and declarative plugins install atomically into the project skill s
     ).list(),
   ).toEqual([]);
 });
+
+test("the investigation and review kits install all and only their declared skills", async () => {
+  const ext = open();
+  await ext.install("mars-debug-kit");
+  expect(await ext.list()).toEqual([
+    "mars-bug-triage",
+    "mars-test-plan",
+    "mars-debug-kit",
+  ]);
+  await ext.install("mars-pr-kit");
+  expect(await open().list()).toEqual([
+    "mars-bug-triage",
+    "mars-code-review",
+    "mars-test-plan",
+    "mars-test-handoff",
+    "mars-debug-kit",
+    "mars-pr-kit",
+  ]);
+});
+
+test("supplied JSON and unified patches are processed offline by independently approved tools", async () => {
+  const ext = open();
+  const runtime = await ext.runtime(source, scope);
+  const call = (
+    server_id: string,
+    tool: string,
+    input: Record<string, string>,
+  ) => runtime.loader.invokeTool(ctx, { server_id, tool, input });
+  try {
+    await ext.install("mars-json-compare");
+    const result = await call("mars-json-compare", "compare_json", {
+      before: '{"a/b":false,"unused":0}',
+      after: '{"a/b":true,"new":"value stays private"}',
+    });
+    expect(JSON.parse(result.content[0]?.text ?? "")).toEqual({
+      count: 3,
+      paths: [
+        { change: "changed", path: "/a~1b" },
+        { change: "removed", path: "/unused" },
+        { change: "added", path: "/new" },
+      ],
+      omitted: 0,
+    });
+    await expect(
+      call("mars-diff-summary", "summarize_diff", { diff: "" }),
+    ).rejects.toThrow();
+    await ext.install("mars-diff-summary");
+    const diff =
+      "--- a/doc\n+++ b/doc\n@@ -1 +1,2 @@\n-a\n+b\n++++ header-like content\n";
+    const stats = await call("mars-diff-summary", "summarize_diff", { diff });
+    expect(JSON.parse(stats.content[0]?.text ?? "")).toEqual({
+      textFiles: 1,
+      added: 2,
+      removed: 1,
+      files: [{ path: "b/doc", added: 2, removed: 1, hunks: 1 }],
+      omitted: 0,
+    });
+    await expect(
+      call("mars-json-compare", "summarize_diff", { diff }),
+    ).rejects.toThrow();
+    const invalid = await call("mars-json-compare", "compare_json", {
+      before: "not JSON",
+      after: "{}",
+    });
+    expect(invalid.is_error).toBe(true);
+  } finally {
+    await runtime.loader.closeAll();
+  }
+}, 30_000);
 
 test("bad IDs, conflicting skill contents and modified bundle bytes cannot install", async () => {
   const extensions = open();
@@ -229,5 +299,5 @@ test("the catalog IPC rejects other windows, non-main frames and renderer-suppli
     (await listener(event as never, { action: "list" })).map(
       (entry: { kind: string }) => entry.kind,
     ),
-  ).toEqual(["mcp", "skill", "plugin"]);
+  ).toEqual(CATALOG.map((entry) => entry.kind));
 });

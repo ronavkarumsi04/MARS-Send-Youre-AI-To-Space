@@ -72,12 +72,12 @@ export function projectExtensions(
       transport: {
         type: "stdio",
         command: process.execPath,
-        args: ["--no-env-file", script],
+        args: ["--no-env-file", script, ...entry.args],
         cwd: dir,
         entrypoint: script,
         env_allowlist: [],
       },
-      permissions: [{ capability: "tool.invoke", resource: "utc_now" }],
+      permissions: [{ capability: "tool.invoke", resource: entry.tool }],
       credential_bindings: [],
     };
   }

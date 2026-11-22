@@ -17,11 +17,11 @@ You can browse the workbench and use the **Team chat** demo without a provider k
 
 In the installed app, choose **Project → Add Verified Extension**, pick an item, review what it will add to the selected project, then choose **Add to project**. You don't need a model key to install. New tasks in that project can use the extension; other projects are unchanged.
 
-- An **MCP server** supplies a callable tool. **UTC clock** runs locally and returns the current UTC time; it needs no credentials or network connection. Its project grant expires after 30 days; add it again to renew.
-- A **skill** supplies instructions, not executable code. **Change summary** teaches the assistant to write release notes from verified changes.
-- A **plugin** groups extensions into a single install. **Release handoff kit** adds Change summary and Test handoff together, without overwriting different instructions of the same name.
+- An **MCP server** supplies a callable tool. **JSON comparison** reports changed paths between supplied documents. **Diff statistics** counts added and removed lines in a supplied unified text patch. **UTC clock** returns the current UTC time. These tools need no credentials or network connection and do not open project files. Their project grants expire after 30 days; add an item again to renew.
+- A **skill** supplies instructions, not executable code. Choose **Bug triage**, **Code review**, **Test planning**, **Change summary**, or **Test handoff** for focused guidance on the corresponding task.
+- A **plugin** groups extensions into a single install. The **Bug investigation kit** combines triage and test planning; the **Pull request review kit** adds review, test planning, and test handoff; the **Release handoff kit** combines change summary and test handoff. Shared skills are reused and conflicting content is never overwritten.
 
-Here, **verified** means the payload matches a SHA-256 pin in the catalog shipped with MARS. It is not third-party certification. There are no remote downloads or custom URLs/commands. Adding the clock still requires explicit approval; the workbench checks the grant and artifact on use. In attach-only mode the external workbench, not the shell, manages its own extensions.
+Here, **verified** means the payload matches a SHA-256 pin in the catalog shipped with MARS. It is not third-party certification. There are no remote downloads or custom URLs/commands. Adding any MCP requires explicit approval; the workbench checks the grant and artifact on use. In attach-only mode the external workbench, not the shell, manages its own extensions.
 
 ## No second agent loop
 
