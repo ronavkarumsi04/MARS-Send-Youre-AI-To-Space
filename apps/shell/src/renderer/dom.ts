@@ -22,7 +22,9 @@ export interface ShellElement {
   append(...nodes: (ShellElement | ShellText)[]): void;
   replaceChildren(...nodes: (ShellElement | ShellText)[]): void;
   querySelectorAll(selectors: string): ArrayLike<ShellElement>;
-  focus(): void;
+  scrollTop?: number;
+  getBoundingClientRect?(): { top: number };
+  focus(options?: { preventScroll?: boolean }): void;
   addEventListener(
     type: string,
     listener: (event: {

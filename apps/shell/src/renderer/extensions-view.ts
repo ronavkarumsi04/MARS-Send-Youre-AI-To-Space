@@ -20,7 +20,22 @@ export type ExtensionState = {
   available: boolean;
   onInstall?: (id: string) => void;
   onRefresh?: () => void;
+  onDraftTask?: (example: string) => void;
+  hasTaskDraft?: boolean;
 };
+
+function exampleRequest(item: ExtensionItem) {
+  switch (item.id) {
+    case "mars-json-compare":
+      return 'Use JSON comparison to compare {"version":1} with {"version":2,"stable":true}. List the changed paths.';
+    case "mars-diff-summary":
+      return "Use Diff statistics to count changed lines in this patch:\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new";
+    case "mars-utc-clock":
+      return "Use UTC clock to report the current time in UTC.";
+    default:
+      return `Use ${item.name} to help with this task: `;
+  }
+}
 
 /** Native install owns verification, permission consent, and persistence. */
 export function renderExtensions(
@@ -66,7 +81,11 @@ export function renderExtensions(
   return h(
     doc,
     "main",
-    { class: "main extensions-main", "data-panel": "extensions" },
+    {
+      class: "main extensions-main",
+      "data-panel": "extensions",
+      "data-library-scroll": "true",
+    },
     h(
       doc,
       "header",
@@ -114,22 +133,34 @@ export function renderExtensions(
             "The verified installer is not available in this build.",
         ),
         ...(state?.items ?? []).map((item) => {
+          const example = exampleRequest(item);
           const add = h(
             doc,
             "button",
             {
               type: "button",
               class: "connect-action",
-              disabled: item.installed || state?.busy === true,
-              "aria-label": `${item.installed ? "Added" : "Add"} ${item.name}`,
+              disabled: state?.busy === true,
+              "data-focus-key": `extension-${item.id}`,
+              "aria-label": item.installed
+                ? `Open task composer for ${item.name}`
+                : `Add ${item.name}`,
             },
-            item.installed ? "Added" : "Add to project",
+            item.installed
+              ? state?.hasTaskDraft
+                ? "Open task draft"
+                : "Draft a task"
+              : "Add to project",
           );
-          add.addEventListener("click", () => state?.onInstall?.(item.id));
+          add.addEventListener("click", () =>
+            item.installed
+              ? state?.onDraftTask?.(example)
+              : state?.onInstall?.(item.id),
+          );
           return h(
             doc,
             "article",
-            { class: "library-item" },
+            { class: "library-item", "data-extension-id": item.id },
             h(
               doc,
               "div",
@@ -138,10 +169,19 @@ export function renderExtensions(
                 doc,
                 "span",
                 { class: "extension-state" },
-                `${item.kind === "mcp" ? "MCP server" : item.kind} · ${item.version}`,
+                `${item.installed ? "Added · " : ""}${item.kind === "mcp" ? "MCP server" : item.kind} · ${item.version}`,
               ),
               h(doc, "h3", {}, item.name),
               h(doc, "p", {}, item.description),
+              item.installed
+                ? h(
+                    doc,
+                    "p",
+                    { class: "library-example" },
+                    h(doc, "strong", {}, "Try in Tasks: "),
+                    example,
+                  )
+                : null,
               h(
                 doc,
                 "small",

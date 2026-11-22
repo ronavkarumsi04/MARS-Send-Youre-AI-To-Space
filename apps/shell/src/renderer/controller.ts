@@ -198,7 +198,17 @@ export function createController(
 
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
+  let extensionAnchorId: string | undefined;
+  const libraryScroller = () =>
+    root.querySelectorAll("[data-library-scroll]")[0];
+  const anchorTop = () =>
+    Array.from(root.querySelectorAll("[data-extension-id]"))
+      .find((el) => el.getAttribute("data-extension-id") === extensionAnchorId)
+      ?.getBoundingClientRect?.().top;
   const render = () => {
+    const oldLibraryOffset = libraryScroller()?.scrollTop;
+    const oldAnchorTop =
+      oldLibraryOffset === undefined ? undefined : anchorTop();
     const launch = state.selectedTask
       ? launchFor(state.selectedTask)
       : createInitialLaunch();
@@ -228,6 +238,18 @@ export function createController(
         ...extensionState,
         onRefresh: () => void refreshExtensions(),
         onInstall: (id) => void refreshExtensions(id),
+        hasTaskDraft: Boolean(composer.request || composer.criteria),
+        onDraftTask: (example) => {
+          if (!composer.request && !composer.criteria)
+            composer = { ...createInitialComposer(), request: example };
+          page = "tasks";
+          render();
+          Array.from(root.querySelectorAll("[data-focus-key]"))
+            .find(
+              (el) => el.getAttribute("data-focus-key") === "composer-request",
+            )
+            ?.focus();
+        },
       },
       ...(assistant
         ? {
@@ -366,6 +388,13 @@ export function createController(
       onExportPatch: () => void handleExportPatch(),
     };
     root.replaceChildren(renderShell(doc, state));
+    const library = libraryScroller();
+    if (library && oldLibraryOffset !== undefined) {
+      library.scrollTop = oldLibraryOffset;
+      const top = anchorTop();
+      if (oldAnchorTop !== undefined && top !== undefined)
+        library.scrollTop += top - oldAnchorTop;
+    }
     if (focusKey === null) return;
     const targets = Array.from(root.querySelectorAll(`[${FOCUS_KEY}]`));
     const keyed = (key: string) =>
@@ -377,7 +406,7 @@ export function createController(
         ? (keyed("refresh") ?? keyed("assistant-input"))
         : undefined) ??
       keyed(HEADING_FOCUS_KEY);
-    target?.focus();
+    target?.focus({ preventScroll: Boolean(library) });
     if (
       matched &&
       selectionStart !== null &&
@@ -475,6 +504,7 @@ export function createController(
 
   const refreshExtensions = async (installId?: string) => {
     if (!extensions || extensionState.busy) return;
+    extensionAnchorId = installId;
     extensionState = {
       ...extensionState,
       busy: true,

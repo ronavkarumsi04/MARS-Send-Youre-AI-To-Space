@@ -1918,3 +1918,24 @@ p {
     height: 32px;
   }
 }
+
+.model-settings #model-status:not(:empty) {
+  border-left: 2px solid var(--border);
+  padding: 6px 10px;
+  background: var(--infoBg);
+  font-size: 13px;
+}
+.model-settings #model-status:empty {
+  display: none;
+}
+.library-item .library-example {
+  max-width: 65ch;
+  color: var(--paperInk);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .workspace-panels > .extensions-main {
+    height: 100%;
+    overflow: auto;
+  }
+}

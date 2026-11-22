@@ -19,7 +19,8 @@ export function settingsActions(
     input: Pick<HTMLInputElement, "value" | "disabled" | "focus">;
     save: Pick<HTMLButtonElement, "disabled">;
     clear: Pick<HTMLButtonElement, "disabled">;
-    status: Pick<Element, "textContent">;
+    status: Pick<Element, "textContent"> &
+      Partial<Pick<Element, "scrollIntoView">>;
   },
 ) {
   const { input, save, clear, status } = controls;
@@ -47,8 +48,9 @@ export function settingsActions(
       else if (result === "cleared") configured = false;
       input.disabled = save.disabled = false;
       clear.disabled = !configured;
-      if (result === "invalid") input.focus();
       status.textContent = messages[result];
+      if (result === "invalid") input.focus();
+      status.scrollIntoView?.({ block: "nearest" });
     },
   };
 }

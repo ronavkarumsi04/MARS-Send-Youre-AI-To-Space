@@ -170,6 +170,75 @@ test("failed read-only launch keeps its own approvals when switching tasks and r
   expect(write().checked).toBe(true);
 });
 
+test("install preserves the library position and drafts an example without executing or replacing existing work", async () => {
+  const doc = new MiniDocument();
+  const calls: { method: string; params: unknown }[] = [];
+  const item = {
+    id: "mars-json-compare",
+    name: "JSON comparison",
+    kind: "mcp" as const,
+    description: "Compare JSON",
+    permissions: [],
+    version: "1",
+    installed: false,
+  };
+  const ctl = createController(
+    fakeBridge(await loadFixtureData(), calls),
+    doc,
+    doc.root,
+    undefined,
+    {
+      request: async () => ({
+        ok: true,
+        workspace: "test",
+        configured: false,
+        canConfigure: true,
+        sessions: [],
+      }),
+    },
+    {
+      list: async () => [{ ...item }],
+      install: async () => {
+        item.installed = true;
+        return "installed";
+      },
+    },
+  );
+  await ctl.load();
+  const el = (attr: string, val: string) => {
+    const element = findAll(doc.root, (e) => e.getAttribute(attr) === val)[0];
+    if (!element) throw new Error(`Missing ${val}`);
+    return element;
+  };
+  const open = async () => {
+    el("data-page", "extensions").click();
+    await Bun.sleep(0);
+  };
+  await open();
+  el("data-library-scroll", "true").scrollTop = 480;
+  const action = () => el("data-focus-key", "extension-mars-json-compare");
+  action().click();
+  await Bun.sleep(0);
+  expect(el("data-library-scroll", "true").scrollTop).toBe(480);
+  expect(action().textContent).toBe("Draft a task");
+  action().click();
+  const input = el("data-control", "composer-request");
+  expect(input.value).toContain("changed paths");
+  input.value = "Keep my existing work";
+  input.dispatch("input");
+  await open();
+  expect(action().textContent).toBe("Open task draft");
+  action().click();
+  expect(el("data-control", "composer-request").value).toBe(
+    "Keep my existing work",
+  );
+  expect(
+    calls.some(
+      (c) => c.method === "tasks.create" || c.method === "tasks.start",
+    ),
+  ).toBe(false);
+});
+
 test("attached workbench without a key explains environment setup without offering a settings window", async () => {
   const doc = new MiniDocument();
   const ctl = createController(
