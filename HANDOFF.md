@@ -6,8 +6,13 @@ Added read-only `tasks.file {task_id, path}` for a task's private workspace,
 reusing provider path policy, task/scope authorization, host-private byte
 rejection and bounded base64 responses. Tree listing remains out of scope.
 `documentation/EDITOR_INTEGRATION.md` compares Monaco and Code OSS and recommends
-a read-only Monaco viewer first. Shell UI/IPC/CSP changes belong to David
-upstream; this fork changes no `apps/shell` files. Offline host/provider and HTTP
+a read-only Monaco viewer first, pending Tanay's Monaco-versus-Code-OSS decision.
+This fork will build the editor later; David reviews and supplies layout touch
+points first; only Tanay merges upstream. Branch from upstream main after #245
+merges, gated on Tanay confirming the #245/#246 bugs fixed. Proposed editor module
+has its own IPC channel/whitelist, separate from chat; no layout/chat/settings/
+Extensions rewrites without David (sidebar Settings navigation is still changing).
+This PR changes no `apps/shell` files. Offline host/provider and HTTP
 contract tests cover the new read surface; no renderer integration is claimed.
 
 Execution budget hardening: the model bridge bounds aggregate text and tool-call metadata before releasing any tool calls, and caps paid output reservations to remaining USD. Launch writes and rewrites reject serialized records over the same 128 KiB limit used by readers, before publishing state; failed starts surface `too_large` and dispose their runtime. Regression coverage is offline with injected SSE responses; no live-provider acceptance is claimed. `packages/execution/src/runtime.ts` is unchanged.
