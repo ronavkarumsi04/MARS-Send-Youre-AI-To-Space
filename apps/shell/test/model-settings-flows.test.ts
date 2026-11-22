@@ -112,6 +112,64 @@ test("task model failure stays distinct from offline workbench and opens native 
   expect(by("data-panel", "settings")).toBeDefined();
 });
 
+test("failed read-only launch keeps its own approvals when switching tasks and retrying", async () => {
+  const fixture = await loadFixtureData();
+  const [first, second] = fixture.tasks;
+  if (!first || !second) throw new Error("Two tasks required");
+  first.status = second.status = "pending";
+  const attempted: Parameters<ShellBridge["tasks.start"]>[0][] = [];
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const doc = new MiniDocument();
+  const ctl = createController(
+    {
+      ...fakeBridge(fixture),
+      "tasks.start": async (params) => {
+        attempted.push(params);
+        await promise;
+        return bridgeFailure("model_unavailable");
+      },
+    },
+    doc,
+    doc.root,
+  );
+  await ctl.load();
+  const control = (attribute: string, val: string) => {
+    const el = findAll(doc.root, (el) => el.getAttribute(attribute) === val)[0];
+    if (!el) throw new Error(`Missing ${val}`);
+    return el;
+  };
+  const select = async (id: string) => {
+    control("data-task-id", id).click();
+    await ctl.settled();
+  };
+  const write = () => control("data-control", "approval-write");
+  const toggle = (value: boolean) => {
+    const el = write();
+    el.checked = value;
+    el.dispatch("change");
+  };
+  const start = () => control("data-action", "start-task").click();
+  toggle(false);
+  start();
+  await select(second.task_id);
+  toggle(true);
+  resolve();
+  await Bun.sleep(0);
+  expect(doc.root.textContent).not.toContain("No available model");
+  await select(first.task_id);
+  expect(write().checked).toBe(false);
+  expect(doc.root.textContent).toContain("No available model");
+  start();
+  expect(attempted.map((req) => [req.task_id, req.approvals])).toEqual(
+    Array(2).fill([
+      first.task_id,
+      { read: true, write: false, execute: false },
+    ]),
+  );
+  await select(second.task_id);
+  expect(write().checked).toBe(true);
+});
+
 test("attached workbench without a key explains environment setup without offering a settings window", async () => {
   const doc = new MiniDocument();
   const ctl = createController(

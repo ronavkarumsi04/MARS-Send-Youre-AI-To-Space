@@ -77,7 +77,7 @@ function createInitialComposer(): ComposerState {
 
 function createInitialLaunch(): LaunchCardState {
   return {
-    approvals: { read: true, write: true, execute: false },
+    approvals: { read: true, write: false, execute: false },
     modelChoice: "default",
     paidModelId: DEFAULT_PAID_MODEL_ID,
     paidModelConsent: false,
@@ -85,6 +85,13 @@ function createInitialLaunch(): LaunchCardState {
     steerDraft: "",
     busy: false,
   };
+}
+
+function beginLaunchAction(launch: LaunchCardState) {
+  launch.busy = true;
+  delete launch.actionError;
+  delete launch.actionNotice;
+  delete launch.modelUnavailable;
 }
 
 function toggleId(ids: readonly string[], id: string, on: boolean): string[] {
@@ -160,7 +167,23 @@ export function createController(
   ).join("");
 
   let composer: ComposerState = createInitialComposer();
-  let launch: LaunchCardState = createInitialLaunch();
+  // Each async action retains its own task's form, even after navigation.
+  const launchForms = new Map<string, LaunchCardState>();
+  const launchFor = (task: Task): LaunchCardState => {
+    const { owner_id, project_id, workspace_id } = task.scope;
+    const key = JSON.stringify([
+      owner_id,
+      project_id,
+      workspace_id,
+      task.session_id,
+      task.task_id,
+    ]);
+    const existing = launchForms.get(key);
+    if (existing) return existing;
+    const form = createInitialLaunch();
+    launchForms.set(key, form);
+    return form;
+  };
   let patchExport: ExportViewState = { busy: false };
 
   let teamState: TeamChatViewState = {
@@ -176,6 +199,9 @@ export function createController(
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
   const render = () => {
+    const launch = state.selectedTask
+      ? launchFor(state.selectedTask)
+      : createInitialLaunch();
     const active = doc.activeElement;
     const focusKey = active?.getAttribute(FOCUS_KEY) ?? null;
     const selectionStart =
@@ -308,23 +334,21 @@ export function createController(
         render();
       },
       onLaunchCheckChange: (checkId, selected) => {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           checkIds: toggleId(launch.checkIds, checkId, selected),
-        };
+        });
         render();
       },
       onCreateTask: () => void handleCreateTask(),
       onLaunchApprovalChange: (key, val) => {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           approvals: { ...launch.approvals, [key]: val },
           ...(key === "execute" && !val ? { checkIds: [] } : {}),
-        };
+        });
         render();
       },
       onLaunchChange: (patch) => {
-        launch = { ...launch, ...patch };
+        Object.assign(launch, patch);
         if (
           "modelChoice" in patch ||
           "paidModelConsent" in patch ||
@@ -1065,19 +1089,18 @@ export function createController(
     selectedId = created.task_id;
     composer = createInitialComposer();
     patchExport = { busy: false };
-    launch = createInitialLaunch();
+    const launch = launchFor(created);
 
     if (snapshot.startNow) {
       if (snapshot.modelChoice === "paid" && !snapshot.paidModelConsent) {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           approvals: { ...snapshot.approvals },
           checkIds: [...snapshot.checkIds],
           modelChoice: "paid",
           paidModelId: snapshot.paidModelId || DEFAULT_PAID_MODEL_ID,
           paidModelConsent: false,
           actionError: "Paid-model consent is required before starting.",
-        };
+        });
         await load();
         return;
       }
@@ -1104,8 +1127,7 @@ export function createController(
       try {
         await value(bridge["tasks.start"](startParams));
       } catch (error) {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           approvals: { ...snapshot.approvals },
           checkIds: [...snapshot.checkIds],
           modelChoice: snapshot.modelChoice,
@@ -1118,7 +1140,7 @@ export function createController(
             error instanceof Error
               ? `Task created, but failed to start: ${error.message}`
               : "Task created, but failed to start.",
-        };
+        });
       }
     }
     await load();
@@ -1127,33 +1149,25 @@ export function createController(
   const handleStartTask = async () => {
     const task = state.selectedTask;
     if (!task) return;
+    const launch = launchFor(task);
     const paidModelId = launch.paidModelId.trim();
     if (launch.modelChoice === "paid") {
       if (!paidModelId) {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           actionError: "Enter a paid model ID before starting.",
-        };
+        });
         render();
         return;
       }
       if (!launch.paidModelConsent) {
-        launch = {
-          ...launch,
+        Object.assign(launch, {
           actionError: "Paid-model consent is required before starting.",
-        };
+        });
         render();
         return;
       }
     }
-    const nextLaunch: LaunchCardState = {
-      ...launch,
-      busy: true,
-      modelUnavailable: false,
-    };
-    delete nextLaunch.actionError;
-    delete nextLaunch.actionNotice;
-    launch = nextLaunch;
+    beginLaunchAction(launch);
     render();
     try {
       const startParams: StartParams = {
@@ -1177,22 +1191,20 @@ export function createController(
       );
       if (launchChecks.length > 0) startParams.required_checks = launchChecks;
       await value(bridge["tasks.start"](startParams));
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         actionNotice: "Task started.",
-      };
+      });
       await load();
     } catch (error) {
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         actionError:
           error instanceof Error ? error.message : "Failed to start task.",
         modelUnavailable:
           error instanceof WorkbenchFailure &&
           error.detail.kind === "model_unavailable",
-      };
+      });
       render();
     }
   };
@@ -1200,10 +1212,8 @@ export function createController(
   const handleResumeTask = async () => {
     const task = state.selectedTask;
     if (!task) return;
-    const nextLaunch: LaunchCardState = { ...launch, busy: true };
-    delete nextLaunch.actionError;
-    delete nextLaunch.actionNotice;
-    launch = nextLaunch;
+    const launch = launchFor(task);
+    beginLaunchAction(launch);
     render();
     try {
       await value(
@@ -1212,15 +1222,14 @@ export function createController(
           expected_revision: task.revision,
         }),
       );
-      launch = { ...launch, busy: false, actionNotice: "Task resumed." };
+      Object.assign(launch, { busy: false, actionNotice: "Task resumed." });
       await load();
     } catch (error) {
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         actionError:
           error instanceof Error ? error.message : "Failed to resume task.",
-      };
+      });
       render();
     }
   };
@@ -1228,10 +1237,8 @@ export function createController(
   const handleSteerTask = async (instruction: string) => {
     const task = state.selectedTask;
     if (!task) return;
-    const nextLaunch: LaunchCardState = { ...launch, busy: true };
-    delete nextLaunch.actionError;
-    delete nextLaunch.actionNotice;
-    launch = nextLaunch;
+    const launch = launchFor(task);
+    beginLaunchAction(launch);
     render();
     try {
       await value(
@@ -1240,20 +1247,18 @@ export function createController(
           instruction,
         }),
       );
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         steerDraft: "",
         actionNotice: "Steering instruction sent.",
-      };
+      });
       await load();
     } catch (error) {
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         actionError:
           error instanceof Error ? error.message : "Failed to steer task.",
-      };
+      });
       render();
     }
   };
@@ -1261,22 +1266,19 @@ export function createController(
   const handleCancelTask = async () => {
     const task = state.selectedTask;
     if (!task) return;
-    const nextLaunch: LaunchCardState = { ...launch, busy: true };
-    delete nextLaunch.actionError;
-    delete nextLaunch.actionNotice;
-    launch = nextLaunch;
+    const launch = launchFor(task);
+    beginLaunchAction(launch);
     render();
     try {
       await value(bridge["tasks.cancel"]({ task_id: task.task_id }));
-      launch = { ...launch, busy: false, actionNotice: "Task cancelled." };
+      Object.assign(launch, { busy: false, actionNotice: "Task cancelled." });
       await load();
     } catch (error) {
-      launch = {
-        ...launch,
+      Object.assign(launch, {
         busy: false,
         actionError:
           error instanceof Error ? error.message : "Failed to cancel task.",
-      };
+      });
       render();
     }
   };
@@ -1648,7 +1650,6 @@ export function createController(
           page = "tasks";
           selectedId = taskId;
           patchExport = { busy: false };
-          launch = createInitialLaunch();
           teamState = { ...teamState, open: false };
           void load();
         },
