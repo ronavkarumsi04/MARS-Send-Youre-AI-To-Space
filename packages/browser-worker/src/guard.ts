@@ -52,6 +52,23 @@ const METHODS = new Set([
 
 type UrlCheck = { ok: true; address: string } | { ok: false; reason: string };
 
+async function untilAborted<T>(
+  pending: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([pending, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 /** Resolves a URL's host once and returns the public address to connect to. */
 async function checkBrowserUrl(
   raw: string,
@@ -226,7 +243,18 @@ export function createGuardedBrowserFetch(
     if (options.signal.aborted) return block("cancelled");
     const method = request.method.toUpperCase();
     if (!METHODS.has(method)) return block("method_denied");
-    const checked = await checkBrowserUrl(request.url, options);
+    const timeout = AbortSignal.timeout(Math.max(1, options.timeoutMs()));
+    const signal = AbortSignal.any([options.signal, timeout]);
+    let checked: UrlCheck;
+    try {
+      checked = await untilAborted(
+        checkBrowserUrl(request.url, options),
+        signal,
+      );
+      signal.throwIfAborted();
+    } catch {
+      return block(options.signal.aborted ? "cancelled" : "network_error");
+    }
     if (!checked.ok) return block(checked.reason);
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(request.headers)) {
@@ -234,14 +262,13 @@ export function createGuardedBrowserFetch(
         headers[name] = value;
     }
     headers["user-agent"] = options.userAgent;
-    const timeout = AbortSignal.timeout(Math.max(1, options.timeoutMs()));
     let response: Response;
     try {
       const init: RequestInit = {
         method,
         headers,
         redirect: "manual",
-        signal: AbortSignal.any([options.signal, timeout]),
+        signal,
       };
       if (request.body && method !== "GET" && method !== "HEAD")
         init.body = request.body as unknown as BodyInit;

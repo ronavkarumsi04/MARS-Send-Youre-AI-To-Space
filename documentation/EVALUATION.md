@@ -595,6 +595,12 @@ edit attempt per file and retries cleanly (stale-anchor recovery for
 profiles on v1 and one full v2 run (`patch-fluent`, `mars:apply_patch` vs
 `omp-stock`, 288 trials) to exercise the powered verdict path.
 
+The edit-format CLI writes brief offline progress to stderr, leaving stdout as
+the final JSON summary. In that summary, `scripted_model_requests` counts fake
+model invocations and `provider_requests: 0` confirms no provider requests were
+made. Live summaries instead use `scripted_model_requests: 0` and
+`provider_requests: null` (live provider invocations are not counted here).
+
 ### Evidence-based per-model edit-format selection
 
 `selectEditFormat` (`@mars/execution`) takes `mars.edit-format-evidence/v1`

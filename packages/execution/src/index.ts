@@ -21,6 +21,7 @@ export {
   ExecutionLimitError,
   type ModelFailureCode,
   maxOutputTokens,
+  NoEligibleModelError,
   type SharedBudget,
   selectExecutionModel,
   WORKSPACE_PLACEHOLDER,

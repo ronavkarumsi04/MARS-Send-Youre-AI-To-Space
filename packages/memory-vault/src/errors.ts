@@ -3,7 +3,8 @@ export type VaultErrorCode =
   | "corrupt_manifest"
   | "scope_mismatch"
   | "invalid_graph"
-  | "invalid_context";
+  | "invalid_context"
+  | "vault_locked";
 
 export class VaultError extends Error {
   constructor(

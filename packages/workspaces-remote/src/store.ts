@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ArtifactRefSchema } from "@mars/contracts";
 import { IntegrityError, ProviderLockedError } from "@mars/workspaces";
@@ -111,7 +111,30 @@ export function openRemoteWorkspaceStore(
   now: () => number = Date.now,
 ): RemoteWorkspaceStore {
   mkdirSync(rootDir, { recursive: true, mode: 0o700 });
-  const db = new Database(join(rootDir, "remote-workspaces.sqlite"), {
+  const dbPath = join(rootDir, "remote-workspaces.sqlite");
+  for (const file of [
+    dbPath,
+    `${dbPath}-wal`,
+    `${dbPath}-shm`,
+    `${dbPath}-journal`,
+  ]) {
+    let info: ReturnType<typeof lstatSync>;
+    try {
+      info = lstatSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw new IntegrityError("Remote workspace state file is unsafe");
+    }
+    if (!info.isFile())
+      throw new IntegrityError(
+        "Remote workspace state file must be a regular file",
+      );
+    if (typeof process.getuid === "function" && info.uid !== process.getuid())
+      throw new IntegrityError(
+        "Remote workspace state file must be owned by the current user",
+      );
+  }
+  const db = new Database(dbPath, {
     create: true,
     strict: true,
   });

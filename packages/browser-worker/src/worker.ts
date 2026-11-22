@@ -318,7 +318,20 @@ export function createBrowserWorker(
         }
         await context.recordStep({
           index,
-          action,
+          action:
+            action.type === "type"
+              ? { ...action, text: clean(action.text) }
+              : action.type === "navigate"
+                ? {
+                    ...action,
+                    url:
+                      clean(action.url) === action.url
+                        ? action.url
+                        : "https://redacted.invalid/",
+                  }
+                : action.type === "done"
+                  ? { ...action, result: clean(action.result) }
+                  : action,
           outcome: result.outcome,
           detail: result.detail.slice(0, 1024),
           url: view.url,

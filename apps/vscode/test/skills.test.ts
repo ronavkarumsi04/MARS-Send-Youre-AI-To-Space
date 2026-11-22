@@ -169,7 +169,7 @@ test("Skills view rejects with a reason, surfaces errors and drops bad messages"
   ).toBe(false);
 });
 
-test("Skills view asks for a connection when the Tasks view has none, and loads once it connects", async () => {
+test("Skills view asks for a connection when Workbench has none, and loads once it connects", async () => {
   const { client } = await setup();
   let current: MarsClient | undefined;
   const states: SkillsState[] = [];
@@ -180,7 +180,9 @@ test("Skills view asks for a connection when the Tasks view has none, and loads 
   });
   await controller.handleMessage({ type: "ready" });
   expect(states.at(-1)).toMatchObject({ connected: false });
-  expect(states.at(-1)?.notice?.text).toContain("Tasks view");
+  expect(states.at(-1)?.notice?.text).toContain(
+    "Workbench Settings or Agent tasks",
+  );
   // The extension refreshes on the Tasks controller's onClientChange.
   current = client;
   await controller.refresh();

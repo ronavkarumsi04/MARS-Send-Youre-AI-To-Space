@@ -1,7 +1,7 @@
 {
   "name": "@mars/vscode-client",
   "displayName": "MARS Workbench",
-  "description": "VS Code client for the MARS task API: create, approve, steer, cancel and resume tasks; inspect events, diffs, artifacts and checkpoints.",
+  "description": "Chat with MARS, hand ideas off to agent tasks, and manage your MARS workbench from VS Code.",
   "version": "0.0.1",
   "private": true,
   "publisher": "mars-local",
@@ -37,12 +37,13 @@
         {
           "type": "webview",
           "id": "mars.workbench",
-          "name": "Tasks"
+          "name": "Workbench"
         },
         {
           "type": "webview",
           "id": "mars.skills",
-          "name": "Skills"
+          "name": "Skills",
+          "visibility": "collapsed"
         },
         {
           "type": "webview",

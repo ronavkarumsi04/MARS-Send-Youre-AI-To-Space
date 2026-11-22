@@ -200,9 +200,22 @@ export class FileMcpRegistry implements McpServerRegistry {
       }
       throw error;
     }
-    const parsed = McpRegistryStateSchema.safeParse(JSON.parse(raw));
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch (cause) {
+      throw new IntegrationTrustError("store_corrupt", { cause });
+    }
+    const parsed = McpRegistryStateSchema.safeParse(json);
     if (!parsed.success) {
       throw new IntegrationTrustError("store_corrupt", { cause: parsed.error });
+    }
+    if (
+      Object.entries(parsed.data.servers).some(
+        ([id, server]) => id !== server.id,
+      )
+    ) {
+      throw new IntegrationTrustError("store_corrupt");
     }
     return parsed.data;
   }
@@ -224,6 +237,25 @@ export class FileMcpRegistry implements McpServerRegistry {
       await rm(tmp, { force: true }).catch(() => {});
       throw error;
     }
+  }
+
+  /** Deduplicate unsolicited upgrade notices across concurrent host sessions. */
+  async markLegacyNotice(id: string, grantId: string) {
+    return this.withLock(async () => {
+      const state = await this.readState();
+      const server = Object.hasOwn(state.servers, id)
+        ? state.servers[id]
+        : undefined;
+      if (
+        server?.transport.type !== "stdio" ||
+        server.transport.launch ||
+        server.legacy_notice_grant === grantId
+      )
+        return false;
+      server.legacy_notice_grant = grantId;
+      await this.writeState(state);
+      return true;
+    });
   }
 
   async list(): Promise<McpServerConfig[]> {

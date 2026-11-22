@@ -100,7 +100,11 @@ export const SelectionMethodSchema = z.enum([
 ]);
 export type SelectionMethod = z.infer<typeof SelectionMethodSchema>;
 
-const TaskListSchema = z.array(TaskIdSchema).min(1).max(512);
+const TaskListSchema = z
+  .array(TaskIdSchema)
+  .min(1)
+  .max(512)
+  .refine((tasks) => new Set(tasks).size === tasks.length, "duplicate task id");
 
 export const StageSchema = z
   .object({

@@ -227,6 +227,27 @@ export class EvolutionService {
     return this.options.now();
   }
 
+  private keepLeaseAlive(runId: string, lease: number) {
+    const lost = new AbortController();
+    const timer = setInterval(
+      () => {
+        try {
+          const token = this.store.acquireLease(
+            runId,
+            this.options.holder,
+            this.now(),
+            this.options.leaseTtlMs,
+          );
+          if (token !== lease) lost.abort();
+        } catch {
+          lost.abort();
+        }
+      },
+      Math.max(10, Math.floor(this.options.leaseTtlMs / 3)),
+    );
+    return { signal: lost.signal, stop: () => clearInterval(timer) };
+  }
+
   private config(runId: string): {
     config: RunConfig;
     control: Control;
@@ -619,15 +640,10 @@ export class EvolutionService {
     if (now >= deadline_ms)
       fail("deadline_exceeded", `run ${runId} passed its deadline`);
     this.store.verifyLedger(runId);
-    const ledgerKey = `${subject.id}/${split}/${key}`;
+    // Unsettled reservations remain charged; retries are separate attempts.
+    const ledgerKey = `${subject.id}/${split}/${key}/${randomUUID()}`;
     this.store.transaction(() => {
       this.store.assertLease(runId, lease, this.now());
-      if (
-        this.store
-          .ledger(runId)
-          .some((row) => row.kind === "reserve" && row.key === ledgerKey)
-      )
-        return;
       const spent = this.spent(runId);
       if (
         spent.tokens + budget.max_tokens > config.budget.max_tokens ||
@@ -678,33 +694,32 @@ export class EvolutionService {
         Math.min(deadline_ms, now + budget.max_duration_ms) - now,
       );
       // Keep the run lease alive while a long evaluation runs; losing it aborts.
-      const lost = new AbortController();
-      const heartbeat = setInterval(
-        () => {
-          try {
-            const token = this.store.acquireLease(
-              runId,
-              this.options.holder,
-              this.now(),
-              this.options.leaseTtlMs,
-            );
-            if (token !== lease) lost.abort();
-          } catch {
-            lost.abort();
-          }
-        },
-        Math.max(10, Math.floor(this.options.leaseTtlMs / 3)),
-      );
+      const heartbeat = this.keepLeaseAlive(runId, lease);
+      const evaluationDeadline = performance.now() + timeout;
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(timeout),
+        heartbeat.signal,
+      ]);
+      let onAbort = () => {};
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        onAbort = () =>
+          reject(new EvolutionError("deadline_exceeded", "evaluation aborted"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
       let outcome: EvaluationOutcome;
       try {
         outcome = EvaluationOutcomeSchema.parse(
-          await this.options.evaluator.evaluate(
-            request,
-            AbortSignal.any([AbortSignal.timeout(timeout), lost.signal]),
-          ),
+          await Promise.race([
+            this.options.evaluator.evaluate(request, signal),
+            cancelled,
+          ]),
         );
+        if (signal.aborted || performance.now() >= evaluationDeadline)
+          fail("deadline_exceeded", "evaluation returned after its deadline");
       } finally {
-        clearInterval(heartbeat);
+        heartbeat.stop();
+        signal.removeEventListener("abort", onAbort);
       }
       await verifyControlDigests(control.control_digests, "after evaluation");
       if (
@@ -1261,7 +1276,7 @@ export class EvolutionService {
         },
         signal,
         {
-          reserve: (inputTokens, maxOutputTokens) =>
+          reserve: (inputTokens, maxOutputTokens, reserveOptions) =>
             this.store.transaction(() => {
               const at = this.now();
               this.store.assertLease(runId, lease, at);
@@ -1270,8 +1285,18 @@ export class EvolutionService {
                   "deadline_exceeded",
                   `run ${runId} passed its deadline before proposal dispatch`,
                 );
-              const remaining =
-                config.budget.max_tokens - this.spent(runId).tokens;
+              const spent = this.spent(runId);
+              const remaining = config.budget.max_tokens - spent.tokens;
+              const remainingUsd = Math.max(
+                0,
+                config.budget.max_usd - spent.usd,
+              );
+              const paid = reserveOptions?.paid === true;
+              if (paid && remainingUsd <= 1e-9)
+                fail(
+                  "budget_exhausted",
+                  `run ${runId} has no USD budget left for a paid proposal`,
+                );
               const outputLimit = Math.min(
                 maxOutputTokens,
                 remaining - inputTokens,
@@ -1289,7 +1314,11 @@ export class EvolutionService {
                 runId,
                 "reserve",
                 reservedKey,
-                { tokens: inputTokens + outputLimit, usd: 0, ms: 0 },
+                {
+                  tokens: inputTokens + outputLimit,
+                  usd: paid ? remainingUsd : 0,
+                  ms: 0,
+                },
                 nowIso(at),
               );
               return outputLimit;
@@ -1451,6 +1480,7 @@ export class EvolutionService {
       this.now(),
       this.options.leaseTtlMs,
     );
+    const heartbeat = this.keepLeaseAlive(runId, lease);
     let ranNow = 0;
     try {
       await verifyControlDigests(control.control_digests, "run start");
@@ -1609,6 +1639,7 @@ export class EvolutionService {
         this.store.setRunStatus(runId, "tamper_detected", nowIso(this.now()));
       throw error;
     } finally {
+      heartbeat.stop();
       this.store.releaseLease(runId, lease);
     }
   }
@@ -1630,7 +1661,19 @@ export class EvolutionService {
     if (prior) {
       if (sha256(prior.decision_json) !== prior.decision_sha256)
         fail("accounting_tampered", "decision digest mismatch");
-      return PromotionDecisionSchema.parse(JSON.parse(prior.decision_json));
+      const decision = PromotionDecisionSchema.parse(
+        JSON.parse(prior.decision_json),
+      );
+      if (
+        decision.run_id !== input.run_id ||
+        (input.candidate_id !== undefined &&
+          decision.candidate_id !== input.candidate_id)
+      )
+        fail(
+          "conflict",
+          "idempotency key already used for a different run or candidate",
+        );
+      return decision;
     }
     const lease = this.store.acquireLease(
       input.run_id,
@@ -1638,6 +1681,7 @@ export class EvolutionService {
       this.now(),
       this.options.leaseTtlMs,
     );
+    const heartbeat = this.keepLeaseAlive(input.run_id, lease);
     try {
       const candidates = this.store.listCandidates(input.run_id);
       const chosen =
@@ -1990,6 +2034,7 @@ export class EvolutionService {
       });
       return decision;
     } finally {
+      heartbeat.stop();
       this.store.releaseLease(input.run_id, lease);
     }
   }

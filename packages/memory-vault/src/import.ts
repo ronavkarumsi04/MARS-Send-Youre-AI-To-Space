@@ -1,7 +1,11 @@
+import { resolve } from "node:path";
 import type { MemoryEntry, RequestContext } from "@mars/contracts";
-import { scanThreat } from "@mars/memory";
+import { RequestContextSchema, scanThreat } from "@mars/memory";
+import { VaultError } from "./errors";
+import { withVaultLock } from "./lock";
 import { sha256 } from "./notes";
-import { type ScannedNote, scanVault } from "./scan";
+import { assertVaultDirectory, pinVaultRoot, type VaultRoot } from "./paths";
+import { type ScannedNote, scanVaultPinned } from "./scan";
 import {
   type ImportAction,
   type ImportItem,
@@ -75,10 +79,28 @@ export async function importVault(
   ctx: RequestContext,
   options: ImportVaultOptions,
 ): Promise<ImportReport> {
+  if (!RequestContextSchema.safeParse(ctx).success)
+    throw new VaultError("invalid_context");
+  const requestedVaultDir = resolve(options.vaultDir);
+  const vaultDir = await assertVaultDirectory(requestedVaultDir, [
+    ...(options.privateRoots ?? []),
+    options.skills.root,
+  ]);
+  const root = await pinVaultRoot(vaultDir, true);
+  return withVaultLock(root, () =>
+    importVaultLocked(ctx, { ...options, vaultDir }, root),
+  );
+}
+
+async function importVaultLocked(
+  ctx: RequestContext,
+  options: ImportVaultOptions,
+  root: VaultRoot,
+): Promise<ImportReport> {
   const source = options.source ?? VAULT_SOURCE;
   const strict = options.strict === true;
   const allowRemove = options.allowRemove === true;
-  const scan = await scanVault(ctx, options);
+  const scan = await scanVaultPinned(ctx, options, root);
   const items: ImportItem[] = [];
   const proposals = { memory: [] as string[], skills: [] as string[] };
   const now = () => (options.now?.() ?? new Date()).toISOString();

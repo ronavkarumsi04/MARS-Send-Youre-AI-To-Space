@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import type { LocalConnection } from "@mars/contracts/connection-file";
 import { createReconnectingBridge } from "../src/main/session";
-import { TransportError, type TransportRequest } from "../src/main/transport";
+import {
+  createLoopbackTransport,
+  TransportError,
+  type TransportRequest,
+} from "../src/main/transport";
 import { bridgeFailure } from "../src/shared/methods";
 import { loadFixtureData } from "./test-utils";
 
@@ -55,9 +59,9 @@ test("connection resolution retries after not_connected and reaches the workbenc
   ]);
 });
 
-test("unavailable and unauthorized failures trigger connection resolution again", async () => {
+test("unavailable, unauthorized and timeout failures trigger connection resolution again", async () => {
   const data = await loadFixtureData();
-  for (const kind of ["unavailable", "unauthorized"] as const) {
+  for (const kind of ["unavailable", "unauthorized", "timeout"] as const) {
     let resolveCalls = 0;
     let transportCreations = 0;
     const bridge = createReconnectingBridge({
@@ -87,6 +91,63 @@ test("unavailable and unauthorized failures trigger connection resolution again"
     expect(await bridge.call("tasks.list", {})).toMatchObject({ ok: true });
     expect(resolveCalls).toBe(2);
     expect(transportCreations).toBe(2);
+  }
+});
+
+test("a stalled mutation times out without replay and the next call uses the replacement endpoint", async () => {
+  const { describe } = await loadFixtureData();
+  const calls: string[] = [];
+  function endpoint(label: string) {
+    return Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const { method } = (await request.json()) as TransportRequest;
+        calls.push(`${label}:${method}`);
+        if (method === "tasks.cancel") {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"result":'));
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return Response.json({
+          result: { ...describe, workspaceLabel: label },
+        });
+      },
+    });
+  }
+
+  const old = endpoint("old");
+  const replacement = endpoint("replacement");
+  try {
+    let url = old.url.origin;
+    const bridge = createReconnectingBridge({
+      resolve: async () => ({ ok: true, connection: { ...connection, url } }),
+      makeTransport: (resolved) =>
+        createLoopbackTransport({ ...resolved, timeoutMs: 500 }),
+    });
+    const mutation = await bridge.call("tasks.cancel", {
+      task_id: "fixture-running",
+    });
+    expect(calls).toEqual(["old:workbench.describe", "old:tasks.cancel"]);
+
+    url = replacement.url.origin;
+    const next = await bridge.call("workbench.describe", {});
+    expect({ mutation, next, calls }).toMatchObject({
+      mutation: bridgeFailure("timeout"),
+      next: { ok: true, result: { workspaceLabel: "replacement" } },
+      calls: [
+        "old:workbench.describe",
+        "old:tasks.cancel",
+        "replacement:workbench.describe",
+      ],
+    });
+  } finally {
+    await Promise.all([old.stop(true), replacement.stop(true)]);
   }
 });
 

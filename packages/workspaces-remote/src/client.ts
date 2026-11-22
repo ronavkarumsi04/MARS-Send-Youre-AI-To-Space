@@ -339,7 +339,7 @@ export function createAgentServerClient(
         );
       if (!supported.includes(info.version))
         throw new SandboxUnavailableError(
-          `Unsupported Agent Server version ${JSON.stringify(info.version.slice(0, 40))}; this client speaks ${supported.join(", ")}`,
+          `Unsupported Agent Server version; this client speaks ${supported.join(", ")}`,
         );
       return info;
     },

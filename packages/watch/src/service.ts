@@ -464,7 +464,7 @@ export function createWatchService(options: WatchServiceOptions): WatchService {
       ): string => {
         const lines = [
           `[untrusted watch-skill output · ${tool} · ${label}]`,
-          ...body,
+          ...body.map(redact),
         ];
         if (result) {
           const stdout = redact(result.stdout.trimEnd());

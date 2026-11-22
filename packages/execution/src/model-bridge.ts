@@ -19,6 +19,9 @@ import {
   type SimpleStreamOptions,
   toolWireSchema,
 } from "@oh-my-pi/pi-ai";
+import { NoEligibleModelError } from "./errors";
+
+export { NoEligibleModelError } from "./errors";
 
 export interface BudgetLedger {
   deadline: number;
@@ -67,9 +70,7 @@ export function selectExecutionModel(
       continue;
     return model;
   }
-  throw new Error(
-    "No eligible configured model; configure a tool-capable free model or explicitly select a priced, user-authorized paid model.",
-  );
+  throw new NoEligibleModelError();
 }
 
 function textContent(content: Context["messages"][number]["content"]): string {

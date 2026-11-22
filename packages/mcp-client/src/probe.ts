@@ -1,5 +1,4 @@
 import { createReadStream } from "node:fs";
-import { resolve } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
 import {
   type AuthorizedArtifact,
@@ -12,6 +11,8 @@ import {
   sha256,
 } from "@mars/integration-trust";
 import { selectMcpAuthentication } from "./credentials";
+import { fromCwd, preparePackageLaunch } from "./package-launch";
+import type { McpPackageStore } from "./package-store";
 import type { McpServerRegistry } from "./registry";
 import {
   type McpCredentialResolver,
@@ -20,13 +21,14 @@ import {
   normalizeOrigin,
   type StdioTransportConfig,
 } from "./schemas";
-import { createMcpTransport, resolveStdioExecutable } from "./transports";
+import { createMcpTransport } from "./transports";
 
 export interface TrustedStdioBaseline {
   evidence: SourceEvidence;
 }
 
 export interface McpEvidenceProbeOptions {
+  packageStore?: McpPackageStore;
   registry: McpServerRegistry;
   scope?: Scope;
   clock?: () => Date;
@@ -73,9 +75,8 @@ async function hashFileOrSpec(
 ): Promise<string> {
   signal?.throwIfAborted();
   if (filePath) {
-    const abs = resolve(filePath);
     const hasher = new Bun.CryptoHasher("sha256");
-    for await (const chunk of createReadStream(abs, { signal }))
+    for await (const chunk of createReadStream(filePath, { signal }))
       hasher.update(chunk);
     return hasher.digest("hex");
   }
@@ -95,6 +96,8 @@ function buildConfigHash(
         cwd: server.transport.cwd ?? null,
         env_allowlist: [...server.transport.env_allowlist].sort(),
         entrypoint: server.transport.entrypoint ?? null,
+        launch: server.transport.launch,
+        dependency_manifest: server.transport.dependency_manifest ?? null,
         artifact_sha256: artifactSha ?? null,
       }),
     );
@@ -109,30 +112,20 @@ function buildConfigHash(
   );
 }
 
-async function readStdioArtifact(
-  config: StdioTransportConfig,
-  signal?: AbortSignal,
-) {
-  signal?.throwIfAborted();
-  const executable = resolveStdioExecutable(config);
-  const executableSha = await hashFileOrSpec(executable, null, signal);
-  const entrypointSha = config.entrypoint
-    ? await hashFileOrSpec(config.entrypoint, null, signal)
-    : null;
-  return {
-    executable,
-    sha: sha256(canonicalJSON({ executable, executableSha, entrypointSha })),
-  };
-}
-
 export async function verifyMcpConfig(
   server: McpServerConfig,
   expected: SourceEvidence,
   signal?: AbortSignal,
+  packageStore?: McpPackageStore,
 ) {
   const artifact =
     server.transport.type === "stdio"
-      ? await readStdioArtifact(server.transport, signal)
+      ? await preparePackageLaunch(
+          server.id,
+          server.transport,
+          packageStore,
+          signal,
+        )
       : undefined;
   if (buildConfigHash(server, artifact?.sha) !== expected.config_sha256) {
     throw new IntegrationTrustError("drift");
@@ -144,7 +137,8 @@ export async function verifyMcpConfig(
   ) {
     throw new IntegrationTrustError("drift");
   }
-  return artifact?.executable;
+  await artifact?.verifyPublished();
+  return artifact?.config ?? server.transport;
 }
 
 function stdioDependencyHash(
@@ -152,7 +146,8 @@ function stdioDependencyHash(
   signal?: AbortSignal,
 ) {
   return hashFileOrSpec(
-    config.dependency_manifest,
+    config.dependency_manifest &&
+      fromCwd(config.cwd ?? process.cwd(), config.dependency_manifest),
     {
       command: config.command,
       args: config.args,
@@ -210,7 +205,7 @@ function deriveStdioRevision(contentHash: string): string {
 
 export { buildCredentialHeaders } from "./credentials";
 
-export async function probeMcpServerDescriptor(
+async function probeMcpServerDescriptor(
   server: McpServerConfig,
   timeoutMs = 5_000,
   extraHeaders?: Record<string, string>,
@@ -238,6 +233,7 @@ export async function probeMcpServerDescriptor(
  * detected and old grants are superseded.
  */
 export class McpEvidenceProbe implements EvidenceProbe {
+  private readonly packageStore: McpPackageStore | undefined;
   private readonly registry: McpServerRegistry;
   private readonly registryScope: string | undefined;
   private readonly clock: () => Date;
@@ -253,6 +249,7 @@ export class McpEvidenceProbe implements EvidenceProbe {
 
   constructor(options: McpEvidenceProbeOptions) {
     this.registry = options.registry;
+    this.packageStore = options.packageStore;
     this.registryScope = options.scope ? scopeKey(options.scope) : undefined;
     this.clock = options.clock ?? (() => new Date());
     this.probeTimeoutMs = options.probeTimeoutMs ?? 4_000;
@@ -349,10 +346,13 @@ export class McpEvidenceProbe implements EvidenceProbe {
     const stdio: StdioTransportConfig = server.transport;
     // Hash static local artifacts BEFORE spawning the stdio process so
     // tampered or unapproved executables are never launched before trust checks.
-    const { executable, sha: artifactSha } = await readStdioArtifact(
+    const launch = await preparePackageLaunch(
+      server.id,
       stdio,
+      this.packageStore,
       signal,
     );
+    const { executable, sha: artifactSha } = launch;
     const configSha = buildConfigHash(server, artifactSha);
     const dependencySha = await stdioDependencyHash(stdio, signal);
 
@@ -411,8 +411,11 @@ export class McpEvidenceProbe implements EvidenceProbe {
       }
     }
 
+    // Only an explicit discovery or a matched trust baseline reaches publication.
+    await launch.install();
+    await launch.verifyPublished();
     const descriptor = await probeMcpServerDescriptor(
-      { ...server, transport: { ...stdio, command: executable } },
+      { ...server, transport: launch.config },
       this.probeTimeoutMs,
       undefined,
       signal,

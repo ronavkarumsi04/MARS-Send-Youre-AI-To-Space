@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RequestContext } from "@mars/contracts";
 import {
   type AuditEvent,
   canonicalJSON,
+  createHmacApprovalAuthorizer,
   IntegrationTrustError,
   type Permission,
   sha256,
@@ -14,10 +24,13 @@ import { startStatefulMcpServer } from "./__fixtures__/stateful-http";
 import {
   createHostMcpControlPlane,
   defaultRequestContext,
+  FileMcpRegistry,
   type HostMcpControlPlane,
   type McpCredentialResolver,
   type McpServerConfig,
   StreamableHttpMcpTransport,
+  sanitizeToolOutput,
+  stripSteeringFields,
 } from "./index";
 
 const STDIO_FIXTURE = resolve(import.meta.dir, "__fixtures__/stdio-server.ts");
@@ -334,6 +347,135 @@ async function registerReviewApprove(
   return { review, grant };
 }
 
+describe("MCP trust boundaries", () => {
+  it("verifies every concurrent host's proof with the persisted key", async () => {
+    const stateDir = await makeTempDir("mars-mcp-keys-");
+    const hosts = await Promise.all(
+      Array.from({ length: 12 }, () => createControlPlane({ stateDir })),
+    );
+    const ctx = makeCtx();
+    const keyDir = join(stateDir, "keys");
+    const keyPath = join(keyDir, "host-approval.key");
+    expect(await readdir(keyDir)).toEqual(["host-approval.key"]);
+    if (process.platform !== "win32") {
+      expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
+    }
+    const key = await readFile(keyPath, "utf8");
+    const verifier = createHmacApprovalAuthorizer({
+      key: Buffer.from(key.trim(), "hex"),
+      approvers: [
+        {
+          approver_id: ctx.scope.owner_id,
+          owner_id: ctx.scope.owner_id,
+          project_ids: [ctx.scope.project_id],
+        },
+      ],
+    });
+    const challenge = {
+      review_id: "review-1",
+      review_revision: 1,
+      binding_sha256: "a".repeat(64),
+      scope: ctx.scope,
+      decision: "approve" as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    };
+    for (const host of hosts) {
+      const proof = host.signHostProof(challenge);
+      expect(await verifier.verify(ctx, challenge, proof)).not.toBeNull();
+    }
+  });
+
+  it("does not replace a corrupt or symlinked signing key", async () => {
+    const stateDir = await makeTempDir("mars-mcp-keys-");
+    const dir = join(stateDir, "keys");
+    await mkdir(dir, { mode: 0o700 });
+    const path = join(dir, "host-approval.key");
+    const malformed = `${"00".repeat(32)}x`;
+    await writeFile(path, malformed, { mode: 0o600 });
+    await expect(createControlPlane({ stateDir })).rejects.toMatchObject({
+      code: "store_corrupt",
+    });
+    expect(await readFile(path, "utf8")).toBe(malformed);
+    await rm(path);
+    await symlink(join(dir, "missing"), path);
+    await expect(createControlPlane({ stateDir })).rejects.toMatchObject({
+      code: "store_location_unsafe",
+    });
+    expect(await readdir(dir)).toEqual(["host-approval.key"]);
+  });
+
+  it("reports malformed registry JSON as corrupt", async () => {
+    const dir = await makeTempDir("mars-mcp-registry-");
+    const registry = new FileMcpRegistry({ dir, workspaceRoots: [] });
+    await writeFile(join(dir, "servers.json"), "{");
+    await expect(registry.list()).rejects.toMatchObject({
+      name: "IntegrationTrustError",
+      code: "store_corrupt",
+      cause: expect.any(SyntaxError),
+    });
+  });
+
+  it("rejects a registry key that differs from the stored server ID", async () => {
+    const dir = await makeTempDir("mars-mcp-registry-");
+    const registry = new FileMcpRegistry({ dir, workspaceRoots: [] });
+    const config = makeConfig({
+      id: "server-a",
+      transport: { type: "streamable-http", url: "https://a.test/mcp" },
+      permissions: [],
+      credential_bindings: [],
+    });
+    await writeFile(
+      join(dir, "servers.json"),
+      JSON.stringify({
+        schema_version: 1,
+        servers: { "server-b": config },
+      }),
+    );
+    await expect(registry.get("server-b")).rejects.toMatchObject({
+      name: "IntegrationTrustError",
+      code: "store_corrupt",
+    });
+  });
+
+  it("redacts and records uninspected subtrees in structured and JSON text output", () => {
+    let branch: unknown = { instructions: "fixture" };
+    for (let i = 0; i < 32; i++) branch = [branch];
+    const data = { kept: true, branch };
+    const out = sanitizeToolOutput(
+      {
+        structuredContent: data,
+        content: [{ type: "text", text: JSON.stringify(data) }],
+      },
+      {
+        server_id: "a",
+        tool: "fixture",
+        grant_id: "g",
+        binding_sha256: "a".repeat(64),
+      },
+    );
+    let pruned: unknown = null;
+    for (let i = 0; i < 32; i++) pruned = [pruned];
+    const expected = { kept: true, branch: pruned };
+    expect(out.structured_content).toEqual(expected);
+    expect(JSON.parse(out.content[0]?.text ?? "")).toEqual(expected);
+    const path = `branch${"[0]".repeat(32)}`;
+    expect(out.stripped_steering_fields).toEqual([
+      `content[0].text.${path}`,
+      `structuredContent.${path}`,
+    ]);
+  });
+
+  it("keeps __proto__ as an own JSON data property", () => {
+    const data = JSON.parse('{"__proto__":{"label":"fixture"},"kept":true}');
+    const { value } = stripSteeringFields(data);
+    expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(value, "__proto__")?.value).toEqual({
+      label: "fixture",
+    });
+    expect(JSON.stringify(value)).toBe(JSON.stringify(data));
+  });
+});
+
 describe("@mars/mcp-client end-to-end trust enforcement", () => {
   it("enforces default-deny with no ambient MCPs and rejects workspace-local stateDir", async () => {
     const workspaceDir = await makeTempDir("mars-workspace-");
@@ -376,6 +518,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
           type: "stdio",
           command: BUN_BIN,
           args: ["run", STDIO_FIXTURE],
+          launch: { version: 1, arguments: ["text", { code: null }] },
           entrypoint: STDIO_FIXTURE,
           env_allowlist: ["MARS_TEST_ALLOWED_VAR"],
         },
@@ -439,6 +582,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         type: "stdio",
         command: BUN_BIN,
         args: ["run", STDIO_FIXTURE],
+        launch: { version: 1, arguments: ["text", { code: null }] },
         env_allowlist: [],
       },
       permissions: [{ capability: "tool.invoke", resource: "echo" }],
@@ -492,6 +636,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         command: "./mcp",
         cwd: dir,
         args: [],
+        launch: { version: 1, arguments: [] },
         env_allowlist: [],
       },
       permissions: [{ capability: "tool.invoke", resource: "echo" }],
@@ -501,6 +646,43 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     await writeFile(
       executable,
       `#!/bin/sh\ntouch "${marker}"\nexec "${BUN_BIN}" run "${STDIO_FIXTURE}"\n`,
+    );
+    await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
+      code: "drift",
+    });
+    expect(await Bun.file(marker).exists()).toBe(false);
+  });
+
+  it("detects an edited script passed as an argument without spawning it or requiring an entrypoint", async () => {
+    const dir = await makeTempDir("mars-stdio-script-arg-");
+    const script = join(dir, "server.ts");
+    const marker = join(dir, "spawned");
+    const fixtureSrc = await readFile(STDIO_FIXTURE, "utf8");
+    await writeFile(script, fixtureSrc, "utf8");
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "edited-script-arg",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        cwd: dir,
+        args: ["run", "server.ts"],
+        launch: { version: 1, arguments: ["text", { code: null }] },
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    expect((await cp.loader.admitServer(ctx, config.id)).server_id).toBe(
+      config.id,
+    );
+    await cp.loader.closeServer(config.id);
+    await writeFile(
+      script,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "SPAWNED");\n${fixtureSrc}`,
+      "utf8",
     );
     await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
       code: "drift",
@@ -527,7 +709,8 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       transport: {
         type: "stdio",
         command: BUN_BIN,
-        args: ["run", STDIO_FIXTURE, "--mode-file", modeFile],
+        args: ["run", STDIO_FIXTURE, `--mode-file=${modeFile}`],
+        launch: { version: 1, arguments: ["text", { code: null }, "text"] },
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -568,6 +751,16 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(oldGrant?.state).toBe("superseded");
     const pendingReview = inspected.reviews.find((r) => r.state === "pending");
     expect(pendingReview).toBeDefined();
+    // Only the live descriptor drifted; static artifact hashes are unchanged.
+    expect(pendingReview?.evidence.config_sha256).toBe(
+      firstGrant.evidence.config_sha256,
+    );
+    expect(pendingReview?.evidence.dependency_sha256).toBe(
+      firstGrant.evidence.dependency_sha256,
+    );
+    expect(pendingReview?.evidence.tools).not.toEqual(
+      firstGrant.evidence.tools,
+    );
 
     // Verify hash-chained audit log integrity
     const { state } = await cp.readState();
@@ -584,6 +777,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         type: "stdio",
         command: BUN_BIN,
         args: ["run", STDIO_FIXTURE],
+        launch: { version: 1, arguments: ["text", { code: null }] },
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -622,6 +816,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
         type: "stdio",
         command: BUN_BIN,
         args: ["run", STDIO_FIXTURE],
+        launch: { version: 1, arguments: ["text", { code: null }] },
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -874,6 +1069,7 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
           type: "stdio",
           command: BUN_BIN,
           args: ["run", scriptPath],
+          launch: { version: 1, arguments: ["text", { code: null }] },
           entrypoint: scriptPath,
           env_allowlist: [],
         },
@@ -1194,6 +1390,81 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     await transport.close();
   });
 
+  it("ignores null and other non-object stdio lines instead of crashing the host", async () => {
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "stdio-non-object-lines",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        args: ["run", STDIO_FIXTURE],
+        launch: { version: 1, arguments: ["text", { code: null }] },
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const result = await cp.loader.invokeTool(ctx, {
+      server_id: config.id,
+      tool: "echo",
+      input: { message: "after-null", nonObjectLines: true },
+      timeout_ms: 2000,
+    });
+    expect(result.content[0]?.text).toBe("echo:after-null");
+  });
+
+  it("handles null JSON-RPC bodies from Streamable HTTP servers without a TypeError", async () => {
+    const initResult = {
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: {} },
+      serverInfo: { name: "null-body", version: "1.0.0" },
+    };
+    const srv = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        if (req.method !== "POST") return new Response(null, { status: 204 });
+        const body = (await req.json()) as { id?: number; method?: string };
+        if (body.id === undefined) return new Response(null, { status: 202 });
+        if (req.headers.get("x-null-mode") === "json") {
+          return new Response("null", {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const result =
+          body.method === "initialize" ? initResult : { tools: [] };
+        return new Response(
+          `data: null\n\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    activeServers.push(srv);
+    const url = `http://127.0.0.1:${srv.port}/mcp`;
+
+    const sse = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    const descriptor = await sse.initialize({ timeoutMs: 2000 });
+    expect(descriptor.serverInfo.name).toBe("null-body");
+    await sse.close();
+
+    const json = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    await expect(
+      json.initialize({
+        timeoutMs: 2000,
+        extraHeaders: { "x-null-mode": "json" },
+      }),
+    ).rejects.toThrow("MCP Streamable HTTP response is not a JSON-RPC object");
+    await json.close();
+  });
+
   it("never spawns a drifted stdio entrypoint during admission even after a pending drift review is recorded", async () => {
     const dir = await makeTempDir("mars-mcp-pending-drift-");
     const stateDir = join(dir, "state");
@@ -1220,6 +1491,7 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
         type: "stdio",
         command: BUN_BIN,
         args: ["run", entrypoint],
+        launch: { version: 1, arguments: ["text", { code: null }] },
         entrypoint,
         env_allowlist: [],
       },

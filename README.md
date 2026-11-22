@@ -23,7 +23,7 @@ The local workbench connects the VS Code client and CLI to durable tasks, isolat
 - Host-bound video/screen perception and verification for every session type via [`@mars/watch`](packages/watch/README.md), wrapping the external watch-skill 1.4.3 CLI (Python, optional, sandboxed) with THE LOOP as advisory evidence and deterministic `verify` contracts mapped to task evidence (`pass` / `fail` / `inconclusive` / `error` plus assurance). Offline fixture tests only; see [documentation/WATCH.md](documentation/WATCH.md) for what was and was not run.
 - Codex CLI tooling and Claude Code conventions without either agent loop: [`@mars/codex-tools`](packages/codex-tools/README.md) (attributed TypeScript port of openai/codex `apply_patch` behind the host-bound `mars_apply_patch` tool that writes only through the workspace provider; `read-only` / `workspace-write` sandbox and `untrusted` / `on-request` / `never` approval mapping onto the workbench read/write/execute gates; `AGENTS.md` + `CLAUDE.md` discovery frozen into the prompt as bounded repository instructions) and repository conventions in [`@mars/skills`](packages/skills/README.md) (`skills/`, `.claude/skills`, `.codex/skills`, `.agents/skills` SKILL.md folders; `.mars/hooks.json` session-start/pre-tool/post-tool hooks that run only through the sandboxed execute approval; `.mars/commands` and `.claude/commands` slash commands expanded by `mars commands` and at task start). Matrix and limits in [documentation/COMPATIBILITY.md](documentation/COMPATIBILITY.md); offline fixture tests only.
 
-Datasets, training and specialist serving are implemented and **offline-verified only**: `@mars/datasets` builds SFT train/validation JSONL from verified, patch-bound tasks ([documentation/DATASETS.md](documentation/DATASETS.md)); `@mars/training` runs pinned TRL + PEFT LoRA jobs in a Python worker, with one tiny CPU plumbing run on a synthetic fixture and QLoRA unverified ([packages/training/README.md](packages/training/README.md)); `@mars/providers-vllm` attaches an operator-started pinned vLLM with serving attestation, `@mars/specialists` routes per step with base-model fallback (including resuming paused tasks on the fallback), and `mars specialists evaluate` runs the held-out adapter-vs-base comparison, all against fake vLLM and fixture evaluators ([documentation/SERVING.md](documentation/SERVING.md), [documentation/SPECIALISTS.md](documentation/SPECIALISTS.md)). No real dataset, useful specialist, GPU host or live adapter serving exists yet, and RL is not started. Independent evaluation (`@mars/evaluation`, Harbor / Terminal-Bench 2) and prompt optimisation (`@mars/optimization`, GEPA worker) exist with offline tests and recorded live checks, but no real-model baseline/candidate comparison has passed yet ([documentation/EVALUATION.md](documentation/EVALUATION.md)). The memory service is wired into sessions as frozen, untrusted-labelled context; the skill store and proposal-only background review exist with offline evidence only (see [Milestone 3](#milestone-3-skills-and-background-review-offline-only)). Research has a durable control plane and an offline-verified worker that `mars serve --research-search brave|searxng|tavily` runs for every session ([documentation/RESEARCH_WORKER.md](documentation/RESEARCH_WORKER.md)); no live search provider or model run has been verified. The integration trust gate is a library, not an enabled third-party loader or approval UI. Real-model and real IDE acceptance remain unverified. See [local workbench setup and evidence limits](documentation/LOCAL_WORKBENCH.md) and [milestone gates](documentation/MILESTONE_0.md).
+Datasets, training and specialist serving are implemented and **offline-verified only**: `@mars/datasets` builds SFT train/validation JSONL from verified, patch-bound tasks ([documentation/DATASETS.md](documentation/DATASETS.md)); `@mars/training` runs pinned TRL + PEFT LoRA jobs in a Python worker, with one tiny CPU plumbing run on a synthetic fixture and QLoRA unverified ([packages/training/README.md](packages/training/README.md)); `@mars/providers-vllm` attaches an operator-started pinned vLLM with serving attestation, `@mars/specialists` routes per step with base-model fallback (including resuming paused tasks on the fallback), and `mars specialists evaluate` runs the held-out adapter-vs-base comparison, all against fake vLLM and fixture evaluators ([documentation/SERVING.md](documentation/SERVING.md), [documentation/SPECIALISTS.md](documentation/SPECIALISTS.md)). No real dataset, useful specialist, GPU host or live adapter serving exists yet, and RL is not started. Independent evaluation (`@mars/evaluation`, Harbor / Terminal-Bench 2) and prompt optimisation (`@mars/optimization`, GEPA worker) exist with offline tests and recorded live checks, but no real-model baseline/candidate comparison has passed yet ([documentation/EVALUATION.md](documentation/EVALUATION.md)). The memory service is wired into sessions as frozen, untrusted-labelled context; the skill store and proposal-only background review exist with offline evidence only (see [Milestone 3](#milestone-3-skills-and-background-review-offline-only)). Research has a durable control plane and an offline-verified worker that `mars serve --research-search brave|searxng|tavily` runs for every session ([documentation/RESEARCH_WORKER.md](documentation/RESEARCH_WORKER.md)); no live search provider or model run has been verified. The [installed desktop catalog](documentation/SHELL.md#add-a-verified-extension) offers first-party, digest-pinned extensions with native approval. Arbitrary third-party desktop installs are not supported. Real-model and real IDE acceptance remain unverified. See [local workbench setup and evidence limits](documentation/LOCAL_WORKBENCH.md) and [milestone gates](documentation/MILESTONE_0.md).
 
 ## Setup
 
@@ -51,6 +51,38 @@ The installer file is local setup tooling, not product source. Bun's bundled pla
 
 Lifecycle scripts stay disabled: optional `onnxruntime-node` and `protobufjs` postinstalls are **not required by these probes**. Voice/embedding/transformer functionality is untested; do not broadly trust dependencies to enable it.
 
+### Using `mars` in the examples
+
+In this source checkout, `mars` means `bun apps/cli/src/main.ts`; no global
+executable is installed. The linked docs use that shorthand. To run their
+commands from any directory, define this shell function (add it to your shell
+startup file to keep it across terminals, and replace the path with your clone):
+
+```sh
+mars() { bun /absolute/path/to/MARS-Send-Youre-AI-To-Space/apps/cli/src/main.ts "$@"; }
+mars --help
+```
+
+The current directory still selects the project for commands with `--source`
+defaults. Without the function, use the full `bun` command from the repo root.
+
+### Optional Python optimization worker
+
+The real GEPA worker tests, including the reflection-prompt scrubbing test, skip
+when `packages/optimization/python/.venv` is missing. The remaining offline
+checks require no Python worker. To include those tests, install
+[uv](https://docs.astral.sh/uv/getting-started/installation/) and run from the
+repository root:
+
+```sh
+uv venv --python 3.12 packages/optimization/python/.venv
+uv pip install --python packages/optimization/python/.venv/bin/python -r packages/optimization/python/requirements.lock
+bun test packages/optimization/src/optimization.test.ts
+```
+
+This separate worker environment is optional and does not configure a model
+provider or enable paid requests.
+
 ## Commands
 
 | Command | Purpose |
@@ -62,7 +94,7 @@ Lifecycle scripts stay disabled: optional `onnxruntime-node` and `protobufjs` po
 | `bun apps/cli/src/main.ts render [file] [--connectors ids] [--address a@b.com] [--follow-up N] [--json]` | Render MARS Output Format text (file or stdin) for a terminal; follow-ups, `app://` triggers and `mars://review` links are listed as proposals, nothing is executed |
 | `bun run smoke:execution` | No-provider/no-tool SDK and native search probe |
 | `bun run audit:sources` | Validate source references, spec digest, package pins, installed versions, and lockfile integrity |
-| `bun run audit:sources:remote` | Fetch immutable source/license files and emit content hashes; network required |
+| `bun run audit:sources:remote` | Fetch immutable source/license files and Git directory trees and emit hashes; network required |
 | `bun run format` | Apply Biome formatting and import organization |
 
 A small Bun build emits the CLI and provider library bundles with `bun run build`; the execution package still runs TypeScript directly. There are no existing database migrations, production data, or schema-upgrade guarantees at version 0.0.1.

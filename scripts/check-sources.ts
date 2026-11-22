@@ -141,7 +141,8 @@ export function validateManifest(input: unknown): SourceManifest {
       throw new Error(`Conflicting repository pins: ${component.id}`);
     repositories.set(component.repository_url, component.revision);
     for (const source of [...component.sources, component.license]) {
-      const expected = `${component.repository_url}/blob/${component.revision}/${source.path}`;
+      const view = source.url.includes("/tree/") ? "tree" : "blob";
+      const expected = `${component.repository_url}/${view}/${component.revision}/${source.path}`;
       if (source.url !== expected)
         throw new Error(
           `Unpinned source URL: ${component.id} / ${source.path}`,

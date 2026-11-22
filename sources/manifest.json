@@ -2481,59 +2481,59 @@
       "id": "graphify",
       "group": "code-knowledge-graph",
       "repository_url": "https://github.com/Graphify-Labs/graphify",
-      "revision": "ab26b1ec1da995743ef5a165a07b0d45ad3314c8",
+      "revision": "8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b",
       "version_note": "0.9.101 (pyproject.toml, tag v0.9.101); PyPI distribution name `graphifyy`",
       "license": {
         "spdx": "Apache-2.0",
         "path": "LICENSE",
-        "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/LICENSE",
+        "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/LICENSE",
         "additional_notices": ["LICENSE-MIT", "NOTICE"],
         "notes": "Apache-2.0 at the pinned LICENSE with an upstream NOTICE and a LICENSE-MIT for parts relicensed from the original MIT release. Nothing is copied or vendored: MARS runs the pinned CLI as an external subprocess and parses its JSON output; packages/knowledge-graph/NOTICE records the attribution."
       },
       "sources": [
         {
           "path": "pyproject.toml",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/pyproject.toml",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/pyproject.toml",
           "purpose": "Version 0.9.101, requires-python >=3.10, dependencies (networkx, tree-sitter grammars, rapidfuzz, pyyaml); source of the `graphify --version` gate."
         },
         {
           "path": "README.md",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/README.md",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/README.md",
           "purpose": "Feature and install overview; audited for the `extract --code-only` offline path and the LLM-backed commands MARS does not call."
         },
         {
           "path": "ARCHITECTURE.md",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/ARCHITECTURE.md",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/ARCHITECTURE.md",
           "purpose": "Pipeline detect \u2192 extract \u2192 build \u2192 cluster \u2192 analyze \u2192 report \u2192 export and the graph.json node/edge schema mapped into KnowledgeGraphArtifactSchema."
         },
         {
           "path": "graphify/cli.py",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/graphify/cli.py",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/graphify/cli.py",
           "purpose": "CLI subcommands and flags; only `extract <root> --code-only --out <dir>` and `--version` are invoked by @mars/knowledge-graph."
         },
         {
           "path": "graphify/cluster.py",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/graphify/cluster.py",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/graphify/cluster.py",
           "purpose": "Deterministic community detection (fixed seed) behind the artifact's communities."
         },
         {
           "path": "graphify/export.py",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/graphify/export.py",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/graphify/export.py",
           "purpose": "graph.json export shape (nodes, links, hyperedges) consumed by normalizeGraph."
         },
         {
           "path": "graphify/__main__.py",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/graphify/__main__.py",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/graphify/__main__.py",
           "purpose": "Entry point and version printing wrapped by the subprocess sandbox."
         },
         {
           "path": "LICENSE",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/LICENSE",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/LICENSE",
           "purpose": "Apache-2.0 license text."
         },
         {
           "path": "NOTICE",
-          "url": "https://github.com/Graphify-Labs/graphify/blob/ab26b1ec1da995743ef5a165a07b0d45ad3314c8/NOTICE",
+          "url": "https://github.com/Graphify-Labs/graphify/blob/8e6a6d2129d4aeffc7a0e9ed79b153f7f057f42b/NOTICE",
           "purpose": "Upstream attribution notice reproduced in packages/knowledge-graph/NOTICE."
         }
       ],
@@ -2624,7 +2624,7 @@
         },
         {
           "path": "codex-rs/apply-patch/tests/fixtures/scenarios",
-          "url": "https://github.com/openai/codex/blob/f58acd6ede312266a7a0eaa63fd8dadacb4de239/codex-rs/apply-patch/tests/fixtures/scenarios",
+          "url": "https://github.com/openai/codex/tree/f58acd6ede312266a7a0eaa63fd8dadacb4de239/codex-rs/apply-patch/tests/fixtures/scenarios",
           "purpose": "Scenario fixtures copied verbatim as the port's characterization tests."
         },
         {

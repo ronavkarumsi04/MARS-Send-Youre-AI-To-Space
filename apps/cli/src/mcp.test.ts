@@ -41,7 +41,7 @@ async function execMcpCli(args: string[]): Promise<string> {
 
 describe("mars mcp CLI flow", () => {
   it("explains which explicit permissions HTTP tools and credentials need", async () => {
-    await expect(execMcpCli(["--help"])).rejects.toThrow(
+    expect(await execMcpCli(["--help"])).toMatch(
       /Explicit review permissions replace the defaults.*--permission network\.connect:<origin>\.\s+If using a credential.*--permission credential\.use:<ref>/,
     );
   });
@@ -69,8 +69,12 @@ describe("mars mcp CLI flow", () => {
       BUN_BIN,
       "--arg",
       "run",
+      "--arg-kind",
+      "text",
       "--arg",
       STDIO_FIXTURE,
+      "--arg-kind",
+      "file",
       "--entrypoint",
       STDIO_FIXTURE,
       "--allow-stdio-probe",
@@ -512,6 +516,8 @@ describe("mars mcp CLI flow", () => {
       process.execPath,
       "--arg",
       STDIO_FIXTURE,
+      "--arg-kind",
+      "file",
       "--entrypoint",
       STDIO_FIXTURE,
       "--allow-stdio-probe",
@@ -532,6 +538,10 @@ describe("mars mcp CLI flow", () => {
       "--arg",
       STDIO_FIXTURE,
       "--arg=v2",
+      "--arg-kind",
+      "file",
+      "--arg-kind",
+      "text",
       "--entrypoint",
       STDIO_FIXTURE,
       "--allow-stdio-probe",

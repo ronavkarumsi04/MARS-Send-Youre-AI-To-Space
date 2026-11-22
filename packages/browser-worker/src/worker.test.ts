@@ -7,7 +7,7 @@ import type {
   BrowserWorkerContext,
   BrowserWorkerInput,
 } from "@mars/browser";
-import { BrowserError } from "@mars/browser";
+import { BrowserError, BrowserStepSchema } from "@mars/browser";
 import type { ArtifactRef } from "@mars/contracts";
 import type { ModelGateway } from "@mars/research-worker";
 import {
@@ -297,9 +297,30 @@ test("secrets and private paths are never typed and are scrubbed from model-visi
     memory.context,
   );
   expect(memory.steps[0]).toMatchObject({ outcome: "blocked" });
+  expect(JSON.stringify(memory.steps)).not.toContain("/srv/private");
   expect(engine.typed).toEqual([]);
   expect(prompts[0]).not.toContain("Welcome to Mars");
   expect(prompts[0]).toContain("[redacted]");
+});
+
+test("redacted navigation actions remain valid browser steps", async () => {
+  const worker = createBrowserWorker({
+    engine: createFakeBrowserEngine(),
+    fetch: fakeFetch,
+    resolveHost,
+    hostPrivateRoots: ["/srv/private"],
+  });
+  const memory = memoryContext();
+  memory.context.recordStep = async (step) => {
+    memory.steps.push(BrowserStepSchema.parse(step));
+  };
+  await worker.run(
+    input({ actions: [{ type: "navigate", url: "https://srv/private/page" }] }),
+    memory.context,
+  );
+  expect(memory.steps).toHaveLength(1);
+  expect(JSON.stringify(memory.steps)).not.toContain("/srv/private");
+  expect(memory.state.result).toBeDefined();
 });
 
 test("cancellation kills the owned browser mid-navigation", async () => {
@@ -446,6 +467,48 @@ test("a host is resolved once per request and the request is pinned to that addr
   });
   expect(second).toEqual({ ok: false, reason: "private_address" });
   expect(pinned).toHaveLength(1);
+});
+
+test("guarded fetch bounds stalled DNS resolution and honours cancellation during DNS", async () => {
+  for (const cancel of [false, true]) {
+    const controller = new AbortController();
+    let fetched = false;
+    const guarded = createGuardedBrowserFetch({
+      resolve: () => new Promise(() => {}),
+      fetch: async () => {
+        fetched = true;
+        return new Response("unexpected");
+      },
+      signal: controller.signal,
+      allowHosts: undefined,
+      denyHosts: [],
+      maxBytes: 1024,
+      timeoutMs: () => 20,
+      userAgent: "test",
+    });
+    const pending = guarded({
+      url: "https://stalled.example/",
+      method: "GET",
+      headers: {},
+    });
+    if (cancel) controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        pending,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve("hung"), 200);
+        }),
+      ]);
+      expect(result).toEqual({
+        ok: false,
+        reason: cancel ? "cancelled" : "network_error",
+      });
+      expect(fetched).toBe(false);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 });
 
 test("the live pinned fetch connects to the validated address, never a fresh DNS answer", async () => {

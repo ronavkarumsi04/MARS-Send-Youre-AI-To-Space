@@ -165,6 +165,24 @@ export function openBrowserStore(options: {
   const rootDir = realpathSync(requestedRoot);
   if (overlaps(rootDir))
     throw unsafe("Browser store root overlaps a private path");
+  for (const name of [
+    DB_FILE,
+    `${DB_FILE}-wal`,
+    `${DB_FILE}-shm`,
+    `${DB_FILE}-journal`,
+  ]) {
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(path.join(rootDir, name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw unsafe("Browser store file is unsafe");
+    }
+    if (!stat.isFile())
+      throw unsafe("Browser store file must be a regular file");
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid())
+      throw unsafe("Browser store file must be owned by the current user");
+  }
   const db = new Database(path.join(rootDir, DB_FILE), {
     create: true,
     strict: true,
