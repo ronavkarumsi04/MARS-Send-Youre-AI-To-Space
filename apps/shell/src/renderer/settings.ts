@@ -13,6 +13,9 @@ const input = document.querySelector<HTMLInputElement>("#model-key");
 const save = document.querySelector<HTMLButtonElement>("[type=submit]");
 const clear = document.querySelector<HTMLButtonElement>("#clear-key");
 const status = document.querySelector("#model-status");
+document.querySelector("#get-key")?.addEventListener("click", () => {
+  void settings?.openKeyPage();
+});
 const messages: Record<ModelSettingsResult, string> = {
   saved: "Key saved in your system’s secure storage.",
   session:

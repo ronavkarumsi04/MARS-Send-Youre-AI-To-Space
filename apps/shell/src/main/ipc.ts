@@ -1,6 +1,8 @@
 import { fail } from "@mars/team-chat";
+import { ASSISTANT_CHANNEL } from "../shared/assistant";
 import { BRIDGE_CHANNEL, bridgeFailure } from "../shared/methods";
 import { TEAM_CHAT_CHANNEL } from "../shared/team-chat";
+import type { createAssistant } from "./assistant";
 import type { Bridge } from "./bridge";
 import type { TeamChatBridge } from "./team-chat-bridge";
 
@@ -28,6 +30,22 @@ function trustedSender(event: IpcEventLike, trustedOrigin: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function registerAssistantBridge(
+  ipcMain: IpcMainLike,
+  assistant: ReturnType<typeof createAssistant>,
+  options: { trustedOrigin: string },
+): void {
+  ipcMain.handle(ASSISTANT_CHANNEL, async (event, payload) => {
+    if (!trustedSender(event, options.trustedOrigin))
+      return { ok: false, error: "Chat request refused." };
+    try {
+      return await assistant.call(payload);
+    } catch {
+      return { ok: false, error: "Chat is unavailable. Please try again." };
+    }
+  });
 }
 
 function requestPayload(

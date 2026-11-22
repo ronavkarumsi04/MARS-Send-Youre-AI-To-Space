@@ -13,17 +13,24 @@
   <body class="model-settings">
     <header class="masthead"><span class="masthead-dots" aria-hidden="true"></span>MARS / model settings</header>
     <main>
-      <h1>Model settings</h1>
-      <p>Add an OpenRouter API key to run the agent with the default free model route. You can browse the workbench and demo Team Chat without a key.</p>
+      <div class="setup-step">MODEL CONNECTION / OPENROUTER</div>
+      <h1>Connect your model</h1>
+      <p>Use one OpenRouter key for chat and agent tasks. MARS uses it to sign in to OpenRouter, not as part of your prompts.</p>
+      <div class="key-help">
+        <p><strong>1. Create your key</strong></p>
+        <p>Sign in to OpenRouter, choose Create API key, and copy it.</p>
+        <button id="get-key" type="button">Open OpenRouter key settings ↗</button>
+      </div>
       <form>
-        <label for="model-key">OpenRouter API key</label>
-        <input id="model-key" type="password" maxlength="512" autocomplete="off" spellcheck="false" required />
+        <label for="model-key">2. Paste your OpenRouter API key</label>
+        <input id="model-key" type="password" maxlength="512" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false" required aria-describedby="key-privacy" />
         <div class="model-actions">
-          <button type="submit">Save key</button>
-          <button id="clear-key" type="button">Clear saved key</button>
+          <button type="submit">Save &amp; connect</button>
+          <button id="clear-key" type="button">Remove key</button>
         </div>
       </form>
-      <p>Changing the key restarts the local workbench.</p>
+      <p id="key-privacy">Stored in your system’s secure storage when available; otherwise used only until MARS quits. Updating the key reconnects your workspace.</p>
+      <p>Chat uses OpenRouter’s free route. Agent tasks use the host’s default model unless you explicitly choose a paid one.</p>
       <p id="model-status" role="status"></p>
     </main>
     <script type="module" src="./settings.js"></script>

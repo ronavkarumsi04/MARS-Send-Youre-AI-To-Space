@@ -73,6 +73,10 @@ export async function buildShell(outdir: string): Promise<void> {
     resolve(rendererDir, "shell.css"),
   );
   await copyFile(
+    resolve(root, "assets/orbit.svg"),
+    resolve(rendererDir, "orbit.svg"),
+  );
+  await copyFile(
     resolve(root, "assets/CommitMono-Regular.woff2"),
     resolve(rendererDir, "CommitMono-Regular.woff2"),
   );

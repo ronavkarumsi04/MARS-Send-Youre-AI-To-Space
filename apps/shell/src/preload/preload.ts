@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { ASSISTANT_CHANNEL, type AssistantApi } from "../shared/assistant";
 import {
   BRIDGE_CHANNEL,
   BRIDGE_GLOBAL,
@@ -38,6 +39,13 @@ if (typeof contextBridge?.exposeInMainWorld === "function") {
   const invoke: Invoke = (channel, payload) =>
     ipcRenderer.invoke(channel, payload);
   contextBridge.exposeInMainWorld(BRIDGE_GLOBAL, createPreloadApi(invoke));
+  contextBridge.exposeInMainWorld(
+    "marsAssistant",
+    Object.freeze({
+      request: (payload: Parameters<AssistantApi["request"]>[0]) =>
+        invoke(ASSISTANT_CHANNEL, payload),
+    }),
+  );
   contextBridge.exposeInMainWorld(
     TEAM_CHAT_GLOBAL,
     createTeamChatPreloadApi(invoke),

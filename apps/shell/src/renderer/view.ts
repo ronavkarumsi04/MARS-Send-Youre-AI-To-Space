@@ -12,7 +12,9 @@ import type {
   InspectResult,
   PatchExportResult,
 } from "../shared/methods";
+import { type AssistantViewState, renderAssistant } from "./assistant-view";
 import { h, type ShellDocument, type ShellElement } from "./dom";
+import { type ExtensionState, renderExtensions } from "./extensions-view";
 import { STATUS_LABEL, VERIFICATION_LABEL } from "./strings";
 import { renderTeamChatPane, type TeamChatViewState } from "./team-chat-view";
 import { renderTranscript } from "./transcript";
@@ -66,6 +68,12 @@ export type ExportViewState = {
 };
 
 export type ShellState = {
+  page?: "chat" | "tasks" | "extensions";
+  assistant?: AssistantViewState;
+  extensions?: ExtensionState;
+  inspectorOpen?: boolean;
+  onPage?: (page: "chat" | "tasks" | "extensions") => void;
+  onToggleInspector?: () => void;
   describe?: DescribeResult;
   tasks: Task[];
   selectedTask?: InspectResult;
@@ -801,7 +809,7 @@ function promptComposer(
     doc,
     "section",
     { class: "composer-card", "data-panel": "prompt-composer" },
-    heading(doc, "New Task Composer"),
+    heading(doc, "Give your agent a task"),
     requestInput,
     criteriaInput,
     h(
@@ -1165,9 +1173,10 @@ export function renderShell(
     "header",
     { class: "masthead" },
     h(doc, "span", { class: "masthead-dots", "aria-hidden": "true" }),
-    "MARS / workbench",
+    h(doc, "span", { class: "masthead-title" }, "MARS"),
+    h(doc, "span", { class: "masthead-subtitle" }, "Your mission control"),
   );
-  if (state.error) {
+  if (state.error && !state.assistant) {
     const retry = h(
       doc,
       "button",
@@ -1191,6 +1200,26 @@ export function renderShell(
     );
   }
   const task = state.selectedTask;
+  const navButton = (
+    text: string,
+    selected: boolean,
+    callback: () => void,
+    className = "nav-item",
+  ) => {
+    const button = h(
+      doc,
+      "button",
+      {
+        type: "button",
+        class: `${className}${selected ? " selected" : ""}`,
+        "aria-pressed": String(selected),
+      },
+      text,
+    );
+    button.addEventListener("click", callback);
+    return button;
+  };
+  const isChat = state.page === "chat" && !state.teamChat?.open;
   const refresh = h(
     doc,
     "button",
@@ -1225,14 +1254,89 @@ export function renderShell(
     doc,
     "nav",
     { class: "sidebar", "aria-label": "Sidebar" },
-    h(doc, "h1", { class: "brand" }, "MARS"),
-    h(doc, "h2", { class: "section-title" }, "Sessions"),
+    h(
+      doc,
+      "div",
+      { class: "brand-row" },
+      h(doc, "span", { class: "brand-icon", "aria-hidden": "true" }, "✳"),
+      h(doc, "h1", { class: "brand" }, "MARS"),
+      h(doc, "span", { class: "brand-tag" }, "DESKTOP"),
+    ),
+    h(
+      doc,
+      "div",
+      { class: "workspace-switcher" },
+      h(doc, "span", { class: "workspace-icon" }, "⌘"),
+      h(
+        doc,
+        "div",
+        {},
+        h(
+          doc,
+          "strong",
+          {},
+          state.describe?.workspaceLabel ?? "Local workspace",
+        ),
+        h(doc, "small", {}, "Personal workspace"),
+      ),
+    ),
+    state.assistant
+      ? navButton(
+          "＋  New conversation",
+          false,
+          () => state.assistant?.onNew?.(),
+          "new-conversation",
+        )
+      : null,
+    state.assistant
+      ? navButton("✧  Chat", isChat, () => state.onPage?.("chat"))
+      : null,
+    navButton(
+      "▤  Tasks",
+      state.page !== "extensions" && !isChat && !state.teamChat?.open,
+      () => state.onPage?.("tasks"),
+    ),
+    state.assistant
+      ? navButton(
+          "◇  Extensions",
+          state.page === "extensions" && !state.teamChat?.open,
+          () => state.onPage?.("extensions"),
+        )
+      : null,
+    h(doc, "h2", { class: "sidebar-label" }, "RECENT CONVERSATIONS"),
+    ...(state.assistant?.sessions ?? []).map((session) =>
+      navButton(
+        session.title,
+        isChat && session.id === state.assistant?.activeId,
+        () => state.assistant?.onSelect?.(session.id),
+        "conversation-item",
+      ),
+    ),
+    state.assistant && state.assistant.sessions.length === 0
+      ? h(
+          doc,
+          "p",
+          { class: "sidebar-empty" },
+          "Good things start with a question.",
+        )
+      : null,
+    h(doc, "h2", { class: "sidebar-label" }, "AGENT SESSIONS"),
     ...taskList(doc, state.tasks, task?.task_id, state.onSelect),
     h(
       doc,
       "section",
-      { class: "team-chat" },
+      { class: "team-chat sidebar-bottom" },
       teamChatBtn,
+      state.assistant
+        ? navButton(
+            state.assistant.configured
+              ? "⚙  Model settings"
+              : "⚙  Connect model",
+            false,
+            () => state.assistant?.onSettings?.(),
+            "nav-item model-settings-button",
+          )
+        : null,
       h(
         doc,
         "p",
@@ -1252,38 +1356,56 @@ export function renderShell(
           { class: "main" },
           renderTeamChatPane(doc, state.teamChat),
         )
-      : h(
-          doc,
-          "main",
-          { class: "main" },
-          h(
-            doc,
-            "div",
-            { class: "main-toolbar" },
-            taskHeader(doc, task, state.verification, state.verificationError),
-            refresh,
-          ),
-          approvalAndLifecycleCard(doc, state),
-          h(
-            doc,
-            "section",
-            { class: "transcript", role: "log", "aria-live": "polite" },
-            state.eventsError
-              ? unavailable(doc, state.eventsError)
-              : h(
+      : state.page === "extensions"
+        ? renderExtensions(doc, state.extensions)
+        : isChat && state.assistant
+          ? renderAssistant(doc, state.assistant)
+          : h(
+              doc,
+              "main",
+              { class: "main" },
+              h(
+                doc,
+                "div",
+                { class: "main-toolbar" },
+                taskHeader(
                   doc,
-                  "div",
-                  { class: "transcript-entries" },
-                  ...renderTranscript(
-                    doc,
-                    state.transcript,
-                    state.events.length,
-                    state.eventsCapped,
-                  ),
+                  task,
+                  state.verification,
+                  state.verificationError,
                 ),
-          ),
-          promptComposer(doc, state),
-        );
+                refresh,
+                navButton(
+                  state.inspectorOpen ? "Hide details" : "Task details",
+                  Boolean(state.inspectorOpen),
+                  () => state.onToggleInspector?.(),
+                  "details-toggle",
+                ),
+              ),
+              state.error
+                ? h(doc, "p", { class: "error", role: "alert" }, state.error)
+                : null,
+              approvalAndLifecycleCard(doc, state),
+              h(
+                doc,
+                "section",
+                { class: "transcript", role: "log", "aria-live": "polite" },
+                state.eventsError
+                  ? unavailable(doc, state.eventsError)
+                  : h(
+                      doc,
+                      "div",
+                      { class: "transcript-entries" },
+                      ...renderTranscript(
+                        doc,
+                        state.transcript,
+                        state.events.length,
+                        state.eventsCapped,
+                      ),
+                    ),
+              ),
+              promptComposer(doc, state),
+            );
 
   const inspector = h(
     doc,
@@ -1326,7 +1448,9 @@ export function renderShell(
   return h(
     doc,
     "div",
-    { class: "app-shell" },
+    {
+      class: `app-shell${isChat || state.page === "extensions" || state.teamChat?.open || !state.inspectorOpen ? " inspector-hidden" : ""}`,
+    },
     masthead,
     sidebar,
     main,

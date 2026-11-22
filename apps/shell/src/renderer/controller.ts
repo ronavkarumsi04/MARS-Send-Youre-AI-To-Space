@@ -5,13 +5,16 @@ import type {
   ReferencePreview,
 } from "@mars/team-chat";
 import { type ProjectionEvent, projectTranscript } from "@mars/ui-core";
+import type { AssistantApi } from "../shared/assistant";
 import type { BridgeResult, ShellBridge } from "../shared/methods";
 import {
   TEAM_CHAT_MAX_MESSAGE_CHARS,
   TEAM_CHAT_MAX_SEARCH_CHARS,
   type TeamChatBridgeApi,
 } from "../shared/team-chat";
+import type { AssistantViewState } from "./assistant-view";
 import type { ShellDocument, ShellElement } from "./dom";
+import type { ExtensionState, ExtensionsApi } from "./extensions-view";
 import type { TeamChatViewState } from "./team-chat-view";
 import { verifyArtifact } from "./verify";
 import {
@@ -107,7 +110,29 @@ export function createController(
   doc: ShellDocument,
   root: ShellElement,
   teamChat?: TeamChatBridgeApi,
+  assistant?: AssistantApi,
+  extensions?: ExtensionsApi,
 ) {
+  let extensionState: ExtensionState = {
+    items: [],
+    busy: false,
+    notice: extensions
+      ? ""
+      : "The verified installer is not available in this build.",
+    available: Boolean(extensions),
+  };
+  let page: "chat" | "tasks" | "extensions" = assistant ? "chat" : "tasks";
+  let inspectorOpen = false;
+  let assistantState: AssistantViewState = {
+    sessions: [],
+    activeId: globalThis.crypto.randomUUID(),
+    draft: "",
+    configured: false,
+    consent: false,
+    busy: false,
+    loading: Boolean(assistant),
+  };
+  let assistantLoaded = false;
   let selectedId: string | undefined;
   let loadRequested = false;
   let loadPromise: Promise<void> | undefined;
@@ -145,6 +170,71 @@ export function createController(
     const selectionDirection = active?.selectionDirection ?? undefined;
     state = {
       ...state,
+      page,
+      inspectorOpen,
+      onToggleInspector: () => {
+        inspectorOpen = !inspectorOpen;
+        render();
+      },
+      onPage: (next) => {
+        page = next;
+        teamState = { ...teamState, open: false };
+        if (next === "extensions") void refreshExtensions();
+        render();
+      },
+      extensions: {
+        ...extensionState,
+        onRefresh: () => void refreshExtensions(),
+        onInstall: (id) => void refreshExtensions(id),
+      },
+      ...(assistant
+        ? {
+            assistant: {
+              ...assistantState,
+              onDraft: (draft) => {
+                assistantState = { ...assistantState, draft };
+                if (
+                  doc.activeElement?.getAttribute(FOCUS_KEY) !==
+                  "assistant-input"
+                )
+                  render();
+              },
+              onConsent: (consent) => {
+                assistantState = { ...assistantState, consent };
+                render();
+              },
+              onSend: () => void sendAssistant(),
+              onSettings: () => void assistantSettings(),
+              onNew: () => {
+                page = "chat";
+                teamState = { ...teamState, open: false };
+                assistantState = {
+                  ...assistantState,
+                  activeId: globalThis.crypto.randomUUID(),
+                  draft: "",
+                  error: undefined,
+                };
+                render();
+              },
+              onSelect: (activeId) => {
+                page = "chat";
+                teamState = { ...teamState, open: false };
+                assistantState = {
+                  ...assistantState,
+                  activeId,
+                  draft: "",
+                  error: undefined,
+                };
+                render();
+              },
+              onTask: (text) => {
+                composer = { ...composer, request: text };
+                page = "tasks";
+                render();
+              },
+            },
+          }
+        : {}),
       composer,
       launch,
       patchExport,
@@ -256,6 +346,130 @@ export function createController(
         // Ignore input types that do not support selection ranges.
       }
     }
+  };
+
+  const loadAssistant = async () => {
+    if (!assistant || assistantLoaded) return;
+    assistantLoaded = true;
+    try {
+      const result = await assistant.request({ action: "load" });
+      assistantState = result.ok
+        ? {
+            ...assistantState,
+            sessions: result.sessions,
+            configured: result.configured,
+            loading: false,
+            activeId: result.sessions[0]?.id ?? assistantState.activeId,
+          }
+        : { ...assistantState, loading: false, error: result.error };
+    } catch {
+      assistantState = {
+        ...assistantState,
+        loading: false,
+        error: "Could not load chat. Reopen MARS to retry.",
+      };
+    }
+    render();
+  };
+
+  const assistantSettings = async () => {
+    if (!assistant) return;
+    try {
+      const result = await assistant.request({ action: "settings" });
+      if (!result.ok)
+        assistantState = { ...assistantState, error: result.error };
+    } catch {
+      assistantState = { ...assistantState, error: "Could not open settings." };
+    }
+    render();
+  };
+
+  const refreshExtensions = async (installId?: string) => {
+    if (!extensions || extensionState.busy) return;
+    extensionState = {
+      ...extensionState,
+      busy: true,
+      notice: installId
+        ? "Review this addition in the confirmation window."
+        : "Loading verified library…",
+    };
+    render();
+    try {
+      const outcome = installId
+        ? await extensions.install(installId)
+        : undefined;
+      const items = await extensions.list();
+      const notice =
+        outcome === "cancelled"
+          ? "Nothing changed."
+          : outcome === "unavailable"
+            ? "Could not add this extension. Review the project and retry."
+            : outcome === "installed"
+              ? "Added to this project."
+              : items.length
+                ? "Review the permissions, then choose Add to project."
+                : "No verified extensions are available for this project.";
+      extensionState = { items, notice, busy: false, available: true };
+    } catch {
+      extensionState = {
+        ...extensionState,
+        items: [],
+        busy: false,
+        notice:
+          "The verified library is unavailable. Open a local project and try again.",
+      };
+    }
+    render();
+  };
+
+  const sendAssistant = async () => {
+    if (!assistant || assistantState.busy || assistantState.loading) return;
+    const text = assistantState.draft.trim();
+    if (!text) return;
+    if (!assistantState.configured || !assistantState.consent) {
+      assistantState = {
+        ...assistantState,
+        error: !assistantState.configured
+          ? "Connect a model to start chatting."
+          : "Allow this conversation to be sent to OpenRouter below, then send your message.",
+      };
+      render();
+      return;
+    }
+    const activeId = assistantState.activeId;
+    assistantState = {
+      ...assistantState,
+      busy: true,
+      pending: { id: activeId, text },
+      error: undefined,
+    };
+    render();
+    try {
+      const result = await assistant.request({
+        action: "send",
+        id: activeId,
+        text,
+        consent: true,
+      });
+      assistantState = result.ok
+        ? {
+            ...assistantState,
+            sessions: result.sessions,
+            configured: result.configured,
+            draft:
+              assistantState.activeId === activeId ? "" : assistantState.draft,
+            busy: false,
+          }
+        : { ...assistantState, busy: false, error: result.error };
+    } catch {
+      assistantState = {
+        ...assistantState,
+        busy: false,
+        error: "Could not send your message. Your draft is kept.",
+      };
+    }
+    assistantState = { ...assistantState, pending: undefined };
+    render();
   };
 
   const displayError = (message: string) => {
@@ -1332,6 +1546,7 @@ export function createController(
         transcript,
         artifacts,
         onSelect: (taskId) => {
+          page = "tasks";
           selectedId = taskId;
           patchExport = { busy: false };
           launch = createInitialLaunch();
@@ -1357,6 +1572,7 @@ export function createController(
   };
 
   const load = () => {
+    void loadAssistant();
     loadRequested = true;
     if (!loadPromise) {
       loadPromise = (async () => {

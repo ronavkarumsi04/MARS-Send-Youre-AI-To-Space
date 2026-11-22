@@ -62,14 +62,15 @@ test("the preload exposes exactly the frozen workbench and team chat bridges", a
     },
   }));
   await import("../src/preload/preload");
-  expect(exposed).toHaveLength(2);
+  expect(exposed).toHaveLength(3);
   expect(exposed[0]?.[0]).toBe(BRIDGE_GLOBAL);
-  expect(exposed[1]?.[0]).toBe(TEAM_CHAT_GLOBAL);
+  expect(exposed[1]?.[0]).toBe("marsAssistant");
+  expect(exposed[2]?.[0]).toBe(TEAM_CHAT_GLOBAL);
   const api = exposed[0]?.[1] as Record<
     string,
     (params: unknown) => Promise<unknown>
   >;
-  const teamApi = exposed[1]?.[1] as Record<
+  const teamApi = exposed[2]?.[1] as Record<
     string,
     (params: unknown) => Promise<unknown>
   >;

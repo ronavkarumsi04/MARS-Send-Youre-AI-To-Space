@@ -17,6 +17,7 @@ import {
   Menu,
   type MenuItemConstructorOptions,
   safeStorage,
+  shell,
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
 import { startLocalWorkbench } from "./local-workbench";
@@ -111,11 +112,11 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     modelWindow = new BrowserWindow({
       parent: window,
       modal: true,
-      width: 490,
-      height: 365,
+      width: 560,
+      height: 590,
       resizable: false,
       title: "MARS Model Settings",
-      backgroundColor: "#050407",
+      backgroundColor: "#101216",
       webPreferences: {
         ...SHELL_WEB_PREFERENCES,
         preload: join(app.getAppPath(), "settings.cjs"),
@@ -123,6 +124,17 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     });
     void modelWindow.loadURL(settingsPage);
   };
+
+  ipcMain.handle(`${DESKTOP_MODEL_CHANNEL}:key-page`, async (event) => {
+    if (
+      !modelWindow ||
+      modelWindow.isDestroyed() ||
+      event.sender !== modelWindow.webContents ||
+      event.senderFrame?.url !== settingsPage
+    )
+      return;
+    await shell.openExternal("https://openrouter.ai/settings/keys");
+  });
 
   ipcMain.handle(DESKTOP_MODEL_CHANNEL, async (event, key: unknown) => {
     if (
@@ -193,6 +205,13 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
   );
 
   return {
+    chatContext() {
+      return {
+        workspace: source,
+        key: openRouterKey,
+        settings: showModelSettings,
+      };
+    },
     resolve() {
       if (changing || closing)
         return Promise.resolve({

@@ -10,4 +10,5 @@ export type ModelSettingsResult =
 
 export type DesktopModelSettings = {
   setKey(key: string | null): Promise<ModelSettingsResult>;
+  openKeyPage(): Promise<void>;
 };

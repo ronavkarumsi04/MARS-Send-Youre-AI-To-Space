@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld(
   "marsModelSettings",
   Object.freeze({
     setKey: (key) => ipcRenderer.invoke(DESKTOP_MODEL_CHANNEL, key),
+    openKeyPage: () => ipcRenderer.invoke(`${DESKTOP_MODEL_CHANNEL}:key-page`),
   } satisfies DesktopModelSettings),
 );

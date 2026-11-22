@@ -9,9 +9,14 @@ import {
   protocol,
   session,
 } from "electron";
+import { createAssistant } from "./assistant";
 import { explicitConnection, resolveConnection } from "./connection";
 import { createDesktop } from "./desktop";
-import { registerBridge, registerTeamChatBridge } from "./ipc";
+import {
+  registerAssistantBridge,
+  registerBridge,
+  registerTeamChatBridge,
+} from "./ipc";
 import {
   appResponseHeaders,
   resolveAppAsset,
@@ -93,7 +98,7 @@ app.on("ready", async () => {
     title: managed ? "MARS" : "MARS Shell",
     width: saved.width,
     height: saved.height,
-    backgroundColor: "#050407",
+    backgroundColor: "#101216",
     webPreferences: {
       ...SHELL_WEB_PREFERENCES,
       preload: join(app.getAppPath(), "preload.cjs"),
@@ -112,6 +117,25 @@ app.on("ready", async () => {
     { trustedOrigin },
   );
   registerTeamChatBridge(ipcMain, createTeamChatBridge(), { trustedOrigin });
+  registerAssistantBridge(
+    ipcMain,
+    createAssistant({
+      directory: join(app.getPath("userData"), "assistant-history"),
+      context: async () => {
+        if (desktop) return desktop.chatContext();
+        const connection = await resolveConnection();
+        return {
+          workspace:
+            explicitConnection() ??
+            (connection.ok
+              ? JSON.stringify(connection.connection.scope)
+              : "attached"),
+          key: process.env.OPENROUTER_API_KEY,
+        };
+      },
+    }),
+    { trustedOrigin },
+  );
   if (managed) {
     try {
       desktop = await createDesktop(window, () => {
