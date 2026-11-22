@@ -1454,8 +1454,16 @@ input[type="checkbox"] {
   .app-shell.inspector-hidden {
     grid-template-columns: 185px minmax(0, 1fr);
   }
-  .inspector {
-    display: none;
+  .app-shell:not(.inspector-hidden) {
+    grid-template-rows: 36px minmax(0, 3fr) minmax(0, 2fr) 27px;
+  }
+  .app-shell:not(.inspector-hidden) .sidebar {
+    grid-row: 2 / 4;
+  }
+  .app-shell:not(.inspector-hidden) .inspector {
+    grid-column: 2;
+    grid-row: 3;
+    border-top: 1px solid var(--borderMuted);
   }
   .assistant-scroll {
     padding: 25px;
