@@ -21,6 +21,7 @@ import {
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
 import { startLocalWorkbench } from "./local-workbench";
+import { hasRemovableKey } from "./model-key";
 import { SHELL_WEB_PREFERENCES } from "./security";
 
 const settingsPage = "mars-shell://app/settings.html";
@@ -153,7 +154,7 @@ export async function createDesktop(
       !modelWindow.isDestroyed() &&
       event.sender === modelWindow.webContents &&
       event.senderFrame?.url === settingsPage &&
-      Boolean(openRouterKey),
+      hasRemovableKey(keyFile, openRouterKey),
   );
 
   ipcMain.handle(DESKTOP_MODEL_CHANNEL, async (event, key: unknown) => {
@@ -185,6 +186,7 @@ export async function createDesktop(
       if (key === null) await rm(keyFile, { force: true });
       else if (persist)
         await replacePrivate(keyFile, safeStorage.encryptString(key));
+      else await rm(keyFile, { force: true });
       openRouterKey = key ?? undefined;
     }, "model");
     return !saved

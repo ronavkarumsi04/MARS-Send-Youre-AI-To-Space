@@ -1,13 +1,27 @@
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistant } from "../src/main/assistant";
+import { hasRemovableKey } from "../src/main/model-key";
 import { createController } from "../src/renderer/controller";
 import { settingsActions } from "../src/renderer/settings-actions";
 import { findAll, MiniDocument } from "./mini-dom";
 import { fakeBridge, loadFixtureData } from "./test-utils";
+
+test("Remove is available for a session key or unreadable encrypted file, but not on first launch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mars-key-presence-"));
+  const file = join(dir, "key.bin");
+  try {
+    expect(await hasRemovableKey(file)).toBe(false);
+    expect(await hasRemovableKey(file, "fixture")).toBe(true);
+    await writeFile(file, Buffer.from([0xff, 0, 0xff]));
+    expect(await hasRemovableKey(file)).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("a key pasted in chat never reaches the provider or history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mars-misplaced-key-"));
