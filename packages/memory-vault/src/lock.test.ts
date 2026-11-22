@@ -24,6 +24,46 @@ async function fixture() {
 }
 const worker = join(import.meta.dir, "../test/lock-worker.ts");
 
+test("locking: local queue timeout preserves exclusion for later waiters", async () => {
+  const root = await fixture();
+  let release = () => {};
+  let entered = () => {};
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const owner = withVaultLock(root, async () => {
+    entered();
+    await held;
+  });
+  await started;
+  try {
+    await expect(
+      withVaultLock(
+        root,
+        async () => {
+          throw new Error("waiter ran");
+        },
+        { timeout_ms: 20 },
+      ),
+    ).rejects.toMatchObject({ code: "vault_locked" });
+    let ran = false;
+    const later = withVaultLock(root, async () => {
+      ran = true;
+    });
+    await Bun.sleep(30);
+    expect(ran).toBe(false);
+    release();
+    await Promise.all([owner, later]);
+    expect(ran).toBe(true);
+  } finally {
+    release();
+    await owner;
+  }
+});
+
 test("locking: separate processes never overlap their critical sections", async () => {
   const root = await fixture();
   const spawn = () =>

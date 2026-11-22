@@ -88,9 +88,11 @@ async function reap(path: string): Promise<void> {
   }
 }
 
-async function acquire(vaultDir: string): Promise<() => Promise<void>> {
+async function acquire(
+  vaultDir: string,
+  deadline: number,
+): Promise<() => Promise<void>> {
   const path = join(vaultDir, VAULT_LOCK_FILE);
-  const deadline = Date.now() + VAULT_LOCK_LIMITS.timeout_ms;
   for (;;) {
     let file: Awaited<ReturnType<typeof open>>;
     try {
@@ -136,25 +138,49 @@ async function acquire(vaultDir: string): Promise<() => Promise<void>> {
 export async function withVaultLock<T>(
   vaultDir: string,
   action: () => Promise<T>,
+  options: { timeout_ms?: number } = {},
 ): Promise<T> {
+  const deadline =
+    Date.now() + (options.timeout_ms ?? VAULT_LOCK_LIMITS.timeout_ms);
   const key = await realpathExisting(vaultDir);
   const previous = pending.get(key) ?? Promise.resolve();
   let releaseLocal = () => {};
   const current = new Promise<void>((resolve) => {
     releaseLocal = resolve;
   });
-  pending.set(key, current);
-  await previous;
+  const queued = previous.then(() => current);
+  pending.set(key, queued);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    await Promise.race([
+      previous,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new VaultError(
+                "vault_locked",
+                "timed out waiting for another vault operation",
+              ),
+            ),
+          Math.max(0, deadline - Date.now()),
+        );
+      }),
+    ]);
+    clearTimeout(timer);
+    if (Date.now() >= deadline) throw new VaultError("vault_locked");
     await mkdir(key, { recursive: true, mode: 0o700 });
-    const release = await acquire(key);
+    const release = await acquire(key, deadline);
     try {
       return await action();
     } finally {
       await release();
     }
   } finally {
+    clearTimeout(timer);
     releaseLocal();
-    if (pending.get(key) === current) pending.delete(key);
+    void queued.then(() => {
+      if (pending.get(key) === queued) pending.delete(key);
+    });
   }
 }
