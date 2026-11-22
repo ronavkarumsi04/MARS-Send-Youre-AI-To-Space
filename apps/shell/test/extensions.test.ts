@@ -4,15 +4,17 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHostMcpControlPlane } from "@mars/mcp-client";
 import { SkillStore } from "@mars/skills";
 import type { BrowserWindow, Dialog, IpcMain } from "electron";
+import { buildUpstream } from "../scripts/build-upstream";
 import {
   desktopExtensionsMenu,
   extensionController,
@@ -346,6 +348,108 @@ test("supplied JSON and unified patches are processed offline by independently a
     await runtime.loader.closeAll();
   }
 }, 30_000);
+
+test("third-party notices cover vendored packages inside the locked MCP SDK", async () => {
+  const notices = await Bun.file(join(dir, "THIRD-PARTY-NOTICES.txt")).text();
+  const sdk = dirname(
+    Bun.resolveSync("@modelcontextprotocol/server/stdio", import.meta.dir),
+  );
+  const embedded = new Set<string>();
+  for await (const path of new Bun.Glob("**/*.mjs.map").scan({ cwd: sdk })) {
+    const map = (await Bun.file(join(sdk, path)).json()) as {
+      sources: string[];
+    };
+    for (const source of map.sources) {
+      const key = source.match(
+        /\.pnpm\/([^/_]+)(?:_[^/]*)?\/node_modules\//,
+      )?.[1];
+      if (key) embedded.add(key.replace("+", "/"));
+    }
+  }
+  expect(embedded.size).toBeGreaterThan(0);
+  for (const dep of embedded) expect(notices).toContain(`\n${dep}\n`);
+});
+
+test("upstream servers run from offline bundles with native project boundaries and exact tool grants", async () => {
+  await buildUpstream(dir);
+  await writeFile(join(source, "sample.txt"), "not granted");
+  const ext = open();
+  const runtime = await ext.runtime(source, scope);
+  const call = (
+    server_id: string,
+    tool: string,
+    input: Record<string, unknown>,
+  ) => runtime.loader.invokeTool(ctx, { server_id, tool, input });
+  const fs = "mcp-filesystem",
+    seq = "mcp-sequential-thinking";
+  try {
+    await expect(
+      call(fs, "list_directory", { path: source }),
+    ).rejects.toThrow();
+    await ext.install(fs);
+    expect(
+      CATALOG.find((entry) => entry.id === fs)?.permissions.join(" "),
+    ).toContain("absolute path");
+    expect(
+      (await call(fs, "list_allowed_directories", {})).content[0]?.text,
+    ).toContain(source);
+    const list = await call(fs, "list_directory", { path: source });
+    expect(list.content[0]?.text).toContain("sample.txt");
+    expect(list.untrusted).toBe(true);
+    expect((await call(fs, "list_directory", { path: state })).is_error).toBe(
+      true,
+    );
+    await expect(
+      call(fs, "read_text_file", { path: join(source, "sample.txt") }),
+    ).rejects.toThrow();
+    await expect(
+      call(fs, "write_file", { path: join(source, "new.txt"), content: "x" }),
+    ).rejects.toThrow();
+    await ext.install(seq);
+    const result = await call(seq, "sequentialthinking", {
+      thought: "Check the requirements.",
+      thoughtNumber: 1,
+      totalThoughts: 1,
+      nextThoughtNeeded: false,
+    });
+    expect(
+      JSON.parse(result.content[0]?.text ?? "{}").thoughtHistoryLength,
+    ).toBe(1);
+    expect(result.untrusted).toBe(true);
+    await writeFile(join(dir, "sequential-thinking.mjs"), "modified");
+    expect(await ext.list()).toEqual([fs]);
+    await expect(call(seq, "sequentialthinking", {})).rejects.toThrow();
+  } finally {
+    await runtime.loader.closeAll();
+  }
+}, 30000);
+
+test("Filesystem binds approval to the original directory, including across workbench restarts", async () => {
+  await buildUpstream(dir);
+  const id = "mcp-filesystem";
+  const ext = open();
+  await ext.install(id);
+  const original = join(root, "moved-project");
+  await rename(source, original);
+  // Even an alias to the very same directory is not the approved canonical root.
+  await symlink(original, source);
+  expect(await ext.list()).not.toContain(id);
+  await expect(ext.install(id)).rejects.toThrow("changed");
+  await rm(source);
+  await mkdir(source);
+  const reopened = open();
+  const runtime = await reopened.runtime(source, scope);
+  try {
+    expect(await reopened.list()).not.toContain(id);
+    // The old registered launch arguments cannot start the server on the new
+    // directory, even with a fresh host that has not cached the old identity.
+    await expect(runtime.loader.admitServer(ctx, id)).rejects.toThrow();
+    await reopened.install(id);
+    expect(await reopened.list()).toContain(id);
+  } finally {
+    await runtime.loader.closeAll();
+  }
+}, 30000);
 
 test("bad IDs, conflicting skill contents and modified bundle bytes cannot install", async () => {
   const extensions = open();
