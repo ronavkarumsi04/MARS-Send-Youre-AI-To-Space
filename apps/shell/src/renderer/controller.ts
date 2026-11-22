@@ -9,6 +9,7 @@ import type { BridgeResult, ShellBridge } from "../shared/methods";
 import {
   TEAM_CHAT_MAX_MESSAGE_CHARS,
   TEAM_CHAT_MAX_SEARCH_CHARS,
+  TEAM_CHAT_METHODS,
   type TeamChatBridgeApi,
 } from "../shared/team-chat";
 import type { ShellDocument, ShellElement } from "./dom";
@@ -109,6 +110,24 @@ export function createController(
   teamChat?: TeamChatBridgeApi,
 ) {
   let selectedId: string | undefined;
+  let selectionGeneration = 0;
+  let searchGeneration = 0;
+  let draftGeneration = 0;
+  const teamApi = teamChat;
+  if (teamApi) {
+    teamChat = Object.fromEntries(
+      TEAM_CHAT_METHODS.map((method) => [
+        method,
+        async (params: never) => {
+          try {
+            return await teamApi[method](params);
+          } catch {
+            return { ok: false, code: "unavailable" };
+          }
+        },
+      ]),
+    ) as TeamChatBridgeApi;
+  }
   let loadRequested = false;
   let loadPromise: Promise<void> | undefined;
   let clientSeq = 1;
@@ -145,12 +164,14 @@ export function createController(
       teamChat: {
         ...teamState,
         onClose: () => {
+          searchGeneration++;
           teamState = { ...teamState, open: false };
           render();
         },
         onSelectConversation: (conversationId) =>
           void openTeamConversation(conversationId),
         onDraftChange: (text) => {
+          draftGeneration++;
           teamState = { ...teamState, draft: text };
         },
         onSend: (text) => void sendTeamMessage(text),
@@ -331,6 +352,10 @@ export function createController(
     const preserveHistory = options?.preserveHistory === true;
     const switchedConversation =
       teamState.activeConversationId !== conversationId;
+    if (switchedConversation) {
+      draftGeneration++;
+      searchGeneration++;
+    }
     const loadingState: TeamChatViewState = {
       ...teamState,
       activeConversationId: conversationId,
@@ -474,10 +499,12 @@ export function createController(
   const sendTeamMessage = async (body: string) => {
     if (!teamChat || !teamState.activeConversationId) return;
     const convId = teamState.activeConversationId;
+    const sentDraftGeneration = draftGeneration;
+    const isCurrent = () => teamState.activeConversationId === convId;
     const keepDraft = (notice: string) => {
+      if (!isCurrent()) return;
       teamState = {
         ...teamState,
-        draft: teamState.draft.trim() === body ? teamState.draft : body,
         notice,
       };
       render();
@@ -504,7 +531,11 @@ export function createController(
         );
         return;
       }
-      const sent: TeamChatViewState = { ...teamState, draft: "" };
+      if (!isCurrent()) return;
+      const sent: TeamChatViewState = {
+        ...teamState,
+        ...(draftGeneration === sentDraftGeneration ? { draft: "" } : {}),
+      };
       delete sent.notice;
       teamState = sent;
       await openTeamConversation(convId, { preserveHistory: true });
@@ -596,6 +627,7 @@ export function createController(
   };
 
   const searchTeamMessages = async (query: string) => {
+    const generation = ++searchGeneration;
     if (!teamChat) return;
     const trimmed = query.trim();
     if (!trimmed) {
@@ -615,6 +647,7 @@ export function createController(
       return;
     }
     const res = await teamChat["team.search"]({ query: trimmed });
+    if (generation !== searchGeneration) return;
     if (!res.ok) {
       teamState = {
         ...teamState,
@@ -635,6 +668,7 @@ export function createController(
   };
 
   const switchTeamViewer = async (viewer: string) => {
+    searchGeneration++;
     if (!teamChat) return;
     const res = await teamChat["team.switchViewer"]({ viewer });
     if (!res.ok) {
@@ -967,6 +1001,9 @@ export function createController(
     const verification = state.verification;
     const diff = state.diff;
     if (!task || !verification || !diff) return;
+    const generation = selectionGeneration;
+    const isCurrent = () =>
+      generation === selectionGeneration && selectedId === task.task_id;
     const expectedPatchSha = verification.patch_sha256 ?? null;
     if (
       verification.state !== "verified" ||
@@ -990,6 +1027,7 @@ export function createController(
           expected_patch_sha256: expectedPatchSha,
         }),
       );
+      if (!isCurrent()) return;
       if (!exported.verified) {
         patchExport = {
           busy: false,
@@ -1013,6 +1051,7 @@ export function createController(
         task_id: task.task_id,
         artifact: exported.artifact,
       });
+      if (!isCurrent()) return;
       if (!fetched.ok) {
         patchExport = {
           busy: false,
@@ -1027,6 +1066,7 @@ export function createController(
         fetched.result,
         globalThis.crypto.subtle,
       );
+      if (!isCurrent()) return;
       if (!verifiedSha256) {
         patchExport = {
           busy: false,
@@ -1045,6 +1085,7 @@ export function createController(
       patchExport = nextExport;
       render();
     } catch (error) {
+      if (!isCurrent()) return;
       patchExport = {
         busy: false,
         error: error instanceof Error ? error.message : "Patch export failed.",
@@ -1160,6 +1201,7 @@ export function createController(
       await loadTeamBootstrap();
       const selected =
         tasks.find((task) => task.task_id === selectedId) ?? tasks[0];
+      if (selectedId !== selected?.task_id) selectionGeneration++;
       selectedId = selected?.task_id;
       if (!selected) {
         state = {
@@ -1326,6 +1368,8 @@ export function createController(
         transcript,
         artifacts,
         onSelect: (taskId) => {
+          selectionGeneration++;
+          searchGeneration++;
           selectedId = taskId;
           patchExport = { busy: false };
           launch = createInitialLaunch();
