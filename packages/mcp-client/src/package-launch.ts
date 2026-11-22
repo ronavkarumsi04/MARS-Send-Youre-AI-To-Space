@@ -54,8 +54,8 @@ export async function preparePackageLaunch(
   const sources = new Set<string>();
   async function pin(raw: string, root?: string | null) {
     const actual = await realpath(raw);
-    const path = root ? await realpath(fromCwd(cwd, root)) : actual;
     const lexical = join(await realpath(dirname(raw)), basename(raw));
+    const path = root ? await realpath(fromCwd(cwd, root)) : lexical;
     const name = root
       ? relative(path, within(path, lexical) ? lexical : actual)
       : basename(path);
