@@ -11,10 +11,11 @@ import {
 import { type Bridge, createBridge } from "./bridge";
 import type { RpcTransport } from "./transport";
 
-const RETRYABLE_ERRORS = new Set<BridgeErrorKind>([
+const CONNECTION_INVALIDATING_ERRORS = new Set<BridgeErrorKind>([
   "not_connected",
   "unavailable",
   "unauthorized",
+  "timeout",
 ]);
 
 export function createReconnectingBridge(options: {
@@ -55,7 +56,7 @@ export function createReconnectingBridge(options: {
       if (!bridge) return bridgeFailure("unavailable");
       try {
         const result = await bridge.call(method, params);
-        if (!result.ok && RETRYABLE_ERRORS.has(result.error.kind))
+        if (!result.ok && CONNECTION_INVALIDATING_ERRORS.has(result.error.kind))
           activeBridge = undefined;
         return result;
       } catch {
