@@ -75,13 +75,11 @@ async function serve(): Promise<void> {
       pending = (
         request.action === "list"
           ? extensions.status()
-          : extensions
-              .install(request.id)
-              .then(() => ({
-                installed: [request.id],
-                expired: [],
-                conflicts: [],
-              }))
+          : extensions.install(request.id).then(() => ({
+              installed: [request.id],
+              expired: [],
+              conflicts: [],
+            }))
       )
         .then(reply, () => reply(null))
         .finally(() => {
