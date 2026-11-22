@@ -51,6 +51,8 @@ import {
   type SkillView,
   SkillViewSchema,
   type StartParams,
+  type TaskFileResult,
+  TaskFileResultSchema,
   WorkspaceRefSchema,
 } from "./protocol";
 
@@ -93,6 +95,11 @@ export interface WorkbenchOperations {
     ref: ArtifactRef,
   ): Promise<ArtifactData>;
   diff(context: RequestContext, taskId: string): Promise<DiffResult>;
+  file?(
+    context: RequestContext,
+    taskId: string,
+    path: string,
+  ): Promise<TaskFileResult>;
   evidence(
     context: RequestContext,
     taskId: string,
@@ -266,7 +273,11 @@ function errorCode(error: unknown): RpcErrorCode {
         return "conflict";
       case "not_found":
         return "not_found";
+      case "limit_exceeded":
+      case "too_large":
+        return "too_large";
       case "unsafe_path":
+      case "policy":
       case "permission_denied":
       case "scope_denied":
         return "forbidden";
@@ -348,6 +359,11 @@ async function dispatch(
     case "tasks.diff":
       return DiffResultSchema.parse(
         await api.diff(context, request.params.task_id),
+      );
+    case "tasks.file":
+      if (!api.file) throw new WorkbenchError("unavailable");
+      return TaskFileResultSchema.parse(
+        await api.file(context, request.params.task_id, request.params.path),
       );
     case "tasks.evidence":
       return EvidenceResultSchema.parse(

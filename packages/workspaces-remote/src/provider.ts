@@ -90,7 +90,7 @@ export interface RemoteWorkspaceProviderOptions {
 }
 
 export interface RemoteWorkspaceProvider
-  extends Omit<LocalWorkspaceProvider, "search"> {
+  extends Omit<LocalWorkspaceProvider, "search" | "readBytes"> {
   readonly serverInfo: AgentServerInfo;
   isolation(): IsolationReport;
 }

@@ -28,6 +28,7 @@ import {
 import { sha256 } from "@mars/contracts/canonical";
 import { isInsideOrEqual } from "@mars/contracts/path-containment";
 import { z } from "zod";
+import { readAnchored } from "./anchored-read";
 import { createWorkspaceDiff } from "./diff";
 import {
   CommandNotApprovedError,
@@ -847,21 +848,46 @@ export async function createLocalWorkspaceProvider(
         searchWorkspaceTree(tree, request, limits, extraIgnores),
       );
     },
+    async readBytes(context, workspace, relativePath, maxBytes) {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
+        throw new WorkspacePolicyError("Invalid read bound");
+      return withWorkspace(context, workspace, async (current) => {
+        const path = validateRelativePath(relativePath, limits, extraIgnores);
+        return readAnchored(
+          treeDir(current),
+          path,
+          Math.min(maxBytes, limits.maxFileBytes),
+        );
+      });
+    },
     async read(context, workspace, relativePath) {
       return withWorkspace(context, workspace, async (current) => {
         const path = validateRelativePath(relativePath, limits, extraIgnores);
         const absolute = await resolveSafePath(treeDir(current), path);
         let handle: FileHandle | undefined;
         try {
+          await options.testHooks?.readPhase?.("before-open");
           handle = await open(
             absolute,
             constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
           );
           const info = await handle.stat();
-          if (!info.isFile())
+          await options.testHooks?.readPhase?.("after-open");
+          if (!info.isFile() || info.nlink !== 1)
             throw new WorkspacePolicyError(
               "Workspace path is not a regular file",
             );
+          const tree = treeDir(current);
+          await resolveSafePath(tree, path);
+          const checked = await lstat(absolute);
+          if (
+            !checked.isFile() ||
+            checked.dev !== info.dev ||
+            checked.ino !== info.ino ||
+            (await realpath(tree)) !== tree ||
+            !isInsideOrEqual(tree, await realpath(absolute))
+          )
+            throw new WorkspacePolicyError("Workspace read path changed");
           if (info.size > limits.maxFileBytes)
             throw new LimitExceededError("File exceeds maxFileBytes");
           const data = await readBounded(handle, limits.maxFileBytes);
@@ -1585,6 +1611,7 @@ export async function createLocalWorkspaceProvider(
     ...provider,
     prepare: (...args) => track(() => provider.prepare(...args)),
     read: (...args) => track(() => provider.read(...args)),
+    readBytes: (...args) => track(() => provider.readBytes(...args)),
     write: (...args) => track(() => provider.write(...args)),
     remove: (...args) => track(() => provider.remove(...args)),
     execute: (...args) => track(() => provider.execute(...args)),

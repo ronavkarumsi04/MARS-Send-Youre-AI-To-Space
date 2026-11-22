@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { EventEnvelope, Scope, Task } from "@mars/contracts";
+import {
+  DEFAULT_WORKSPACE_LIMITS,
+  validateRelativePath,
+} from "@mars/workspaces";
 import { MarsClient } from "../../../apps/vscode/src/client";
 import { HttpRpcTransport } from "../../../apps/vscode/src/rpc";
 import {
@@ -240,6 +244,92 @@ function fixture(overrides: Partial<WorkbenchOperations> = {}) {
     });
   return { server, api, calls, url, send };
 }
+
+test.each(["../x", ".env"])(
+  "tasks.file rejects workspace policy denial for %s over HTTP",
+  async (path) => {
+    const { send } = fixture({
+      async file(_context, _taskId, requestedPath) {
+        validateRelativePath(requestedPath, DEFAULT_WORKSPACE_LIMITS);
+        throw new Error("Expected workspace policy rejection");
+      },
+    });
+    const response = await send({
+      method: "tasks.file",
+      context,
+      params: { task_id: "task", path },
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "forbidden",
+        message: "The workbench request is not permitted.",
+      },
+    });
+  },
+);
+
+test.each(["limit_exceeded", "too_large"])(
+  "tasks.file maps %s to HTTP 413",
+  async (code) => {
+    const { send } = fixture({
+      async file() {
+        throw Object.assign(new Error("private detail"), { code });
+      },
+    });
+    const response = await send({
+      method: "tasks.file",
+      context,
+      params: { task_id: "task", path: "large.txt" },
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: { code: "too_large" },
+    });
+  },
+);
+
+test("tasks.file HTTP contract is scoped, validated and optional", async () => {
+  const result = {
+    path: "hello.txt",
+    data_base64: "",
+    media_type: "application/octet-stream",
+    size: 0,
+    sha256: artifact.sha256,
+  };
+  const { send } = fixture({
+    async file(ctx, taskId, path) {
+      expect(ctx).toMatchObject(context);
+      expect(taskId).toBe("task");
+      expect(path).toBe(result.path);
+      return result;
+    },
+  });
+  const request = {
+    method: "tasks.file",
+    context,
+    params: { task_id: "task", path: result.path },
+  };
+  const response = await send(request);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ result });
+  expect(
+    (
+      await send({
+        ...request,
+        context: { ...context, scope: { ...scope, owner_id: "foreign" } },
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (await send({ ...request, params: { ...request.params, path: "" } }))
+      .status,
+  ).toBe(400);
+  expect((await send(request, { authorization: "Bearer wrong" })).status).toBe(
+    401,
+  );
+  expect((await fixture().send(request)).status).toBe(503);
+});
 
 test("loopback RPC requires authentication even for describe and never reflects tokens", async () => {
   const { send, calls, server } = fixture();

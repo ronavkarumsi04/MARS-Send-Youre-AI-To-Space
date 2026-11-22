@@ -689,6 +689,9 @@ export async function createWorkbenchService(
       workspace: {
         prepare: provider.prepare.bind(provider),
         read: provider.read.bind(provider),
+        ...("readBytes" in provider
+          ? { readBytes: provider.readBytes.bind(provider) }
+          : {}),
         write: provider.write.bind(provider),
         remove: provider.remove.bind(provider),
         execute: provider.execute.bind(provider),

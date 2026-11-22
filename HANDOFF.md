@@ -1,5 +1,31 @@
 # HANDOFF
 
+## Task workspace file RPC groundwork
+
+`tasks.file` now uses bounded, non-storing Bun FFI `openat` reads on Linux and
+macOS, refusing symlinks and multi-link regular files; unsupported platforms
+and unavailable FFI fail closed, with no procfs/pathname fallback. The shipped
+desktop workbench is a bundled Bun child process. Platform flags/errno are
+checked, and macOS desktop CI runs the workspace/workbench suites on x64/arm64.
+The root/ancestor directories must remain host-owned.
+Real-service tests prepare three tasks, add live links in their private trees,
+and race parent swaps against HTTP reads. Provider tests verify zero artifact
+writes. Size errors map consistently to HTTP 413. See `WORKBENCH_RPC.md` for
+the legacy read-path limits and the shell-side selection/handle boundary.
+Host-private checks inspect raw bytes and metadata, never incidental base64 text.
+
+Workspace file reads now revalidate component policy and opened-file identity
+before reading bytes, including parent-swap regression tests. This hardens the
+read path, not all concurrent filesystem mutations: snapshot traversal and
+write/remove path-based mutations need separate race-hardening work. Portable
+path rechecks are not a substitute for OS-enforced workspace isolation.
+
+Added read-only `tasks.file {task_id, path}` for a task's private workspace,
+reusing provider path policy, task/scope authorization, host-private byte
+rejection and bounded base64 responses. Tree listing remains out of scope.
+This PR changes no `apps/shell` files. Offline host/provider and HTTP
+contract tests cover the new read surface; no renderer integration is claimed.
+
 ## Desktop installer releases
 
 On Ronav's fork, pushing a `vMAJOR.MINOR.PATCH` tag from a commit with the desktop release workflow publishes the Apple Silicon and Intel macOS disk images and the Ubuntu/Debian x64 package on [GitHub Releases](https://github.com/ronavkarumsi04/MARS-Send-Youre-AI-To-Space/releases) after the full installer matrix passes. PR, `main` branch, and manual runs still upload Actions artifacts without publishing a release.

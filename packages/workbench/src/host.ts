@@ -208,6 +208,7 @@ const artifactResponseFits = (bytes: number, mediaType: string) =>
 export { WORKBENCH_PACKAGE_VERSION } from "./host-shared";
 
 export interface WorkspaceHost extends ExecutionProvider {
+  readBytes?: LocalWorkspaceProvider["readBytes"];
   search?: LocalWorkspaceProvider["search"];
   reopen(context: RequestContext, taskId: string): Promise<WorkspaceRef>;
   cwd(context: RequestContext, workspace: WorkspaceRef): Promise<string>;
@@ -316,6 +317,7 @@ export type WorkbenchHostApi = WorkbenchOperations &
   Required<
     Pick<
       WorkbenchOperations,
+      | "file"
       | "memoryProposals"
       | "acceptMemoryProposal"
       | "rejectMemoryProposal"
@@ -2824,6 +2826,7 @@ export async function createWorkbenchHost(
     Required<
       Pick<
         WorkbenchOperations,
+        | "file"
         | "journal"
         | "memoryProposals"
         | "acceptMemoryProposal"
@@ -3456,6 +3459,51 @@ export async function createWorkbenchHost(
         media_type: ref.media_type,
       };
     },
+    async file(context, taskId, path) {
+      checkContext(context);
+      await options.store.inspect(context, taskId);
+      const workspace = await options.workspace.reopen(context, taskId);
+      if (!options.workspace.readBytes) throw new WorkbenchError("unavailable");
+      const metadata = {
+        path,
+        media_type: "application/octet-stream",
+        size: MAX_RESPONSE_BYTES,
+        sha256: "0".repeat(64),
+      };
+      const maxBytes =
+        3 *
+        Math.floor(
+          (MAX_RESPONSE_BYTES -
+            Buffer.byteLength(
+              JSON.stringify({ result: { ...metadata, data_base64: "" } }),
+            )) /
+            4,
+        );
+      const bytes = await options.workspace.readBytes(
+        context,
+        workspace,
+        path,
+        maxBytes,
+      );
+      const resultMetadata = {
+        ...metadata,
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+      const patterns = await privatePatterns(context, taskId);
+      assertPublicBytes(bytes, patterns);
+      assertPublicBytes(
+        new TextEncoder().encode(JSON.stringify(resultMetadata)),
+        patterns,
+      );
+      const result = {
+        ...resultMetadata,
+        data_base64: Buffer.from(bytes).toString("base64"),
+      };
+      if (Buffer.byteLength(JSON.stringify({ result })) > MAX_RESPONSE_BYTES)
+        throw new WorkbenchError("too_large");
+      return result;
+    },
     async diff(context, taskId) {
       checkContext(context);
       await options.store.inspect(context, taskId);
@@ -3710,6 +3758,7 @@ export async function createWorkbenchHost(
     events: track(api.events),
     journal: track(api.journal),
     artifact: track(api.artifact),
+    file: track(api.file),
     diff: track(api.diff),
     evidence: track(api.evidence),
     checkpoint: track(api.checkpoint),

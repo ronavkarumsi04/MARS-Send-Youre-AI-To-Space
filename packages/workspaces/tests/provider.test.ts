@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import {
   chmod,
   cp,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -57,6 +58,90 @@ import {
 } from "./helpers";
 
 const digest = "a".repeat(64);
+
+test.skipIf(["linux", "darwin"].includes(process.platform))(
+  "bounded reads fail closed without a root-anchored platform primitive",
+  async () => {
+    const f = await makeFixture();
+    try {
+      await expect(
+        f.provider.readBytes(context, f.workspace, "tracked.txt", 100),
+      ).rejects.toMatchObject({ code: "policy" });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!["linux", "darwin"].includes(process.platform))(
+  "bounded reads store nothing and reject hardlinks",
+  async () => {
+    const artifacts = createInMemoryArtifactStore();
+    const put = artifacts.put.bind(artifacts);
+    let writes = 0;
+    artifacts.put = async (...args) => {
+      writes++;
+      return put(...args);
+    };
+    const f = await makeFixture({ artifactStore: artifacts });
+    try {
+      const before = writes;
+      expect(
+        Buffer.from(
+          await f.provider.readBytes(context, f.workspace, "tracked.txt", 100),
+        ).toString(),
+      ).toBe("dirty tracked\n");
+      await expect(
+        f.provider.readBytes(context, f.workspace, "tracked.txt", 1),
+      ).rejects.toMatchObject({ code: "limit_exceeded" });
+      const tree = await f.provider.workspacePath(context, f.workspace);
+      await link(join(tree, "tracked.txt"), join(tree, "hard.txt"));
+      await expect(
+        f.provider.readBytes(context, f.workspace, "hard.txt", 100),
+      ).rejects.toMatchObject({ code: "policy" });
+      await expect(
+        f.provider.read(context, f.workspace, "hard.txt"),
+      ).rejects.toMatchObject({ code: "policy" });
+      expect(writes).toBe(before);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.each([false, true])(
+  "read refuses a parent symlink swap (restored after open: %s)",
+  async (restore) => {
+    let tree = "";
+    let outside = "";
+    const f = await makeFixture({
+      testHooks: {
+        async readPhase(phase) {
+          if (phase === "before-open") {
+            await rename(join(tree, "parent"), join(tree, "parent-backup"));
+            await symlink(outside, join(tree, "parent"));
+          } else if (restore) {
+            await rm(join(tree, "parent"));
+            await rename(join(tree, "parent-backup"), join(tree, "parent"));
+          }
+        },
+      },
+    });
+    try {
+      tree = await f.provider.workspacePath(context, f.workspace);
+      outside = join(f.base, "outside");
+      await mkdir(outside);
+      await mkdir(join(tree, "parent"));
+      await writeFile(join(tree, "parent", "file.txt"), "inside\n");
+      await writeFile(join(outside, "file.txt"), "outside\n");
+      await expect(
+        f.provider.read(context, f.workspace, "parent/file.txt"),
+      ).rejects.toMatchObject({ code: "policy" });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("path filters compare ignore and secret names case-insensitively", () => {
   expect(isIgnored(".Git")).toBe(true);
