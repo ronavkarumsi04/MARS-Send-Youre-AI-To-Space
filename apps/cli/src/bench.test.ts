@@ -17,10 +17,12 @@ test("bench refuses without an explicit mode, a live budget cap or a live model"
   const root = await mkdtemp(join(tmpdir(), "mars-bench-cli-"));
   roots.push(root);
   const out = join(root, "out");
+  const progress: string[] = [];
   const run = (args: string[]) =>
     runBench(["edit-formats", ...args], () => undefined, {
       env: {},
       fetch: noNetwork,
+      err: (line) => progress.push(line),
     });
   await expect(run(["--out", out])).rejects.toThrow("mode_required");
   await expect(run(["--live", "--offline", "--out", out])).rejects.toThrow(
@@ -46,6 +48,7 @@ test("bench refuses without an explicit mode, a live budget cap or a live model"
       "k",
     ]),
   ).rejects.toThrow("signing_key_missing");
+  expect(progress).toEqual([]);
 });
 
 test("bench --offline runs the scripted benchmark and its report loads as serve evidence", async () => {
@@ -53,6 +56,7 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
   roots.push(root);
   const out = join(root, "out");
   const lines: string[] = [];
+  const progress: string[] = [];
   await runBench(
     [
       "edit-formats",
@@ -75,7 +79,11 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
       "bench",
     ],
     (line) => lines.push(line),
-    { env: { BENCH_KEY: "not-a-real-secret" }, fetch: noNetwork },
+    {
+      env: { BENCH_KEY: "not-a-real-secret" },
+      fetch: noNetwork,
+      err: (line) => progress.push(line),
+    },
   );
   const summary = JSON.parse(lines.join("\n"));
   expect(summary).toMatchObject({
@@ -83,11 +91,16 @@ test("bench --offline runs the scripted benchmark and its report loads as serve 
     simulated: true,
     signed: true,
     trials: 20,
+    provider_requests: 0,
     // v1 has 10 tasks, below the power minimum: exploratory, no verdict.
     bar_met: false,
     exploratory: true,
   });
-  expect(summary.model_requests).toBeGreaterThan(0);
+  expect(summary.scripted_model_requests).toBeGreaterThan(0);
+  expect(summary.model_requests).toBeUndefined();
+  expect(progress[0]).toContain("20 scripted trials (provider requests: 0)");
+  expect(progress).toContain("Offline benchmark: 1/20 trials completed.");
+  expect(progress.at(-1)).toBe("Offline benchmark: 20/20 trials completed.");
   expect(await readFile(join(out, "report.md"), "utf8")).toContain("SIMULATED");
   const evidence = await loadEditFormatEvidence(out, {
     key_id: "bench",
