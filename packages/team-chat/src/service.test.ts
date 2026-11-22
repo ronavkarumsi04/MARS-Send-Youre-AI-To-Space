@@ -30,6 +30,57 @@ const send = (over: Partial<SendMessageInput> = {}): SendMessageInput => ({
   ...over,
 });
 
+test("new references do not collide with IDs in a supplied dataset", () => {
+  const dataset = structuredClone(FIXTURE);
+  const original = dataset.references[0];
+  if (!original) throw new Error("missing reference");
+  const oldId = original.reference_id;
+  original.reference_id = "ref_sent_1";
+  dataset.shares = dataset.shares.map((share) => ({
+    ...share,
+    reference_id:
+      share.reference_id === oldId ? "ref_sent_1" : share.reference_id,
+  }));
+  const service = new FixtureTeamService({ dataset });
+  const result = ok(
+    service.sendMessage(
+      U.ada,
+      send({
+        references: [
+          {
+            kind: "file",
+            repo_id: R.site,
+            commit_sha: SITE_SHA,
+            path: "src/style.css",
+            line_start: null,
+            line_end: null,
+            symbol: null,
+          },
+        ],
+      }),
+    ),
+  );
+  const message = ok(
+    service.openConversation(U.ada, C.dmAdaGrace),
+  ).messages.find((entry) => entry.message_id === result.message_id);
+  expect(message?.references[0]).toMatchObject({
+    state: "ok",
+    path: "src/style.css",
+    repo_id: R.site,
+  });
+  expect(message?.references[0]?.reference_id).not.toBe("ref_sent_1");
+});
+
+test("default fixture clock rolls over midnight with valid chronological timestamps", () => {
+  const service = new FixtureTeamService();
+  for (let i = 0; i < 561; i++) {
+    ok(service.sendMessage(U.ada, send({ client_message_id: `clock_${i}` })));
+  }
+  const messages = ok(service.openConversation(U.ada, C.dmAdaGrace)).messages;
+  expect(messages.at(-2)?.created_at).toBe("2026-11-04T00:00:00.000Z");
+  expect(messages.at(-1)?.created_at).toBe("2026-11-04T00:01:00.000Z");
+});
+
 function ok<T>(
   result: { ok: true; value: T } | { ok: false; code: string },
 ): T {

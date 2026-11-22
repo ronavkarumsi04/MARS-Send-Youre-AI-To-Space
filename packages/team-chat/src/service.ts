@@ -475,12 +475,10 @@ function fingerprintOf(
 }
 
 function fixedClock(): () => string {
-  let minute = 40;
+  let timestamp = Date.parse("2026-11-03T14:40:00.000Z");
   return () => {
-    minute += 1;
-    const h = 14 + Math.floor(minute / 60);
-    const m = minute % 60;
-    return `2026-11-03T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00.000Z`;
+    timestamp += 60_000;
+    return new Date(timestamp).toISOString();
   };
 }
 
@@ -653,7 +651,14 @@ export class FixtureTeamService implements TeamService {
         return fail("invalid");
       if (draft.kind === "symbol" && draft.symbol === null)
         return fail("invalid");
-      this.referenceCounter += 1;
+      do {
+        this.referenceCounter += 1;
+      } while (
+        this.data.references.some(
+          (reference) =>
+            reference.reference_id === `ref_sent_${this.referenceCounter}`,
+        )
+      );
       references.push({
         reference_id: `ref_sent_${this.referenceCounter}`,
         kind: draft.kind,
