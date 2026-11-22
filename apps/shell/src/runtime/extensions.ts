@@ -13,6 +13,7 @@ import {
 import { type Operation, SkillStore } from "@mars/skills";
 import { CATALOG, type CatalogEntry, findExtension } from "./extension-catalog";
 import type { CatalogStatus } from "./extension-wire";
+import { projectRootIdentity, requireProjectRoot } from "./project-root";
 
 const hash = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
@@ -27,6 +28,7 @@ export function projectExtensions(
   options: { clock?: () => Date; onExpired?: (id: string) => void } = {},
 ) {
   const notified = new Set<string>();
+  const openedRoot = projectRootIdentity(source);
   function notifyExpired(id: string) {
     if (!notified.has(id)) {
       notified.add(id);
@@ -87,7 +89,7 @@ export function projectExtensions(
           "--no-env-file",
           script,
           ...entry.args,
-          ...(entry.projectRootArg ? [source] : []),
+          ...(entry.projectRootArg && openedRoot ? [source, openedRoot] : []),
         ],
         cwd: dir,
         entrypoint: script,
@@ -102,6 +104,12 @@ export function projectExtensions(
 
   async function mcpStatus(cp: HostMcpControlPlane, entry: CatalogEntry) {
     const registered = await cp.registry.get(entry.id);
+    if (
+      entry.kind === "mcp" &&
+      entry.projectRootArg &&
+      (!openedRoot || projectRootIdentity(source) !== openedRoot)
+    )
+      return "unavailable";
     if (
       !registered ||
       !isDeepStrictEqual(registered, {
@@ -198,6 +206,7 @@ export function projectExtensions(
     const cp = await plane();
     if ((await mcpStatus(cp, entry)) === "installed") return;
     const ctx = context();
+    if (entry.projectRootArg) requireProjectRoot(source, openedRoot);
     const server = config(entry);
     const evidence = await cp.probe.observeServer(ctx, server, {
       allowUnapprovedStdioProbe: true,
@@ -232,9 +241,19 @@ export function projectExtensions(
         throw new Error("Project scope mismatch.");
       const cp = await plane();
       const inner = cp.createLoader();
+      const checkRoot = (id: string) => {
+        const entry = findExtension(id);
+        if (entry?.kind === "mcp" && entry.projectRootArg)
+          requireProjectRoot(source, openedRoot);
+      };
       const loader: TrustedMcpLoader = {
         ...inner,
+        async admitServer(ctx, id, action, signal) {
+          checkRoot(id);
+          return inner.admitServer(ctx, id, action, signal);
+        },
         async invokeTool(ctx, request) {
+          checkRoot(request.server_id);
           try {
             return await inner.invokeTool(ctx, request);
           } catch (error) {

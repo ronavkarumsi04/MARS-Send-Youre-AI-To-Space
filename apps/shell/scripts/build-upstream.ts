@@ -15,7 +15,11 @@ export async function buildUpstream(destination: string) {
     if (manifest.name !== pkg || manifest.version !== entry?.version)
       throw new Error(`Unexpected package version for ${pkg}`);
     const result = await Bun.build({
-      entrypoints: [join(root, "dist/index.js")],
+      entrypoints: [
+        name === "filesystem"
+          ? join(import.meta.dir, "filesystem.mjs")
+          : join(root, "dist/index.js"),
+      ],
       target: "bun",
       minify: true,
       // Upstream locates its package.json beside its script. Inline the version

@@ -105,16 +105,16 @@ export const CATALOG: CatalogEntry[] = [
     tool: "list_directory",
     additionalTools: ["list_allowed_directories"],
     projectRootArg: true,
-    args: ["--transport", "stdio", "--read-only", "--confine-roots", "--"],
+    args: [],
     assets: [
       {
         file: "filesystem.mjs",
         sha256:
-          "ab26fa7309c235f093424372e9866363bdd2b586145d367f33535d920277710c",
+          "b28d0b31686170d39aa293ba12263f4087a013a51d240ceef4e0698b2b134c84",
       },
     ],
     permissions: [
-      "List names in any directory in the selected project, including hidden names",
+      "List file and directory names (including hidden names) and disclose the selected project's absolute path",
       "No tool grant for reading file contents or writing files. No credentials or remote connection.",
     ],
   },

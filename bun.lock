@@ -58,6 +58,7 @@
         "zod": "3.25.76",
       },
       "devDependencies": {
+        "@modelcontextprotocol/server": "2.4.0",
         "@modelcontextprotocol/server-filesystem": "2.4.0",
         "@modelcontextprotocol/server-sequential-thinking": "2.2.0",
         "electron": "44.10.2",
