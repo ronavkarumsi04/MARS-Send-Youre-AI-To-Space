@@ -36,9 +36,9 @@ Proposed module: `apps/shell/src/editor/` (name is a proposal).
 - Patches are **not** the two revision-matched full texts Monaco's side-by-side
   diff needs. Side-by-side requires a future base+current text API bound to matched
   revisions; fetching current contents alone cannot supply it.
-- The `tasks.file` RPC belongs to a **separate fork PR**, held pending hardening,
-  not this decision. Split branch: `devin/1795326753-workbench-tasks-file` (PR to
-  be opened separately). Proposed single-file request: `{task_id, path}`; response:
+- The `tasks.file` RPC belongs to [fork PR #21](https://github.com/ronavkarumsi04/MARS-Send-Youre-AI-To-Space/pull/21),
+  held pending hardening, not this decision.
+  Proposed single-file request: `{task_id, path}`; response:
   `{path, data_base64, media_type, size, sha256}` from the task's private workspace,
   not source checkout. It is not present in this docs-only PR.
 - Remaining gaps: tree listing with explicit task-workspace versus source-project
