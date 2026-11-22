@@ -49,7 +49,7 @@ test("installs the same private revision once and preserves layout and modes", a
   await b.install();
   expect(b.sha).toBe(a.sha);
   expect((await lstat(join(b.directory, "lib/entry"))).ino).toBe(before.ino);
-  expect(await readdir(b.directory)).toEqual(["lib", "main"]);
+  expect((await readdir(b.directory)).sort()).toEqual(["lib", "main"]);
   await writeFile(join(src, "lib/entry"), "changed");
   expect(await readFile(join(a.directory, "main"), "utf8")).toBe("original");
   expect((await store.inspect({ path: src, exclude: [data] })).sha).not.toBe(
