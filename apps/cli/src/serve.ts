@@ -28,6 +28,7 @@ import {
 import { remoteWorkspaceFromFlags } from "@mars/workspaces-remote";
 import { loadEditFormatEvidence } from "./bench";
 import { ServeUsageError } from "./cli-errors";
+import { openRuntimeMcp } from "./mcp";
 import { omnirouteFromFlags } from "./omniroute";
 import {
   VLLM_SERVE_HELP,
@@ -264,6 +265,7 @@ export async function runServer(
       "edit-format-key-env": { type: "string" },
       "edit-format-key-id": { type: "string" },
       state: { type: "string" },
+      "mcp-state-dir": { type: "string" },
       port: { type: "string" },
       owner: { type: "string" },
       project: { type: "string" },
@@ -297,6 +299,7 @@ export async function runServer(
     console.log(
       [
         `Usage: mars serve [--source DIR] [--state PRIVATE_DIR] [--port ${DEFAULT_WORKBENCH_PORT}] [--owner ID] [--project ID] [--image REPO@sha256:DIGEST] [--checks HOST_CHECKS.json] [--trust-project] [--no-conventions]`,
+        "                  [--mcp-state-dir PRIVATE_DIR]",
         "                  [--research-search brave|searxng|tavily] [--research-api-key-env NAME] [--research-searxng-url URL] [--research-model ID] [--research-deny-host PATTERN]... [--browser-chromium PATH] [--browser-deny-host PATTERN]... [--browser-allow-input] [--graphify ARG]... [--graphify-os-wrapper]",
         "                  [--omniroute] [--omniroute-url http://localhost:20128] [--omniroute-start] [--omniroute-allow web-session|browser-session|caution|ambiguous|unknown]...",
         ...VLLM_SERVE_USAGE,
@@ -485,6 +488,9 @@ export async function runServer(
         }
       })()
     : undefined;
+  const mcpStateDir = values["mcp-state-dir"]
+    ? resolve(values["mcp-state-dir"])
+    : undefined;
   const service = await createWorkbenchService({
     sourceRoot: source,
     stateRoot: state,
@@ -509,6 +515,12 @@ export async function runServer(
     ...(catalog ? { registry: catalog } : {}),
     ...(specialists ? { specialists } : {}),
     ...(editFormats ? { editFormats } : {}),
+    ...(mcpStateDir
+      ? {
+          mcp: (cwd, scope) =>
+            openRuntimeMcp(mcpStateDir, [source, cwd], scope),
+        }
+      : {}),
     trustProjectConfig: trustProject,
   });
   await new Promise<void>((resolve, reject) => {

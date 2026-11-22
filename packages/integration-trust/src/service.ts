@@ -28,7 +28,12 @@ import {
 } from "./schemas";
 import type { TrustStore } from "./store";
 export interface EvidenceProbe {
-  observe(ctx: RequestContext, identity: Identity): Promise<SourceEvidence>;
+  observe(
+    ctx: RequestContext,
+    identity: Identity,
+    authorization?: Pick<Grant, "permissions" | "credential_bindings">,
+    signal?: AbortSignal,
+  ): Promise<SourceEvidence>;
 }
 export interface CallerCapabilities {
   permissions: Permission[];
@@ -39,6 +44,7 @@ export interface AuthorizedArtifact {
   binding_sha256: string;
   evidence: SourceEvidence;
   permissions: Permission[];
+  credential_bindings: CredentialBinding[];
 }
 export interface AuthorizedInvocation extends AuthorizedArtifact {
   tool: string;
@@ -95,11 +101,13 @@ export interface IntegrationGate {
     ctx: RequestContext,
     req: Identity & { action: "load" | "install" | "enable" },
     loader: (artifact: AuthorizedArtifact) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T>;
   invoke<T>(
     ctx: RequestContext,
     req: InvokeRequest,
     callback: (action: AuthorizedInvocation) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T>;
 }
 export interface IntegrationTrustOptions {
@@ -115,6 +123,7 @@ export interface IntegrationTrustOptions {
     remoteEndpointMaxGrantTtlMs?: number;
     requiredScanners?: string[];
     maxDelegationDepth?: number;
+    probeTimeoutMs?: number;
   };
 }
 const ContextSchema = z
@@ -143,6 +152,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     remoteEndpointMaxGrantTtlMs: 86400000,
     requiredScanners: [] as string[],
     maxDelegationDepth: 2,
+    probeTimeoutMs: 2000,
     ...options.policy,
   };
   for (const n of [
@@ -150,11 +160,14 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     policy.maxGrantTtlMs,
     policy.remoteEndpointMaxGrantTtlMs,
     policy.maxDelegationDepth,
+    policy.probeTimeoutMs,
   ])
     if (!Number.isSafeInteger(n) || n < 0) fail("config_invalid");
   if (
     policy.maxGrantTtlMs > 90 * 86400000 ||
     policy.remoteEndpointMaxGrantTtlMs > 7 * 86400000 ||
+    policy.probeTimeoutMs < 1 ||
+    policy.probeTimeoutMs > 15000 ||
     !policy.requiredScanners.every((s) => CodeSchema.safeParse(s).success)
   )
     fail("config_invalid");
@@ -174,25 +187,44 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     const age = clock().getTime() - Date.parse(e.observed_at);
     if (age > policy.maxEvidenceAgeMs || age < -60000) fail("stale_evidence");
   }
-  async function observe(ctx: RequestContext, id: Identity) {
+  async function observe(
+    ctx: RequestContext,
+    id: Identity,
+    authorization?: Pick<Grant, "permissions" | "credential_bindings">,
+    signal?: AbortSignal,
+  ) {
     let e: SourceEvidence;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    const probeSignal = signal
+      ? AbortSignal.any([signal, controller.signal])
+      : controller.signal;
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => controller.abort(), policy.probeTimeoutMs);
     try {
+      probeSignal.throwIfAborted();
       e = parseEvidence(
         await Promise.race([
-          Promise.resolve().then(() => probe.observe(ctx, frozenClone(id))),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error("evidence_unavailable")),
-              2000,
+          Promise.resolve().then(() => {
+            probeSignal.throwIfAborted();
+            return probe.observe(
+              ctx,
+              frozenClone(id),
+              authorization,
+              probeSignal,
             );
+          }),
+          new Promise<never>((_, reject) => {
+            onAbort = () => reject(probeSignal.reason);
+            probeSignal.addEventListener("abort", onAbort, { once: true });
           }),
         ]),
       );
     } catch (error) {
+      signal?.throwIfAborted();
       fail("evidence_unavailable", error);
     } finally {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
+      if (onAbort) probeSignal.removeEventListener("abort", onAbort);
     }
     if (e.kind !== id.kind || e.integration_id !== id.integration_id)
       fail("evidence_unavailable");
@@ -420,7 +452,14 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         )
       )
         fail("scanner_unavailable");
-      const current = await observe(ctx, r);
+      const current = await observe(
+        ctx,
+        r,
+        frozenClone({
+          permissions: r.permissions,
+          credential_bindings: r.credential_bindings,
+        }),
+      );
       if (
         binding(ctx.scope, current, r.permissions, r.credential_bindings) !==
         r.binding_sha256
@@ -518,11 +557,13 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
     request: Identity & { action?: string },
     invoke: InvokeRequest | undefined,
     callback: (a: AuthorizedInvocation | AuthorizedArtifact) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
     let ctx: RequestContext | undefined,
       r: Grant | undefined,
       dispatched = false;
     try {
+      signal?.throwIfAborted();
       ctx = context(raw);
       const id = IdentitySchema.safeParse({
         kind: request.kind,
@@ -533,9 +574,8 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
       const grants = l.state.grants.filter((g) =>
         matches(ctx as RequestContext, id.data, g),
       );
-      r = grants.findLast((g) => g.state === "approved");
+      r = grants.findLast((g) => g.state !== "superseded");
       if (!r) {
-        if (grants.some((g) => g.state === "revoked")) fail("revoked");
         if (
           !l.state.reviews.some((v) =>
             matches(ctx as RequestContext, id.data, v),
@@ -544,8 +584,18 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           fail("unknown_integration");
         fail("no_grant");
       }
+      if (r.state === "revoked") fail("revoked");
       if (clock().getTime() >= Date.parse(r.expires_at)) fail("expired");
-      const evidence = await observe(ctx, id.data);
+      const evidence = await observe(
+        ctx,
+        id.data,
+        frozenClone({
+          permissions: r.permissions,
+          credential_bindings: r.credential_bindings,
+        }),
+        signal,
+      );
+      signal?.throwIfAborted();
       if (
         binding(ctx.scope, evidence, r.permissions, r.credential_bindings) !==
         r.binding_sha256
@@ -563,6 +613,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         binding_sha256: r.binding_sha256,
         evidence,
         permissions: r.permissions,
+        credential_bindings: r.credential_bindings,
       };
       if (invoke) {
         const req = invoke;
@@ -608,7 +659,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
           ) ||
             !isSubset(
               [{ capability: "credential.use", resource: req.credential_ref }],
-              caller,
+              permissions,
             ))
         )
           fail("credential_denied");
@@ -639,6 +690,7 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         fail("revision_conflict");
       if (clock().getTime() >= Date.parse(r.expires_at)) fail("expired");
       fresh(evidence);
+      signal?.throwIfAborted();
       dispatched = true;
       return await callback(authorized);
     } catch (error) {
@@ -679,22 +731,28 @@ export function createIntegrationTrust(options: IntegrationTrustOptions): {
         }
       }
       if (dispatched) throw error;
+      signal?.throwIfAborted();
       throw new IntegrationTrustError(code, { cause: error });
     }
   }
   const gate: IntegrationGate = {
-    admit(ctx, req, loader) {
+    admit(ctx, req, loader, signal) {
       return dispatch(
         structuredClone(ctx),
         structuredClone(req),
         undefined,
         loader,
+        signal,
       );
     },
-    invoke(ctx, req, callback) {
+    invoke(ctx, req, callback, signal) {
       const snapshot = structuredClone(req);
-      return dispatch(structuredClone(ctx), snapshot, snapshot, (a) =>
-        callback(a as AuthorizedInvocation),
+      return dispatch(
+        structuredClone(ctx),
+        snapshot,
+        snapshot,
+        (a) => callback(a as AuthorizedInvocation),
+        signal,
       );
     },
   };
