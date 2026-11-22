@@ -145,6 +145,11 @@ export function createProcessSandbox(
       } finally {
         clearTimeout(timer);
         request.signal.removeEventListener("abort", onAbort);
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
       }
     },
     async cleanup() {},
