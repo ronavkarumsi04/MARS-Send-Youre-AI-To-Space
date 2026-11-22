@@ -180,6 +180,7 @@ export function createHarborEvaluator(
     // packages/evaluation/agent/main.ts APPLIED_COMPONENTS: only the system prompt reaches the agent.
     appliedComponents: ["system_prompt"],
     async evaluate(request, signal) {
+      if (signal.aborted) fail("deadline_exceeded", "evaluation aborted");
       if (request.manifest.model.id !== template.model.id)
         fail(
           "evaluator_mismatch",
@@ -240,6 +241,7 @@ export function createHarborEvaluator(
           .cancel(options.context, job.job_id)
           .catch(() => {});
       signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
       try {
         await options.service.settled(job.job_id);
       } finally {

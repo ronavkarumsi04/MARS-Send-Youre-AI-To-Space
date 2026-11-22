@@ -2,8 +2,8 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readdir,
-  readFile,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -76,7 +76,15 @@ export async function snapshotDirectory(
       if (!info.isFile())
         fail("unsafe_path", `special file in harness tree: ${path}`);
       validateTreePath(path);
-      const data = new Uint8Array(await readFile(join(root, path)));
+      if (
+        entries.length + 1 > effective.maxFiles ||
+        info.size > effective.maxBytes - total
+      )
+        fail("invalid_input", "harness tree exceeds snapshot limits");
+      const data = await readBoundedFile(
+        join(root, path),
+        effective.maxBytes - total,
+      );
       total += data.byteLength;
       if (entries.length + 1 > effective.maxFiles || total > effective.maxBytes)
         fail("invalid_input", "harness tree exceeds snapshot limits");
@@ -92,6 +100,35 @@ export async function snapshotDirectory(
   }
   await walk("");
   return { entries, blobs, tree_sha256: treeDigest(entries) };
+}
+
+async function readBoundedFile(
+  path: string,
+  limit: number,
+): Promise<Uint8Array> {
+  const file = await open(path, "r");
+  try {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const chunk = new Uint8Array(Math.min(64 * 1024, limit - size + 1));
+      const { bytesRead } = await file.read(chunk);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+      if (size > limit)
+        fail("invalid_input", "harness tree exceeds snapshot limits");
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    const data = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return data;
+  } finally {
+    await file.close();
+  }
 }
 
 /** Writes a snapshot into a fresh directory (which must not exist yet). */
