@@ -107,7 +107,11 @@ export class McpPackageStore {
       source.externalExecutable && (await realpath(source.externalExecutable));
     const excluded = new Set(
       await Promise.all(
-        (source.exclude ?? []).map((p) => physical(resolve(p))),
+        (source.exclude ?? []).map((p) => {
+          if (!isAbsolute(p))
+            throw new Error("Data exclusions must be absolute paths.");
+          return physical(p);
+        }),
       ),
     );
     const entries: Entry[] = [];

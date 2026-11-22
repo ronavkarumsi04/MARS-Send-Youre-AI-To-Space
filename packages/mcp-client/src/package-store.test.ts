@@ -69,6 +69,19 @@ test("a link into an excluded folder cannot publish a broken package", async () 
   );
 });
 
+test("data exclusions follow directory links before parent components", async () => {
+  const { src, base, store } = await fixture();
+  await mkdir(join(src, "nested"));
+  await symlink(join(src, "nested"), join(base, "alias"));
+  await writeFile(join(src, "record"), "mutable data");
+  const rev = await store.inspect({
+    path: src,
+    exclude: [`${base}/alias/../record`],
+  });
+  await rev.install();
+  expect(await readdir(rev.directory)).toEqual(["nested"]);
+});
+
 test("failed installs publish nothing and reclaim dead but not live staging directories", async () => {
   const { src, directory, store } = await fixture();
   const file = join(src, "entry");
