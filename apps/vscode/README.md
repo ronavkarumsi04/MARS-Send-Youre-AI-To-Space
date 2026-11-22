@@ -1,6 +1,6 @@
 # MARS Workbench (VS Code client)
 
-`@mars/vscode-client` is a native VS Code sidebar for MARS tasks. It is a **client only**: it creates, starts, steers, cancels and resumes tasks through the MARS task API, shows events, usage, diffs and artifacts, and creates/restores checkpoints. Oh My Pi (behind the MARS server) remains the only session/tool/model execution owner. The extension never calls models, runs shell commands, writes workspace files or keeps its own task history; all task truth and revisions come from the server.
+`@mars/vscode-client` is a native VS Code sidebar for conversations and MARS tasks. **Chat** helps you explore a question without running commands, reading files, or making changes. **Agent tasks** remain server-owned: the extension creates, starts, steers, cancels and resumes tasks through the MARS task API, shows events, usage, diffs and artifacts, and creates/restores checkpoints. Oh My Pi (behind the MARS server) owns task execution and history.
 
 > Status: the [local task service](../../documentation/LOCAL_WORKBENCH.md) connects this client to durable tasks, private workspaces and Oh My Pi. HTTP/SDK integration tests use injected model responses; a real VS Code window and live model remain unverified.
 
@@ -18,9 +18,15 @@ bun run smoke        # builds, then loads dist/extension.js in plain Node with a
 
 Run it in VS Code: open `apps/vscode` and launch an Extension Development Host (`code --extensionDevelopmentPath=$PWD`), then open the **MARS** activity-bar view.
 
+For **Chat**, choose **Connect model** and add an OpenRouter API key in the native password prompt. Chat sends only the conversation to OpenRouter's fixed free route when you opt in. The key stays in VS Code Secret Storage, and completed conversations are saved locally in VS Code workspace storage. **Make a task** copies an assistant reply into the task draft for review; it never submits or starts a task.
+
+For **Agent tasks**, connect a MARS workbench separately:
+
 1. Start a local server with `mars serve`. It never prints the token; it writes a mode-0600 `connection.json` (`{schema_version:1, url, token, scope:{owner_id, project_id}}`).
 2. Run **MARS: Import local connection file** and pick that file. The file must be ≤16 KiB with exactly those keys, a `[A-Za-z0-9_-]{32,256}` token, and a root `http://` loopback URL (no path, credentials, query or fragment); on POSIX it must not be group/other accessible. The token goes only to VS Code SecretStorage (`mars.serverToken`) and the URL only to the **user** (global) `mars.serverUrl`; replacing an existing URL or token asks first. Alternatively run **MARS: Set Server Token** to paste a token into a password box. Tokens never reach the webview, logs, errors or settings.
 3. Run **MARS: Connect**.
+
+The **Extensions** page explains MCP servers, skills and plugins and links to the existing Skills dashboard. The verified installer in desktop PR #246 is only available for projects managed by MARS Desktop. Attached workbenches do not expose it, so VS Code does not offer installation or mark unverified integrations as trusted.
 
 ## Settings
 

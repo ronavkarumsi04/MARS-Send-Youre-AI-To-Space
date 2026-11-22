@@ -1,5 +1,10 @@
 /// <reference lib="dom" />
 import type {
+  AssistantRequest,
+  AssistantUpdate,
+  WorkspaceAction,
+} from "../assistantMessages";
+import type {
   DiffFileView,
   EventView,
   HostMessage,
@@ -8,11 +13,15 @@ import type {
   ViewState,
   WebviewMessage,
 } from "../messages";
+import { type Chat, renderChat } from "./assistantView";
 import { button, h } from "./dom";
 import { renderOutput } from "./output";
+import { renderExtensions, renderSettings, toolbar } from "./workspaceViews";
 
 interface VsCodeApi {
-  postMessage(message: WebviewMessage): void;
+  postMessage(
+    message: WebviewMessage | AssistantRequest | WorkspaceAction,
+  ): void;
   getState(): unknown;
   setState(state: unknown): void;
 }
@@ -21,6 +30,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
 const vscode = acquireVsCodeApi();
 const app = document.getElementById("app") as HTMLElement;
 let state: ViewState | null = null;
+type Page = "chat" | "tasks" | "extensions" | "settings";
+let page: Page = "chat";
+let modelBusy = false;
+let modelError: string | undefined;
+let historyOpen = false;
+const chat: Chat = {
+  sessions: [],
+  activeId: crypto.randomUUID(),
+  draft: "",
+  configured: false,
+  consent: false,
+  loading: true,
+};
 
 /** Persistent live regions outside the re-rendered `#app`; only their text changes. */
 function liveRegion(role: "status" | "alert"): HTMLElement {
@@ -223,7 +245,7 @@ const newTask = (() => {
     ),
     create,
   );
-  return { details, request, create };
+  return { details, request, create, persist };
 })();
 
 const steerBox = focusKey(h("textarea"), "steer-instruction");
@@ -804,10 +826,7 @@ function checkbox(text: string, input: HTMLInputElement): HTMLElement {
   return h("label", { class: "check" }, input, text);
 }
 
-function render(): void {
-  if (!state) return;
-  const focused = captureFocus();
-  const s = state;
+function taskStatus(s: ViewState): HTMLElement {
   const notice = s.notice
     ? h("div", { class: `notice ${s.notice.kind}` }, s.notice.text)
     : null;
@@ -830,28 +849,252 @@ function render(): void {
     s.notice && s.notice.kind !== "info" ? s.notice.text : "",
     newNotice && s.notice?.kind !== "info",
   );
+  return h(
+    "div",
+    {},
+    renderHeader(s),
+    busyText ? h("div", { class: "busy" }, busyText) : null,
+    notice,
+  );
+}
+
+function taskContent(s: ViewState): HTMLElement {
   const connected = s.connection.status === "connected";
   newTask.create.disabled = !connected || s.busy !== null;
-  app.replaceChildren(
-    renderHeader(s),
-    busyText ? h("div", { class: "busy" }, busyText) : "",
-    notice ?? "",
+  return h(
+    "section",
+    { class: "task-content workspace-content" },
+    taskStatus(s),
     connected ? newTask.details : "",
     connected ? renderTasks(s) : "",
     connected && s.selected ? renderSelected(s, s.selected) : "",
   );
+}
+
+function openPage(next: Page): void {
+  page = next;
+  render();
+}
+
+function setConversation(id: string): void {
+  if (chat.pending || id === chat.activeId) return;
+  chat.activeId = id;
+  chat.draft = "";
+  chat.consent = false;
+  delete chat.error;
+  openPage("chat");
+  app.querySelector<HTMLElement>(".assistant-input")?.focus();
+}
+
+function openTask(text?: string): void {
+  if (text !== undefined) {
+    newTask.request.value = text.slice(0, 20_000);
+    newTask.persist();
+  }
+  newTask.details.open = true;
+  openPage("tasks");
+  app
+    .querySelector<HTMLElement>(
+      '[data-focus-key="new-task-request"], [data-focus-key="connect"]',
+    )
+    ?.focus();
+}
+
+function navAction(label: string, target: Page): HTMLButtonElement {
+  const entry = button(label, `nav-${target}`, () => openPage(target), {
+    secondary: true,
+  });
+  if (page === target) entry.setAttribute("aria-current", "page");
+  return entry;
+}
+
+function navigation(): HTMLElement {
+  const history = h("details", { class: "chat-history" });
+  history.open = historyOpen;
+  history.append(
+    h("summary", { key: "history" }, "Conversations"),
+    ...chat.sessions.map(({ id, title }) => {
+      const entry = button(
+        title,
+        `chat-${id}`,
+        () => {
+          if (id === chat.activeId) openPage("chat");
+          else setConversation(id);
+        },
+        {
+          secondary: true,
+          disabled: Boolean(chat.pending) && id !== chat.activeId,
+          title,
+        },
+      );
+      entry.setAttribute("aria-pressed", String(id === chat.activeId));
+      return entry;
+    }),
+  );
+  if (!chat.sessions.length)
+    history.append(h("p", { class: "muted small" }, "No conversations yet."));
+  history.addEventListener("toggle", () => {
+    if (history.isConnected) historyOpen = history.open;
+  });
+  return h(
+    "aside",
+    { class: "workspace-rail" },
+    h("p", { class: "workspace-brand" }, "✳ MARS"),
+    h(
+      "nav",
+      { class: "workspace-nav", label: "MARS workspace" },
+      navAction("✧ Chat", "chat"),
+      navAction("◎ Agent tasks", "tasks"),
+      navAction("◇ Extensions", "extensions"),
+      navAction("⚙ Settings", "settings"),
+    ),
+    h(
+      "div",
+      { class: "workspace-history" },
+      button(
+        "+ New chat",
+        "new-chat",
+        () => setConversation(crypto.randomUUID()),
+        { secondary: true, disabled: Boolean(chat.pending) },
+      ),
+      history,
+    ),
+  );
+}
+
+function sendChat(): void {
+  const text = chat.draft.trim();
+  if (
+    !text ||
+    chat.pending ||
+    !chat.configured ||
+    !chat.consent ||
+    chat.loading
+  )
+    return;
+  chat.pending = text;
+  delete chat.error;
+  vscode.postMessage({
+    type: "assistantSend",
+    id: chat.activeId,
+    text,
+    consent: true,
+  });
+  render(true);
+}
+
+function updateChat(message: AssistantUpdate): void {
+  chat.loading = false;
+  chat.configured = message.configured;
+  if (message.sessions) chat.sessions = message.sessions;
+  if (message.completesSend) {
+    delete chat.pending;
+    if (!message.error) chat.draft = "";
+    if (message.error) chat.error = message.error;
+  } else {
+    modelBusy = false;
+    modelError = message.error;
+    if (message.error && page === "chat") chat.error = message.error;
+  }
+  render(Boolean(message.completesSend));
+}
+
+function modelAction(type: "assistantSetKey" | "assistantRemoveKey"): void {
+  modelBusy = true;
+  modelError = undefined;
+  vscode.postMessage({ type });
+  render();
+}
+
+function renderPage(): [HTMLElement, HTMLElement?] {
+  if (page === "tasks")
+    return [
+      toolbar("Agent tasks", "◎ Agent"),
+      state
+        ? taskContent(state)
+        : h("p", { class: "workspace-content" }, "Connecting to workbench…"),
+    ];
+  if (page === "settings")
+    return [
+      toolbar("Settings", "⚙ Settings"),
+      renderSettings(
+        chat.configured,
+        chat.loading || modelBusy,
+        modelError,
+        {
+          getKey: () => vscode.postMessage({ type: "openKeyPage" }),
+          setKey: () => modelAction("assistantSetKey"),
+          removeKey: () => modelAction("assistantRemoveKey"),
+          settings: () => vscode.postMessage({ type: "openSettings" }),
+          importConnection: () =>
+            vscode.postMessage({ type: "importConnection" }),
+        },
+        state ? taskStatus(state) : undefined,
+      ),
+    ];
+  if (page === "extensions")
+    return [
+      toolbar("Extensions", "◇ Library"),
+      renderExtensions(() => vscode.postMessage({ type: "openSkills" })),
+    ];
+  const session = chat.sessions.find(({ id }) => id === chat.activeId);
+  return [
+    toolbar(session?.title ?? "New conversation", "✧ Chat"),
+    renderChat(chat, {
+      draft: (value) => {
+        chat.draft = value;
+      },
+      consent: (value) => {
+        chat.consent = value;
+      },
+      send: sendChat,
+      settings: () => {
+        openPage("settings");
+        app
+          .querySelector<HTMLElement>('[data-focus-key="set-model-key"]')
+          ?.focus();
+      },
+      task: openTask,
+    }),
+  ];
+}
+
+function render(scrollToReply = false): void {
+  const focused = captureFocus();
+  const previous = app.querySelector(".workspace-page");
+  const samePage = previous?.getAttribute("data-page") === page;
+  const scrollTop = samePage ? (previous?.scrollTop ?? 0) : 0;
+  const transcriptTop = samePage
+    ? (previous?.querySelector(".assistant-scroll")?.scrollTop ?? 0)
+    : 0;
+  const panel = h(
+    "div",
+    { class: `workspace-page page-${page}` },
+    ...renderPage(),
+  );
+  panel.dataset.page = page;
+  app.replaceChildren(navigation(), panel);
   if (focused) restoreFocus(app, focused);
+  panel.scrollTop = scrollTop;
+  const transcript = panel.querySelector(".assistant-scroll");
+  if (transcript)
+    transcript.scrollTop = scrollToReply
+      ? transcript.scrollHeight
+      : transcriptTop;
 }
 
 window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
   const message = event.data;
   if (message?.type === "state") {
     state = message.state;
-    render();
+    if (page === "tasks" || page === "settings") render();
+  } else if (message?.type === "assistantState") {
+    updateChat(message);
   } else if (message?.type === "focusNewTask") {
-    newTask.details.open = true;
-    newTask.request.focus();
+    openTask();
   }
 });
 
+render();
 vscode.postMessage({ type: "ready" });
+vscode.postMessage({ type: "assistantLoad" });

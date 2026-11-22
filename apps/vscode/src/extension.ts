@@ -4,6 +4,12 @@ import { basename } from "node:path";
 import { readConnectionFile } from "@mars/contracts/connection-file";
 import * as vscode from "vscode";
 import { decodeArtifactText } from "./artifactText";
+import { Assistant } from "./assistant";
+import {
+  type AssistantRequest,
+  AssistantRequestSchema,
+  WorkspaceActionSchema,
+} from "./assistantMessages";
 import { MarsClient, type VerifiedArtifact } from "./client";
 import { importConnection } from "./connectionFile";
 import {
@@ -26,6 +32,8 @@ import { TeamRealtime } from "./teamChat/realtime";
 import { RpcTeamService } from "./teamChat/service";
 
 const TOKEN_KEY = "mars.serverToken";
+const MODEL_KEY = "mars.openRouterKey";
+const CONVERSATIONS_KEY = "mars.conversations";
 const VIEW_ID = "mars.workbench";
 const TEAM_CHAT_VIEW_ID = "mars.teamChat";
 const TEAM_CHAT_FLAG = "teamChat.enabled";
@@ -99,13 +107,21 @@ class WorkbenchViewProvider
   private readonly trustedEndpoints = new Set<string>();
   private suspended = 0;
   private readonly clientChanged = new vscode.EventEmitter<void>();
+  private readonly assistant: Assistant;
   /** Fires when the connected client changes, so the Skills view can reload. */
   readonly onDidChangeClient = this.clientChanged.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly documents: ReadonlyDocuments,
-  ) {}
+  ) {
+    this.assistant = new Assistant({
+      getKey: () => context.secrets.get(MODEL_KEY),
+      read: () => context.workspaceState.get(CONVERSATIONS_KEY),
+      save: (sessions) =>
+        context.workspaceState.update(CONVERSATIONS_KEY, sessions),
+    });
+  }
 
   dispose(): void {
     this.controller?.dispose();
@@ -147,6 +163,7 @@ class WorkbenchViewProvider
       localResourceRoots: [dist, media],
     };
     view.webview.html = buildWebviewHtml({
+      title: "MARS Workbench",
       cspSource: view.webview.cspSource,
       nonce: randomBytes(18).toString("base64"),
       scriptUri: view.webview
@@ -167,7 +184,30 @@ class WorkbenchViewProvider
     this.controller = controller;
     const subscriptions = [
       view.webview.onDidReceiveMessage((message: unknown) => {
-        void controller.handleMessage(message);
+        const assistant = AssistantRequestSchema.safeParse(message);
+        const action = WorkspaceActionSchema.safeParse(message);
+        if (assistant.success) void this.handleAssistant(view, assistant.data);
+        else if (action.success) {
+          switch (action.data.type) {
+            case "importConnection":
+              void importLocalConnection(this.context, this);
+              break;
+            case "openSettings":
+              void vscode.commands.executeCommand(
+                "workbench.action.openSettings",
+                `@ext:${this.context.extension.id}`,
+              );
+              break;
+            case "openSkills":
+              void vscode.commands.executeCommand(`${SKILLS_VIEW_ID}.focus`);
+              break;
+            case "openKeyPage":
+              void vscode.env.openExternal(
+                vscode.Uri.parse("https://openrouter.ai/settings/keys"),
+              );
+              break;
+          }
+        } else void controller.handleMessage(message);
       }),
     ];
     view.onDidDispose(() => {
@@ -176,6 +216,52 @@ class WorkbenchViewProvider
       if (this.controller === controller) this.controller = undefined;
       if (this.view === view) this.view = undefined;
     });
+  }
+
+  private async handleAssistant(
+    view: vscode.WebviewView,
+    request: AssistantRequest,
+  ): Promise<void> {
+    let update: HostMessage;
+    try {
+      if (request.type === "assistantSetKey") {
+        const key = await vscode.window.showInputBox({
+          title: "OpenRouter API key",
+          prompt: "Used only for MARS Chat’s free OpenRouter route.",
+          password: true,
+          ignoreFocusOut: true,
+          validateInput: (value) =>
+            /^[-a-zA-Z0-9_]{1,512}$/.test(value.trim())
+              ? undefined
+              : "Enter a valid API key.",
+        });
+        if (key) await this.context.secrets.store(MODEL_KEY, key.trim());
+      } else if (request.type === "assistantRemoveKey") {
+        const choice = await vscode.window.showWarningMessage(
+          "Remove the OpenRouter API key from VS Code?",
+          { modal: true },
+          "Remove",
+        );
+        if (choice === "Remove") await this.context.secrets.delete(MODEL_KEY);
+      }
+      update =
+        request.type === "assistantSend"
+          ? await this.assistant.send(request)
+          : await this.assistant.load();
+    } catch {
+      update = {
+        type: "assistantState",
+        configured: Boolean(
+          await this.context.secrets
+            .get(MODEL_KEY)
+            .then(undefined, () => undefined),
+        ),
+        completesSend: request.type === "assistantSend",
+        error:
+          "Could not access MARS chat storage. Check VS Code and try again.",
+      };
+    }
+    if (this.view === view) await view.webview.postMessage(update);
   }
 
   private async connect(): Promise<ConnectResult> {
@@ -346,7 +432,7 @@ class WorkbenchViewProvider
  */
 const SKILLS_VIEW_ID = "mars.skills";
 
-/** Skills dashboard; it uses the Tasks view's connection, so it never asks for a token itself. */
+/** Skills dashboard; it uses the Workbench connection, so it never asks for a token itself. */
 class SkillsViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
