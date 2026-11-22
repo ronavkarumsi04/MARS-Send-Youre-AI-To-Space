@@ -14,8 +14,7 @@ paths, and provider file-size limits. Raw bytes and response metadata are
 checked for host-private roots; matching content is rejected, not redacted.
 Base64 plus envelope must fit the 4 MiB response limit, otherwise `too_large`;
 there is no paging or truncation. Hosts without this optional operation return
-`unavailable`. There is no directory-tree/list RPC. See
-[Editor integration](EDITOR_INTEGRATION.md) for UI ownership and remaining gaps.
+`unavailable`. There is no directory-tree/list RPC.
 
 `@mars/workbench` provides `serveWorkbench({ api, token, port? })`. `api` implements the exported `WorkbenchOperations` interface. This package is the HTTP boundary, **not** a task runner: it does not open a database, create workspaces, approve integrations, or start a second agent loop. The durable-task/workspace/Oh My Pi host adapter and CLI startup remain separate integration work.
 
