@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import {
   app,
   BrowserWindow,
@@ -17,9 +17,12 @@ import {
   Menu,
   type MenuItemConstructorOptions,
   safeStorage,
+  shell,
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
+import { desktopExtensionsMenu } from "./extensions";
 import { startLocalWorkbench } from "./local-workbench";
+import { hasRemovableKey } from "./model-key";
 import { SHELL_WEB_PREFERENCES } from "./security";
 
 const settingsPage = "mars-shell://app/settings.html";
@@ -42,7 +45,10 @@ function canStoreKey(): boolean {
   );
 }
 
-export async function createDesktop(window: BrowserWindow, reload: () => void) {
+export async function createDesktop(
+  window: BrowserWindow,
+  reload: (change: "project" | "model") => void,
+) {
   const root = join(app.getPath("userData"), "local-workbench");
   const demo = join(root, "demo-project");
   const projectFile = join(root, "project.txt");
@@ -70,18 +76,24 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
   let workbench: ReturnType<typeof startLocalWorkbench> | undefined;
   let changing = false;
   let closing = false;
+  let chatLifetime = new AbortController();
 
-  const change = async (save: () => Promise<void>) => {
+  const change = async (
+    save: () => Promise<void>,
+    kind: "project" | "model" = "project",
+  ) => {
     if (changing || closing) return false;
     changing = true;
+    chatLifetime.abort();
     try {
       await save();
       await workbench?.stop();
-      if (!closing && !window.isDestroyed()) reload();
+      if (!closing && !window.isDestroyed()) reload(kind);
       return true;
     } catch {
       return false;
     } finally {
+      chatLifetime = new AbortController();
       changing = false;
     }
   };
@@ -111,11 +123,11 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     modelWindow = new BrowserWindow({
       parent: window,
       modal: true,
-      width: 490,
-      height: 365,
+      width: 560,
+      height: 590,
       resizable: false,
       title: "MARS Model Settings",
-      backgroundColor: "#050407",
+      backgroundColor: "#101216",
       webPreferences: {
         ...SHELL_WEB_PREFERENCES,
         preload: join(app.getAppPath(), "settings.cjs"),
@@ -123,6 +135,28 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     });
     void modelWindow.loadURL(settingsPage);
   };
+
+  ipcMain.handle(`${DESKTOP_MODEL_CHANNEL}:key-page`, async (event) => {
+    if (
+      !modelWindow ||
+      modelWindow.isDestroyed() ||
+      event.sender !== modelWindow.webContents ||
+      event.senderFrame?.url !== settingsPage
+    )
+      return false;
+    await shell.openExternal("https://openrouter.ai/settings/keys");
+    return true;
+  });
+
+  ipcMain.handle(
+    `${DESKTOP_MODEL_CHANNEL}:has-key`,
+    (event) =>
+      !!modelWindow &&
+      !modelWindow.isDestroyed() &&
+      event.sender === modelWindow.webContents &&
+      event.senderFrame?.url === settingsPage &&
+      hasRemovableKey(keyFile, openRouterKey),
+  );
 
   ipcMain.handle(DESKTOP_MODEL_CHANNEL, async (event, key: unknown) => {
     if (
@@ -140,12 +174,22 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     )
       return "invalid";
     const persist = key !== null && canStoreKey();
+    if (key === null && !openRouterKey) {
+      // An unreadable credential from an earlier login may still exist.
+      try {
+        await rm(keyFile, { force: true });
+        return "cleared";
+      } catch {
+        return "unavailable";
+      }
+    }
     const saved = await change(async () => {
       if (key === null) await rm(keyFile, { force: true });
       else if (persist)
         await replacePrivate(keyFile, safeStorage.encryptString(key));
+      else await rm(keyFile, { force: true });
       openRouterKey = key ?? undefined;
-    });
+    }, "model");
     return !saved
       ? "unavailable"
       : key === null
@@ -155,6 +199,36 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
           : "session";
   });
 
+  const activeWorkbench = () => {
+    if (changing || closing) return undefined;
+    if (!workbench) {
+      const running = startLocalWorkbench({
+        resources: join(process.resourcesPath, "workbench"),
+        onExpired(name) {
+          if (
+            workbench !== running ||
+            changing ||
+            closing ||
+            window.isDestroyed()
+          )
+            return;
+          void dialog.showMessageBox(window, {
+            type: "info",
+            message: `${name} needs renewed approval`,
+            detail: `This tool is unavailable to tasks in ${source}. Use Project → Add Verified Extension to approve it again.`,
+          });
+        },
+        source,
+        state: join(root, "projects"),
+        ...(openRouterKey ? { openRouterKey } : {}),
+      });
+      workbench = running;
+      void running.exited.then(() => {
+        if (workbench === running) workbench = undefined;
+      });
+    }
+    return workbench;
+  };
   const projectMenu: MenuItemConstructorOptions = {
     label: "Project",
     submenu: [
@@ -180,6 +254,11 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
       },
       { type: "separator" },
       { label: "Model Settings…", click: showModelSettings },
+      desktopExtensionsMenu({ dialog, ipcMain }, window, activeWorkbench, () =>
+        source === demo
+          ? "demo-project"
+          : `${basename(source) || source}\nFolder: ${source}`,
+      ),
       { type: "separator" },
       { role: "close" },
     ],
@@ -193,28 +272,27 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
   );
 
   return {
+    chatContext() {
+      if (changing || closing) throw new Error("Workspace changing");
+      return {
+        workspace: source,
+        key: openRouterKey,
+        signal: chatLifetime.signal,
+        settings: showModelSettings,
+      };
+    },
     resolve() {
-      if (changing || closing)
-        return Promise.resolve({
+      return (
+        activeWorkbench()?.connection() ??
+        Promise.resolve({
           ok: false as const,
           reason: "The local workbench is switching projects. Try again.",
-        });
-      if (!workbench) {
-        const running = startLocalWorkbench({
-          resources: join(process.resourcesPath, "workbench"),
-          source,
-          state: join(root, "projects"),
-          ...(openRouterKey ? { openRouterKey } : {}),
-        });
-        workbench = running;
-        void running.exited.then(() => {
-          if (workbench === running) workbench = undefined;
-        });
-      }
-      return workbench.connection();
+        })
+      );
     },
     async close() {
       closing = true;
+      chatLifetime.abort();
       await workbench?.stop();
     },
   };

@@ -111,36 +111,40 @@ function teamId(value: unknown): string {
   return id;
 }
 
-/** Atomic private write: `wx` temporary file at 0600, fsync, then rename or link. */
+/** Publish the complete private file atomically; a hard link never replaces an existing entry. */
 async function writePrivate(
   file: string,
   body: string,
-  overwrite = true,
+  publish: (temporary: string, target: string) => Promise<void> = rename,
 ): Promise<void> {
   const temporary = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
   try {
-    const handle = await open(temporary, "wx", 0o600);
     try {
       await handle.writeFile(body);
+      await handle.chmod(0o600);
       await handle.sync();
     } finally {
       await handle.close();
     }
-    if (overwrite) await rename(temporary, file);
-    else {
-      try {
-        await link(temporary, file);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST")
-          throw new TeamUsageError(
-            "export refuses to overwrite an existing file; pass --force.",
-          );
-        throw error;
-      }
-    }
-    chmodSync(file, 0o600);
+    await publish(temporary, file);
   } finally {
     await unlink(temporary).catch(() => undefined);
+  }
+}
+
+async function publishNewExport(
+  temporary: string,
+  target: string,
+): Promise<void> {
+  try {
+    await link(temporary, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST")
+      throw new TeamUsageError(
+        "export refuses to overwrite an existing file; pass --force.",
+      );
+    throw error;
   }
 }
 
@@ -576,209 +580,204 @@ async function runServe(
       : undefined,
   );
   const opened: TeamStore = store;
-  try {
-    const authenticators: Authenticator[] = [];
-    let devTokensFile: string | null = null;
-    let activeDevUsers = 0;
-    const provisionedUsers = new Set<string>();
-    // Initial provisioning only: a member removed via removeTeamMember stays
-    // removed across restarts until explicitly re-added.
-    const ensureMember = (user_id: string, isFirst: boolean) => {
-      provisionedUsers.add(user_id);
-      if (opened.teamMemberState({ team_id: options.team, user_id }) === null) {
-        opened.setTeamMember({
-          team_id: options.team,
-          user_id,
-          role: isFirst ? "admin" : "member",
-        });
-      }
-    };
-    for (const [index, user_id] of options.members.entries())
-      ensureMember(user_id, index === 0);
-    // Register local authenticators (dev, HS256 token) before remote providers
-    // (GitHub) so local credentials are never forwarded to upstream APIs.
-    if (options.devUsers) {
-      const tokens = await ensureDevTokens(
-        options.state,
-        options.team,
-        options.devUsers,
-        (userId) =>
-          opened.teamMemberRole({ team_id: options.team, user_id: userId }),
-      );
-      devTokensFile = join(options.state, DEV_TOKENS_FILE);
-      activeDevUsers = tokens.users.length;
-      const users: DevUser[] = tokens.users.map((user) => ({
-        token: user.token,
-        user_id: user.user_id,
-        team_ids: [options.team],
-      }));
-      authenticators.push(createDevAuthenticator(users));
-      for (const user of tokens.users) {
-        provisionedUsers.add(user.user_id);
-        // `ensureDevTokens` already omits revoked users until `mars team readmit`,
-        // so every user in `tokens.users` is active and keeps their token-file role.
-        opened.setTeamMember({
-          team_id: options.team,
-          user_id: user.user_id,
-          role: user.role,
-        });
-      }
-    }
-    if (options.authProvider === "token") {
-      const secret = process.env[options.authSecretEnv];
-      if (!secret || Buffer.byteLength(secret, "utf8") < 32)
-        throw new TeamUsageError(
-          `--auth-provider token requires ${options.authSecretEnv} to be set to at least 32 bytes.`,
-        );
-      authenticators.push(
-        createVerifiedTokenAuthenticator({
-          secret,
-          ...(options.authIssuer ? { issuer: options.authIssuer } : {}),
-          ...(options.authAudience ? { audience: options.authAudience } : {}),
-          resolveTeams: (userId) => opened.activeTeamIds(userId),
-        }),
-      );
-    } else if (options.authProvider === "github") {
-      if (options.githubAllowedIds) {
-        for (const [index, ghId] of options.githubAllowedIds.entries()) {
-          const userId = `gh_${ghId}`;
-          if (!provisionedUsers.has(userId))
-            ensureMember(userId, provisionedUsers.size === 0 && index === 0);
-        }
-      }
-      authenticators.push(
-        createGitHubAuthenticator({
-          ...(options.githubApiUrl ? { apiBaseUrl: options.githubApiUrl } : {}),
-          ...(options.githubAllowedIds
-            ? { allowedIds: options.githubAllowedIds }
-            : {}),
-          mapUserId: (profile) => `gh_${profile.id}`,
-          resolveTeams: (_profile, userId) => opened.activeTeamIds(userId),
-        }),
-      );
-    }
-    const authenticator: Authenticator =
-      authenticators.length === 0
-        ? { authenticate: async () => null }
-        : authenticators.length === 1
-          ? (authenticators[0] as Authenticator)
-          : createCompositeAuthenticator(authenticators);
-    const allRepoIds = [
-      ...options.repos.map((r) => r.repo_id),
-      ...options.remoteRepos.map((r) => r.repo_id),
-    ];
-    const defaultGrantUsers = [...provisionedUsers];
-    for (const repo_id of allRepoIds) {
-      opened.setRepo({
+  await using resources = new AsyncDisposableStack();
+  resources.defer(() => opened.close());
+  const authenticators: Authenticator[] = [];
+  let devTokensFile: string | null = null;
+  let activeDevUsers = 0;
+  const provisionedUsers = new Set<string>();
+  // Initial provisioning only: a member removed via removeTeamMember stays
+  // removed across restarts until explicitly re-added.
+  const ensureMember = (user_id: string, isFirst: boolean) => {
+    provisionedUsers.add(user_id);
+    if (opened.teamMemberState({ team_id: options.team, user_id }) === null) {
+      opened.setTeamMember({
         team_id: options.team,
-        repo_id,
-        label: repo_id,
+        user_id,
+        role: isFirst ? "admin" : "member",
       });
-      const grant = options.repoAccess.get(repo_id) ?? defaultGrantUsers;
-      // Initial provisioning only: a row revoked by `mars team revoke --repo`
-      // stays removed across restarts until `mars team grant`.
-      for (const user_id of grant) {
-        const access = { team_id: options.team, repo_id, user_id };
-        if (opened.repoAccessState(access) === null)
-          opened.setRepoAccess(access);
+    }
+  };
+  for (const [index, user_id] of options.members.entries())
+    ensureMember(user_id, index === 0);
+  // Register local authenticators (dev, HS256 token) before remote providers
+  // (GitHub) so local credentials are never forwarded to upstream APIs.
+  if (options.devUsers) {
+    const tokens = await ensureDevTokens(
+      options.state,
+      options.team,
+      options.devUsers,
+      (userId) =>
+        opened.teamMemberRole({ team_id: options.team, user_id: userId }),
+    );
+    devTokensFile = join(options.state, DEV_TOKENS_FILE);
+    activeDevUsers = tokens.users.length;
+    const users: DevUser[] = tokens.users.map((user) => ({
+      token: user.token,
+      user_id: user.user_id,
+      team_ids: [options.team],
+    }));
+    authenticators.push(createDevAuthenticator(users));
+    for (const user of tokens.users) {
+      provisionedUsers.add(user.user_id);
+      // `ensureDevTokens` already omits revoked users until `mars team readmit`,
+      // so every user in `tokens.users` is active and keeps their token-file role.
+      opened.setTeamMember({
+        team_id: options.team,
+        user_id: user.user_id,
+        role: user.role,
+      });
+    }
+  }
+  if (options.authProvider === "token") {
+    const secret = process.env[options.authSecretEnv];
+    if (!secret || Buffer.byteLength(secret, "utf8") < 32)
+      throw new TeamUsageError(
+        `--auth-provider token requires ${options.authSecretEnv} to be set to at least 32 bytes.`,
+      );
+    authenticators.push(
+      createVerifiedTokenAuthenticator({
+        secret,
+        ...(options.authIssuer ? { issuer: options.authIssuer } : {}),
+        ...(options.authAudience ? { audience: options.authAudience } : {}),
+        resolveTeams: (userId) => opened.activeTeamIds(userId),
+      }),
+    );
+  } else if (options.authProvider === "github") {
+    if (options.githubAllowedIds) {
+      for (const [index, ghId] of options.githubAllowedIds.entries()) {
+        const userId = `gh_${ghId}`;
+        if (!provisionedUsers.has(userId))
+          ensureMember(userId, provisionedUsers.size === 0 && index === 0);
       }
     }
-    if (options.enable) opened.setEnabled(true);
-    let agentWorker: TeamAgentWorker | null = null;
-    if (agentModel !== null) {
-      const modelRegistry = await loadModelRegistry({
-        cwd: options.state,
-        env: process.env,
-      });
-      const agentRootDir = join(options.state, "agent");
-      mkdirSync(agentRootDir, { recursive: true, mode: 0o700 });
-      chmodSync(agentRootDir, 0o700);
-      agentWorker = createTeamAgentWorker({
-        host: opened.agentHost,
-        run: (claimed) =>
-          runTeamAgentRequest({
-            request: claimed.request,
-            input: claimed.input,
-            signal: claimed.signal,
-            registry: modelRegistry,
-            rootDir: agentRootDir,
-            scan: scanThreat,
-            env: process.env,
-            ...(options.quiet
-              ? {}
-              : {
-                  onError: (notice) =>
-                    out(JSON.stringify({ log: "team-agent", ...notice })),
-                }),
-          }),
-        ...(options.quiet
-          ? {}
-          : {
-              onError: () =>
-                out(
-                  JSON.stringify({
-                    log: "team-agent",
-                    reason_code: "worker_error",
-                  }),
-                ),
-            }),
-      });
+    authenticators.push(
+      createGitHubAuthenticator({
+        ...(options.githubApiUrl ? { apiBaseUrl: options.githubApiUrl } : {}),
+        ...(options.githubAllowedIds
+          ? { allowedIds: options.githubAllowedIds }
+          : {}),
+        mapUserId: (profile) => `gh_${profile.id}`,
+        resolveTeams: (_profile, userId) => opened.activeTeamIds(userId),
+      }),
+    );
+  }
+  const authenticator: Authenticator =
+    authenticators.length === 0
+      ? { authenticate: async () => null }
+      : authenticators.length === 1
+        ? (authenticators[0] as Authenticator)
+        : createCompositeAuthenticator(authenticators);
+  const allRepoIds = [
+    ...options.repos.map((r) => r.repo_id),
+    ...options.remoteRepos.map((r) => r.repo_id),
+  ];
+  const defaultGrantUsers = [...provisionedUsers];
+  for (const repo_id of allRepoIds) {
+    opened.setRepo({
+      team_id: options.team,
+      repo_id,
+      label: repo_id,
+    });
+    const grant = options.repoAccess.get(repo_id) ?? defaultGrantUsers;
+    // Initial provisioning only: a row revoked by `mars team revoke --repo`
+    // stays removed across restarts until `mars team grant`.
+    for (const user_id of grant) {
+      const access = { team_id: options.team, repo_id, user_id };
+      if (opened.repoAccessState(access) === null) opened.setRepoAccess(access);
     }
-    const server = serveTeam({
-      store: opened,
-      authenticator,
-      port: options.port,
-      repos: registry,
-      agentReferences: port,
+  }
+  if (options.enable) opened.setEnabled(true);
+  let agentWorker: TeamAgentWorker | null = null;
+  if (agentModel !== null) {
+    const modelRegistry = await loadModelRegistry({
+      cwd: options.state,
+      env: process.env,
+    });
+    const agentRootDir = join(options.state, "agent");
+    mkdirSync(agentRootDir, { recursive: true, mode: 0o700 });
+    chmodSync(agentRootDir, 0o700);
+    agentWorker = createTeamAgentWorker({
+      host: opened.agentHost,
+      run: (claimed) =>
+        runTeamAgentRequest({
+          request: claimed.request,
+          input: claimed.input,
+          signal: claimed.signal,
+          registry: modelRegistry,
+          rootDir: agentRootDir,
+          scan: scanThreat,
+          env: process.env,
+          ...(options.quiet
+            ? {}
+            : {
+                onError: (notice) =>
+                  out(JSON.stringify({ log: "team-agent", ...notice })),
+              }),
+        }),
       ...(options.quiet
         ? {}
-        : { log: (entry) => out(JSON.stringify({ log: "team", ...entry })) }),
+        : {
+            onError: () =>
+              out(
+                JSON.stringify({
+                  log: "team-agent",
+                  reason_code: "worker_error",
+                }),
+              ),
+          }),
     });
-    const url = `http://127.0.0.1:${server.port}`;
-    const connectionFile = join(options.state, CONNECTION_FILE);
-    try {
-      await writePrivate(
-        connectionFile,
-        JSON.stringify({ schema_version: 1, url, team_id: options.team }),
-      );
-    } catch (error) {
-      await server.stop(true);
-      throw error;
-    }
-    if (agentWorker) agentWorker.start();
-    await new Promise<void>((resolve, reject) => {
-      registerRuntimeCleanup("mars-team", async () => {
-        try {
-          if (agentWorker) await agentWorker.stop();
-          // `stop(true)` ends every open stream before the process exits.
-          await server.stop(true);
-          resolve();
-        } catch {
-          reject(new Error("Team service shutdown failed."));
-        }
-      });
-      out(
-        JSON.stringify({
-          status: "listening",
-          service: "team",
-          url,
-          team_id: options.team,
-          connection_file: connectionFile,
-          auth_provider: options.authProvider,
-          dev_tokens_file: devTokensFile,
-          dev_users: activeDevUsers,
-          migrations_applied: opened.migrationsApplied,
-          ledger_head: opened.ledgerHead,
-          repos: allRepoIds.length,
-          remote_repos: options.remoteRepos.length,
-          enabled: opened.isEnabled(),
-          agent: agentModel !== null,
-        }),
-      );
-    });
-  } finally {
-    opened.close();
   }
+  const server = serveTeam({
+    store: opened,
+    authenticator,
+    port: options.port,
+    repos: registry,
+    agentReferences: port,
+    ...(options.quiet
+      ? {}
+      : { log: (entry) => out(JSON.stringify({ log: "team", ...entry })) }),
+  });
+  resources.defer(() => server.stop(true));
+  const url = `http://127.0.0.1:${server.port}`;
+  const connectionFile = join(options.state, CONNECTION_FILE);
+  await writePrivate(
+    connectionFile,
+    JSON.stringify({ schema_version: 1, url, team_id: options.team }),
+  );
+  if (agentWorker) {
+    resources.defer(() => agentWorker.stop());
+    agentWorker.start();
+  }
+  await new Promise<void>((resolve, reject) => {
+    const unregister = registerRuntimeCleanup("mars-team", async () => {
+      try {
+        await resources.disposeAsync();
+        resolve();
+      } catch {
+        reject(new Error("Team service shutdown failed."));
+      }
+    });
+    resources.defer(unregister);
+    out(
+      JSON.stringify({
+        status: "listening",
+        service: "team",
+        url,
+        team_id: options.team,
+        connection_file: connectionFile,
+        auth_provider: options.authProvider,
+        dev_tokens_file: devTokensFile,
+        dev_users: activeDevUsers,
+        migrations_applied: opened.migrationsApplied,
+        ledger_head: opened.ledgerHead,
+        repos: allRepoIds.length,
+        remote_repos: options.remoteRepos.length,
+        enabled: opened.isEnabled(),
+        agent: agentModel !== null,
+      }),
+    );
+  });
 }
 
 function simpleArgs(
@@ -855,17 +854,13 @@ export async function runTeam(
     if (typeof values.out !== "string" || values.out.length === 0)
       throw new TeamUsageError("export needs --out FILE.");
     const target = resolve(values.out);
-    if (existsSync(target) && values.force !== true)
-      throw new TeamUsageError(
-        "export refuses to overwrite an existing file; pass --force.",
-      );
     const store = openStore(stateDir(values.state));
     try {
       const snapshot = store.exportSnapshot();
       await writePrivate(
         target,
         JSON.stringify(snapshot),
-        values.force === true,
+        values.force === true ? rename : publishNewExport,
       );
       out(
         JSON.stringify({

@@ -75,8 +75,7 @@ function codeKind(code: string): BridgeErrorKind | undefined {
   if (code === "forbidden" || code === "permission_denied") return "forbidden";
   if (code === "not_found") return "not_found";
   if (code === "conflict" || code === "revision_conflict") return "conflict";
-  if (code === "unavailable" || code === "model_unavailable")
-    return "unavailable";
+  if (code === "unavailable" || code === "model_unavailable") return code;
   return undefined;
 }
 
@@ -95,11 +94,7 @@ export function createLoopbackTransport(options: {
   return {
     async send(request) {
       const controller = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       let response: Response;
       let body: string;
       try {
@@ -122,8 +117,8 @@ export function createLoopbackTransport(options: {
           throw new TransportError("protocol");
         body = await readBounded(response, maxBytes);
       } catch (error) {
+        if (controller.signal.aborted) throw new TransportError("timeout");
         if (error instanceof TransportError) throw error;
-        if (timedOut) throw new TransportError("timeout");
         throw new TransportError("unavailable");
       } finally {
         clearTimeout(timer);
