@@ -30,6 +30,88 @@ const send = (over: Partial<SendMessageInput> = {}): SendMessageInput => ({
   ...over,
 });
 
+test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+  "pagination rejects non-finite limit %s",
+  (limit) => {
+    const service = new FixtureTeamService();
+    expect(service.openConversation(U.ada, C.dmAdaGrace, { limit })).toEqual({
+      ok: false,
+      code: "invalid",
+    });
+  },
+);
+
+test.each(["", "seq:", "seq: ", "seq:1e2", "seq:0x10", "seq:9007199254740992"])(
+  "pagination rejects malformed cursor %s",
+  (before) => {
+    const service = new FixtureTeamService();
+    expect(service.openConversation(U.ada, C.dmAdaGrace, { before })).toEqual({
+      ok: false,
+      code: "invalid",
+    });
+  },
+);
+
+test("generated message IDs do not collide with supplied dataset messages", () => {
+  const dataset = structuredClone(FIXTURE);
+  const existing = dataset.messages.find(
+    (message) => message.conversation_id === C.dmGraceLinus,
+  );
+  if (!existing) throw new Error("missing message");
+  existing.message_id = `msg_${C.dmAdaGrace}_5`;
+  const service = new FixtureTeamService({ dataset });
+  const input = send();
+  const result = ok(service.sendMessage(U.ada, input));
+  expect(result.message_id).not.toBe(existing.message_id);
+  expect(ok(service.sendMessage(U.ada, input))).toEqual({
+    ...result,
+    duplicate: true,
+  });
+});
+
+test("generated message IDs respect the schema length limit", () => {
+  const longDataset = structuredClone(FIXTURE);
+  const conversationId = "c".repeat(128);
+  longDataset.conversations = longDataset.conversations.map((conversation) => ({
+    ...conversation,
+    conversation_id:
+      conversation.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : conversation.conversation_id,
+  }));
+  longDataset.participants = longDataset.participants.map((participant) => ({
+    ...participant,
+    conversation_id:
+      participant.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : participant.conversation_id,
+  }));
+  longDataset.messages = longDataset.messages.map((message) => ({
+    ...message,
+    conversation_id:
+      message.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : message.conversation_id,
+  }));
+  const longService = new FixtureTeamService({ dataset: longDataset });
+  const sent = ok(
+    longService.sendMessage(U.ada, send({ conversation_id: conversationId })),
+  );
+  expect(sent.message_id.length).toBeLessThanOrEqual(128);
+  expect(
+    ok(
+      longService.sendMessage(
+        U.ada,
+        send({
+          conversation_id: conversationId,
+          client_message_id: "long_2",
+          reply_to: sent.message_id,
+        }),
+      ),
+    ).sequence,
+  ).toBe(6);
+});
+
 test("new references do not collide with IDs in a supplied dataset", () => {
   const dataset = structuredClone(FIXTURE);
   const original = dataset.references[0];

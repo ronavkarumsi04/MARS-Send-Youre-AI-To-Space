@@ -31,6 +31,46 @@ function type(state: ComposerState, text: string): ComposerState {
 }
 
 describe("mention candidates", () => {
+  test("same-named symbols on different lines can both be attached", () => {
+    const symbolEnv: ComposerEnvironment = {
+      ...env,
+      index: {
+        repos: [
+          {
+            repo_id: R.site,
+            name: "site",
+            commit_sha: SITE_SHA,
+            files: [
+              {
+                path: "src/style.css",
+                line_count: 20,
+                symbols: [
+                  { name: ".banner", line: 2 },
+                  { name: ".banner", line: 12 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    let state = reduceComposer(
+      EMPTY_COMPOSER,
+      { type: "input", text: "@banner", caret: 7 },
+      symbolEnv,
+    );
+    state = reduceComposer(state, { type: "pickerSelect" }, symbolEnv);
+    state = reduceComposer(
+      state,
+      { type: "input", text: "@banner", caret: 7 },
+      symbolEnv,
+    );
+    state = reduceComposer(state, { type: "pickerMove", delta: 1 }, symbolEnv);
+    state = reduceComposer(state, { type: "pickerSelect" }, symbolEnv);
+    expect(state.chips.map((chip) => chip.reference.line_start)).toEqual([
+      2, 12,
+    ]);
+  });
   test("empty query lists files from the active repo first, then the other repo", () => {
     const candidates = mentionCandidates(index, "", R.platform);
     expect(candidates.map((c) => c.kind)).toEqual([
