@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RequestContext } from "@mars/contracts";
@@ -705,4 +705,288 @@ test("memory proposals are linked to the host task the reviewed turn came from",
   expect(linked?.status).toBe("pending");
   expect((await memory.snapshot(context)).entries).toEqual([]);
   expect(runner.modelRequests).toBe(1);
+});
+
+test("duplicate lessons are dropped: repeated in the reply or already in memory", async () => {
+  const { memory, runner } = setup(
+    fakeModel(() =>
+      output([
+        memoryProposal("Run bun test before pushing."),
+        memoryProposal("  run BUN test   before pushing. "),
+        memoryProposal("Already known fact"),
+        memoryProposal("Run bun test before pushing.", "user"),
+      ]),
+    ),
+  );
+  await memory.batch(context, 0, [
+    {
+      operation: "add",
+      entry: {
+        entry_id: "known",
+        scope: context.scope,
+        target: "project",
+        fact: "already known   FACT",
+        revision: 0,
+        source_event_ids: ["e"],
+        observed_at: "2026-01-01T00:00:00.000Z",
+        verified_at: null,
+        supersedes: null,
+        deleted: false,
+      },
+    },
+  ]);
+  const result = await runner.reviewNow(turn());
+  expect(result.status).toBe("completed");
+  const proposals = await memory.listProposals(context);
+  expect(
+    proposals.flatMap((p) =>
+      p.operations.map((op) =>
+        op.operation === "add" ? [op.entry.target, op.entry.fact] : [],
+      ),
+    ),
+  ).toEqual([
+    ["project", "Run bun test before pushing."],
+    ["profile", "Run bun test before pushing."],
+  ]);
+});
+
+test("identical skill ops are deduplicated; conflicting ops for one skill are rejected", () => {
+  const same = parseOutput(
+    output([skillProposal("lint-first"), skillProposal("lint-first")]),
+  );
+  expect(same).toHaveLength(1);
+  expect(() =>
+    parseOutput(
+      output([
+        skillProposal("lint-first"),
+        skillProposal("lint-first", "update"),
+      ]),
+    ),
+  ).toThrow(InvalidOutput);
+});
+
+test("the output size limit counts UTF-8 bytes, not UTF-16 code units", () => {
+  const wide = "\u6f22".repeat(22_000);
+  const reply = `{"proposals":[],"pad":"${wide}"}`;
+  expect(reply.length).toBeLessThan(64_000);
+  expect(() => parseOutput(reply)).toThrow("(size)");
+});
+
+test("a large skill library shrinks the prompt instead of disabling review", async () => {
+  const model = fakeModel(() => output([]));
+  const { skills, runner } = setup(model);
+  for (let index = 0; index < 20; index++)
+    await skills.create(
+      `bulk-${index}`,
+      skillContent(`bulk-${index}`, `Step ${index}. ${"y".repeat(3800)}`),
+      { actor: "user", source: "interactive" },
+    );
+  const result = await runner.reviewNow(turn());
+  expect(result.status).toBe("completed");
+  const user = model.requests[0]?.user ?? "";
+  expect(user.length).toBeLessThanOrEqual(REVIEW_LIMITS.context_chars);
+  const prompt = JSON.parse(user);
+  expect(prompt.skills.length).toBeGreaterThan(0);
+  expect(prompt.skills.length).toBeLessThan(20);
+  expect(prompt.transcript).toEqual(turn().transcript);
+});
+
+test("a gateway that ignores the abort signal still times out and frees the runner", async () => {
+  const model: ReviewModelGateway = {
+    id: "fake:hang",
+    complete: () => new Promise(() => undefined),
+  };
+  const { runner, log } = setup(model, { timeoutMs: 30 });
+  expect((await runner.reviewNow(turn())).status).toBe("cancelled");
+  expect(log().at(-1)?.event).toBe("cancelled");
+  const hungSnapshot = setup(
+    fakeModel(() => output([])),
+    { timeoutMs: 30 },
+  );
+  hungSnapshot.memory.snapshot = () => new Promise(() => undefined);
+  const stuck = new ReviewRunner({
+    context,
+    memory: hungSnapshot.memory,
+    skills: hungSnapshot.skills,
+    model: fakeModel(() => output([])),
+    logRoot: join(hungSnapshot.dir, "review-2"),
+    timeoutMs: 30,
+  });
+  runners.push(stuck);
+  expect((await stuck.reviewNow(turn())).status).toBe("cancelled");
+});
+
+test("malformed turns and replies never throw out of the runner", async () => {
+  const model = fakeModel(() => output([]));
+  const { runner } = setup(model);
+  for (const bad of [
+    null,
+    undefined,
+    "session-a",
+    { origin: "foreground", iterations: 10, transcript: [] },
+    { ...turn(), sessionId: 42 },
+  ] as unknown as Turn[]) {
+    expect(() => runner.recordTurn(bad)).not.toThrow();
+    expect((await runner.reviewNow(bad)).status).toBe("skipped");
+  }
+  for (const transcript of [undefined, "text", [null], [{ role: "user" }]])
+    expect(
+      (
+        await runner.reviewNow({
+          ...turn(),
+          transcript: transcript as unknown as Turn["transcript"],
+        })
+      ).status,
+    ).toBe("rejected");
+  const nullReply = setup({
+    id: "fake:null",
+    complete: async () => null as unknown as never,
+  });
+  expect((await nullReply.runner.reviewNow(turn())).status).toBe("rejected");
+  expect(runner.modelRequests).toBe(0);
+});
+
+test("only role and content of transcript messages reach the prompt", async () => {
+  const model = fakeModel(() => output([]));
+  const { runner } = setup(model);
+  const leaky = {
+    ...turn(),
+    secret: "host-only",
+    transcript: [
+      { role: "user", content: "hi", apiKey: "sk-should-not-leak" },
+      { role: "assistant", content: "hello", callback: () => 1 },
+    ],
+  } as unknown as Turn;
+  expect((await runner.reviewNow(leaky)).status).toBe("completed");
+  const user = model.requests[0]?.user ?? "";
+  expect(user).not.toContain("sk-should-not-leak");
+  expect(user).not.toContain("host-only");
+  expect(JSON.parse(user).transcript).toEqual([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "hello" },
+  ]);
+  runner.recordTurn(leaky);
+  expect(runner.pendingSessions).toEqual(["session-a"]);
+});
+
+test("a rate-limited review keeps a newer queued turn and respects the pending cap", async () => {
+  let now = Date.UTC(2026, 0, 1);
+  let limited = true;
+  const scheduled: (() => Promise<void>)[] = [];
+  let onCall: (() => void) | undefined;
+  const model = fakeModel(() => {
+    onCall?.();
+    if (limited) throw new ReviewRateLimit();
+    return output([]);
+  });
+  const { runner } = setup(model, {
+    clock: () => now,
+    scheduleIdle: (callback) => {
+      scheduled.push(callback);
+      return () => {
+        scheduled.splice(scheduled.indexOf(callback) >>> 0, 1);
+      };
+    },
+  });
+  onCall = () => {
+    for (let i = 0; i < REVIEW_LIMITS.pending_sessions; i++)
+      runner.recordTurn(turn(`other-${i}`));
+  };
+  expect((await runner.reviewNow(turn("session-a"))).status).toBe(
+    "rate-limited",
+  );
+  expect(runner.pendingSessions).toHaveLength(REVIEW_LIMITS.pending_sessions);
+  expect(runner.pendingSessions.at(-1)).toBe("session-a");
+  await runner.stop();
+
+  const second = setup(model, {
+    clock: () => now,
+    scheduleIdle: (callback) => {
+      scheduled.push(callback);
+      return () => undefined;
+    },
+  });
+  scheduled.length = 0;
+  onCall = () => {
+    onCall = undefined;
+    second.runner.recordTurn({
+      ...turn("session-a"),
+      transcript: [{ role: "user", content: "newer transcript" }],
+    });
+  };
+  expect((await second.runner.reviewNow(turn("session-a"))).status).toBe(
+    "rate-limited",
+  );
+  limited = false;
+  now += REVIEW_LIMITS.backoff_max_ms;
+  await scheduled.at(-1)?.();
+  expect(model.requests.at(-1)?.user).toContain("newer transcript");
+});
+
+test("an idle timer that fires before the cooldown ends keeps the session queued", async () => {
+  let now = 0;
+  const scheduled: (() => Promise<void>)[] = [];
+  let fail = true;
+  const model = fakeModel(() => {
+    if (fail) throw new ReviewRateLimit();
+    return output([]);
+  });
+  const { runner } = setup(model, {
+    clock: () => now,
+    scheduleIdle: (callback) => {
+      scheduled.push(callback);
+      return () => undefined;
+    },
+  });
+  expect((await runner.reviewNow(turn())).status).toBe("rate-limited");
+  fail = false;
+  await scheduled.shift()?.();
+  expect(runner.pendingSessions).toEqual(["session-a"]);
+  expect(runner.modelRequests).toBe(1);
+  now += REVIEW_LIMITS.backoff_initial_ms;
+  await scheduled.shift()?.();
+  expect(runner.modelRequests).toBe(2);
+  expect(runner.pendingSessions).toEqual([]);
+});
+
+test("timings beyond what setTimeout can honour are refused", () => {
+  const base = {
+    context,
+    memory: {
+      snapshot: async () => ({ revision: 0, entries: [] }),
+      submitProposal: async () => {
+        throw new Error("unused");
+      },
+    },
+    skills: new SkillStore(join(tmpdir(), "mars-review-unused")),
+    model: fakeModel(() => output([])),
+    logRoot: join(tmpdir(), "mars-review-unused-log"),
+  } as unknown as ReviewDependencies;
+  expect(() => new ReviewRunner({ ...base, idleMs: 2 ** 31 })).toThrow(
+    "Invalid review timing",
+  );
+  expect(() => new ReviewRunner({ ...base, timeoutMs: 2 ** 31 })).toThrow(
+    "Invalid review timing",
+  );
+});
+
+test("an audit log that breaks mid-review still returns a result and withdraws proposals", async () => {
+  let breakLog: (() => void) | undefined;
+  const { dir, memory, runner } = setup(
+    fakeModel(() => {
+      breakLog?.();
+      return output([memoryProposal("logged fact")]);
+    }),
+  );
+  breakLog = () => {
+    const file = join(dir, "review", "review.jsonl");
+    rmSync(file, { force: true });
+    mkdirSync(file);
+  };
+  const result = await runner.reviewNow(turn());
+  expect(result.status).toBe("error");
+  expect(result.proposals).toEqual([]);
+  expect(
+    (await memory.listProposals(context)).map((proposal) => proposal.status),
+  ).toEqual(["rejected"]);
 });
