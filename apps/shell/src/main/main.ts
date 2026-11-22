@@ -124,12 +124,9 @@ app.on("ready", async () => {
       context: async () => {
         if (desktop) return desktop.chatContext();
         const connection = await resolveConnection();
+        if (!connection.ok) throw new Error("Workbench unavailable");
         return {
-          workspace:
-            explicitConnection() ??
-            (connection.ok
-              ? JSON.stringify(connection.connection.scope)
-              : "attached"),
+          workspace: JSON.stringify(connection.connection.scope),
           key: process.env.OPENROUTER_API_KEY,
         };
       },

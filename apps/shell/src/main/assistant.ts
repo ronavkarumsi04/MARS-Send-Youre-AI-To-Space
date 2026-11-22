@@ -62,7 +62,16 @@ export function createAssistant(options: Options) {
       const parsed = AssistantRequestSchema.safeParse(payload);
       if (!parsed.success) return { ok: false, error: "Invalid chat request." };
       const request = parsed.data;
-      const context = await options.context();
+      let context: Context;
+      try {
+        context = await options.context();
+      } catch {
+        return {
+          ok: false,
+          error:
+            "Connect to a workbench and reload to open this project's chat.",
+        };
+      }
       if (request.action === "settings") {
         if (!context.settings)
           return {
