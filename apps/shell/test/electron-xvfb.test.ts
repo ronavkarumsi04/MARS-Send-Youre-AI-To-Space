@@ -64,6 +64,15 @@ interface CdpTarget {
   webSocketDebuggerUrl?: string;
 }
 
+class CdpProtocolError extends Error {
+  readonly code: number | undefined;
+
+  constructor(error: { code?: number; message?: string }) {
+    super(error.message ?? "CDP error");
+    this.code = error.code;
+  }
+}
+
 class CdpClient {
   private readonly ws: WebSocket;
   private nextId = 1;
@@ -79,14 +88,13 @@ class CdpClient {
       const parsed = JSON.parse(raw) as {
         id?: number;
         result?: unknown;
-        error?: { message?: string };
+        error?: { code?: number; message?: string };
       };
       if (typeof parsed.id !== "number") return;
       const entry = this.pending.get(parsed.id);
       if (!entry) return;
       this.pending.delete(parsed.id);
-      if (parsed.error)
-        entry.reject(new Error(parsed.error.message ?? "CDP error"));
+      if (parsed.error) entry.reject(new CdpProtocolError(parsed.error));
       else entry.resolve(parsed.result);
     });
     ws.addEventListener("close", () => {
@@ -177,24 +185,76 @@ async function waitForPageTarget(
 }
 
 async function waitForCondition(
-  cdp: CdpClient,
+  cdp: Pick<CdpClient, "evaluate">,
   expression: string,
   description: string,
   timeoutMs = 10_000,
 ): Promise<void> {
+  // The target can appear in /json before Chromium creates its main context.
+  // Retry read-only probes, never actions like button clicks.
+  const read = async <T>(probe: string): Promise<T | undefined> => {
+    try {
+      return await cdp.evaluate<T>(probe);
+    } catch (error) {
+      if (
+        error instanceof CdpProtocolError &&
+        error.code === -32000 &&
+        error.message === "Cannot find default execution context"
+      )
+        return undefined;
+      throw error;
+    }
+  };
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const matched = await cdp.evaluate<boolean>(expression);
+    const matched = await read<boolean>(expression);
     if (matched) return;
     await Bun.sleep(100);
   }
-  const snapshot = await cdp.evaluate<string>(
+  const snapshot = await read<string>(
     "document.body ? document.body.textContent.slice(0, 800) : ''",
   );
   throw new Error(
-    `Timed out waiting for ${description}. Body snapshot: ${snapshot}`,
+    `Timed out waiting for ${description}. Body snapshot: ${snapshot ?? "(renderer context unavailable)"}`,
   );
 }
+
+test("readiness polling retries when CDP has not created the default context", async () => {
+  let attempts = 0;
+  await waitForCondition(
+    {
+      async evaluate<T>() {
+        if (++attempts === 1)
+          throw new CdpProtocolError({
+            code: -32000,
+            message: "Cannot find default execution context",
+          });
+        return true as T;
+      },
+    },
+    "true",
+    "the renderer",
+  );
+  expect(attempts).toBe(2);
+});
+
+test("readiness polling does not retry renderer exceptions", async () => {
+  const exception = new Error("Cannot find default execution context");
+  let attempts = 0;
+  await expect(
+    waitForCondition(
+      {
+        async evaluate() {
+          attempts++;
+          throw exception;
+        },
+      },
+      "true",
+      "the renderer",
+    ),
+  ).rejects.toBe(exception);
+  expect(attempts).toBe(1);
+});
 
 test.skipIf(!PACKAGED_ELECTRON)(
   "installed MARS opens its own workbench and Team Chat without a connection file",
@@ -227,7 +287,7 @@ test.skipIf(!PACKAGED_ELECTRON)(
       cdp = await CdpClient.connect(await waitForPageTarget(port));
       await waitForCondition(
         cdp,
-        "document.querySelector('.status-bar')?.textContent.includes('Connected')",
+        "document.querySelector('.status-bar > span')?.textContent === 'Connected'",
         "the bundled workbench to connect",
         20_000,
       );
