@@ -94,6 +94,46 @@ async function fixture(input: {
   };
 }
 
+test("CLI error summaries redact host paths as well as raw output", async () => {
+  const f = await fixture({});
+  try {
+    await writeFile(
+      join(f.root, "scenario.json"),
+      JSON.stringify({
+        rules: [
+          {
+            match: ["verify", "run"],
+            exit: 1,
+            stdout: JSON.stringify({
+              error: "fixture.failure",
+              message: `failed at ${f.dataRoot}/private.json`,
+              fix: `inspect ${f.cwd}/clip.mp4`,
+              details: {},
+            }),
+          },
+        ],
+      }),
+    );
+    const rendered = await f.tools.verify({
+      action: "run",
+      contract: {
+        contract_id: "redaction",
+        title: "redaction",
+        checks: [
+          { id: "exists", type: "file_exists", params: { path: "clip.mp4" } },
+        ],
+      },
+    });
+    expect(rendered).toContain("fixture.failure");
+    expect(rendered).not.toContain(f.dataRoot);
+    expect(rendered).not.toContain(f.cwd);
+    expect(rendered).toContain("<watch-data>");
+    expect(f.records[0]?.verified).toBe(false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("a missing CLI makes every tool unavailable and verification inconclusive, never a pass", async () => {
   const f = await fixture({ command: [join(tmpdir(), "no-such-watch-skill")] });
   try {
