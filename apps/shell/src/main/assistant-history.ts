@@ -46,10 +46,12 @@ export async function saveTurn(
   path: string,
   updated: AssistantSession,
   previousLength: number,
+  signal?: AbortSignal,
 ) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await chmod(dirname(path), 0o700);
   await (await open(path, "a", 0o600)).close();
+  signal?.throwIfAborted();
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout=2000; BEGIN IMMEDIATE");

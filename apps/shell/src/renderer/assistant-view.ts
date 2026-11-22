@@ -6,6 +6,7 @@ export type AssistantViewState = {
   activeId: string;
   draft: string;
   configured: boolean;
+  canConfigure?: boolean;
   consent: boolean;
   busy: boolean;
   loading: boolean;
@@ -237,7 +238,7 @@ export function renderAssistant(
       doc,
       "div",
       { class: "assistant-compose-wrap" },
-      !state.configured && !state.loading
+      !state.configured && !state.loading && state.canConfigure !== undefined
         ? h(
             doc,
             "div",
@@ -251,10 +252,19 @@ export function renderAssistant(
                 doc,
                 "p",
                 {},
-                "Add an OpenRouter API key to bring MARS online.",
+                state.canConfigure
+                  ? "Add an OpenRouter API key to bring MARS online."
+                  : "Set OPENROUTER_API_KEY in the environment that launches MARS, then restart the attached app.",
               ),
             ),
-            action(doc, "Connect model  ↗", "connect-action", state.onSettings),
+            state.canConfigure
+              ? action(
+                  doc,
+                  "Connect model  ↗",
+                  "connect-action",
+                  state.onSettings,
+                )
+              : null,
           )
         : null,
       state.error

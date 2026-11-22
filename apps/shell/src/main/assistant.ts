@@ -15,6 +15,7 @@ import { readHistory, saveTurn } from "./assistant-history";
 type Context = {
   workspace: string;
   key?: string | undefined;
+  signal?: AbortSignal;
   settings?: (() => void) | undefined;
 };
 type Options = {
@@ -23,10 +24,15 @@ type Options = {
   complete?: (
     messages: AssistantSession["messages"],
     key: string,
+    signal?: AbortSignal,
   ) => Promise<string>;
 };
 
-async function complete(messages: AssistantSession["messages"], key: string) {
+async function complete(
+  messages: AssistantSession["messages"],
+  key: string,
+  signal?: AbortSignal,
+) {
   const provider = BUILTIN_PROVIDERS.find((item) => item.id === "openrouter");
   const model = BUILTIN_MODELS.find(
     (item) => item.id === "openrouter/free" && item.pricing.free,
@@ -35,6 +41,17 @@ async function complete(messages: AssistantSession["messages"], key: string) {
   const adapter = createOpenAICompatibleAdapter(provider, {
     env: { OPENROUTER_API_KEY: key },
     timeoutMs: 60_000,
+    ...(signal
+      ? {
+          fetch: (url, init) =>
+            fetch(url, {
+              ...init,
+              signal: init?.signal
+                ? AbortSignal.any([init.signal, signal])
+                : signal,
+            }),
+        }
+      : {}),
   });
   const response = await adapter.complete(
     {
@@ -56,7 +73,7 @@ async function complete(messages: AssistantSession["messages"], key: string) {
 
 /** All credentials, provider access, and history stay outside the sandboxed renderer. */
 export function createAssistant(options: Options) {
-  let busy = false;
+  let active: Context | undefined;
   return {
     async call(payload: unknown): Promise<AssistantResult> {
       const parsed = AssistantRequestSchema.safeParse(payload);
@@ -93,7 +110,12 @@ export function createAssistant(options: Options) {
         };
       }
       if (request.action === "send") {
-        if (busy)
+        if (context.signal?.aborted)
+          return {
+            ok: false,
+            error: "Model settings or project changed. Please retry.",
+          };
+        if (active && !active.signal?.aborted)
           return {
             ok: false,
             error: "A reply is already in progress. Please wait.",
@@ -127,12 +149,14 @@ export function createAssistant(options: Options) {
             error:
               "This conversation has reached its context limit. Start a new chat.",
           };
-        busy = true;
+        active = context;
         try {
           const reply = await (options.complete ?? complete)(
             messages,
             context.key,
+            context.signal,
           );
+          context.signal?.throwIfAborted();
           const updated: AssistantSession = {
             id: request.id,
             title: existing?.title ?? request.text.slice(0, 80),
@@ -142,6 +166,7 @@ export function createAssistant(options: Options) {
             path,
             updated,
             existing?.messages.length ?? 0,
+            context.signal,
           );
           if (!saved)
             return {
@@ -157,7 +182,7 @@ export function createAssistant(options: Options) {
               "Could not finish or save the reply. Your draft is kept. Check your key and connection, or retry if the free model is busy.",
           };
         } finally {
-          busy = false;
+          if (active === context) active = undefined;
         }
       }
       return {

@@ -1349,7 +1349,7 @@ export function renderShell(
       "section",
       { class: "team-chat sidebar-bottom" },
       teamChatBtn,
-      state.assistant
+      state.assistant?.canConfigure
         ? navButton(
             state.assistant.configured
               ? "⚙  Model settings"

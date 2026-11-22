@@ -362,6 +362,7 @@ export function createController(
             ...assistantState,
             sessions: result.sessions,
             configured: result.configured,
+            canConfigure: result.canConfigure,
             loading: false,
             error: undefined,
             activeId: result.sessions[0]?.id ?? assistantState.activeId,
@@ -435,7 +436,9 @@ export function createController(
       assistantState = {
         ...assistantState,
         error: !assistantState.configured
-          ? "Connect a model to start chatting."
+          ? assistantState.canConfigure === false
+            ? "Set OPENROUTER_API_KEY and restart the attached app to start chatting."
+            : "Connect a model to start chatting."
           : "Allow this conversation to be sent to OpenRouter below, then send your message.",
       };
       render();

@@ -71,10 +71,12 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
   let workbench: ReturnType<typeof startLocalWorkbench> | undefined;
   let changing = false;
   let closing = false;
+  let chatLifetime = new AbortController();
 
   const change = async (save: () => Promise<void>) => {
     if (changing || closing) return false;
     changing = true;
+    chatLifetime.abort();
     try {
       await save();
       await workbench?.stop();
@@ -83,6 +85,7 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     } catch {
       return false;
     } finally {
+      chatLifetime = new AbortController();
       changing = false;
     }
   };
@@ -132,8 +135,9 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
       event.sender !== modelWindow.webContents ||
       event.senderFrame?.url !== settingsPage
     )
-      return;
+      return false;
     await shell.openExternal("https://openrouter.ai/settings/keys");
+    return true;
   });
 
   ipcMain.handle(DESKTOP_MODEL_CHANNEL, async (event, key: unknown) => {
@@ -206,9 +210,11 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
 
   return {
     chatContext() {
+      if (changing || closing) throw new Error("Workspace changing");
       return {
         workspace: source,
         key: openRouterKey,
+        signal: chatLifetime.signal,
         settings: showModelSettings,
       };
     },
@@ -234,6 +240,7 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     },
     async close() {
       closing = true;
+      chatLifetime.abort();
       await workbench?.stop();
     },
   };
