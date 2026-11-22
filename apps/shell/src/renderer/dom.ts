@@ -8,6 +8,7 @@ export interface ShellElement {
   value?: string;
   checked?: boolean;
   disabled?: boolean;
+  scrollTop?: number;
   selectionStart?: number | null;
   selectionEnd?: number | null;
   selectionDirection?: "forward" | "backward" | "none" | null;

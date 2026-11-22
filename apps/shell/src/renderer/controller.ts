@@ -173,6 +173,22 @@ export function createController(
 
   const render = () => {
     if (disposed) return;
+    const scrollPositions = new Map(
+      Array.from(root.querySelectorAll("[data-scroll-key]")).map((element) => [
+        element.getAttribute("data-scroll-key"),
+        element.scrollTop ?? 0,
+      ]),
+    );
+    const restoreScroll = () => {
+      for (const element of Array.from(
+        root.querySelectorAll("[data-scroll-key]"),
+      )) {
+        const top = scrollPositions.get(
+          element.getAttribute("data-scroll-key"),
+        );
+        if (top !== undefined) element.scrollTop = top;
+      }
+    };
     const active = doc.activeElement;
     const focusKey = active?.getAttribute(FOCUS_KEY) ?? null;
     const selectionStart =
@@ -275,7 +291,10 @@ export function createController(
       onExportPatch: () => void handleExportPatch(),
     };
     root.replaceChildren(renderShell(doc, state));
-    if (focusKey === null) return;
+    if (focusKey === null) {
+      restoreScroll();
+      return;
+    }
     const targets = Array.from(root.querySelectorAll(`[${FOCUS_KEY}]`));
     const keyed = (key: string) =>
       targets.find((element) => element.getAttribute(FOCUS_KEY) === key);
@@ -298,6 +317,7 @@ export function createController(
         // Ignore input types that do not support selection ranges.
       }
     }
+    restoreScroll();
   };
 
   const displayError = (message: string) => {

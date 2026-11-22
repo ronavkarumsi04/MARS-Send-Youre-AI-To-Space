@@ -38,6 +38,39 @@ function fakeTimers() {
   };
 }
 
+test.each(["sidebar", "inspector"])(
+  "auto-refresh preserves %s scroll position",
+  async (key) => {
+    const fixture = await loadFixtureData();
+    const doc = new MiniDocument();
+    const timers = fakeTimers();
+    const controller = createController(
+      fakeBridge(fixture),
+      doc,
+      doc.root,
+      undefined,
+      timers,
+    );
+    const pane = () =>
+      findAll(
+        doc.root,
+        (element) => element.getAttribute("data-scroll-key") === key,
+      )[0];
+    try {
+      await controller.load();
+      const initial = pane();
+      if (!initial) throw new Error("scroll pane missing");
+      initial.scrollTop = 240;
+      timers.advance(3000);
+      await controller.settled();
+      expect(pane()).not.toBe(initial);
+      expect(pane()?.scrollTop).toBe(240);
+    } finally {
+      controller.dispose();
+    }
+  },
+);
+
 test("auto-refresh preserves unsubmitted Team Chat search text, focus, and caret", async () => {
   const fixture = await loadFixtureData();
   const teamBridge = createTeamChatBridge();

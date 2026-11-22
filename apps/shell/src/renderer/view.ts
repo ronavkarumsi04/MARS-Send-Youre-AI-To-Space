@@ -1224,7 +1224,7 @@ export function renderShell(
   const sidebar = h(
     doc,
     "nav",
-    { class: "sidebar", "aria-label": "Sidebar" },
+    { class: "sidebar", "aria-label": "Sidebar", "data-scroll-key": "sidebar" },
     h(doc, "h1", { class: "brand" }, "MARS"),
     h(doc, "h2", { class: "section-title" }, "Sessions"),
     ...taskList(doc, state.tasks, task?.task_id, state.onSelect),
@@ -1288,7 +1288,11 @@ export function renderShell(
   const inspector = h(
     doc,
     "aside",
-    { class: "inspector", "aria-label": "Task inspector" },
+    {
+      class: "inspector",
+      "aria-label": "Task inspector",
+      "data-scroll-key": "inspector",
+    },
     task
       ? taskInspector(doc, task)
       : h(
