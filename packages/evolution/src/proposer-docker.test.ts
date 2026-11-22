@@ -1073,6 +1073,110 @@ describe("EvolutionService with model proposer and Docker --network=none builds"
     });
   });
 
+  test("refuses to dispatch a paid proposal when the run has no USD budget left", async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await createFixture(
+        () => ({ hypothesis: "unused" }),
+        dir,
+      );
+      const cfg = runConfig();
+      let calls = 0;
+      const service = await EvolutionService.open({
+        storeDir: fixture.storeDir,
+        workDir: fixture.workDir,
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        sandbox: createProcessSandbox(),
+        proposer: createModelProposer({
+          allowPaid: true,
+          model: "anthropic/claude-sonnet",
+          client: {
+            async complete() {
+              calls += 1;
+              return {
+                content: JSON.stringify({ hypothesis: "paid idea" }),
+                model: "anthropic/claude-sonnet",
+                usage: { inputTokens: 100, outputTokens: 100, costUsd: 0.05 },
+              };
+            },
+          },
+        }),
+      });
+      try {
+        await fixture.start(service, {
+          ...cfg,
+          budget: { ...cfg.budget, max_usd: 0 },
+          evaluation_budget: { ...cfg.evaluation_budget, max_usd: 0 },
+        });
+        expect((await service.run("run-1")).status).toBe("budget_exhausted");
+        expect(calls).toBe(0);
+        expect(
+          service.store
+            .ledger("run-1")
+            .filter((row) => row.key.endsWith("/proposal")),
+        ).toEqual([]);
+        expect(service.metrics("run-1").search_process.spend.usd).toBe(0);
+        expect((await service.verify("run-1")).ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
+  test("reserves the remaining USD for a paid proposal and keeps it after an interrupted call", async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await createFixture(
+        () => ({ hypothesis: "unused" }),
+        dir,
+      );
+      const cfg = runConfig();
+      let calls = 0;
+      const service = await EvolutionService.open({
+        storeDir: fixture.storeDir,
+        workDir: fixture.workDir,
+        evaluator: createFixtureEvaluator({ usdPerTrialPerEffort: 0 }),
+        sandbox: createProcessSandbox(),
+        proposer: createModelProposer({
+          allowPaid: true,
+          model: "anthropic/claude-sonnet",
+          client: {
+            async complete() {
+              calls += 1;
+              const reserve = service.store
+                .ledger("run-1")
+                .find(
+                  (row) =>
+                    row.kind === "reserve" && row.key === "g1-c0/proposal",
+                );
+              expect(reserve?.usd).toBe(1);
+              throw new EvolutionError(
+                "deadline_exceeded",
+                "interrupted before usage arrived",
+              );
+            },
+          },
+        }),
+      });
+      try {
+        await fixture.start(service, {
+          ...cfg,
+          budget: { ...cfg.budget, max_usd: 1 },
+        });
+        expect((await service.run("run-1")).status).toBe("deadline_exceeded");
+        expect(calls).toBe(1);
+        expect((await service.run("run-1")).status).toBe("budget_exhausted");
+        expect(calls).toBe(1);
+        expect(
+          service.store
+            .ledger("run-1")
+            .filter((row) => row.key.endsWith("/proposal")),
+        ).toMatchObject([{ kind: "reserve", usd: 1 }]);
+        expect((await service.verify("run-1")).ok).toBe(true);
+      } finally {
+        service.close();
+      }
+    });
+  });
+
   test("caps model cancellation to the remaining wall-clock run deadline", async () => {
     await withTempDir(async (dir) => {
       const fixture = await createFixture(

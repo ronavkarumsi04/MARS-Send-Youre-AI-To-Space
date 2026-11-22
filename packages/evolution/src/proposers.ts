@@ -79,7 +79,16 @@ export interface ProposalContext {
 }
 
 export interface ProposalAccounting {
-  reserve(inputTokens: number, maxOutputTokens: number): number;
+  /**
+   * Reserves run budget before dispatch and returns the output-token limit.
+   * `paid` marks a call that may be charged; the host refuses it when no USD
+   * budget remains and holds the remaining USD until the call settles.
+   */
+  reserve(
+    inputTokens: number,
+    maxOutputTokens: number,
+    options?: { paid?: boolean },
+  ): number;
   settle(usage: NonNullable<MutationProposal["usage"]>): void;
 }
 
@@ -390,6 +399,10 @@ export function createModelProposer(
       );
     }
   }
+  const paid =
+    allowPaid &&
+    (options.route !== undefined ||
+      (model !== undefined && !isFreeOpenRouterModel(model)));
   const maxTokens = options.maxTokens ?? 2048;
   const temperature = options.temperature ?? 0.2;
   const maxContextBytes = options.maxContextBytes ?? 24_000;
@@ -417,7 +430,7 @@ export function createModelProposer(
       const inputTokens =
         new TextEncoder().encode(JSON.stringify(messages)).byteLength + 64;
       const outputLimit =
-        accounting?.reserve(inputTokens, maxTokens) ?? maxTokens;
+        accounting?.reserve(inputTokens, maxTokens, { paid }) ?? maxTokens;
       const startedAt = Date.now();
       const completePromise = (async () =>
         options.client.complete(
