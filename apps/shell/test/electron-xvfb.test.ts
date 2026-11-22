@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -30,6 +31,42 @@ const CAN_RUN_ELECTRON_XVFB = HAS_ELECTRON && HAS_XVFB;
 /** CI sets this so a missing Electron binary or Xvfb fails instead of skipping. */
 const REQUIRE_ELECTRON_XVFB = process.env.MARS_REQUIRE_ELECTRON_XVFB === "1";
 const PACKAGED_ELECTRON = process.env.MARS_PACKAGED_ELECTRON;
+
+test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
+  "a crashed renderer recovers in the same window and a crash loop stops on a static page",
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), "mars-shell-crash-"));
+    try {
+      const dist = join(home, "dist");
+      const entry = join(dist, "crash-renderer.cjs");
+      await buildShell(dist);
+      await copyFile(
+        new URL("./fixtures/crash-renderer.cjs", import.meta.url),
+        entry,
+      );
+      const child = Bun.spawn(
+        ["xvfb-run", "-a", ELECTRON_BIN, entry, "--disable-gpu"],
+        {
+          env: {
+            ...process.env,
+            HOME: home,
+            ELECTRON_ENABLE_LOGGING: "1",
+            MARS_SHELL_CONNECTION: join(home, "not-connected"),
+          },
+          stderr: "pipe",
+        },
+      );
+      const [exit, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stderr).text(),
+      ]);
+      if (exit !== 0) throw new Error(`Electron exited ${exit}: ${stderr}`);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 test.skipIf(!REQUIRE_ELECTRON_XVFB)(
   "Electron binary and xvfb-run are present when required",

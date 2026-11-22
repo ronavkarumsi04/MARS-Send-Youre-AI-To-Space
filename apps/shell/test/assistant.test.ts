@@ -4,9 +4,10 @@ import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistant } from "../src/main/assistant";
-import { registerAssistantBridge } from "../src/main/ipc";
+import { type IpcEventLike, registerAssistantBridge } from "../src/main/ipc";
 import { renderAssistant } from "../src/renderer/assistant-view";
 import { ASSISTANT_CHANNEL } from "../src/shared/assistant";
+import { ipcFixture } from "./ipc-fixture";
 import { findAll, MiniDocument } from "./mini-dom";
 
 const observed = (project: string, seenMessages = 0) => ({
@@ -279,9 +280,10 @@ test("only one model request can be in flight", async () => {
 
 test("assistant IPC denies foreign senders before invoking the service", async () => {
   let calls = 0;
+  const { options, owner, otherWindow, childFrame } = ipcFixture();
   const handlers = new Map<
     string,
-    (event: { senderFrame?: { url: string } }, payload: unknown) => unknown
+    (event: IpcEventLike, payload: unknown) => unknown
   >();
   registerAssistantBridge(
     {
@@ -301,20 +303,36 @@ test("assistant IPC denies foreign senders before invoking the service", async (
         };
       },
     },
-    { trustedOrigin: "mars-shell://app" },
+    options,
   );
+  const load = (event: IpcEventLike) =>
+    handlers.get(ASSISTANT_CHANNEL)?.(event, { action: "load" });
+  for (const event of [
+    otherWindow,
+    childFrame,
+    { ...owner, senderFrame: null },
+  ]) {
+    expect(await load(event)).toEqual({
+      ok: false,
+      error: "Chat request refused.",
+    });
+  }
   for (const url of [
     "https://evil.example",
     "mars-shell://other/index.html",
     "mars-shell://user@app/index.html",
+    "mars-shell://app/recovery.html",
   ]) {
-    const result = await handlers.get(ASSISTANT_CHANNEL)?.(
-      { senderFrame: { url } },
-      { action: "load" },
-    );
+    owner.senderFrame.url = url;
+    const result = await load(owner);
     expect(result).toEqual({ ok: false, error: "Chat request refused." });
   }
   expect(calls).toBe(0);
+  const newMainFrame = { url: "mars-shell://app/index.html" };
+  owner.sender.mainFrame = newMainFrame;
+  expect(await load({ ...owner, senderFrame: newMainFrame })).toMatchObject({
+    ok: true,
+  });
 });
 
 test("assistant output is inert text and task handoff is always explicit", () => {
