@@ -127,7 +127,11 @@ test("task file reads use private workspace policy and public byte guards", asyn
   await writeFile(join(source, "empty.txt"), "");
   await writeFile(join(source, "private.txt"), f.root);
   await writeFile(join(source, "large.txt"), "x".repeat(3 * 1024 * 1024));
-  await symlink("hello.txt", join(source, "link.txt"));
+  await mkdir(join(source, "inside"));
+  await writeFile(join(source, "inside", "secret.txt"), "inside\n");
+  const outside = await mkdtemp(join(tmpdir(), "mars-file-outside-"));
+  cleanup.push(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "secret.txt"), "outside\n");
   const provider = await createLocalWorkspaceProvider({
     sourceRoot: source,
     rootDir: join(f.root, "provider"),
@@ -144,6 +148,14 @@ test("task file reads use private workspace policy and public byte guards", asyn
     scope: { owner_id: ctx.scope.owner_id, project_id: ctx.scope.project_id },
   });
   const prepared = await provider.prepare(providerContext(context()), "task");
+  const tree = await provider.workspacePath(
+    providerContext(context()),
+    prepared,
+  );
+  await symlink("hello.txt", join(tree, "link.txt"));
+  await symlink(join(outside, "secret.txt"), join(tree, "outside.txt"));
+  await symlink(outside, join(tree, "linkdir"));
+  await symlink(join(tree, "inside"), join(tree, "inside-linkdir"));
   const api = await f.makeHost(
     undefined,
     undefined,
@@ -188,10 +200,17 @@ test("task file reads use private workspace policy and public byte guards", asyn
     "/etc/passwd",
     ".env",
     "node_modules/a",
-    "missing.txt",
     "link.txt",
+    "outside.txt",
+    "linkdir/secret.txt",
+    "inside-linkdir/secret.txt",
   ])
-    await expect(api.file?.(context(), "task", path)).rejects.toThrow();
+    await expect(api.file(context(), "task", path)).rejects.toMatchObject({
+      code: "policy",
+    });
+  await expect(
+    api.file(context(), "task", "missing.txt"),
+  ).rejects.toMatchObject({ code: "not_found" });
   await expect(api.file?.(context(), "missing", "hello.txt")).rejects.toThrow();
   await expect(
     api.file?.(
