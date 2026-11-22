@@ -90,7 +90,7 @@ export function renderExtensions(
         doc,
         "p",
         { class: "extensions-intro" },
-        "Tools connect. Skills guide. Plugins bundle. Here’s how they fit together.",
+        "Add tools and skills to new agent tasks in this project. Extensions don’t give Assistant chat access to your files or tools.",
       ),
       h(
         doc,
