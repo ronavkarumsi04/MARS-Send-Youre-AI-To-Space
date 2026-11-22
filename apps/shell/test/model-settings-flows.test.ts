@@ -98,9 +98,7 @@ test("settings gives a browser fallback, preserves invalid input and clears a sa
     controls,
   );
   await actions.openKeyPage();
-  expect(controls.status.textContent).toContain(
-    "Settings → API Keys",
-  );
+  expect(controls.status.textContent).toContain("Settings → API Keys");
   controls.input.value = "typo";
   await actions.apply("typo");
   expect(controls.input.value).toBe("typo");
