@@ -698,4 +698,33 @@ describe("review regressions", () => {
       /inert_mutation: evaluator does not apply skills\/tools\/retrieval/,
     );
   });
+
+  test("a harness-only evaluator rejects prompt-only changes but evaluates a harness patch", async () => {
+    const fixture = await createFixture((context) =>
+      context.child_index === 0
+        ? { hypothesis: "change a prompt", prompts: { system: "new prompt" } }
+        : {
+            hypothesis: "change the harness",
+            patch: policyPatch(BETTER_POLICY),
+          },
+    );
+    cleanup.push(async () =>
+      rm(fixture.root, { recursive: true, force: true }),
+    );
+    const service = await fixture.open({
+      evaluator: { ...base, appliedComponents: [] },
+    });
+    cleanup.push(async () => service.close());
+    await fixture.start(service, runConfig({ children_per_generation: 2 }));
+    await service.run("run-1");
+    expect(service.lineage("run-1")).toMatchObject([
+      { candidate_id: "initial", state: "evaluated" },
+      {
+        candidate_id: "g1-c0",
+        state: "rejected",
+        reason: expect.stringContaining("inert_mutation"),
+      },
+      { candidate_id: "g1-c1", state: "evaluated" },
+    ]);
+  });
 });

@@ -1,7 +1,11 @@
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { SandboxUnavailableError } from "./errors";
+import {
+  DockerSandboxPrerequisiteError,
+  DockerSandboxRootUserError,
+  SandboxUnavailableError,
+} from "./errors";
 import { compareStrings, DEFAULT_WORKSPACE_LIMITS } from "./tree";
 import type {
   DockerSandboxOptions,
@@ -142,6 +146,8 @@ function validateResolvedConfig(config: ResolvedDockerConfig): void {
   }
   if (!isAbsolute(config.dockerPath))
     throw new TypeError("dockerPath must be absolute");
+  if (config.uid === 0 || config.gid === 0)
+    throw new DockerSandboxRootUserError();
   if (
     !Number.isSafeInteger(config.uid) ||
     config.uid <= 0 ||
@@ -181,13 +187,40 @@ export function createDockerSandbox(
     isolation: "docker-container",
     async verify(): Promise<void> {
       try {
-        await access(resolved.dockerPath, constants.X_OK);
+        try {
+          await access(resolved.dockerPath, constants.X_OK);
+        } catch (error) {
+          if (
+            ["ENOENT", "ENOTDIR", "EACCES"].includes(
+              (error as NodeJS.ErrnoException).code ?? "",
+            )
+          ) {
+            throw new DockerSandboxPrerequisiteError(
+              "Docker CLI is not executable at the configured path",
+              { cause: error },
+            );
+          }
+          throw error;
+        }
         const version = await invoke(
           resolved,
           ["version", "--format", "{{.Server.Version}}"],
           5000,
         );
-        if (version.exitCode !== 0) throw new Error(version.stderr.toString());
+        if (version.exitCode !== 0) {
+          const detail = version.stderr.toString().trim();
+          if (
+            /cannot connect to the docker daemon|permission denied while trying to connect to the docker (?:api|daemon socket)|(?:connect|connection): (?:no such file or directory|connection refused|permission denied)/i.test(
+              detail,
+            )
+          ) {
+            throw new DockerSandboxPrerequisiteError(
+              "Docker daemon is unavailable",
+              { cause: new Error(detail) },
+            );
+          }
+          throw new Error(`Docker version check failed: ${detail}`);
+        }
         const image = await invoke(
           resolved,
           [
@@ -199,22 +232,35 @@ export function createDockerSandbox(
           ],
           5000,
         );
-        let repoDigests: unknown;
-        try {
-          repoDigests = JSON.parse(image.stdout.toString("utf8"));
-        } catch {
-          repoDigests = undefined;
+        if (image.exitCode !== 0) {
+          const detail = image.stderr.toString().trim();
+          const missing = detail.replace(
+            /^Error(?: response from daemon)?:\s*/,
+            "",
+          );
+          if (
+            missing === `No such image: ${resolved.image}` ||
+            missing === `No such object: ${resolved.image}`
+          ) {
+            throw new DockerSandboxPrerequisiteError(
+              `Pinned Docker image is not available locally: ${resolved.image}`,
+            );
+          }
+          throw new Error(`Docker image inspection failed: ${detail}`);
         }
+        const repoDigests: unknown = JSON.parse(image.stdout.toString("utf8"));
         if (
-          image.exitCode !== 0 ||
           !Array.isArray(repoDigests) ||
           !repoDigests.includes(resolved.image)
         ) {
-          throw new Error("Pinned Docker image is not available locally");
+          throw new Error(
+            `Docker image inspection did not verify the pinned repository digest: ${resolved.image}`,
+          );
         }
       } catch (error) {
+        if (error instanceof DockerSandboxPrerequisiteError) throw error;
         throw new SandboxUnavailableError(
-          "Docker daemon or pinned local image is unavailable",
+          `Docker sandbox verification failed: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
         );
       }
