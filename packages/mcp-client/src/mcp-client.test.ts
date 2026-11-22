@@ -508,6 +508,42 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(await Bun.file(marker).exists()).toBe(false);
   });
 
+  it("detects an edited script passed as an argument without spawning it or requiring an entrypoint", async () => {
+    const dir = await makeTempDir("mars-stdio-script-arg-");
+    const script = join(dir, "server.ts");
+    const marker = join(dir, "spawned");
+    const fixtureSrc = await readFile(STDIO_FIXTURE, "utf8");
+    await writeFile(script, fixtureSrc, "utf8");
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "edited-script-arg",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        cwd: dir,
+        args: ["run", "server.ts"],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    expect((await cp.loader.admitServer(ctx, config.id)).server_id).toBe(
+      config.id,
+    );
+    await cp.loader.closeServer(config.id);
+    await writeFile(
+      script,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "SPAWNED");\n${fixtureSrc}`,
+      "utf8",
+    );
+    await expect(cp.loader.admitServer(ctx, config.id)).rejects.toMatchObject({
+      code: "drift",
+    });
+    expect(await Bun.file(marker).exists()).toBe(false);
+  });
+
   it("detects stdio descriptor drift on per-dispatch re-probe, supersedes grant, and requires re-approval", async () => {
     const modeDir = await makeTempDir("mars-stdio-mode-");
     const modeFile = join(modeDir, "mode.json");
@@ -527,7 +563,7 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
       transport: {
         type: "stdio",
         command: BUN_BIN,
-        args: ["run", STDIO_FIXTURE, "--mode-file", modeFile],
+        args: ["run", STDIO_FIXTURE, `--mode-file=${modeFile}`],
         entrypoint: STDIO_FIXTURE,
         env_allowlist: [],
       },
@@ -568,6 +604,16 @@ describe("@mars/mcp-client end-to-end trust enforcement", () => {
     expect(oldGrant?.state).toBe("superseded");
     const pendingReview = inspected.reviews.find((r) => r.state === "pending");
     expect(pendingReview).toBeDefined();
+    // Only the live descriptor drifted; static artifact hashes are unchanged.
+    expect(pendingReview?.evidence.config_sha256).toBe(
+      firstGrant.evidence.config_sha256,
+    );
+    expect(pendingReview?.evidence.dependency_sha256).toBe(
+      firstGrant.evidence.dependency_sha256,
+    );
+    expect(pendingReview?.evidence.tools).not.toEqual(
+      firstGrant.evidence.tools,
+    );
 
     // Verify hash-chained audit log integrity
     const { state } = await cp.readState();
@@ -1192,6 +1238,80 @@ writeFileSync(${JSON.stringify(markerPath)}, "ran");
     expect(seenCursors).toContain(undefined);
     expect(seenCursors).toContain("page2");
     await transport.close();
+  });
+
+  it("ignores null and other non-object stdio lines instead of crashing the host", async () => {
+    const cp = await createControlPlane();
+    const ctx = makeCtx();
+    const config = makeConfig({
+      id: "stdio-non-object-lines",
+      transport: {
+        type: "stdio",
+        command: BUN_BIN,
+        args: ["run", STDIO_FIXTURE],
+        env_allowlist: [],
+      },
+      permissions: [{ capability: "tool.invoke", resource: "echo" }],
+      credential_bindings: [],
+    });
+    await registerReviewApprove(cp, ctx, config);
+    const result = await cp.loader.invokeTool(ctx, {
+      server_id: config.id,
+      tool: "echo",
+      input: { message: "after-null", nonObjectLines: true },
+      timeout_ms: 2000,
+    });
+    expect(result.content[0]?.text).toBe("echo:after-null");
+  });
+
+  it("handles null JSON-RPC bodies from Streamable HTTP servers without a TypeError", async () => {
+    const initResult = {
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: {} },
+      serverInfo: { name: "null-body", version: "1.0.0" },
+    };
+    const srv = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        if (req.method !== "POST") return new Response(null, { status: 204 });
+        const body = (await req.json()) as { id?: number; method?: string };
+        if (body.id === undefined) return new Response(null, { status: 202 });
+        if (req.headers.get("x-null-mode") === "json") {
+          return new Response("null", {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const result =
+          body.method === "initialize" ? initResult : { tools: [] };
+        return new Response(
+          `data: null\n\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    activeServers.push(srv);
+    const url = `http://127.0.0.1:${srv.port}/mcp`;
+
+    const sse = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    const descriptor = await sse.initialize({ timeoutMs: 2000 });
+    expect(descriptor.serverInfo.name).toBe("null-body");
+    await sse.close();
+
+    const json = new StreamableHttpMcpTransport({
+      type: "streamable-http",
+      url,
+    });
+    await expect(
+      json.initialize({
+        timeoutMs: 2000,
+        extraHeaders: { "x-null-mode": "json" },
+      }),
+    ).rejects.toThrow("MCP Streamable HTTP response is not a JSON-RPC object");
+    await json.close();
   });
 
   it("never spawns a drifted stdio entrypoint during admission even after a pending drift review is recorded", async () => {

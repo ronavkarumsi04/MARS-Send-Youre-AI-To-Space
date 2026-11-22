@@ -112,6 +112,12 @@ export function createController(
   let loadRequested = false;
   let loadPromise: Promise<void> | undefined;
   let clientSeq = 1;
+  // Per-load prefix: the host keeps sent client_message_ids across renderer
+  // reloads, so a bare counter would replay or conflict with earlier sends.
+  const clientIdPrefix = Array.from(
+    globalThis.crypto.getRandomValues(new Uint8Array(8)),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
 
   let composer: ComposerState = createInitialComposer();
   let launch: LaunchCardState = createInitialLaunch();
@@ -493,7 +499,7 @@ export function createController(
         input: {
           conversation_id: convId,
           body,
-          client_message_id: `shell-msg-${clientSeq++}`,
+          client_message_id: `shell-msg-${clientIdPrefix}-${clientSeq++}`,
           reply_to: null,
           references: [],
         },

@@ -33,6 +33,10 @@ interface JsonRpcResponse {
   };
 }
 
+function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export interface McpRequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -297,13 +301,13 @@ export class StdioMcpTransport implements McpTransportConnection {
       this.buffer = this.buffer.slice(newlineIdx + 1);
       newlineIdx = this.buffer.indexOf("\n");
       if (!line) continue;
-      let msg: JsonRpcResponse;
+      let msg: unknown;
       try {
-        msg = JSON.parse(line) as JsonRpcResponse;
+        msg = JSON.parse(line);
       } catch {
         continue;
       }
-      if (typeof msg.id !== "number") continue;
+      if (!isJsonRpcResponse(msg) || typeof msg.id !== "number") continue;
       const entry = this.pending.get(msg.id);
       if (!entry) continue;
       this.pending.delete(msg.id);
@@ -506,13 +510,15 @@ function parseSseEventBlock(
   if (dataLines.length === 0) return undefined;
   const joined = dataLines.join("\n").trim();
   if (!joined) return undefined;
-  let parsed: JsonRpcResponse;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(joined) as JsonRpcResponse;
+    parsed = JSON.parse(joined);
   } catch {
     return undefined;
   }
-  return parsed.id === expectedId ? parsed : undefined;
+  return isJsonRpcResponse(parsed) && parsed.id === expectedId
+    ? parsed
+    : undefined;
 }
 
 async function readSseJsonRpcResponse(
@@ -758,6 +764,9 @@ export class StreamableHttpMcpTransport implements McpTransportConnection {
       },
     );
 
+    if (!isJsonRpcResponse(msg)) {
+      throw new Error("MCP Streamable HTTP response is not a JSON-RPC object");
+    }
     if (msg.error) {
       throw new Error(
         `MCP JSON-RPC error ${msg.error.code}: ${msg.error.message}`,
