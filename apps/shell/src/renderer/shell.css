@@ -296,6 +296,10 @@ p {
 .sidebar-history .sidebar-label {
   margin: 0 0 15px;
 }
+.sidebar-history:not(:empty) {
+  /* Let the rail scroll before its list shrinks out of reach. */
+  min-height: 8rem;
+}
 .new-conversation,
 .conversation-item {
   width: 100%;

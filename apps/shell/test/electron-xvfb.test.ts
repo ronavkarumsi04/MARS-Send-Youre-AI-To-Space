@@ -404,6 +404,20 @@ test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
         "Boolean(document.querySelector('[data-page=tasks]'))",
         "Tasks navigation",
       );
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: 1280,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      const reachable = (selector: string) =>
+        cdp?.evaluate<boolean>(`(() => {
+        const button = document.querySelector(${JSON.stringify(selector)});
+        button.scrollIntoView({block: "nearest"});
+        const r = button.getBoundingClientRect();
+        return button.contains(document.elementFromPoint(r.x + r.width/2, r.y + r.height/2));
+      })()`);
+      expect(await reachable(".new-conversation")).toBe(true);
       await cdp.evaluate("document.querySelector('[data-page=tasks]').click()");
       // Wait for initial task list load
       await waitForCondition(
@@ -411,6 +425,8 @@ test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
         "document.querySelectorAll('[data-task-id]').length >= 5",
         "sidebar tasks to render",
       );
+      expect(await reachable('[data-task-id="fixture-pending"]')).toBe(true);
+      await cdp.send("Emulation.clearDeviceMetricsOverride");
 
       // 1. Verify runtime Electron security & CSP invariants
       const securityCheck = await cdp.evaluate<{
