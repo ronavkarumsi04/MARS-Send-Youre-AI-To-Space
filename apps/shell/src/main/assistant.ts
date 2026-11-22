@@ -1,25 +1,16 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   BUILTIN_MODELS,
   BUILTIN_PROVIDERS,
   createOpenAICompatibleAdapter,
 } from "@mars/providers";
-import { z } from "zod";
 import {
   AssistantRequestSchema,
   type AssistantResult,
   type AssistantSession,
-  AssistantSessionSchema,
 } from "../shared/assistant";
+import { readHistory, saveTurn } from "./assistant-history";
 
 type Context = {
   workspace: string;
@@ -82,21 +73,15 @@ export function createAssistant(options: Options) {
         context.settings();
       }
       const id = createHash("sha256").update(context.workspace).digest("hex");
-      const path = join(options.directory, `${id}.json`);
+      const path = join(options.directory, `${id}.sqlite`);
       let sessions: AssistantSession[];
       try {
-        sessions = z
-          .array(AssistantSessionSchema)
-          .max(50)
-          .parse(JSON.parse(await readFile(path, "utf8")));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-          return {
-            ok: false,
-            error:
-              "Chat history could not be read. It has not been overwritten.",
-          };
-        sessions = [];
+        sessions = await readHistory(path);
+      } catch {
+        return {
+          ok: false,
+          error: "Chat history could not be read. It has not been overwritten.",
+        };
       }
       if (request.action === "send") {
         if (busy)
@@ -144,22 +129,18 @@ export function createAssistant(options: Options) {
             title: existing?.title ?? request.text.slice(0, 80),
             messages: [...messages, { role: "assistant", content: reply }],
           };
-          sessions = [
+          const saved = await saveTurn(
+            path,
             updated,
-            ...sessions.filter((session) => session.id !== request.id),
-          ];
-          await mkdir(options.directory, { recursive: true, mode: 0o700 });
-          await chmod(options.directory, 0o700);
-          const temp = `${path}.${randomUUID()}.tmp`;
-          try {
-            await writeFile(temp, JSON.stringify(sessions), {
-              flag: "wx",
-              mode: 0o600,
-            });
-            await rename(temp, path);
-          } finally {
-            await rm(temp, { force: true });
-          }
+            existing?.messages.length ?? 0,
+          );
+          if (!saved)
+            return {
+              ok: false,
+              error:
+                "History changed in another window. Your draft is kept; retry to use the latest conversation.",
+            };
+          sessions = saved;
         } catch {
           return {
             ok: false,

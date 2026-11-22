@@ -118,6 +118,54 @@ test("provider failures do not save partial turns or leak errors, and retries wo
   }
 });
 
+test("two attached instances preserve distinct conversations and reject a stale turn", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mars-chat-concurrent-"));
+  const options = {
+    directory,
+    context: () => ({ workspace: "shared", key: "fixture" }),
+  };
+  const immediate = createAssistant({
+    ...options,
+    complete: async () => "fast",
+  });
+  try {
+    for (const same of [false, true]) {
+      const started = Promise.withResolvers<void>();
+      const reply = Promise.withResolvers<string>();
+      const other = createAssistant({
+        ...options,
+        complete: async () => {
+          started.resolve();
+          return reply.promise;
+        },
+      });
+      const request = {
+        action: "send",
+        consent: true,
+        id: randomUUID(),
+        text: "one",
+      };
+      const first = other.call(request);
+      await started.promise;
+      expect(
+        (
+          await immediate.call({
+            ...request,
+            id: same ? request.id : randomUUID(),
+            text: "two",
+          })
+        ).ok,
+      ).toBe(true);
+      reply.resolve("slow");
+      expect((await first).ok).toBe(!same);
+    }
+    const result = await immediate.call({ action: "load" });
+    expect(result.ok && result.sessions).toHaveLength(3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("only one model request can be in flight", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mars-chat-busy-"));
   const pending = Promise.withResolvers<string>();
