@@ -3,6 +3,7 @@ import { h, type ShellDocument, type ShellElement } from "./dom";
 
 export type AssistantViewState = {
   sessions: AssistantSession[];
+  unsentIds?: string[];
   activeId: string;
   draft: string;
   configured: boolean;
@@ -122,8 +123,24 @@ export function renderAssistant(
         { class: "suggestion-grid" },
         ...suggestions.map(([title, prompt], index) => {
           const suggestion = action(doc, "", "suggestion", () => {
-            state.onDraft?.(prompt ?? "");
+            const draft = input.value ?? "";
+            const next = draft ? `${draft}\n\n${prompt}` : (prompt ?? "");
+            if (next.length > 8000) return;
+            input.value = next;
+            state.onDraft?.(next);
           });
+          // The live composer does not re-render on each keystroke.
+          const updateSuggestion = () => {
+            suggestion.disabled =
+              state.busy ||
+              state.loading ||
+              (input.value ?? "").length +
+                (input.value ? 2 : 0) +
+                (prompt?.length ?? 0) >
+                8000;
+          };
+          updateSuggestion();
+          input.addEventListener("input", updateSuggestion);
           suggestion.append(
             h(
               doc,

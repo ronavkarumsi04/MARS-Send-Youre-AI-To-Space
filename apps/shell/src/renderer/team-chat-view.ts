@@ -357,7 +357,16 @@ export function renderTeamChatPane(
   const messageFeed = h(
     doc,
     "div",
-    { class: "team-messages", role: "log", "aria-live": "polite" },
+    {
+      class: "team-messages",
+      role: "log",
+      "aria-live": "polite",
+      "data-team-feed": JSON.stringify([
+        state.viewer,
+        state.activeConversationId,
+        Boolean(state.searchHits),
+      ]),
+    },
     ...(state.searchHits
       ? [
           h(
@@ -390,6 +399,7 @@ export function renderTeamChatPane(
     rows: "2",
     placeholder: "Message team chat…",
     "aria-label": "Team chat message",
+    "aria-describedby": "team-keyboard-hint",
     "data-focus-key": "team-composer",
   });
   composerInput.value = state.draft;
@@ -408,10 +418,27 @@ export function renderTeamChatPane(
     },
     "Send message",
   );
-  sendBtn.addEventListener("click", () => {
+  const sendMessage = () => {
     const body = (composerInput.value ?? state.draft).trim();
     if (!body) return;
     state.onSend?.(body);
+  };
+  sendBtn.addEventListener("click", sendMessage);
+  composerInput.addEventListener("keydown", (event) => {
+    const key = event as typeof event & {
+      key?: string;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+      isComposing?: boolean;
+    };
+    if (
+      key.key === "Enter" &&
+      (key.ctrlKey || key.metaKey) &&
+      !key.isComposing
+    ) {
+      event.preventDefault?.();
+      sendMessage();
+    }
   });
 
   const composer = h(
@@ -451,7 +478,20 @@ export function renderTeamChatPane(
         h(doc, "h2", { class: "eyebrow" }, "Conversations"),
         h(doc, "ul", { class: "team-conv-list" }, ...convItems),
       ),
-      h(doc, "div", { class: "team-thread" }, messageFeed, notice, composer),
+      h(
+        doc,
+        "div",
+        { class: "team-thread" },
+        messageFeed,
+        notice,
+        composer,
+        h(
+          doc,
+          "p",
+          { id: "team-keyboard-hint", class: "composer-footnote" },
+          "Enter for a new line · Ctrl or ⌘ + Enter to send",
+        ),
+      ),
     ),
   );
 }

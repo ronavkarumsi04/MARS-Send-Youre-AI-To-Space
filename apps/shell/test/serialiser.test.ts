@@ -272,7 +272,7 @@ test("task event paging stops when the cursor does not advance", async () => {
     findAll(document.root, (element) => element.tagName === "P")
       .map((element) => element.textContent)
       .join(" "),
-  ).toContain("1 task event available");
+  ).toContain("1 task event recorded");
 });
 
 test("task event paging stops at 1,000 entries", async () => {

@@ -696,7 +696,7 @@ p {
   font-size: 10px;
 }
 .composer-footnote {
-  font-size: 9px;
+  font: 12px / 1.4 var(--body);
   text-align: center;
   color: var(--muted);
   margin: 8px 0 0;
@@ -1938,6 +1938,13 @@ p {
   }
   .orbit-mark {
     height: 32px;
+  }
+}
+@media (max-height: 650px) {
+  .sidebar-history:not(:empty) {
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
   }
 }
 

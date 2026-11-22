@@ -251,6 +251,49 @@ test("model refresh preserves drafts while a workspace switch resets chat and co
   expect(field("chat-consent").checked).toBeFalsy();
 });
 
+test("new chat keeps an unopened multiline draft, starters append and other workspaces cannot reopen it", async () => {
+  const doc = new MiniDocument();
+  let workspace = "a";
+  const controller = createController(
+    fakeBridge(await loadFixtureData()),
+    doc,
+    doc.root,
+    undefined,
+    {
+      request: async () => ({
+        ok: true,
+        workspace,
+        configured: false,
+        canConfigure: true,
+        sessions: [],
+      }),
+    },
+  );
+  await controller.load();
+  const field = () =>
+    findAll(
+      doc.root,
+      (el) => el.getAttribute("data-focus-key") === "assistant-input",
+    )[0]!;
+  const original = "First line\nSecond line";
+  field().value = original;
+  field().dispatch("input");
+  button(doc, "New conversation").click();
+  expect(field().value).toBe("");
+  button(doc, "Unsent draft 1").click();
+  expect(field().value).toBe(original);
+  button(doc, "Explore an idea").click();
+  expect(field().value).toBe(
+    original +
+      "\n\nHelp me think through an idea for a new feature. Ask me a few questions to get started.",
+  );
+  button(doc, "New conversation").click();
+  workspace = "b";
+  await controller.load();
+  expect(field().value).toBe("");
+  expect(doc.root.textContent).not.toContain("Unsent draft");
+});
+
 test("switching conversations cannot misplace a failed in-flight draft", async () => {
   const doc = new MiniDocument();
   const pending = Promise.withResolvers<AssistantResult>();

@@ -42,7 +42,9 @@ const MAX_PAYLOAD_CACHE_ENTRIES = 5000;
 const FOCUS_KEY = "data-focus-key";
 const DEFAULT_PAID_MODEL_ID = "claude-sonnet-4-5";
 
-type OptionalValue<T> = { ok: true; value: T } | { ok: false; error: string };
+type OptionalValue<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; kind?: BridgeError["kind"] };
 
 class WorkbenchFailure extends Error {
   constructor(readonly detail: BridgeError) {
@@ -148,6 +150,27 @@ export function createController(
     loading: Boolean(assistant),
   });
   let assistantState = emptyAssistant();
+  // Only shelved drafts live here. No draft is written to disk or sent to the model.
+  const assistantDrafts = new Map<string, string>();
+  let draftWorkspace: string | undefined;
+  const selectChat = (id: string) => {
+    if (assistantState.busy || assistantState.loading) return;
+    if (assistantState.draft)
+      assistantDrafts.set(assistantState.activeId, assistantState.draft);
+    const draft = assistantDrafts.get(id) ?? "";
+    assistantDrafts.delete(id);
+    page = "chat";
+    teamState = { ...teamState, open: false };
+    assistantState = {
+      ...assistantState,
+      activeId: id,
+      draft,
+      consent: false,
+      validation: undefined,
+      error: undefined,
+    };
+    render();
+  };
   let assistantWorkspace: string | undefined;
   let suspendedDraft:
     | { workspace: string; activeId: string; draft: string }
@@ -195,6 +218,11 @@ export function createController(
     searchQuery: "",
     resolvedRefs: {},
   };
+  const teamDrafts = new Map<string, string>();
+  const teamKey = (
+    viewer = teamState.viewer,
+    id = teamState.activeConversationId,
+  ) => JSON.stringify([viewer, id]);
 
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
@@ -206,6 +234,7 @@ export function createController(
       .find((el) => el.getAttribute("data-extension-id") === extensionAnchorId)
       ?.getBoundingClientRect?.().top;
   const render = () => {
+    const previousFeed = root.querySelectorAll("[data-team-feed]")[0];
     const oldLibraryOffset = libraryScroller()?.scrollTop;
     const oldAnchorTop =
       oldLibraryOffset === undefined ? undefined : anchorTop();
@@ -255,6 +284,11 @@ export function createController(
         ? {
             assistant: {
               ...assistantState,
+              unsentIds: assistantWorkspace
+                ? Array.from(assistantDrafts.keys()).filter(
+                    (id) => !assistantState.sessions.some((s) => s.id === id),
+                  )
+                : [],
               ...(!assistantLoaded && !assistantState.loading && !state.error
                 ? { onRetryLoad: () => void load() }
                 : {}),
@@ -276,30 +310,8 @@ export function createController(
               },
               onSend: () => void sendAssistant(),
               onSettings: () => void assistantSettings(),
-              onNew: () => {
-                page = "chat";
-                teamState = { ...teamState, open: false };
-                assistantState = {
-                  ...assistantState,
-                  activeId: globalThis.crypto.randomUUID(),
-                  draft: "",
-                  validation: undefined,
-                  error: undefined,
-                };
-                render();
-              },
-              onSelect: (activeId) => {
-                page = "chat";
-                teamState = { ...teamState, open: false };
-                assistantState = {
-                  ...assistantState,
-                  activeId,
-                  draft: "",
-                  validation: undefined,
-                  error: undefined,
-                };
-                render();
-              },
+              onNew: () => selectChat(globalThis.crypto.randomUUID()),
+              onSelect: selectChat,
               onTask: (text) => {
                 composer = { ...composer, request: text };
                 page = "tasks";
@@ -320,6 +332,8 @@ export function createController(
         onSelectConversation: (conversationId) =>
           void openTeamConversation(conversationId),
         onDraftChange: (text) => {
+          if (text) teamDrafts.set(teamKey(), text);
+          else teamDrafts.delete(teamKey());
           teamState = { ...teamState, draft: text };
         },
         onSend: (text) => void sendTeamMessage(text),
@@ -394,6 +408,14 @@ export function createController(
       onExportPatch: () => void handleExportPatch(),
     };
     root.replaceChildren(renderShell(doc, state));
+    const currentFeed = root.querySelectorAll("[data-team-feed]")[0];
+    if (
+      currentFeed &&
+      previousFeed?.scrollTop !== undefined &&
+      currentFeed.getAttribute("data-team-feed") ===
+        previousFeed.getAttribute("data-team-feed")
+    )
+      currentFeed.scrollTop = previousFeed.scrollTop;
     const library = libraryScroller();
     if (library && oldLibraryOffset !== undefined) {
       library.scrollTop = oldLibraryOffset;
@@ -443,6 +465,8 @@ export function createController(
       const changed = assistantWorkspace !== result.workspace;
       if (changed) {
         scopeGeneration++;
+        if (result.workspace !== draftWorkspace) assistantDrafts.clear();
+        draftWorkspace = result.workspace;
         assistantState = emptyAssistant();
         if (suspendedDraft?.workspace === result.workspace)
           assistantState = {
@@ -648,6 +672,9 @@ export function createController(
     } catch (error) {
       return {
         ok: false,
+        ...(error instanceof WorkbenchFailure
+          ? { kind: error.detail.kind }
+          : {}),
         error:
           error instanceof Error ? error.message : "Workbench is unavailable.",
       };
@@ -683,6 +710,12 @@ export function createController(
         conversations: res.value.conversations,
       };
       delete nextTeamState.error;
+      if (
+        teamState.viewer !== res.value.viewer ||
+        nextConvId !== teamState.activeConversationId
+      )
+        nextTeamState.draft =
+          teamDrafts.get(teamKey(res.value.viewer, nextConvId)) ?? "";
       if (nextConvId) nextTeamState.activeConversationId = nextConvId;
       teamState = nextTeamState;
     } catch {
@@ -706,7 +739,12 @@ export function createController(
       ...teamState,
       activeConversationId: conversationId,
       loading: true,
-      ...(switchedConversation ? { draft: "" } : {}),
+      ...(switchedConversation
+        ? {
+            draft:
+              teamDrafts.get(teamKey(teamState.viewer, conversationId)) ?? "",
+          }
+        : {}),
     };
     delete loadingState.searchHits;
     delete loadingState.error;
@@ -845,10 +883,11 @@ export function createController(
   const sendTeamMessage = async (body: string) => {
     if (!teamChat || !teamState.activeConversationId) return;
     const convId = teamState.activeConversationId;
+    const key = teamKey();
     const keepDraft = (notice: string) => {
+      if (teamKey() !== key) return;
       teamState = {
         ...teamState,
-        draft: teamState.draft.trim() === body ? teamState.draft : body,
         notice,
       };
       render();
@@ -875,10 +914,21 @@ export function createController(
         );
         return;
       }
-      const sent: TeamChatViewState = { ...teamState, draft: "" };
+      if (teamDrafts.get(key)?.trim() === body) teamDrafts.delete(key);
+      if (teamKey() !== key) return;
+      const sent: TeamChatViewState = {
+        ...teamState,
+        draft: teamDrafts.get(key) ?? "",
+      };
       delete sent.notice;
       teamState = sent;
       await openTeamConversation(convId, { preserveHistory: true });
+      if (teamState.open && teamKey() === key)
+        Array.from(root.querySelectorAll("[data-message-id]"))
+          .find(
+            (el) => el.getAttribute("data-message-id") === res.value.message_id,
+          )
+          ?.scrollIntoView?.({ block: "nearest" });
     } catch {
       keepDraft("Unable to send message. Edit it and send again.");
     }
@@ -1019,7 +1069,7 @@ export function createController(
       viewer: res.value.viewer,
       users: res.value.users,
       conversations: res.value.conversations,
-      draft: "",
+      draft: teamDrafts.get(teamKey(res.value.viewer, nextConvId)) ?? "",
       resolvedRefs: {},
     };
     delete nextTeamState.searchHits;
@@ -1696,9 +1746,14 @@ export function createController(
       if (verification.ok) nextState.verification = verification.value;
       else nextState.verificationError = verification.error;
       if (diff.ok) nextState.diff = diff.value;
-      else nextState.diffError = diff.error;
+      else if (inspected.status !== "cancelled" || diff.kind !== "not_found")
+        nextState.diffError = diff.error;
       if (evidence.ok) nextState.evidence = evidence.value;
-      else nextState.evidenceError = evidence.error;
+      else if (
+        inspected.status !== "cancelled" ||
+        evidence.kind !== "not_found"
+      )
+        nextState.evidenceError = evidence.error;
       if (!events.ok) nextState.eventsError = events.error;
       state = nextState;
       render();

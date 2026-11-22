@@ -433,7 +433,8 @@ export function renderTranscript(
   eventCount: number,
   eventsCapped = false,
 ): ShellElement[] {
-  const countLabel = `${eventCount}${eventsCapped ? "+" : ""} task event${eventCount === 1 && !eventsCapped ? "" : "s"} available`;
+  const visible = projection?.entries.length ?? 0;
+  const countLabel = `${visible} transcript ${visible === 1 ? "entry" : "entries"} · ${eventCount}${eventsCapped ? "+" : ""} task event${eventCount === 1 && !eventsCapped ? "" : "s"} recorded`;
   if (!projection || projection.entries.length === 0) {
     return [
       h(

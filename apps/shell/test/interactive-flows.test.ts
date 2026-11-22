@@ -1191,7 +1191,7 @@ describe("interactive renderer controller flows", () => {
       );
       expect(renderedIds(doc)).toEqual(all);
 
-      // Switching conversations clears the draft.
+      // Never show one conversation's draft in another; restore it on return.
       const draftBox = findByAttr(doc.root, "data-focus-key", "team-composer");
       if (draftBox) {
         draftBox.value = "Sensitive draft for thread A";
@@ -1210,6 +1210,12 @@ describe("interactive renderer controller flows", () => {
         () =>
           (findByAttr(doc.root, "data-focus-key", "team-composer")?.value ??
             "") === "",
+      );
+      findByAttr(doc.root, "data-conversation-id", convId)?.click();
+      await waitFor(
+        () =>
+          findByAttr(doc.root, "data-focus-key", "team-composer")?.value ===
+          "Sensitive draft for thread A",
       );
     } finally {
       close();

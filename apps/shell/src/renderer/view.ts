@@ -1366,6 +1366,15 @@ export function renderShell(
                 state.assistant?.busy,
               ),
             ),
+            ...(state.assistant.unsentIds ?? []).map((id, index) =>
+              navButton(
+                `Unsent draft ${index + 1}`,
+                false,
+                () => state.assistant?.onSelect?.(id),
+                "conversation-item",
+                state.assistant?.busy,
+              ),
+            ),
           ]
         : (!state.page || state.page === "tasks") && !state.teamChat?.open
           ? [
