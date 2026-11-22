@@ -391,6 +391,47 @@ select {
   padding: 8px 12px 10px;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
+.handoff {
+  max-height: min(55vh, 34rem);
+  overflow: auto;
+}
+.handoff form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 6px;
+}
+.handoff label {
+  display: grid;
+}
+.handoff label:has(textarea) {
+  grid-column: 1 / -1;
+}
+.linked-tasks,
+.share-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.linked-tasks {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 0;
+}
+.share-options {
+  grid-column: 1 / -1;
+}
+.share-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.share-options input {
+  margin: 0;
+}
+.evidence-card p {
+  overflow-wrap: anywhere;
+}
 .reply-bar {
   display: flex;
   align-items: center;
@@ -405,6 +446,18 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.agent-bar > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agent-bar ul {
+  max-height: 140px;
+  margin: 4px 0;
+  padding-inline-start: 20px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .composer-input {
   position: relative;

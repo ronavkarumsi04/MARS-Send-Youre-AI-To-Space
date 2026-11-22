@@ -60,6 +60,7 @@ export interface StartOptions {
  */
 export interface CreateOptions {
   launchKey?: string;
+  requestId?: string;
   signal?: AbortSignal;
 }
 
@@ -123,8 +124,9 @@ export class MarsClient {
     method: RpcMethod,
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    requestId = this.newId(),
   ): Promise<unknown> {
-    const context = makeContext(this.scope(), this.newId());
+    const context = makeContext(this.scope(), requestId);
     return this.transport.send({ method, context, params }, signal);
   }
 
@@ -147,7 +149,7 @@ export class MarsClient {
     task: Task,
     options?: CreateOptions | AbortSignal,
   ): Promise<Task> {
-    const { launchKey, signal } =
+    const { launchKey, requestId, signal } =
       options instanceof AbortSignal ? { signal: options } : (options ?? {});
     if (launchKey !== undefined && !LAUNCH_KEY_PATTERN.test(launchKey))
       throw new RpcError("protocol", "Launch key is invalid.");
@@ -156,6 +158,7 @@ export class MarsClient {
         RPC_METHODS.create,
         launchKey === undefined ? { task } : { task, launch_key: launchKey },
         signal,
+        requestId,
       ),
       task.task_id,
     );

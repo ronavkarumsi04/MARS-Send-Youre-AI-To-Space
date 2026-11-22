@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MARS Model Settings</title>
+    <link rel="stylesheet" href="./shell.css" />
+  </head>
+  <body class="model-settings">
+    <header class="masthead"><span class="masthead-dots" aria-hidden="true"></span>MARS / model settings</header>
+    <main>
+      <h1>Model settings</h1>
+      <p>Add an OpenRouter API key to run the agent with the default free model route. You can browse the workbench and demo Team Chat without a key.</p>
+      <form>
+        <label for="model-key">OpenRouter API key</label>
+        <input id="model-key" type="password" maxlength="512" autocomplete="off" spellcheck="false" required />
+        <div class="model-actions">
+          <button type="submit">Save key</button>
+          <button id="clear-key" type="button">Clear saved key</button>
+        </div>
+      </form>
+      <p>Changing the key restarts the local workbench.</p>
+      <p id="model-status" role="status"></p>
+    </main>
+    <script type="module" src="./settings.js"></script>
+  </body>
+</html>

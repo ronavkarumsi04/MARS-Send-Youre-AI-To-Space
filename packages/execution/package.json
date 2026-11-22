@@ -6,6 +6,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@mars/contracts": "workspace:*",
+    "@mars/mcp-client": "workspace:*",
     "@mars/output-format": "workspace:*",
     "@mars/providers": "workspace:*",
     "@mars/workspaces": "workspace:*",

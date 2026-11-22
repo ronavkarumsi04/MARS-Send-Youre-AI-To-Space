@@ -12,7 +12,7 @@ import {
   reduceComposer,
 } from "./composer";
 import { FIXTURE_REPOS as R, SITE_SHA, FIXTURE_USERS as U } from "./fixture";
-import { chipLabel, mentionCandidates } from "./mentions";
+import { chipLabel, mentionCandidates, parseMarsInvocation } from "./mentions";
 import { FixtureTeamService } from "./service";
 
 const index = new FixtureTeamService().mentionIndex(U.ada);
@@ -39,19 +39,16 @@ describe("mention candidates", () => {
       "file",
       "file",
     ]);
-    expect(candidates.map((c) => c.repo_id)).toEqual([
-      R.platform,
-      R.platform,
-      R.site,
-      R.site,
-    ]);
+    expect(
+      candidates.map((c) => (c.kind === "file" ? c.repo_id : null)),
+    ).toEqual([R.platform, R.platform, R.site, R.site]);
   });
 
   test("a path query matches files across both repos and a symbol query matches symbols", () => {
     const files = mentionCandidates(index, "src/", null);
-    expect(new Set(files.map((c) => c.repo_id))).toEqual(
-      new Set([R.platform, R.site]),
-    );
+    expect(
+      new Set(files.map((c) => ("repo_id" in c ? c.repo_id : null))),
+    ).toEqual(new Set([R.platform, R.site]));
     const symbols = mentionCandidates(index, "banner", R.site);
     expect(symbols.map((c) => `${c.kind}:${c.label}`)).toEqual([
       "symbol:bannerHeight",
@@ -59,7 +56,11 @@ describe("mention candidates", () => {
       "symbol:.banner",
       "symbol:.banner .verdict",
     ]);
-    expect(symbols[1]?.reference).toMatchObject({
+    const second = symbols[1];
+    if (!second || !("reference" in second)) {
+      throw new Error("expected code candidate");
+    }
+    expect(second.reference).toMatchObject({
       kind: "symbol",
       path: "src/style.css",
       line_start: 5,
@@ -82,7 +83,7 @@ describe("mention candidates", () => {
 
   test("chip labels show repo, path, short SHA and range", () => {
     const [range] = mentionCandidates(index, "style.css:14-23", null);
-    if (!range) throw new Error("no candidate");
+    if (!range || !("reference" in range)) throw new Error("no candidate");
     expect(chipLabel(range.reference, range.repo_name)).toBe(
       "mars-site (fixture) · src/style.css:14-23 @ a1b2c3d",
     );
@@ -287,6 +288,26 @@ describe("picker status updates", () => {
 });
 
 describe("composer problems", () => {
+  test("a text-required send preserves attached chips until there is accompanying text", () => {
+    const draft = reduceComposer(
+      type(EMPTY_COMPOSER, "@how.ts"),
+      { type: "pickerSelect" },
+      env,
+    );
+    expect(draft.chips).toHaveLength(1);
+    const requireText = true;
+    for (const state of [draft, type(draft, "   ")]) {
+      expect(composerProblem(state, requireText)).toBe("text_required");
+      expect(buildSend(state, "conv", "cm", requireText)).toBeNull();
+    }
+    const withText = type(draft, "See this file");
+    expect(composerProblem(withText, requireText)).toBeNull();
+    expect(buildSend(withText, "conv", "cm", requireText)).toMatchObject({
+      body: "See this file",
+      references: [draft.chips[0]?.reference],
+    });
+  });
+
   test("an overlength body is reported and never built into a send", () => {
     const long = type(EMPTY_COMPOSER, "x".repeat(4001));
     expect(composerProblem(long)).toBe("too_long");
@@ -294,5 +315,194 @@ describe("composer problems", () => {
     expect(composerProblem(type(EMPTY_COMPOSER, "x".repeat(4000)))).toBeNull();
     expect(composerProblem(EMPTY_COMPOSER)).toBe("empty");
     expect(composerProblem(type(EMPTY_COMPOSER, "   "))).toBe("empty");
+  });
+});
+
+describe("@MARS invocations", () => {
+  test.each([
+    [
+      "@MARS, can you summarize the selected transport details?",
+      "can you summarize the selected transport details?",
+    ],
+    [" \t@mArS:summarize this", "summarize this"],
+    ["@mars? What changed?", "What changed?"],
+    ["@MARS. Summarize the changes.", "Summarize the changes."],
+    ["@MARS.Summarize the changes.", "Summarize the changes."],
+    ["Please @MARS summarize this", "Please summarize this"],
+    ["\n @mArS? ", ""],
+    ["@MARS", ""],
+    ["@MARS.", ""],
+  ])("extracts the prompt from %j", (text, prompt) => {
+    expect(parseMarsInvocation(text)).toEqual({ prompt });
+  });
+
+  test.each([
+    "Email dev@mars.example for details",
+    "@MARSHALL, can you summarize?",
+    "@MARS_TEAM can you summarize?",
+  ])("treats %j as an ordinary message", (text) => {
+    expect(parseMarsInvocation(text)).toBeNull();
+  });
+
+  test("a complete picker-inserted dotted teammate takes precedence over an agent invocation", () => {
+    const teammate = {
+      user_id: "mars.ops",
+      handle: "mars.ops",
+      display_name: "Ops",
+    };
+    const mentionEnv = {
+      ...env,
+      index: { repos: [], users: [teammate], agent_available: true },
+    };
+    const query = "@mars.ops";
+    const draft = reduceComposer(
+      reduceComposer(
+        EMPTY_COMPOSER,
+        { type: "input", text: query, caret: query.length },
+        mentionEnv,
+      ),
+      { type: "pickerSelect" },
+      mentionEnv,
+    );
+    expect(draft.text).toBe("@mars.ops ");
+    const options = { teammates: [teammate] };
+    expect(
+      parseMarsInvocation(`${draft.text}review this?`, options),
+    ).toBeNull();
+    expect(parseMarsInvocation("@MARS.OPS, review this?", options)).toBeNull();
+    expect(parseMarsInvocation("@MARS.Summarize this", options)).toEqual({
+      prompt: "Summarize this",
+    });
+  });
+
+  test.each([
+    "@mars.svg:1 needs a new icon",
+    "@mars.svg:1-4 needs a new icon",
+    "@MARS.config.ts:12, see this line",
+    "look at @mars.svg:1",
+    "is it @mars.svg:1-4?",
+    "see @mars.svg:7.",
+    "@mars.svg:7,@mars.css:8 both need new icons",
+    "@mars.svg:7; @mars.css:8-9. Both need new icons",
+    "@mars.svg:1) and the other one",
+    "See @mars.svg:7…",
+    "@mars.svg:7。",
+    "@mars.svg:7！ needs a new icon",
+    "is it @mars.svg:1-3？",
+  ])("leaves the file-and-line token in %j as ordinary chat", (text) => {
+    expect(parseMarsInvocation(text)).toBeNull();
+    expect(parseMarsInvocation(text, { leadingOnly: true })).toBeNull();
+    expect(parseMarsInvocation("@MARS.Summarize this")).toEqual({
+      prompt: "Summarize this",
+    });
+    expect(parseMarsInvocation("@MARS: 1 question")).toEqual({
+      prompt: "1 question",
+    });
+  });
+
+  test.each([
+    ["@MARS.Summarize:2.0 migration risks", "Summarize:2.0 migration risks"],
+    ["@MARS.Compare:1-2x speedups", "Compare:1-2x speedups"],
+    ["@MARS.Explain:3rd option", "Explain:3rd option"],
+    ["@MARS.rate:10/10 ideas", "rate:10/10 ideas"],
+    ["@MARS.Summarize:2,3 and 4", "Summarize:2,3 and 4"],
+    ["@MARS.check:7-day window", "check:7-day window"],
+    ["@MARS.Review:20% discount proposal", "Review:20% discount proposal"],
+    ["@MARS.Compare:2× speedup", "Compare:2× speedup"],
+    ["@MARS.Sum:2+2 please", "Sum:2+2 please"],
+    ["@MARS.Estimate:$5 budget", "Estimate:$5 budget"],
+    ['@MARS.Quote:5" screens', 'Quote:5" screens'],
+    ["@MARS，总结一下", "总结一下"],
+    ["@MARS… what changed?", "what changed?"],
+    ["@MARS。Summarize this", "Summarize this"],
+    ["@MARS？", ""],
+  ])("keeps %j a private agent command", (text, prompt) => {
+    expect(parseMarsInvocation(text)).toEqual({ prompt });
+    expect(parseMarsInvocation(text, { leadingOnly: true })).toEqual({
+      prompt,
+    });
+  });
+
+  test("the picker never offers a teammate whose handle is a casing of @MARS", () => {
+    const users = [
+      { user_id: "MARS", handle: "MARS", display_name: "Mars Person" },
+      { user_id: "marsha", handle: "marsha", display_name: "Marsha" },
+    ];
+    for (const agent_available of [false, true]) {
+      const picked = mentionCandidates(
+        { repos: [], users, agent_available },
+        "mars",
+        null,
+      );
+      expect(
+        picked.filter((c) => c.kind === "user").map((c) => c.label),
+      ).toEqual(["@marsha"]);
+      expect(picked.some((c) => c.kind === "agent")).toBe(agent_available);
+    }
+    // Picking the remaining teammate and sending stays ordinary chat.
+    const mentionEnv = { ...env, index: { repos: [], users } };
+    const draft = reduceComposer(
+      reduceComposer(
+        EMPTY_COMPOSER,
+        { type: "input", text: "@mars", caret: 5 },
+        mentionEnv,
+      ),
+      { type: "pickerSelect" },
+      mentionEnv,
+    );
+    expect(draft.text).toBe("@marsha ");
+    expect(
+      parseMarsInvocation(`${draft.text}can you review this?`, {
+        teammates: users,
+        leadingOnly: true,
+      }),
+    ).toBeNull();
+  });
+
+  test("only leading invocations are reserved when the agent is disabled", () => {
+    const options = { leadingOnly: true };
+    expect(parseMarsInvocation("Is @MARS enabled here?", options)).toBeNull();
+    expect(parseMarsInvocation(" \t@mArS: summarize this", options)).toEqual({
+      prompt: "summarize this",
+    });
+  });
+});
+
+describe("dynamic remote path search mentions", () => {
+  test("supports remote search results with unknown line_count for both file and range mentions", () => {
+    const dynamicEnv = {
+      index: {
+        repos: [
+          {
+            repo_id: "repo_live",
+            name: "mars",
+            commit_sha: "abcdef1234567890abcdef1234567890abcdef12",
+            files: [{ path: "src/auth.ts", line_count: 0, symbols: [] }],
+          },
+        ],
+      },
+      activeRepoId: "repo_live",
+      maxChips: 5,
+    };
+    const fileCandidates = mentionCandidates(
+      dynamicEnv.index,
+      "src/auth",
+      "repo_live",
+    );
+    expect(fileCandidates).toHaveLength(1);
+    expect(fileCandidates[0]?.kind).toBe("file");
+    expect(fileCandidates[0]?.detail).toBe("mars @ abcdef1");
+
+    const rangeCandidates = mentionCandidates(
+      dynamicEnv.index,
+      "src/auth.ts:10-25",
+      "repo_live",
+    );
+    expect(rangeCandidates).toHaveLength(1);
+    expect(rangeCandidates[0]?.kind).toBe("range");
+    if (rangeCandidates[0]?.kind === "range") {
+      expect(rangeCandidates[0].reference.line_start).toBe(10);
+      expect(rangeCandidates[0].reference.line_end).toBe(25);
+    }
   });
 });

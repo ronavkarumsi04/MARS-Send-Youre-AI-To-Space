@@ -662,6 +662,39 @@ test("router falls back after 429, retains retry-after cooldown, and records the
   }
 });
 
+test("router passes completion cancellation to provider fetch without falling back", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const registry = await registryFor(
+      root,
+      [
+        provider("a", "http://127.0.0.1:1/a"),
+        provider("b", "http://127.0.0.1:1/b"),
+      ],
+      [model("first", "a"), model("second", "b")],
+      ["first", "second"],
+    );
+    const controller = new AbortController();
+    let calls = 0;
+    const routed = new ModelRouter(registry, {
+      adapterOptions: {
+        fetch: async (_url, init) => {
+          calls += 1;
+          controller.abort(new Error("completion cancelled"));
+          expect(init?.signal?.aborted).toBe(true);
+          throw init?.signal?.reason;
+        },
+      },
+    });
+    await expect(
+      routed.complete(request, {}, controller.signal),
+    ).rejects.toThrow("completion cancelled");
+    expect(calls).toBe(1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("router reports cooled-down providers as skipped in complete and stream", async () => {
   let requests = 0;
   const stub = await serve((_incoming, outgoing) => {

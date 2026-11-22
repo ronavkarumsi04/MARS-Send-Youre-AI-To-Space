@@ -11,15 +11,21 @@ export type ConnectionOptions = {
   homeDir?: string;
 };
 
+export function explicitConnection(
+  argv = process.argv.slice(1),
+  env = process.env,
+): string | undefined {
+  const argument = argv.find((value) => value.startsWith("--connection="));
+  return argument?.slice("--connection=".length) || env.MARS_SHELL_CONNECTION;
+}
+
 export async function resolveConnection(
   options: ConnectionOptions = {},
 ): Promise<ConnectionResult> {
-  const args = options.argv ?? process.argv.slice(2);
-  const argument = args.find((value) => value.startsWith("--connection="));
-  const explicitPath =
-    argument?.slice("--connection=".length) ||
-    (options.env ?? process.env).MARS_SHELL_CONNECTION;
-  let filePath = explicitPath;
+  let filePath = explicitConnection(
+    options.argv ? [...options.argv] : undefined,
+    options.env,
+  );
   if (!filePath) {
     const home = options.homeDir ?? process.env.HOME ?? "";
     let paths: string[];

@@ -30,12 +30,14 @@ const SCENARIOS: { name: string; width: number; height: number }[] = [
   { name: "group", width: 1400, height: 900 },
   { name: "picker", width: 1400, height: 900 },
   { name: "chips", width: 1400, height: 900 },
+  { name: "attachment-only", width: 1400, height: 900 },
   { name: "panel", width: 1400, height: 900 },
   { name: "linus", width: 1400, height: 900 },
   { name: "pending", width: 1400, height: 900 },
   { name: "failed", width: 1400, height: 900 },
   { name: "narrow", width: 560, height: 900 },
   { name: "service", width: 1400, height: 900 },
+  { name: "handoff", width: 1400, height: 900 },
 ];
 
 const THEME = `
@@ -102,6 +104,7 @@ async function main(): Promise<void> {
   await writeFile(page, html);
   const results: string[] = [];
   for (const scenario of SCENARIOS) {
+    const verify = scenario.name === "handoff";
     const png = join(out, `team-chat-${scenario.name}.png`);
     const proc = Bun.spawn(
       [
@@ -114,14 +117,26 @@ async function main(): Promise<void> {
         `--window-size=${scenario.width},${scenario.height}`,
         "--virtual-time-budget=4000",
         `--screenshot=${png}`,
+        ...(verify ? ["--dump-dom"] : []),
         `file://${page}?scenario=${scenario.name}`,
       ],
-      { stdout: "ignore", stderr: "pipe" },
+      { stdout: verify ? "pipe" : "ignore", stderr: "pipe" },
     );
+    const dom = proc.stdout ? await new Response(proc.stdout).text() : "";
     const code = await proc.exited;
     if (code !== 0) {
       const err = await new Response(proc.stderr).text();
       throw new Error(`chrome failed for ${scenario.name}: ${err.slice(-400)}`);
+    }
+    if (verify) {
+      if (!dom.includes('data-harness-done="true"'))
+        throw new Error(
+          dom.match(/data-harness-error="([^"]*)"/)?.[1] ??
+            "handoff scenario did not finish",
+        );
+      console.log(
+        "handoff scenario: two task links restored after a webview reload; first task's evidence published once it ran",
+      );
     }
     results.push(png);
   }

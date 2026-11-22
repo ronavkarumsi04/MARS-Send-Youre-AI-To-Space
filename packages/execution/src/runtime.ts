@@ -5,10 +5,13 @@ import {
   type Budget,
   exceedsUsd,
   type ModelConfig,
+  type RequestContext,
+  type Scope,
   type Task,
   TaskSchema,
 } from "@mars/contracts";
 import { isStrictlyInside } from "@mars/contracts/path-containment";
+import type { TrustedMcpLoader } from "@mars/mcp-client";
 import { OUTPUT_FORMAT_PROMPT } from "@mars/output-format";
 import type { ModelProviderRegistry } from "@mars/providers";
 import {
@@ -799,6 +802,7 @@ export interface RuntimeSessionOptions {
   rebindFromModelIds?: readonly string[];
   approvals: { read: boolean; write: boolean; execute: boolean };
   tools: RuntimeTools;
+  mcp?: RuntimeMcp;
   recall?(query: string): Promise<string>;
   collaboration?: RuntimeCollaboration;
   research?: RuntimeResearch;
@@ -831,6 +835,14 @@ export interface RuntimeSessionOptions {
    */
   editFormat?: EditFormat;
 }
+
+export type RuntimeMcp = (
+  cwd: string,
+  scope: Scope,
+) => Promise<{
+  loader: TrustedMcpLoader;
+  listServerIds(): Promise<string[]>;
+}>;
 
 export const MAX_SYSTEM_PROMPT_CHARS = 16_000;
 
@@ -1113,7 +1125,31 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     ...(approvals.execute ? [executeTool(deps, options.tools)] : []),
   ];
   let created: Awaited<ReturnType<typeof createAgentSession>>;
+  let mcp: Awaited<ReturnType<RuntimeMcp>> | undefined;
+  let mcpClose: Promise<void> | undefined;
+  const closeMcp = () => {
+    mcpClose ??= mcp?.loader.closeAll();
+    return mcpClose;
+  };
+  controller.signal.addEventListener(
+    "abort",
+    () => {
+      void closeMcp()?.catch(() => undefined);
+    },
+    { once: true },
+  );
   try {
+    if (options.mcp && selected.capabilities.tools) {
+      mcp = await options.mcp(cwd, task.scope);
+      const context: RequestContext = {
+        schema_version: 1,
+        scope: task.scope,
+        request_id: task.task_id,
+      };
+      customTools.push(
+        ...(await admittedMcpTools(deps, mcp, context, controller.signal)),
+      );
+    }
     await persistLedger(ledger);
     const model = models.find(providerId, selected.id);
     if (!model)
@@ -1159,6 +1195,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       systemPrompt: systemPrompt,
     });
   } catch (error) {
+    await closeMcp();
     models.unregisterProvider(providerId);
     await manager.close();
     await authStorage.close();
@@ -1168,6 +1205,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
   manager.appendCustomEntry("mars.edit_format", editFormat);
   const journalPath = manager.getSessionFile();
   if (!journalPath) {
+    await closeMcp();
     await session.dispose();
     await authStorage.close();
     throw new Error("Missing execution journal.");
@@ -1197,6 +1235,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
     JSON.stringify(session.getActiveToolNames().sort()) !==
     JSON.stringify(expectedTools)
   ) {
+    await closeMcp();
     await session.dispose();
     models.unregisterProvider(providerId);
     await authStorage.close();
@@ -1302,6 +1341,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       userCancelled = true;
       controller.abort();
       const stopped = await Promise.allSettled([
+        Promise.resolve().then(closeMcp),
         Promise.resolve().then(() => session.abort()),
         Promise.resolve().then(() => options.tools.stop()),
       ]);
@@ -1322,6 +1362,7 @@ export async function openRuntimeSession(options: RuntimeSessionOptions) {
       clearTimeout(deadlineTimer);
       unsubscribe();
       const stopped = await Promise.allSettled([
+        Promise.resolve().then(closeMcp),
         Promise.resolve().then(() => options.tools.stop()),
         Promise.resolve().then(() => session.dispose()),
       ]);
@@ -1346,6 +1387,247 @@ interface ToolDeps {
     permission: ToolPermission | null,
     signal?: AbortSignal,
   ): Promise<void>;
+}
+
+async function admittedMcpTools(
+  { checkTool }: ToolDeps,
+  { loader, listServerIds }: Awaited<ReturnType<RuntimeMcp>>,
+  context: RequestContext,
+  sessionSignal: AbortSignal,
+): Promise<CustomTool[]> {
+  const tools: CustomTool[] = [];
+  for (const serverId of await listServerIds()) {
+    sessionSignal.throwIfAborted();
+    let admitted: Awaited<ReturnType<TrustedMcpLoader["admitServer"]>>;
+    try {
+      admitted = await loader.admitServer(
+        context,
+        serverId,
+        "load",
+        sessionSignal,
+      );
+    } catch {
+      continue;
+    }
+    if (
+      admitted.origin &&
+      !admitted.permissions.some(
+        (p) =>
+          p.capability === "network.connect" && p.resource === admitted.origin,
+      )
+    )
+      continue;
+    for (const { name: tool, inputSchema } of admitted.descriptor.tools) {
+      if (
+        !admitted.permissions.some(
+          (p) => p.capability === "tool.invoke" && p.resource === tool,
+        )
+      )
+        continue;
+      const digest = createHash("sha256")
+        .update(JSON.stringify([serverId, tool]))
+        .digest("hex")
+        .slice(0, 16);
+      const label = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32);
+      const name = `mars_mcp_${label}_${digest}`;
+      tools.push({
+        name,
+        label: name,
+        description: `Call approved MCP tool ${label} on server ${serverId}.`,
+        parameters: mcpToolParameters(inputSchema),
+        async execute(_id, params, _update, _ctx, signal) {
+          await checkTool(null, signal);
+          const input = z.record(z.unknown()).parse(params);
+          if (JSON.stringify(input).length > MAX_TOOL_OUTPUT_CHARS)
+            throw new Error("MCP tool arguments exceed the input limit.");
+          try {
+            const result = await loader.invokeTool(context, {
+              server_id: serverId,
+              tool,
+              input,
+              ...(admitted.origin ? { target_origin: admitted.origin } : {}),
+              ...(admitted.credential_ref
+                ? { credential_ref: admitted.credential_ref }
+                : {}),
+              signal: signal
+                ? AbortSignal.any([sessionSignal, signal])
+                : sessionSignal,
+            });
+            return boundedText("MCP tool")(JSON.stringify(result));
+          } catch {
+            throw new Error("MCP tool invocation was denied or failed.");
+          }
+        },
+      });
+    }
+  }
+  sessionSignal.throwIfAborted();
+  return tools;
+}
+
+function mcpToolParameters(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const types = new Set([
+    "object",
+    "array",
+    "string",
+    "number",
+    "integer",
+    "boolean",
+    "null",
+  ]);
+  const resolveLocalRef = (ref: unknown): unknown => {
+    if (typeof ref !== "string" || !ref.startsWith("#/") || ref.length > 512)
+      return undefined;
+    let pointer: string;
+    try {
+      pointer = decodeURIComponent(ref.slice(2));
+    } catch {
+      return undefined;
+    }
+    let target: unknown = schema;
+    for (const part of pointer.split("/")) {
+      const key = part.replaceAll("~1", "/").replaceAll("~0", "~");
+      if (!target || typeof target !== "object" || !Object.hasOwn(target, key))
+        return undefined;
+      target = (target as Record<string, unknown>)[key];
+    }
+    return target;
+  };
+  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  type Constraint = { value: unknown; path: ReadonlySet<unknown> };
+  // Lower `share` projects first. A node's share is split among its children,
+  // required fields and array items ahead of optional ones, so one wide
+  // argument cannot take every slot. `floor` is the share of the node's
+  // optional siblings; descendants never go below it, so a deep argument
+  // cannot hide its siblings or its ancestors' siblings.
+  type Projection = {
+    constraints: Constraint[];
+    depth: number;
+    share: number;
+    floor: number;
+    structural: boolean;
+    attach: (result: Record<string, unknown>) => void;
+  };
+  const maxNodes = 256;
+  let root: Record<string, unknown> = {};
+  const queue: Projection[] = [
+    {
+      constraints: [{ value: schema, path: new Set() }],
+      depth: 0,
+      share: 1,
+      floor: 1,
+      structural: true,
+      attach: (result) => {
+        root = result;
+      },
+    },
+  ];
+  for (let remaining = maxNodes; remaining > 0; remaining--) {
+    const next = queue.shift();
+    if (!next) break;
+    const { constraints, depth, share, floor, attach } = next;
+    const result: Record<string, unknown> = {};
+    attach(result);
+    const nodes = new Set<Record<string, unknown>>();
+    const properties = new Map<string, Constraint[]>();
+    const required = new Set<string>();
+    const items: Constraint[] = [];
+    const declaredTypes = new Set<string>();
+    const pending = [...constraints];
+    for (const { value, path } of pending) {
+      const node = asRecord(value);
+      if (!node || path.has(node) || (!nodes.has(node) && nodes.size >= 8))
+        continue;
+      nodes.add(node);
+      const nextPath = new Set(path).add(node);
+      const target = resolveLocalRef(node.$ref);
+      if (target !== undefined && pending.length < 64)
+        pending.push({ value: target, path: nextPath });
+      if (typeof node.type === "string" && types.has(node.type))
+        declaredTypes.add(node.type);
+      for (const [key, child] of Object.entries(
+        asRecord(node.properties) ?? {},
+      ).slice(0, 64)) {
+        if (
+          !/^[a-zA-Z0-9_.-]{1,80}$/.test(key) ||
+          ["__proto__", "constructor", "prototype"].includes(key)
+        )
+          continue;
+        const constraints = properties.get(key);
+        const constraint = { value: child, path: nextPath };
+        if (constraints) constraints.push(constraint);
+        else properties.set(key, [constraint]);
+      }
+      if (Array.isArray(node.required)) {
+        for (const key of node.required.slice(0, 64)) {
+          if (typeof key === "string") required.add(key);
+        }
+      }
+      if (asRecord(node.items))
+        items.push({ value: node.items, path: nextPath });
+    }
+
+    if (declaredTypes.has("integer")) declaredTypes.delete("number");
+    if (declaredTypes.size === 1) result.type = [...declaredTypes][0];
+    else if (declaredTypes.size > 1)
+      result.allOf = [...declaredTypes].map((type) => ({ type }));
+    if (depth >= 8 || remaining === 1) continue;
+    const entries = [...properties];
+    const selected = [
+      ...entries.filter(([key]) => required.has(key)),
+      ...entries.filter(([key]) => !required.has(key)),
+    ].slice(0, 64);
+    const structuralCount =
+      (items.length ? 1 : 0) +
+      selected.filter(([key]) => required.has(key)).length;
+    const optionalCount = selected.length + (items.length ? 1 : 0);
+    const enqueue = (
+      structural: boolean,
+      constraints: Constraint[],
+      attach: Projection["attach"],
+    ) =>
+      queue.push({
+        constraints,
+        depth: depth + 1,
+        share: Math.max(
+          floor,
+          share * (structural ? structuralCount : optionalCount),
+        ),
+        floor: Math.max(floor, share * optionalCount),
+        structural,
+        attach,
+      });
+    if (items.length)
+      enqueue(true, items, (item) => {
+        result.items = item;
+      });
+    const projectedProperties: Record<string, unknown> = {};
+    const projectedRequired: string[] = [];
+    for (const [key, children] of selected) {
+      const isRequired = required.has(key);
+      enqueue(isRequired, children, (child) => {
+        result.properties = projectedProperties;
+        projectedProperties[key] = child;
+        if (isRequired) {
+          projectedRequired.push(key);
+          result.required = projectedRequired;
+        }
+      });
+    }
+    queue.sort(
+      (a, b) =>
+        a.share - b.share ||
+        a.depth - b.depth ||
+        Number(b.structural) - Number(a.structural),
+    );
+    queue.length = Math.min(queue.length, remaining - 1);
+  }
+  return { ...root, type: "object" };
 }
 
 const toolResult = (text: string) => ({

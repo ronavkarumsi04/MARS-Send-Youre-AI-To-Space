@@ -67,6 +67,20 @@ export class SandboxUnavailableError extends WorkspaceError {
   }
 }
 
+export class DockerSandboxPrerequisiteError extends SandboxUnavailableError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DockerSandboxPrerequisiteError";
+  }
+}
+
+export class DockerSandboxRootUserError extends TypeError {
+  constructor() {
+    super("Docker uid and gid must be positive non-root integers");
+    this.name = "DockerSandboxRootUserError";
+  }
+}
+
 export class IntegrityError extends WorkspaceError {
   constructor(
     message = "Workspace integrity validation failed",

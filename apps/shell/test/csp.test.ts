@@ -8,36 +8,40 @@ import {
   SHELL_WEB_PREFERENCES,
 } from "../src/main/security";
 
-const HTML_PATH = new URL("../src/renderer/index.html", import.meta.url);
+test.each(["index.html", "settings.html"])(
+  "the %s renderer uses the strict application policy",
+  async (page) => {
+    const html = await readFile(
+      new URL(`../src/renderer/${page}`, import.meta.url),
+      "utf8",
+    );
+    const content = html.match(
+      /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/,
+    )?.[1];
+    expect(content).toBe(SHELL_META_CSP);
+    expect(SHELL_CSP).toContain("frame-ancestors 'none'");
+    expect(SHELL_META_CSP).not.toContain("frame-ancestors");
+    for (const forbidden of [
+      "unsafe-inline",
+      "unsafe-eval",
+      "http:",
+      "https:",
+      "ws:",
+      "wss:",
+      "data:",
+      "blob:",
+      "*",
+    ])
+      expect(SHELL_CSP).not.toContain(forbidden);
+    expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i);
+    expect(html).not.toMatch(/<style\b/i);
+    expect(html).not.toMatch(/\sstyle\s*=/i);
+    expect(appResponseHeaders()["Content-Security-Policy"]).toBe(SHELL_CSP);
+    expect(appResponseHeaders()["X-Content-Type-Options"]).toBe("nosniff");
+  },
+);
 
-test("the renderer meta policy matches the strict application policy", async () => {
-  const html = await readFile(HTML_PATH, "utf8");
-  const content = html.match(
-    /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/,
-  )?.[1];
-  expect(content).toBe(SHELL_META_CSP);
-  expect(SHELL_CSP).toContain("frame-ancestors 'none'");
-  expect(SHELL_META_CSP).not.toContain("frame-ancestors");
-  for (const forbidden of [
-    "unsafe-inline",
-    "unsafe-eval",
-    "http:",
-    "https:",
-    "ws:",
-    "wss:",
-    "data:",
-    "blob:",
-    "*",
-  ])
-    expect(SHELL_CSP).not.toContain(forbidden);
-  expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i);
-  expect(html).not.toMatch(/<style\b/i);
-  expect(html).not.toMatch(/\sstyle\s*=/i);
-  expect(appResponseHeaders()["Content-Security-Policy"]).toBe(SHELL_CSP);
-  expect(appResponseHeaders()["X-Content-Type-Options"]).toBe("nosniff");
-});
-
-test("only three exact same-origin assets resolve and preferences stay sandboxed", async () => {
+test("only exact same-origin assets resolve and preferences stay sandboxed", async () => {
   const rendererDir = "/shell/renderer";
   expect(resolveAppAsset("mars-shell://app/index.html", rendererDir)).toEqual({
     file: `${rendererDir}/index.html`,
@@ -49,6 +53,16 @@ test("only three exact same-origin assets resolve and preferences stay sandboxed
   expect(
     resolveAppAsset("mars-shell://app/shell.css", rendererDir)?.mediaType,
   ).toBe("text/css; charset=utf-8");
+  expect(
+    resolveAppAsset("mars-shell://app/settings.html", rendererDir)?.mediaType,
+  ).toBe("text/html; charset=utf-8");
+  expect(
+    resolveAppAsset("mars-shell://app/settings.js", rendererDir)?.mediaType,
+  ).toBe("text/javascript; charset=utf-8");
+  expect(
+    resolveAppAsset("mars-shell://app/CommitMono-Regular.woff2", rendererDir)
+      ?.mediaType,
+  ).toBe("font/woff2");
   for (const url of [
     "mars-shell://evil/index.html",
     "mars-shell://app/unknown.js",
@@ -76,5 +90,7 @@ test("only three exact same-origin assets resolve and preferences stay sandboxed
     "utf8",
   );
   expect(css).not.toMatch(/@import\b/i);
-  expect(css).not.toMatch(/url\s*\(/i);
+  expect(css.match(/url\s*\([^)]*\)/gi)).toEqual([
+    'url("./CommitMono-Regular.woff2")',
+  ]);
 });

@@ -2,7 +2,7 @@
 
 Default-deny admission and dispatch control for MCP servers, connectors, plugins and skills. This document covers the trust boundary, what this increment actually protects, host setup, and the read-only audit of `m8ven/is-it-legit-mcp`.
 
-Oh My Pi remains the sole live session/model/tool execution owner. This package does not discover integrations, load SDKs, open MCP connections, or run an agent loop. Ambient integrations stay disabled in the MARS runtime; this package is the gate future enablement paths must call.
+Oh My Pi remains the sole live session/model/tool execution owner. The trust package does not discover integrations, load SDKs, open MCP connections, or run an agent loop. Ambient integrations stay disabled; the MARS runtime exposes only MCP tools admitted by the host-configured trust gate.
 
 ## Trust boundary
 
@@ -40,15 +40,64 @@ Any failure is audited as `dispatch.denied` with an error code, and the callback
 
 ## What this increment protects, and what it does not
 
-Protected when a host routes through it: admission (`admit`) and invocation (`invoke`) callbacks wired to this gate, approval/deny/revoke state transitions, and persistence integrity of the trust store.
+Protected when a host routes through it: admission (`admit`) and invocation (`invoke`) callbacks wired to this gate, approval/deny/revoke state transitions, persistence integrity of the trust store, and MCP server loading/dispatch via `@mars/mcp-client` and `mars mcp`.
 
 Not protected or not implemented:
 
-- Integration discovery and enablement in MARS remain **disabled**. No existing code path loads MCPs, connectors, plugins or skills, so nothing is newly enabled or newly gated in the running product until the parent wires `gate` into those paths.
+- Ambient integration discovery remains **disabled**. `@mars/mcp-client` starts with an empty registry and never auto-discovers MCP servers from project configs, `$PATH`, or global editor manifests; servers must be explicitly registered, probed, and approved by the host.
 - Permission metadata is **not a sandbox**. Process isolation, filesystem confinement, network egress control and secret storage remain separate enforcement layers that must enforce the frozen permissions independently.
-- A remote MCP descriptor digest only shows what the server *advertised* at probe time. It cannot prove the server implementation is unchanged. MARS therefore re-probes the descriptor on every dispatch and caps remote-endpoint grants (default 24 h, hard cap 7 days). This is bounded validity, not an immutable-code guarantee.
-- The evidence probe and authorizer are host-supplied. If they are wrong, the gate is wrong. Real user-presence UX (an IDE approval dialog) is future work.
+- A remote MCP descriptor digest only shows what the server *advertised* at probe time. It cannot prove the server implementation is unchanged. MARS therefore re-probes the descriptor on every dispatch and caps remote-endpoint grants. The CLI uses 24 hours by default and rejects longer TTLs. Only a host-configured policy can raise the cap, up to 7 days. This is bounded validity, not an immutable-code guarantee.
+- The evidence probe and authorizer are host-supplied. If they are wrong, the gate is wrong. Real user-presence UX (an IDE approval dialog) is future work; today the host-owned CLI (`mars mcp`) signs approvals with a host-held HMAC key.
 - Cross-process locking uses a lock file with stale-lock recovery on a local POSIX filesystem. Network filesystems are unverified.
+
+## MCP client/loader (`@mars/mcp-client`)
+
+`@mars/mcp-client` wires `@mars/integration-trust` into a real, default-deny MCP client and server loader supporting both **stdio** and **Streamable HTTP** transports:
+
+- **Explicit registry (`FileMcpRegistry` / `MemoryMcpRegistry`)**: Starts empty with no ambient discovery. Persists server definitions in a host-owned state directory outside all agent-writable workspaces (`0700` dir, `0600` files, atomic writes).
+- **Exclusive gate routing (`McpServerLoader`)**:
+  - Every server admission goes through `gate.admit(ctx, { kind: "mcp", integration_id, action: "load" }, loader)`.
+  - Every tool dispatch goes through `gate.invoke(ctx, { kind: "mcp", integration_id, tool_name, permissions, caller, target_origin, credential_ref }, callback)`.
+  - `mars mcp test` and normal agent sessions use the same loader. The runtime gets the loader and registered server IDs, never `admin` or the signing key. It admits each server and exposes only tools with approved `tool.invoke` permissions, then rechecks through the gate on every call.
+- **Model-facing tool schemas**: The model sees a bounded structural projection of each approved tool's input schema: types, properties, `required`, array `items` and local `$ref` targets, without descriptions or other free text. The projection is capped at 256 nodes and depth 8. When a schema exceeds the cap, each node's share of the budget is split among its children, with required fields and array items first. A node's siblings and its ancestors' siblings are projected before its own descendants, so one wide or deep argument cannot hide another argument. `required` lists only fields the model can see. `enum`, `anyOf`, `oneOf` and `allOf` are not projected; the server still validates every call.
+- **Transports**:
+  - **stdio**: Spawns only the explicitly registered command/args with `shell: false` and a minimal environment allowlist (plus `PATH` if configured) so ambient secrets never leak to child processes.
+  - **Streamable HTTP**: Supports both JSON and `text/event-stream` (SSE) responses and tracks sessions separately for each authentication context (including anonymous). Session cleanup uses the credentials that initialized the session. Redirects are not followed.
+- **Per-dispatch descriptor re-probing and drift**: `McpEvidenceProbe` performs live `initialize` + `tools/list` probes (and hashes local stdio entrypoints). Any schema, tool-list, or server-version change changes `binding_sha256`, causing `@mars/integration-trust` to supersede the grant into a new pending review and deny dispatch until re-approved.
+- **Origin-bound credentials**: Credentials are resolved only after `gate.invoke` verifies the host-selected `credential_bindings` entry matches the exact normalized target origin; mismatched origins fail closed with `endpoint_mismatch`.
+- **Mid-flight revocation**: Active invocations poll grant status on the trust store and re-check before returning, aborting the transport and tearing down the connection if the grant is revoked mid-flight.
+- **Untrusted output handling (`sanitizeToolOutput`)**: Every MCP tool result is returned as a deeply frozen `UntrustedToolOutput` (`untrusted: true`) after recursively stripping prompt-steering keys (`_instructions`, `instructions`, `system_prompt`, etc.) and XML-style steering tags (`<system>`, `<instructions>`, etc.) from content and structured output.
+
+## Host-owned CLI approval flow (`mars mcp`)
+
+To expose approved tools in agent sessions, start `mars serve --mcp-state-dir <dir> --owner <id> --project <id>` with the same host-private state directory and scope used for `mars mcp review` and `mars mcp approve`. Without this flag, agent sessions expose no MCP tools. Text-only models can run without MCP tools. Each session closes its own connections on shutdown.
+
+`mars mcp` provides a host-owned CLI backed by `createHostMcpControlPlane` (storing the trust store, server registry, and 32-byte HMAC approval key in a host-owned state directory outside workspaces, defaulting to `$XDG_STATE_HOME/mars/integration-trust` or `~/.local/state/mars/integration-trust`):
+
+Server registrations are isolated by scope. If upgrading from a build with a shared registry, run review and approval again in each intended scope; unscoped registrations are not imported automatically. New stdio reviews bind both the resolved executable and the optional entrypoint.
+
+```sh
+# List registered servers, pending reviews, and active grants (empty by default)
+mars mcp list [--state-dir <dir>] [--owner <id>] [--project <id>] [--json]
+
+# Register + live-probe an MCP server and open a pending trust review
+mars mcp review <server-id> (--command <cmd> --allow-stdio-probe [--arg <arg>]... | --url <url>) \
+  [--permission <cap>:<res>]... [--credential <ref>@<origin>]... [--json]
+
+# Approve a pending review using the host-held HMAC key (remote CLI default and maximum: 24h)
+mars mcp approve <review-id> [--ttl-ms <ms>] [--approved-by <name>] [--json]
+
+# Test admission or invoke a tool through gate.admit / gate.invoke
+mars mcp test <server-id> [--tool <name>] [--input <json>] \
+  [--permission <cap>:<res>]... [--credential-ref <ref>] [--target-origin <origin>] [--json]
+
+# Revoke an active grant immediately
+mars mcp revoke <grant-id> [--approved-by <name>] [--json]
+```
+
+An explicit review permission list replaces the defaults. For HTTP tools, include `--permission network.connect:<origin>` along with the permitted tools. If using a credential, include its `credential.use:<ref>` permission in any explicit permission list.
+
+Model output, tool output, project configs, and downloaded skills never have access to the host approval key or `admin` methods and cannot self-approve.
 
 ## Host setup / migration
 
