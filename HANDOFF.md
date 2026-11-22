@@ -2,6 +2,12 @@
 
 ## Editor workbench groundwork
 
+Workspace file reads now revalidate component policy and opened-file identity
+before reading bytes, including parent-swap regression tests. This hardens the
+read path, not all concurrent filesystem mutations: snapshot traversal and
+write/remove path-based mutations need separate race-hardening work. Portable
+path rechecks are not a substitute for OS-enforced workspace isolation.
+
 Added read-only `tasks.file {task_id, path}` for a task's private workspace,
 reusing provider path policy, task/scope authorization, host-private byte
 rejection and bounded base64 responses. Tree listing remains out of scope.
