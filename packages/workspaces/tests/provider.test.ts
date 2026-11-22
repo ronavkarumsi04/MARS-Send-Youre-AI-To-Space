@@ -90,7 +90,7 @@ test.skipIf(process.platform !== "linux")(
         Buffer.from(
           await f.provider.readBytes(context, f.workspace, "tracked.txt", 100),
         ).toString(),
-      ).toBe("baseline tracked\n");
+      ).toBe("dirty tracked\n");
       await expect(
         f.provider.readBytes(context, f.workspace, "tracked.txt", 1),
       ).rejects.toMatchObject({ code: "limit_exceeded" });
@@ -98,6 +98,9 @@ test.skipIf(process.platform !== "linux")(
       await link(join(tree, "tracked.txt"), join(tree, "hard.txt"));
       await expect(
         f.provider.readBytes(context, f.workspace, "hard.txt", 100),
+      ).rejects.toMatchObject({ code: "policy" });
+      await expect(
+        f.provider.read(context, f.workspace, "hard.txt"),
       ).rejects.toMatchObject({ code: "policy" });
       expect(writes).toBe(before);
     } finally {
