@@ -9,7 +9,7 @@ test("restores chat and task drafts together after the webview is recreated", ()
     criteria: "Preserve this criterion",
     chatDraft: "Unsent chat message",
     activeId,
-    page: "settings",
+    page: "settings" as const,
   };
   expect(restoreWorkbenchState(JSON.parse(JSON.stringify(saved)))).toEqual(
     saved,
