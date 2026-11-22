@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -143,9 +144,14 @@ async function packageMac(stage: string) {
   const contents = join(bundle, "Contents");
   const resources = join(contents, "Resources");
   run("ditto", [join(electron, "Electron.app"), bundle]);
+  await rename(
+    join(contents, "MacOS", "Electron"),
+    join(contents, "MacOS", "MARS"),
+  );
   await stageApp(resources, stage);
   const plist = join(contents, "Info.plist");
   for (const [key, value] of [
+    ["CFBundleExecutable", "MARS"],
     ["CFBundleName", "MARS"],
     ["CFBundleDisplayName", "MARS"],
     ["CFBundleIdentifier", "io.github.tanaypatel917-lab.mars"],
@@ -196,12 +202,13 @@ async function packageLinux(stage: string) {
   await mkdir(join(locals, "pixmaps"), { recursive: true });
   await mkdir(control, { recursive: true });
   await cp(electron, app, { recursive: true, verbatimSymlinks: true });
+  await rename(join(app, "electron"), join(app, "mars"));
   await chmod(join(app, "chrome-sandbox"), 0o4755);
   await stageApp(join(app, "resources"), stage);
   await copyFile(icon, join(locals, "pixmaps", "mars.png"));
   await writeFile(
     join(locals, "applications", "mars.desktop"),
-    "[Desktop Entry]\nType=Application\nName=MARS\nComment=MARS desktop workbench\nExec=/opt/mars/electron\nIcon=mars\nTerminal=false\nCategories=Development;\n",
+    "[Desktop Entry]\nType=Application\nName=MARS\nComment=MARS desktop workbench\nExec=/opt/mars/mars\nIcon=mars\nTerminal=false\nCategories=Development;\n",
   );
   const arch = process.arch === "arm64" ? "arm64" : "amd64";
   await writeFile(
