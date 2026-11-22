@@ -3466,7 +3466,6 @@ export async function createWorkbenchHost(
       if (!options.workspace.readBytes) throw new WorkbenchError("unavailable");
       const metadata = {
         path,
-        data_base64: "",
         media_type: "application/octet-stream",
         size: MAX_RESPONSE_BYTES,
         sha256: "0".repeat(64),
@@ -3475,7 +3474,9 @@ export async function createWorkbenchHost(
         3 *
         Math.floor(
           (MAX_RESPONSE_BYTES -
-            Buffer.byteLength(JSON.stringify({ result: metadata }))) /
+            Buffer.byteLength(
+              JSON.stringify({ result: { ...metadata, data_base64: "" } }),
+            )) /
             4,
         );
       const bytes = await options.workspace.readBytes(
@@ -3484,18 +3485,21 @@ export async function createWorkbenchHost(
         path,
         maxBytes,
       );
-      const result = {
+      const resultMetadata = {
         ...metadata,
         size: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("hex"),
-        data_base64: Buffer.from(bytes).toString("base64"),
       };
       const patterns = await privatePatterns(context, taskId);
       assertPublicBytes(bytes, patterns);
       assertPublicBytes(
-        new TextEncoder().encode(JSON.stringify(result)),
+        new TextEncoder().encode(JSON.stringify(resultMetadata)),
         patterns,
       );
+      const result = {
+        ...resultMetadata,
+        data_base64: Buffer.from(bytes).toString("base64"),
+      };
       if (Buffer.byteLength(JSON.stringify({ result })) > MAX_RESPONSE_BYTES)
         throw new WorkbenchError("too_large");
       return result;

@@ -94,8 +94,8 @@ function task(): Task {
     artifacts: [],
   };
 }
-async function fixture(contextWindow = 32000) {
-  const base = await mkdtemp(join(tmpdir(), "mars-service-"));
+async function fixture(contextWindow = 32000, prefix = "mars-service-") {
+  const base = await mkdtemp(join(tmpdir(), prefix));
   cleanup.push(() => rm(base, { recursive: true, force: true }));
   const source = join(base, "source");
   const root = join(base, "state");
@@ -315,6 +315,46 @@ test.skipIf(process.platform !== "linux")(
     expect(swaps).toBeGreaterThan(0);
   },
   20000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "task file privacy checks raw bytes, not incidental base64",
+  async () => {
+    const f = await fixture(32000, "marsservice");
+    const encoded = f.source + "A".repeat((4 - (f.source.length % 4)) % 4);
+    const binary = Buffer.from(encoded, "base64");
+    expect(binary.toString("base64")).toContain(f.source);
+    expect(binary.includes(Buffer.from(f.source))).toBe(false);
+    await writeFile(join(f.source, "binary.dat"), binary);
+    const { client, service, connection } = await f.start(async () =>
+      sse({ content: "Done" }),
+    );
+    const created = await client.create(task());
+    await client.start(created.task_id, {
+      expectedRevision: 0,
+      approvals: { read: true, write: false, execute: false },
+    });
+    await eventually(
+      () => client.inspect(created.task_id),
+      (view) => view.status === "completed",
+    );
+    const response = await fetch(`${service.url}/v1/rpc`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        method: "tasks.file",
+        context: { schema_version: 1, scope, request_id: randomUUID() },
+        params: { task_id: created.task_id, path: "binary.dat" },
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).result.data_base64).toBe(
+      binary.toString("base64"),
+    );
+  },
 );
 
 test.skipIf(process.platform !== "linux")(
