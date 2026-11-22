@@ -49,6 +49,11 @@ jobs:
           bun run --cwd apps/shell native:install
       - name: Test workspace and workbench reads on macOS
         if: runner.os == 'macOS'
+        run: |
+          bun test packages/workspaces/tests/anchored-read.test.ts
+          bun test packages/workspaces/tests/provider.test.ts packages/workbench/src/service.test.ts -t '^(bounded reads|read refuses a parent symlink swap|task file )'
+      - name: Test full workspace and workbench suites on Linux
+        if: runner.os == 'Linux'
         run: bun test packages/workbench packages/workspaces
       - name: Build and smoke-test the bundled workbench
         run: bun run --cwd apps/shell package
