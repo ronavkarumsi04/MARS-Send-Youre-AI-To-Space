@@ -9,6 +9,7 @@ import type { BridgeResult, ShellBridge } from "../shared/methods";
 import {
   TEAM_CHAT_MAX_MESSAGE_CHARS,
   TEAM_CHAT_MAX_SEARCH_CHARS,
+  TEAM_CHAT_METHODS,
   type TeamChatBridgeApi,
 } from "../shared/team-chat";
 import type { ShellDocument, ShellElement } from "./dom";
@@ -107,8 +108,49 @@ export function createController(
   doc: ShellDocument,
   root: ShellElement,
   teamChat?: TeamChatBridgeApi,
+  options: {
+    scheduleRefresh?: (callback: () => void, delayMs: number) => () => void;
+  } = {},
 ) {
+  const scheduleRefresh =
+    options.scheduleRefresh ??
+    ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => clearTimeout(timer);
+    });
+  let disposed = false;
+  let cancelRefresh: (() => void) | undefined;
+  let refreshDelayMs = 3000;
+  let pollingTaskId: string | undefined;
+  const trackPollingTask = (task: Task | undefined) => {
+    pollingTaskId =
+      task?.status === "pending" || task?.status === "running"
+        ? task.task_id
+        : undefined;
+  };
+  const clearRefresh = () => {
+    cancelRefresh?.();
+    cancelRefresh = undefined;
+  };
   let selectedId: string | undefined;
+  let selectionGeneration = 0;
+  let searchGeneration = 0;
+  let draftGeneration = 0;
+  const teamApi = teamChat;
+  if (teamApi) {
+    teamChat = Object.fromEntries(
+      TEAM_CHAT_METHODS.map((method) => [
+        method,
+        async (params: never) => {
+          try {
+            return await teamApi[method](params);
+          } catch {
+            return { ok: false, code: "unavailable" };
+          }
+        },
+      ]),
+    ) as TeamChatBridgeApi;
+  }
   let loadRequested = false;
   let loadPromise: Promise<void> | undefined;
   let clientSeq = 1;
@@ -136,6 +178,23 @@ export function createController(
   let state: ShellState = { tasks: [], events: [], artifacts: [] };
 
   const render = () => {
+    if (disposed) return;
+    const scrollPositions = new Map(
+      Array.from(root.querySelectorAll("[data-scroll-key]")).map((element) => [
+        element.getAttribute("data-scroll-key"),
+        element.scrollTop ?? 0,
+      ]),
+    );
+    const restoreScroll = () => {
+      for (const element of Array.from(
+        root.querySelectorAll("[data-scroll-key]"),
+      )) {
+        const top = scrollPositions.get(
+          element.getAttribute("data-scroll-key"),
+        );
+        if (top !== undefined) element.scrollTop = top;
+      }
+    };
     const active = doc.activeElement;
     const focusKey = active?.getAttribute(FOCUS_KEY) ?? null;
     const selectionStart =
@@ -151,12 +210,14 @@ export function createController(
       teamChat: {
         ...teamState,
         onClose: () => {
+          searchGeneration++;
           teamState = { ...teamState, open: false };
           render();
         },
         onSelectConversation: (conversationId) =>
           void openTeamConversation(conversationId),
         onDraftChange: (text) => {
+          draftGeneration++;
           teamState = { ...teamState, draft: text };
         },
         onSend: (text) => void sendTeamMessage(text),
@@ -167,6 +228,9 @@ export function createController(
         onResolveReference: (messageId, referenceId) =>
           void resolveTeamReference(messageId, referenceId),
         onSearch: (query) => void searchTeamMessages(query),
+        onSearchChange: (query) => {
+          teamState = { ...teamState, searchQuery: query };
+        },
         onSwitchViewer: (viewer) => void switchTeamViewer(viewer),
         onLoadOlder: () => void loadOlderTeamMessages(),
       },
@@ -233,7 +297,10 @@ export function createController(
       onExportPatch: () => void handleExportPatch(),
     };
     root.replaceChildren(renderShell(doc, state));
-    if (focusKey === null) return;
+    if (focusKey === null) {
+      restoreScroll();
+      return;
+    }
     const targets = Array.from(root.querySelectorAll(`[${FOCUS_KEY}]`));
     const keyed = (key: string) =>
       targets.find((element) => element.getAttribute(FOCUS_KEY) === key);
@@ -256,6 +323,7 @@ export function createController(
         // Ignore input types that do not support selection ranges.
       }
     }
+    restoreScroll();
   };
 
   const displayError = (message: string) => {
@@ -337,6 +405,10 @@ export function createController(
     const preserveHistory = options?.preserveHistory === true;
     const switchedConversation =
       teamState.activeConversationId !== conversationId;
+    if (switchedConversation) {
+      draftGeneration++;
+      searchGeneration++;
+    }
     const loadingState: TeamChatViewState = {
       ...teamState,
       activeConversationId: conversationId,
@@ -480,10 +552,12 @@ export function createController(
   const sendTeamMessage = async (body: string) => {
     if (!teamChat || !teamState.activeConversationId) return;
     const convId = teamState.activeConversationId;
+    const sentDraftGeneration = draftGeneration;
+    const isCurrent = () => teamState.activeConversationId === convId;
     const keepDraft = (notice: string) => {
+      if (!isCurrent()) return;
       teamState = {
         ...teamState,
-        draft: teamState.draft.trim() === body ? teamState.draft : body,
         notice,
       };
       render();
@@ -510,7 +584,11 @@ export function createController(
         );
         return;
       }
-      const sent: TeamChatViewState = { ...teamState, draft: "" };
+      if (!isCurrent()) return;
+      const sent: TeamChatViewState = {
+        ...teamState,
+        ...(draftGeneration === sentDraftGeneration ? { draft: "" } : {}),
+      };
       delete sent.notice;
       teamState = sent;
       await openTeamConversation(convId, { preserveHistory: true });
@@ -602,6 +680,7 @@ export function createController(
   };
 
   const searchTeamMessages = async (query: string) => {
+    const generation = ++searchGeneration;
     if (!teamChat) return;
     const trimmed = query.trim();
     if (!trimmed) {
@@ -621,6 +700,7 @@ export function createController(
       return;
     }
     const res = await teamChat["team.search"]({ query: trimmed });
+    if (generation !== searchGeneration) return;
     if (!res.ok) {
       teamState = {
         ...teamState,
@@ -641,6 +721,7 @@ export function createController(
   };
 
   const switchTeamViewer = async (viewer: string) => {
+    searchGeneration++;
     if (!teamChat) return;
     const res = await teamChat["team.switchViewer"]({ viewer });
     if (!res.ok) {
@@ -973,6 +1054,9 @@ export function createController(
     const verification = state.verification;
     const diff = state.diff;
     if (!task || !verification || !diff) return;
+    const generation = selectionGeneration;
+    const isCurrent = () =>
+      generation === selectionGeneration && selectedId === task.task_id;
     const expectedPatchSha = verification.patch_sha256 ?? null;
     if (
       verification.state !== "verified" ||
@@ -996,6 +1080,7 @@ export function createController(
           expected_patch_sha256: expectedPatchSha,
         }),
       );
+      if (!isCurrent()) return;
       if (!exported.verified) {
         patchExport = {
           busy: false,
@@ -1019,6 +1104,7 @@ export function createController(
         task_id: task.task_id,
         artifact: exported.artifact,
       });
+      if (!isCurrent()) return;
       if (!fetched.ok) {
         patchExport = {
           busy: false,
@@ -1033,6 +1119,7 @@ export function createController(
         fetched.result,
         globalThis.crypto.subtle,
       );
+      if (!isCurrent()) return;
       if (!verifiedSha256) {
         patchExport = {
           busy: false,
@@ -1051,6 +1138,7 @@ export function createController(
       patchExport = nextExport;
       render();
     } catch (error) {
+      if (!isCurrent()) return;
       patchExport = {
         busy: false,
         error: error instanceof Error ? error.message : "Patch export failed.",
@@ -1166,7 +1254,9 @@ export function createController(
       await loadTeamBootstrap();
       const selected =
         tasks.find((task) => task.task_id === selectedId) ?? tasks[0];
+      if (selectedId !== selected?.task_id) selectionGeneration++;
       selectedId = selected?.task_id;
+      trackPollingTask(selected);
       if (!selected) {
         state = {
           describe: described,
@@ -1176,11 +1266,12 @@ export function createController(
           onRefresh: () => void load(),
         };
         render();
-        return;
+        return true;
       }
       const inspected = await value(
         bridge["tasks.inspect"]({ task_id: selected.task_id }),
       );
+      if (selectedId === inspected.task_id) trackPollingTask(inspected);
       const [verification, diff, evidence, events] = await Promise.all([
         optionalValue(() =>
           value(bridge["tasks.verification"]({ task_id: selected.task_id })),
@@ -1332,7 +1423,11 @@ export function createController(
         transcript,
         artifacts,
         onSelect: (taskId) => {
+          selectionGeneration++;
+          searchGeneration++;
           selectedId = taskId;
+          trackPollingTask(state.tasks.find((task) => task.task_id === taskId));
+          refreshDelayMs = 3000;
           patchExport = { busy: false };
           launch = createInitialLaunch();
           teamState = { ...teamState, open: false };
@@ -1349,24 +1444,38 @@ export function createController(
       if (!events.ok) nextState.eventsError = events.error;
       state = nextState;
       render();
+      return true;
     } catch (error) {
       displayError(
         error instanceof Error ? error.message : "Workbench is unavailable.",
       );
+      return false;
     }
   };
 
   const load = () => {
+    if (disposed) return Promise.resolve();
+    clearRefresh();
     loadRequested = true;
     if (!loadPromise) {
       loadPromise = (async () => {
-        while (loadRequested) {
+        while (loadRequested && !disposed) {
           loadRequested = false;
-          await loadOnce();
+          const success = await loadOnce();
+          refreshDelayMs = success
+            ? 3000
+            : Math.min(refreshDelayMs * 2, 30_000);
         }
       })().finally(() => {
         loadPromise = undefined;
+        if (disposed) return;
         if (loadRequested) void load();
+        else if (pollingTaskId && pollingTaskId === selectedId) {
+          cancelRefresh = scheduleRefresh(() => {
+            cancelRefresh = undefined;
+            void load();
+          }, refreshDelayMs);
+        }
       });
     }
     return loadPromise;
@@ -1376,5 +1485,11 @@ export function createController(
     while (loadPromise) await loadPromise;
   };
 
-  return { load, settled };
+  const dispose = () => {
+    disposed = true;
+    loadRequested = false;
+    clearRefresh();
+  };
+
+  return { load, settled, dispose };
 }

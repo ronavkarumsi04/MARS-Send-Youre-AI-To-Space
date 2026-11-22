@@ -140,7 +140,13 @@ test("only whitelisted methods reach transport and IPC refuses untrusted senders
       },
     },
     ipcBridge,
-    { trustedOrigin: "mars-shell://app" },
+    {
+      trustedOrigin: "mars-shell://app",
+      trustedContents: {
+        mainFrame: { url: "mars-shell://app/index.html" },
+        isDestroyed: () => false,
+      },
+    },
   );
   const refused = await listener?.(
     { senderFrame: { url: "https://evil.example/index.html" } },

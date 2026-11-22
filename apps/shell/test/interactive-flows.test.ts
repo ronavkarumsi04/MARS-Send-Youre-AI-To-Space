@@ -20,7 +20,7 @@ import {
   sha256Hex,
 } from "../scripts/fixture-workbench";
 import { type Bridge, createBridge } from "../src/main/bridge";
-import { registerTeamChatBridge } from "../src/main/ipc";
+import { type IpcEventLike, registerTeamChatBridge } from "../src/main/ipc";
 import {
   createTeamChatBridge,
   type TeamChatBridge,
@@ -167,6 +167,229 @@ function findByAttr(
 ): MiniElement | undefined {
   return findAll(root, (el) => el.getAttribute(attr) === value)[0];
 }
+
+async function openChat(doc: MiniDocument) {
+  findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+  await waitFor(() =>
+    Boolean(findByAttr(doc.root, "data-focus-key", "team-composer")),
+  );
+}
+
+function editDraft(doc: MiniDocument, text: string) {
+  const box = findByAttr(doc.root, "data-focus-key", "team-composer");
+  if (!box) throw new Error("composer missing");
+  box.value = text;
+  box.dispatch("input");
+}
+
+function sendMessage(doc: MiniDocument) {
+  findAll(
+    doc.root,
+    (el) => el.tagName === "BUTTON" && el.textContent === "Send message",
+  )[0]?.click();
+}
+
+function searchChat(doc: MiniDocument, query: string) {
+  const input = findByAttr(doc.root, "class", "team-search-input");
+  if (!input) throw new Error("search missing");
+  input.value = query;
+  findByAttr(doc.root, "class", "team-search-btn")?.click();
+}
+
+test("renderer race: obsolete export errors are discarded even after selecting away and back", async () => {
+  const { bridge, close } = await startTestWorkbench();
+  const pending =
+    Promise.withResolvers<Awaited<ReturnType<ShellBridge["tasks.export"]>>>();
+  let called = false;
+  try {
+    const doc = new MiniDocument();
+    const controller = createController(
+      {
+        ...bridge,
+        "tasks.export": () => {
+          called = true;
+          return pending.promise;
+        },
+      },
+      doc,
+      doc.root,
+    );
+    await controller.load();
+    const select = async (id: string) => {
+      findAll(
+        doc.root,
+        (el) =>
+          el.tagName === "BUTTON" && el.getAttribute("data-task-id") === id,
+      )[0]?.click();
+      await controller.settled();
+    };
+    await select("fixture-completed-verified");
+    findAll(
+      doc.root,
+      (el) =>
+        el.tagName === "BUTTON" &&
+        el.textContent.includes("Export verified patch"),
+    )[0]?.click();
+    await waitFor(() => called);
+    await select("fixture-running");
+    await select("fixture-completed-verified");
+    pending.resolve({
+      ok: false,
+      error: { kind: "unavailable", message: "obsolete export failure" },
+    });
+    await Bun.sleep(20);
+    expect(doc.root.textContent).not.toContain("obsolete export failure");
+  } finally {
+    close();
+  }
+});
+
+test("renderer race: send preserves edited drafts and never returns to the originating conversation", async () => {
+  const { bridge, close } = await startTestWorkbench();
+  const base = toShellTeamChat(
+    createTeamChatBridge({ service: new FixtureTeamService() }),
+  );
+  let pending =
+    Promise.withResolvers<
+      Awaited<ReturnType<TeamChatBridgeApi["team.send"]>>
+    >();
+  let calls = 0;
+  try {
+    const doc = new MiniDocument();
+    const controller = createController(bridge, doc, doc.root, {
+      ...base,
+      "team.send": async (params) => {
+        calls++;
+        await pending.promise;
+        return base["team.send"](params);
+      },
+    });
+    await controller.load();
+    await openChat(doc);
+    editDraft(doc, "first draft");
+    sendMessage(doc);
+    await waitFor(() => calls === 1);
+    editDraft(doc, "newer draft");
+    pending.resolve({ ok: false, code: "invalid" });
+    await waitFor(() => doc.root.textContent.includes("first draft"));
+    expect(findByAttr(doc.root, "data-focus-key", "team-composer")?.value).toBe(
+      "newer draft",
+    );
+    pending = Promise.withResolvers();
+    sendMessage(doc);
+    await waitFor(() => calls === 2);
+    const other = findAll(
+      doc.root,
+      (el) =>
+        el.tagName === "BUTTON" &&
+        el.getAttribute("data-conversation-id") !== null &&
+        el.getAttribute("aria-pressed") !== "true",
+    )[0];
+    const otherId = other?.getAttribute("data-conversation-id");
+    expect(otherId).toBeTruthy();
+    other?.click();
+    await waitFor(
+      () =>
+        findByAttr(doc.root, "data-focus-key", "team-composer")?.value === "",
+    );
+    editDraft(doc, "other conversation draft");
+    pending.resolve({ ok: false, code: "invalid" });
+    await Bun.sleep(30);
+    expect(findByAttr(doc.root, "data-focus-key", "team-composer")?.value).toBe(
+      "other conversation draft",
+    );
+    expect(
+      findByAttr(doc.root, "data-conversation-id", otherId ?? "")?.getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+  } finally {
+    close();
+  }
+});
+
+test("renderer race: search ignores out-of-order replies, clear, and conversation changes", async () => {
+  const { bridge, close } = await startTestWorkbench();
+  const base = toShellTeamChat(
+    createTeamChatBridge({ service: new FixtureTeamService() }),
+  );
+  const requests: ReturnType<
+    typeof Promise.withResolvers<
+      Awaited<ReturnType<TeamChatBridgeApi["team.search"]>>
+    >
+  >[] = [];
+  try {
+    const doc = new MiniDocument();
+    const controller = createController(bridge, doc, doc.root, {
+      ...base,
+      "team.search": () => {
+        const request =
+          Promise.withResolvers<
+            Awaited<ReturnType<TeamChatBridgeApi["team.search"]>>
+          >();
+        requests.push(request);
+        return request.promise;
+      },
+    });
+    await controller.load();
+    await openChat(doc);
+    searchChat(doc, "old");
+    searchChat(doc, "new");
+    requests[1]?.resolve({ ok: false, code: "not_found" });
+    await waitFor(() => doc.root.textContent.includes("not_found"));
+    requests[0]?.resolve({ ok: false, code: "invalid" });
+    await Bun.sleep(20);
+    expect(findByAttr(doc.root, "class", "team-search-input")?.value).toBe(
+      "new",
+    );
+    searchChat(doc, "clear me");
+    searchChat(doc, "");
+    requests[2]?.resolve({ ok: false, code: "invalid" });
+    await Bun.sleep(20);
+    expect(findByAttr(doc.root, "class", "team-search-input")?.value).toBe("");
+    searchChat(doc, "switch");
+    findAll(
+      doc.root,
+      (el) =>
+        el.tagName === "BUTTON" &&
+        el.getAttribute("data-conversation-id") !== null &&
+        el.getAttribute("aria-pressed") !== "true",
+    )[0]?.click();
+    requests[3]?.resolve({ ok: false, code: "invalid" });
+    await Bun.sleep(20);
+    expect(doc.root.textContent).not.toContain("Team chat error: invalid");
+  } finally {
+    close();
+  }
+});
+
+test("renderer race: rejected action IPC becomes the normal sanitized action error", async () => {
+  const { bridge, close } = await startTestWorkbench();
+  const base = toShellTeamChat(
+    createTeamChatBridge({ service: new FixtureTeamService() }),
+  );
+  const pending =
+    Promise.withResolvers<
+      Awaited<ReturnType<TeamChatBridgeApi["team.search"]>>
+    >();
+  try {
+    const doc = new MiniDocument();
+    const controller = createController(bridge, doc, doc.root, {
+      ...base,
+      "team.search": () => pending.promise,
+    });
+    await controller.load();
+    await openChat(doc);
+    searchChat(doc, "reject");
+    pending.reject(new Error("/private/host/secret"));
+    await waitFor(() =>
+      doc.root.textContent.includes("Team chat error: unavailable"),
+    );
+    expect(doc.root.textContent).not.toContain("/private/host/secret");
+  } finally {
+    close();
+  }
+});
 
 describe("interactive workbench bridge and fixture lifecycle", () => {
   test("creates, starts, steers, cancels, and exports verified patches with SHA-256 verification", async () => {
@@ -327,12 +550,17 @@ describe("interactive workbench bridge and fixture lifecycle", () => {
 describe("Team Chat IPC bridge security and operations", () => {
   test("enforces sender origin, allowlist, messaging, reactions, pins, and search", async () => {
     const teamBridge = createTeamChatBridge();
+    const trustedContents = {
+      mainFrame: { url: "mars-shell://app/index.html" },
+      isDestroyed: () => false,
+    };
+    const trustedEvent = {
+      sender: trustedContents,
+      senderFrame: trustedContents.mainFrame,
+    };
     const handlers = new Map<
       string,
-      (
-        event: { senderFrame: { url: string } | null },
-        payload: unknown,
-      ) => Promise<unknown>
+      (event: IpcEventLike, payload: unknown) => Promise<unknown>
     >();
     registerTeamChatBridge(
       {
@@ -341,7 +569,7 @@ describe("Team Chat IPC bridge security and operations", () => {
         },
       },
       teamBridge,
-      { trustedOrigin: "mars-shell://app" },
+      { trustedOrigin: "mars-shell://app", trustedContents },
     );
     const handler = handlers.get(TEAM_CHAT_CHANNEL);
     expect(handler).toBeDefined();
@@ -356,19 +584,19 @@ describe("Team Chat IPC bridge security and operations", () => {
       code: "forbidden",
     });
 
-    const unknownMethod = await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.deleteEverything", params: {} },
-    );
+    const unknownMethod = await handler(trustedEvent, {
+      method: "team.deleteEverything",
+      params: {},
+    });
     expect(unknownMethod).toEqual({
       ok: false,
       code: "forbidden",
     });
 
-    const stateRes = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.state", params: {} },
-    )) as {
+    const stateRes = (await handler(trustedEvent, {
+      method: "team.state",
+      params: {},
+    })) as {
       ok: boolean;
       value?: {
         conversations: { conversation_id: string }[];
@@ -381,27 +609,24 @@ describe("Team Chat IPC bridge security and operations", () => {
     expect(convId).toBeTruthy();
     if (!convId) return;
 
-    const opened = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.open", params: { conversation_id: convId } },
-    )) as { ok: boolean; value?: { messages: { message_id: string }[] } };
+    const opened = (await handler(trustedEvent, {
+      method: "team.open",
+      params: { conversation_id: convId },
+    })) as { ok: boolean; value?: { messages: { message_id: string }[] } };
     expect(opened.ok).toBe(true);
 
-    const sent = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.send",
-        params: {
-          input: {
-            conversation_id: convId,
-            body: "Hello from shell test <img src=x onerror=alert(1)>",
-            client_message_id: "test-msg-1",
-            reply_to: null,
-            references: [],
-          },
+    const sent = (await handler(trustedEvent, {
+      method: "team.send",
+      params: {
+        input: {
+          conversation_id: convId,
+          body: "Hello from shell test <img src=x onerror=alert(1)>",
+          client_message_id: "test-msg-1",
+          reply_to: null,
+          references: [],
         },
       },
-    )) as {
+    })) as {
       ok: boolean;
       value?: { message_id: string; sequence: number; duplicate: boolean };
     };
@@ -410,35 +635,29 @@ describe("Team Chat IPC bridge security and operations", () => {
     expect(sent.value.message_id).toBeTruthy();
     expect(sent.value.duplicate).toBe(false);
 
-    const reacted = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.setReaction",
-        params: {
-          message_id: sent.value.message_id,
-          emoji: "👍",
-          on: true,
-        },
+    const reacted = (await handler(trustedEvent, {
+      method: "team.setReaction",
+      params: {
+        message_id: sent.value.message_id,
+        emoji: "👍",
+        on: true,
       },
-    )) as { ok: boolean };
+    })) as { ok: boolean };
     expect(reacted.ok).toBe(true);
 
-    const pinned = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      {
-        method: "team.setPinned",
-        params: {
-          conversation_id: convId,
-          pinned: true,
-        },
+    const pinned = (await handler(trustedEvent, {
+      method: "team.setPinned",
+      params: {
+        conversation_id: convId,
+        pinned: true,
       },
-    )) as { ok: boolean };
+    })) as { ok: boolean };
     expect(pinned.ok).toBe(true);
 
-    const searched = (await handler(
-      { senderFrame: { url: "mars-shell://app/index.html" } },
-      { method: "team.search", params: { query: "Hello from shell test" } },
-    )) as { ok: boolean; value?: { hits: unknown[] } };
+    const searched = (await handler(trustedEvent, {
+      method: "team.search",
+      params: { query: "Hello from shell test" },
+    })) as { ok: boolean; value?: { hits: unknown[] } };
     expect(searched.ok).toBe(true);
     expect((searched.value?.hits.length ?? 0) > 0).toBe(true);
   });

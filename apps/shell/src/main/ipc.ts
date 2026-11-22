@@ -5,7 +5,18 @@ import type { Bridge } from "./bridge";
 import type { TeamChatBridge } from "./team-chat-bridge";
 
 export type IpcEventLike = {
+  sender?: unknown;
   senderFrame?: { url?: string } | null;
+};
+
+export type IpcContentsLike = {
+  mainFrame: { url?: string };
+  isDestroyed(): boolean;
+};
+
+type SenderOptions = {
+  trustedOrigin: string;
+  trustedContents: IpcContentsLike;
 };
 
 export type IpcMainLike = {
@@ -15,8 +26,17 @@ export type IpcMainLike = {
   ): void;
 };
 
-function trustedSender(event: IpcEventLike, trustedOrigin: string): boolean {
+export function trustedSender(
+  event: IpcEventLike,
+  { trustedOrigin, trustedContents }: SenderOptions,
+): boolean {
   try {
+    if (
+      trustedContents.isDestroyed() ||
+      event.sender !== trustedContents ||
+      event.senderFrame !== trustedContents.mainFrame
+    )
+      return false;
     const trusted = new URL(trustedOrigin);
     const sender = new URL(event.senderFrame?.url ?? "");
     return (
@@ -53,12 +73,11 @@ function requestPayload(
 export function registerBridge(
   ipcMain: IpcMainLike,
   bridge: Bridge,
-  options: { trustedOrigin: string },
+  options: SenderOptions,
 ): void {
   ipcMain.handle(BRIDGE_CHANNEL, async (event, payload) => {
     try {
-      if (!trustedSender(event, options.trustedOrigin))
-        return bridgeFailure("refused");
+      if (!trustedSender(event, options)) return bridgeFailure("refused");
       const request = requestPayload(payload);
       if (!request) return bridgeFailure("refused");
       return await bridge.call(request.method, request.params);
@@ -71,12 +90,11 @@ export function registerBridge(
 export function registerTeamChatBridge(
   ipcMain: IpcMainLike,
   teamChat: TeamChatBridge,
-  options: { trustedOrigin: string },
+  options: SenderOptions,
 ): void {
   ipcMain.handle(TEAM_CHAT_CHANNEL, async (event, payload) => {
     try {
-      if (!trustedSender(event, options.trustedOrigin))
-        return fail("forbidden");
+      if (!trustedSender(event, options)) return fail("forbidden");
       const request = requestPayload(payload);
       if (!request) return fail("invalid");
       return await teamChat.call(request.method, request.params);

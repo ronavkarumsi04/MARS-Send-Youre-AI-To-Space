@@ -19,6 +19,7 @@ import {
   safeStorage,
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
+import { trustedSender } from "./ipc";
 import { startLocalWorkbench } from "./local-workbench";
 import { SHELL_WEB_PREFERENCES } from "./security";
 
@@ -128,7 +129,10 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     if (
       !modelWindow ||
       modelWindow.isDestroyed() ||
-      event.sender !== modelWindow.webContents ||
+      !trustedSender(event, {
+        trustedOrigin: "mars-shell://app",
+        trustedContents: modelWindow.webContents,
+      }) ||
       event.senderFrame?.url !== settingsPage
     )
       return "refused";

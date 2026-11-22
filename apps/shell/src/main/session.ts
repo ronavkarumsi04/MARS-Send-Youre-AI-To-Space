@@ -15,6 +15,7 @@ const RETRYABLE_ERRORS = new Set<BridgeErrorKind>([
   "not_connected",
   "unavailable",
   "unauthorized",
+  "timeout",
 ]);
 
 export function createReconnectingBridge(options: {
