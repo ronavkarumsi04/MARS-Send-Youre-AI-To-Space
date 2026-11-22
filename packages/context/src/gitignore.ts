@@ -84,7 +84,12 @@ function globSource(pattern: string): string {
     if (character === "\\" && index + 1 < pattern.length) {
       index += 1;
       result += (pattern[index] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    } else if (character === "*" && pattern[index + 1] === "*") {
+    } else if (
+      character === "*" &&
+      pattern[index + 1] === "*" &&
+      (index === 0 || pattern[index - 1] === "/") &&
+      (index + 2 === pattern.length || pattern[index + 2] === "/")
+    ) {
       index += 1;
       if (pattern[index + 1] === "/") {
         index += 1;
@@ -93,6 +98,7 @@ function globSource(pattern: string): string {
         result += ".*";
       }
     } else if (character === "*") {
+      while (pattern[index + 1] === "*") index += 1;
       result += "[^/]*";
     } else if (character === "?") {
       result += "[^/]";

@@ -109,4 +109,14 @@ describe(".gitignore escapes", () => {
     expect(isGitignored("q?", false, rules)).toBe(true);
     expect(isGitignored("qx", false, rules)).toBe(false);
   });
+
+  test("stars not bounded by slashes stay within one path segment", () => {
+    const rules = [
+      { prefix: "", rules: parseGitignore("src/**\\.ts\nlib/a**b\n") },
+    ];
+    expect(isGitignored("src/x.ts", false, rules)).toBe(true);
+    expect(isGitignored("src/deep/x.ts", false, rules)).toBe(false);
+    expect(isGitignored("lib/axxb", false, rules)).toBe(true);
+    expect(isGitignored("lib/a/b", false, rules)).toBe(false);
+  });
 });
