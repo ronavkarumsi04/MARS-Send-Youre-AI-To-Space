@@ -305,11 +305,12 @@ test.skipIf(!PACKAGED_ELECTRON)(
       for (const spec of [
         '12px "Commit Mono"',
         '14px "Inter"',
+        '600 17px "Barlow Condensed"',
         "500 32px Manrope",
       ]) {
         expect(
           await cdp.evaluate(
-            `document.fonts.load(${JSON.stringify(spec)}).then(fonts => fonts.length)`,
+            `document.fonts.load(${JSON.stringify(spec)}, "0123").then(fonts => fonts.length)`,
           ),
         ).toBe(1);
       }

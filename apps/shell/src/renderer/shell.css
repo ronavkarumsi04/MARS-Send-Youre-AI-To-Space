@@ -17,6 +17,14 @@
   font-weight: 400;
   font-display: swap;
 }
+/* UI numbering gets its own face. Text, IDs and code keep their original font. */
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("./BarlowCondensed-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+  unicode-range: U+0030-0039;
+}
 :root {
   color-scheme: dark;
   --pageBg: #050407;
@@ -38,6 +46,7 @@
   --paperMuted: #625e58;
   --paperLine: #c8c1b7;
   --mono: "Commit Mono", ui-monospace, monospace;
+  --numbers: "Barlow Condensed", var(--body);
   --display: Manrope, "Inter", sans-serif;
   --body: "Inter", system-ui, sans-serif;
   --radius: 2px;
@@ -256,8 +265,10 @@ p {
   padding: 11px 12px;
 }
 .nav-item::before {
-  font: 9px / 1 var(--mono);
-  opacity: 0.65;
+  font: 600 17px / 1 var(--numbers);
+  font-variant-numeric: tabular-nums;
+  min-width: 1.1em;
+  opacity: 0.8;
 }
 .nav-item[data-page="chat"]::before {
   content: "01";
@@ -569,7 +580,8 @@ p {
 }
 .suggestion-number {
   color: #cfb994;
-  font: 10px / 1 var(--mono);
+  font: 600 19px / 1 var(--numbers);
+  font-variant-numeric: tabular-nums;
 }
 .suggestion-arrow {
   margin-left: auto;
@@ -1938,4 +1950,9 @@ p {
     height: 100%;
     overflow: auto;
   }
+}
+
+.eyebrow,
+.settings-content .settings-index {
+  font-family: "Barlow Condensed", var(--mono);
 }

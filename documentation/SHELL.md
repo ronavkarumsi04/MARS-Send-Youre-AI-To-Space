@@ -71,7 +71,7 @@ Main-process hardening: `app.enableSandbox()`, every permission request/check de
 
 ## Build it
 
-Desktop typography uses Manrope for headlines, Inter for controls and body copy, and Commit Mono for technical metadata. The unmodified variable Latin WOFF2 files come from Fontsource’s `@fontsource-variable/manrope` and `@fontsource-variable/inter` 5.2.5. All three faces ship with their SIL Open Font License 1.1 and copyright notices; neither build nor runtime needs a font CDN.
+Desktop typography uses Manrope for headlines, Inter for controls and body copy, Barlow Condensed SemiBold for UI numbers, and Commit Mono for technical metadata. The unmodified variable Latin WOFF2 files come from Fontsource’s `@fontsource-variable/manrope` and `@fontsource-variable/inter` 5.2.5. The numeral face comes from `@fontsource/barlow-condensed` 5.2.6. All four faces ship with their SIL Open Font License 1.1 and copyright notices; neither build nor runtime needs a font CDN.
 
 On macOS or Debian/Ubuntu with the pinned Bun version, run `bun install --frozen-lockfile --ignore-scripts`, `bun run --cwd apps/shell native:install`, then `bun run --cwd apps/shell package`. Installers are in `apps/shell/dist/installers`. The packager smoke-tests the bundled Bun, authenticated workbench RPC, and Oh My Pi native session before producing the installer.
 

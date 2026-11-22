@@ -81,13 +81,14 @@ export async function buildShell(outdir: string): Promise<void> {
     "Manrope-Variable",
     "Inter-Variable",
     "CommitMono-Regular",
+    "BarlowCondensed-SemiBold",
   ]) {
     await copyFile(
       resolve(root, "assets", face + ".woff2"),
       resolve(rendererDir, face + ".woff2"),
     );
   }
-  for (const family of ["Manrope", "Inter", "CommitMono"]) {
+  for (const family of ["Manrope", "Inter", "CommitMono", "BarlowCondensed"]) {
     await copyFile(
       resolve(root, "assets", family + "-OFL.txt"),
       resolve(outdir, family + "-OFL.txt"),

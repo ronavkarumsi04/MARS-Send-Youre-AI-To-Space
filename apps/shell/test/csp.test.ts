@@ -94,6 +94,7 @@ test("only exact same-origin assets resolve and preferences stay sandboxed", asy
     'url("./Manrope-Variable.woff2")',
     'url("./Inter-Variable.woff2")',
     'url("./CommitMono-Regular.woff2")',
+    'url("./BarlowCondensed-SemiBold.woff2")',
     'url("./orbit.svg")',
   ]);
 });
