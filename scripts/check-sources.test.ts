@@ -28,6 +28,19 @@ describe("source manifest validation", () => {
     first.license.url = `${first.repository_url}/blob/main/LICENSE`;
     expect(() => validateManifest(changed)).toThrow("Unpinned source URL");
   });
+  test("accepts immutable directory entries but rejects mutable tree URLs", () => {
+    const changed = structuredClone(manifest);
+    const directory = changed.components
+      .flatMap((entry) => entry.sources)
+      .find((entry) => entry.url.includes("/tree/"));
+    if (!directory) throw new Error("Directory fixture missing");
+    expect(() => validateManifest(changed)).not.toThrow();
+    directory.url = directory.url.replace(
+      /\/tree\/[a-f0-9]{40}\//,
+      "/tree/main/",
+    );
+    expect(() => validateManifest(changed)).toThrow("Unpinned source URL");
+  });
   test("rejects duplicate IDs, missing components, and conflicting repository pins", () => {
     const changed = structuredClone(manifest);
     const first = changed.components[0];

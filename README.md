@@ -94,7 +94,7 @@ provider or enable paid requests.
 | `bun apps/cli/src/main.ts render [file] [--connectors ids] [--address a@b.com] [--follow-up N] [--json]` | Render MARS Output Format text (file or stdin) for a terminal; follow-ups, `app://` triggers and `mars://review` links are listed as proposals, nothing is executed |
 | `bun run smoke:execution` | No-provider/no-tool SDK and native search probe |
 | `bun run audit:sources` | Validate source references, spec digest, package pins, installed versions, and lockfile integrity |
-| `bun run audit:sources:remote` | Fetch immutable source/license files and emit content hashes; network required |
+| `bun run audit:sources:remote` | Fetch immutable source/license files and Git directory trees and emit hashes; network required |
 | `bun run format` | Apply Biome formatting and import organization |
 
 A small Bun build emits the CLI and provider library bundles with `bun run build`; the execution package still runs TypeScript directly. There are no existing database migrations, production data, or schema-upgrade guarantees at version 0.0.1.
