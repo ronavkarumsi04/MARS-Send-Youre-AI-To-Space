@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,54 @@ import { pathToFileURL } from "node:url";
 import { runTeam, TeamUsageError } from "./team";
 
 const entrypoint = join(import.meta.dir, "main.ts");
+
+test("concurrent exports without --force never overwrite one another", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-team-export-race-"));
+  try {
+    const target = join(root, "snapshot.json");
+    const args = ["export", "--state", root, "--out", target];
+    const results = await Promise.allSettled([
+      runTeam(args, () => {}),
+      runTeam(args, () => {}),
+    ]);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason).toBeInstanceOf(
+      TeamUsageError,
+    );
+    expect(JSON.parse(await readFile(target, "utf8")).schema_version).toBe(1);
+    await runTeam([...args, "--force"], () => {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed team serve authentication setup closes the opened store", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-team-setup-close-"));
+  const close = spyOn(Database.prototype, "close");
+  try {
+    await expect(
+      runTeam(
+        [
+          "serve",
+          "--state",
+          root,
+          "--auth-provider",
+          "token",
+          "--auth-secret-env",
+          "MARS_TEAM_TEST_MISSING_SECRET",
+        ],
+        () => {},
+      ),
+    ).rejects.toBeInstanceOf(TeamUsageError);
+    expect(close).toHaveBeenCalledTimes(1);
+  } finally {
+    close.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 interface Served {
   child: ReturnType<typeof Bun.spawn>;
