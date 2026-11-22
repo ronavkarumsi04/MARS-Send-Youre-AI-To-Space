@@ -2,9 +2,12 @@
 
 ## Task workspace file RPC groundwork
 
-`tasks.file` now uses bounded, non-storing, descriptor-anchored reads on Linux
-with trusted procfs, refusing symlinks and multi-link regular files; unsupported
-platforms fail closed. The root/ancestor directories must remain host-owned.
+`tasks.file` now uses bounded, non-storing Bun FFI `openat` reads on Linux and
+macOS, refusing symlinks and multi-link regular files; unsupported platforms
+and unavailable FFI fail closed, with no procfs/pathname fallback. The shipped
+desktop workbench is a bundled Bun child process. Platform flags/errno are
+checked, and macOS desktop CI runs the workspace/workbench suites on x64/arm64.
+The root/ancestor directories must remain host-owned.
 Real-service tests prepare three tasks, add live links in their private trees,
 and race parent swaps against HTTP reads. Provider tests verify zero artifact
 writes. Size errors map consistently to HTTP 413. See `WORKBENCH_RPC.md` for

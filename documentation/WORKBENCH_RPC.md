@@ -28,23 +28,57 @@ to HTTP 413 across RPC methods, rather than leaking a provider error as HTTP 500
 
 Separate pathname walks and dev/inode comparisons do **not** bind an opened file
 to the workspace root under concurrent parent replacement. Bun/Node's portable
-filesystem API does not expose directory-relative `openat`/`openat2`. Instead,
-this bounded reader supports Linux with trusted procfs: it holds the workspace
-root directory descriptor, then opens each next component relative to the held
-descriptor via `/proc/self/fd/<fd>/<component>`, using `O_NOFOLLOW` at every
-component and `O_DIRECTORY` on parents. Descriptors remain open until completion;
+filesystem API does not expose directory-relative `openat`/`openat2`. The shipped
+desktop workbench runs in a **Bun child process**, not Node inside Electron:
+`apps/shell/src/main/local-workbench.ts` spawns the bundled `bun`, copied from
+`process.execPath` by `apps/shell/scripts/package.ts`. Bounded reads use Bun FFI
+to call libc `openat` on Linux and macOS (x64/arm64). Linux loads `libc.so.6`;
+macOS loads `/usr/lib/libSystem.B.dylib`. No native addon or procfs is required.
+
+The reader holds the workspace root directory descriptor, then opens each next
+component with `openat(parentFd, component, flags)`, using `O_NOFOLLOW` at every
+component and `O_DIRECTORY` on parents. All descriptors use `O_CLOEXEC` and
+`O_NONBLOCK` (so opening a non-regular file cannot block before rejection).
+Descriptors remain open until completion and are closed on success or error;
 swapping a pathname for a symlink cannot redirect the held parent descriptor.
 The root and its ancestors are host-owned private provider state, not writable
-by tasks. This relies on the OS/procfs and that host-state boundary, not on a
+by tasks. This relies on the OS and that host-state boundary, not on a
 later `realpath` check. It is not a sandbox against a same-user process that can
 alter host-private state or mounts.
+
+`packages/workspaces/src/anchored-read.ts` writes out the ABI constants:
+
+| Constant | Linux x64 | Linux arm64 | macOS x64/arm64 |
+| --- | --- | --- | --- |
+| `AT_FDCWD` (root open only) | -100 | -100 | -2 |
+| `O_RDONLY` | 0 | 0 | 0 |
+| `O_NONBLOCK` | 0x800 | 0x800 | 0x4 |
+| `O_DIRECTORY` | 0x10000 | 0x4000 | 0x100000 |
+| `O_NOFOLLOW` | 0x20000 | 0x8000 | 0x100 |
+| `O_CLOEXEC` | 0x80000 | 0x80000 | 0x1000000 |
+
+These follow Linux UAPI (`asm-generic/fcntl.h`, x86 `bits/fcntl-linux.h`, arm64
+`asm/fcntl.h`) and Apple's XNU `bsd/sys/fcntl.h`. The exposed `O_*` values are
+checked against runtime `node:fs` constants before use; tests also check
+close-on-exec with native `fcntl(F_GETFD)`, since `node:fs` omits `O_CLOEXEC`.
+FFI reads thread-local errno immediately after a failed open through Linux
+`__errno_location` or Darwin `__error`. Both map 1/2/4/5/9/13/20 to
+`EPERM`/`ENOENT`/`EINTR`/`EIO`/`EBADF`/`EACCES`/`ENOTDIR`; `ELOOP` is 40 on
+Linux and 62 on macOS. Permission, symlink and changing-path errors become
+policy denials; a missing top-level file becomes `not_found`. Other errno values
+remain internal errors, not guessed policy or missing-file results.
 
 Regular files with `nlink != 1` are refused, including hardlinks to outside
 files. Handle stats are checked before and after reading for link count and
 content-change indicators; this is not a revision-matched immutable snapshot.
-Unsupported platforms or unavailable procfs fail closed; remote providers
+Windows, other unsupported platforms/architectures, missing Bun FFI/libc symbols
+(including Linux without `libc.so.6`), or mismatched runtime flags fail closed
+with a policy error. There is no pathname/procfs fallback. Remote providers
 without `readBytes` return `unavailable`, with no artifact-read fallback.
 Missing/changing nested components may return policy/403 rather than 404.
+Linux and macOS exercise the same implementation. Desktop CI runs the workspace
+and workbench suites, including live links and concurrent parent swaps, on both
+macOS architectures; a Linux-only local run does not verify macOS execution.
 The legacy artifact `read` retains pathname rechecks (now also rejecting
 hardlinks), not this confinement guarantee; snapshot/write/remove paths remain
 separate hardening work.

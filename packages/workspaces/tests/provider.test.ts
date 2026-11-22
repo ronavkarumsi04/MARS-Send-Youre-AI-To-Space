@@ -59,7 +59,7 @@ import {
 
 const digest = "a".repeat(64);
 
-test.skipIf(process.platform === "linux")(
+test.skipIf(["linux", "darwin"].includes(process.platform))(
   "bounded reads fail closed without a root-anchored platform primitive",
   async () => {
     const f = await makeFixture();
@@ -73,7 +73,7 @@ test.skipIf(process.platform === "linux")(
   },
 );
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(!["linux", "darwin"].includes(process.platform))(
   "bounded reads store nothing and reject hardlinks",
   async () => {
     const artifacts = createInMemoryArtifactStore();

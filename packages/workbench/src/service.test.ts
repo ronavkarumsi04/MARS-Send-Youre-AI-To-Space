@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -94,8 +95,12 @@ function task(): Task {
     artifacts: [],
   };
 }
-async function fixture(contextWindow = 32000, prefix = "mars-service-") {
-  const base = await mkdtemp(join(tmpdir(), prefix));
+async function fixture(
+  contextWindow = 32000,
+  prefix = "mars-service-",
+  temporaryRoot = tmpdir(),
+) {
+  const base = await realpath(await mkdtemp(join(temporaryRoot, prefix)));
   cleanup.push(() => rm(base, { recursive: true, force: true }));
   const source = join(base, "source");
   const root = join(base, "state");
@@ -177,7 +182,7 @@ async function fixture(contextWindow = 32000, prefix = "mars-service-") {
   return { base, source, root, registry, launches, start };
 }
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(!["linux", "darwin"].includes(process.platform))(
   "task file HTTP reads use real task workspaces under concurrent mutation",
   async () => {
     const f = await fixture();
@@ -317,10 +322,14 @@ test.skipIf(process.platform !== "linux")(
   20000,
 );
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(!["linux", "darwin"].includes(process.platform))(
   "task file privacy checks raw bytes, not incidental base64",
   async () => {
-    const f = await fixture(32000, "marsservice");
+    const f = await fixture(
+      32000,
+      "marsservice",
+      process.platform === "darwin" ? "/tmp" : tmpdir(),
+    );
     const encoded = f.source + "A".repeat((4 - (f.source.length % 4)) % 4);
     const binary = Buffer.from(encoded, "base64");
     expect(binary.toString("base64")).toContain(f.source);
