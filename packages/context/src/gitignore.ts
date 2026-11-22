@@ -101,7 +101,8 @@ function globSource(pattern: string): string {
         pattern[next] === "\\" &&
         pattern[next + 1] === "/"
       ) {
-        result += "(?:.*/)?";
+        // Git only lets a bare "/" after the stars match zero directories.
+        result += ".*/";
         index = next + 1;
       } else {
         result += "[^/]*";

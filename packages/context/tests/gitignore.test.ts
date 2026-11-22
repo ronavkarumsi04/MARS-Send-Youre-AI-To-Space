@@ -126,7 +126,8 @@ describe(".gitignore escapes", () => {
     ];
     expect(isGitignored("a/x.ts", false, rules)).toBe(true);
     expect(isGitignored("a/p/q/x.ts", false, rules)).toBe(true);
-    expect(isGitignored("b/y.ts", false, rules)).toBe(true);
+    expect(isGitignored("b/y.ts", false, rules)).toBe(false);
+    expect(isGitignored("b/p/y.ts", false, rules)).toBe(true);
     expect(isGitignored("b/p/q/y.ts", false, rules)).toBe(true);
   });
 });
