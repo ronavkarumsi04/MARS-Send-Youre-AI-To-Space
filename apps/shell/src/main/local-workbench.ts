@@ -7,10 +7,12 @@ import {
   type ConnectionResult,
   loadConnectionFile,
 } from "@mars/contracts/connection-file";
+import { findExtension } from "../runtime/extension-catalog";
 import {
   type CatalogStatus,
-  type ExtensionAction,
+  EXPIRED_PREFIX,
   ExtensionReply,
+  type OperatorAction,
   REPLY_PREFIX,
 } from "../runtime/extension-wire";
 
@@ -19,6 +21,8 @@ type WorkbenchOptions = {
   source: string;
   state: string;
   openRouterKey?: string;
+  onExpired?: (name: string) => void;
+  extensionTimeoutMs?: number;
 };
 
 const unavailable: ConnectionResult = {
@@ -63,6 +67,9 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
     if (line === "MARS_WORKBENCH_READY") {
       clearTimeout(timer);
       ready.resolve(true);
+    } else if (line.startsWith(EXPIRED_PREFIX)) {
+      const entry = findExtension(line.slice(EXPIRED_PREFIX.length));
+      if (!stopping && entry?.kind === "mcp") options.onExpired?.(entry.name);
     } else if (pending && line.startsWith(REPLY_PREFIX)) {
       try {
         const reply = ExtensionReply.parse(
@@ -97,7 +104,7 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
     }
   })();
 
-  async function send(request: ExtensionAction): Promise<CatalogStatus> {
+  async function send(request: OperatorAction): Promise<CatalogStatus> {
     if (
       !(await ready.promise) ||
       stopping ||
@@ -108,8 +115,14 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
       throw new Error("Extensions are unavailable.");
     return new Promise((resolve, reject) => {
       const token = randomUUID();
+      const deadline = setTimeout(() => {
+        stopping = true;
+        child.kill("SIGKILL");
+        finish(null);
+      }, options.extensionTimeoutMs ?? 60_000);
       const finish = (value: CatalogStatus | null) => {
         if (pending?.token !== token) return;
+        clearTimeout(deadline);
         pending = undefined;
         if (value === null)
           reject(new Error("Could not verify or apply extension."));
@@ -125,7 +138,7 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
   let listing: Promise<CatalogStatus> | undefined;
   return {
     exited: exited.promise,
-    extensionAction(request: ExtensionAction) {
+    extensionAction(request: OperatorAction) {
       if (request.action === "list" && listing) return listing;
       const result = tail.then(() => send(request));
       tail = result

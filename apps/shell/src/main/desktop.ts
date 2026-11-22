@@ -161,6 +161,20 @@ export async function createDesktop(window: BrowserWindow, reload: () => void) {
     if (!workbench) {
       const running = startLocalWorkbench({
         resources: join(process.resourcesPath, "workbench"),
+        onExpired(name) {
+          if (
+            workbench !== running ||
+            changing ||
+            closing ||
+            window.isDestroyed()
+          )
+            return;
+          void dialog.showMessageBox(window, {
+            type: "info",
+            message: `${name} needs renewed approval`,
+            detail: `This tool is unavailable to tasks in ${source}. Use Project → Add Verified Extension to approve it again.`,
+          });
+        },
         source,
         state: join(root, "projects"),
         ...(openRouterKey ? { openRouterKey } : {}),

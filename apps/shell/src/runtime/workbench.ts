@@ -5,6 +5,7 @@ import { createWorkbenchService } from "@mars/workbench";
 import { z } from "zod";
 import {
   type CatalogStatus,
+  EXPIRED_PREFIX,
   ExtensionRequest,
   REPLY_PREFIX,
 } from "./extension-wire";
@@ -37,7 +38,11 @@ async function serve(): Promise<void> {
       JSON.parse(line),
     );
     const scope = { owner_id: "local", project_id: basename(state) };
-    const extensions = projectExtensions(source, state, scope);
+    const extensions = projectExtensions(source, state, scope, undefined, {
+      onExpired(id) {
+        process.stdout.write(`${EXPIRED_PREFIX}${id}\n`);
+      },
+    });
     const service = await createWorkbenchService({
       sourceRoot: source,
       stateRoot: state,
@@ -75,11 +80,16 @@ async function serve(): Promise<void> {
       pending = (
         request.action === "list"
           ? extensions.status()
-          : extensions.install(request.id).then(() => ({
-              installed: [request.id],
-              expired: [],
-              conflicts: [],
-            }))
+          : extensions
+              .install(
+                request.id,
+                request.action === "restore" ? request.revision : undefined,
+              )
+              .then(() => ({
+                installed: [request.id],
+                expired: [],
+                conflicts: [],
+              }))
       )
         .then(reply, () => reply(null))
         .finally(() => {

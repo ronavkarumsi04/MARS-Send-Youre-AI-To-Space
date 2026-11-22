@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostMcpControlPlane } from "@mars/mcp-client";
@@ -9,8 +17,9 @@ import {
   desktopExtensionsMenu,
   extensionController,
 } from "../src/main/extensions";
+import { startLocalWorkbench } from "../src/main/local-workbench";
 import { CATALOG } from "../src/runtime/extension-catalog";
-import type { ExtensionAction } from "../src/runtime/extension-wire";
+import type { OperatorAction } from "../src/runtime/extension-wire";
 import { projectExtensions } from "../src/runtime/extensions";
 
 let root: string;
@@ -93,7 +102,7 @@ test("archive then reinstall restores bundled instructions without losing the cu
   const options = { actor: "operator", source: "manual" };
   await store.update(skill, custom, options);
   expect((await ext.status()).conflicts).toContain(plugin);
-  await expect(ext.install(plugin)).rejects.toThrow("Archive");
+  await expect(ext.install(plugin)).rejects.toThrow("Confirm");
   await store.archive(skill, options);
   await ext.install(plugin);
   expect(await ext.list()).toContain(plugin);
@@ -103,6 +112,108 @@ test("archive then reinstall restores bundled instructions without losing the cu
     ),
   ).toBe(true);
 });
+
+test("native recovery requires consent to restore the reviewed revision, preserving customized history", async () => {
+  const ext = open();
+  await ext.install(skill);
+  const store = new SkillStore(join(state, "skills"));
+  const custom =
+    "---\nname: mars-change-summary\ndescription: My learned update\n---\nKeep this.";
+  const options = { actor: "operator", source: "proposal" };
+  await store.update(skill, custom, options);
+  const host = {
+    async extensionAction(a: OperatorAction) {
+      if (a.action !== "list")
+        await ext.install(
+          a.id,
+          a.action === "restore" ? a.revision : undefined,
+        );
+      return ext.status();
+    },
+  };
+  const confirm = (fn: () => Promise<boolean>) =>
+    extensionController(
+      () => host,
+      async (_entry, restore) => {
+        expect(restore).toBe(true);
+        return fn();
+      },
+    );
+  expect(await confirm(async () => false).install(plugin)).toBe("cancelled");
+  expect((await store.get(skill))?.content).toBe(custom);
+  expect(
+    await confirm(async () => {
+      await store.update(skill, `${custom} Edited.`, options);
+      return true;
+    }).install(plugin),
+  ).toBe("unavailable");
+  expect((await store.get(skill))?.content).toBe(`${custom} Edited.`);
+  expect(await confirm(async () => true).install(plugin)).toBe("installed");
+  expect(await ext.list()).toContain(plugin);
+  expect(
+    (await store.listVersions(skill)).some(
+      (v) => v.skill.content === `${custom} Edited.`,
+    ),
+  ).toBe(true);
+});
+
+test("a nonresponsive extension child exits and releases queued callers", async () => {
+  const runtime = join(root, "apps", "shell", "src", "runtime");
+  await mkdir(runtime, { recursive: true });
+  await symlink(process.execPath, join(root, "bun"));
+  await writeFile(
+    join(runtime, "workbench.ts"),
+    'process.stdin.resume(); console.log("MARS_WORKBENCH_READY");',
+  );
+  const host = startLocalWorkbench({
+    resources: root,
+    state,
+    source,
+    extensionTimeoutMs: 100,
+  });
+  try {
+    const results = await Promise.allSettled([
+      host.extensionAction({ action: "install", id: skill }),
+      host.extensionAction({ action: "list" }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    await host.exited;
+    expect((await host.connection()).ok).toBe(false);
+  } finally {
+    await host.stop();
+  }
+});
+
+test("an expired tool notifies the operator once and can be re-approved and invoked", async () => {
+  let time = Date.now();
+  const notices: string[] = [];
+  const ext = projectExtensions(source, state, scope, dir, {
+    clock: () => new Date(time),
+    onExpired: (id) => notices.push(id),
+  });
+  const runtime = await ext.runtime(source, scope);
+  try {
+    await ext.install(mcp);
+    const call = () =>
+      runtime.loader.invokeTool(ctx, {
+        server_id: mcp,
+        tool: "utc_now",
+        input: {},
+      });
+    await call();
+    time += 31 * 86400000;
+    await expect(call()).rejects.toThrow("expired");
+    expect(notices).toEqual([mcp]);
+    expect((await ext.status()).expired).toEqual([mcp]);
+    expect(await runtime.listServerIds()).toEqual([]);
+    expect(notices).toEqual([mcp]);
+    await ext.install(mcp);
+    expect(await runtime.listServerIds()).toEqual([mcp]);
+    expect((await call()).is_error).toBe(false);
+  } finally {
+    await runtime.loader.closeAll();
+  }
+}, 30000);
 
 test("supplied JSON and unified patches are processed offline by independently approved tools", async () => {
   const ext = open();
@@ -268,9 +379,9 @@ test("the runtime receives only its own project’s verified, unexpired, unrevok
 }, 30_000);
 
 test("install only dispatches after explicit confirmation on the same project", async () => {
-  const actions: ExtensionAction[] = [];
+  const actions: OperatorAction[] = [];
   const a = {
-    extensionAction: async (request: ExtensionAction) => {
+    extensionAction: async (request: OperatorAction) => {
       actions.push(request);
       return { installed: [], expired: [], conflicts: [] };
     },
@@ -296,9 +407,11 @@ test("install only dispatches after explicit confirmation on the same project", 
   project = { ...a };
   choice.resolve(true);
   expect(await switched).toBe("unavailable");
-  expect(actions).toEqual([]);
+  expect(actions.every((a) => a.action === "list")).toBe(true);
   expect(await api.install(plugin)).toBe("installed");
-  expect(actions).toEqual([{ action: "install", id: plugin }]);
+  expect(actions.filter((a) => a.action !== "list")).toEqual([
+    { action: "install", id: plugin },
+  ]);
 });
 
 test("the catalog IPC rejects other windows, non-main frames and renderer-supplied configuration", async () => {
@@ -347,7 +460,14 @@ test("the catalog IPC rejects other windows, non-main frames and renderer-suppli
   ).toContain("renew");
   expect(
     catalog.find((entry: { id: string }) => entry.id === skill).description,
-  ).toContain("Archive");
+  ).toContain("restoring customized");
+  expect(() =>
+    listener?.(event as never, {
+      action: "restore",
+      id: skill,
+      revision: "0".repeat(64),
+    }),
+  ).toThrow();
   expect(catalog.map((entry: { kind: string }) => entry.kind)).toEqual(
     CATALOG.map((entry) => entry.kind),
   );

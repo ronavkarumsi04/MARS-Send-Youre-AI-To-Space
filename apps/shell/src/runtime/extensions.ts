@@ -7,6 +7,7 @@ import {
   createHostMcpControlPlane,
   type HostMcpControlPlane,
   type McpServerConfig,
+  type TrustedMcpLoader,
   verifyMcpConfig,
 } from "@mars/mcp-client";
 import { type Operation, SkillStore } from "@mars/skills";
@@ -23,12 +24,21 @@ export function projectExtensions(
   state: string,
   scope: Scope,
   dir = join(import.meta.dir, "catalog"),
+  options: { clock?: () => Date; onExpired?: (id: string) => void } = {},
 ) {
+  const notified = new Set<string>();
+  function notifyExpired(id: string) {
+    if (!notified.has(id)) {
+      notified.add(id);
+      options.onExpired?.(id);
+    }
+  }
   const store = new SkillStore(join(state, "skills"));
   let opening: Promise<HostMcpControlPlane> | undefined;
   const plane = () => {
     opening ??= createHostMcpControlPlane({
       scope,
+      ...(options.clock ? { clock: options.clock } : {}),
       stateDir: join(state, "extension-trust"),
       workspaceRoots: [source, join(state, "workspaces")],
       approvers: [
@@ -99,7 +109,11 @@ export function projectExtensions(
     });
     const grant = grants.findLast((g) => g.state !== "superseded");
     if (grant?.state !== "approved") return "unavailable";
-    if (Date.parse(grant.expires_at) <= Date.now()) return "expired";
+    if (
+      Date.parse(grant.expires_at) <=
+      (options.clock?.().getTime() ?? Date.now())
+    )
+      return "expired";
     try {
       await artifacts(entry);
       await verifyMcpConfig(registered, grant.evidence);
@@ -110,6 +124,7 @@ export function projectExtensions(
   }
 
   async function status(): Promise<CatalogStatus> {
+    const revision = await store.getRevision();
     const skills = await store.list();
     const result: CatalogStatus = { installed: [], expired: [], conflicts: [] };
     for (const entry of CATALOG) {
@@ -139,15 +154,16 @@ export function projectExtensions(
       )
         result.conflicts.push(entry.id);
     }
+    if (result.conflicts.length) result.revision = revision;
     return result;
   }
 
-  async function install(id: string) {
+  async function install(id: string, restoreRevision?: string) {
     const entry = findExtension(id);
     if (!entry) throw new Error("Not in the bundled catalog.");
     const contents = await artifacts(entry);
     if (entry.kind !== "mcp") {
-      const expectedRevision = await store.getRevision();
+      const expectedRevision = restoreRevision ?? (await store.getRevision());
       const skills = await store.list();
       const ops: Operation[] = [];
       for (const { name, content } of contents) {
@@ -157,9 +173,11 @@ export function projectExtensions(
           ops.push({ op: "restore", name });
           if (existing.content !== content)
             ops.push({ op: "update", name, content });
+        } else if (existing.content !== content && restoreRevision) {
+          ops.push({ op: "update", name, content });
         } else if (existing.content !== content)
           throw new Error(
-            "A different skill already uses that name. Archive it first.",
+            "A different skill already uses that name. Confirm restoration first.",
           );
       }
       if (ops.length)
@@ -195,6 +213,7 @@ export function projectExtensions(
         expires_at: review.expires_at,
       }),
     });
+    notified.delete(id);
   }
 
   return {
@@ -205,16 +224,32 @@ export function projectExtensions(
       if (!isDeepStrictEqual(scope, taskScope))
         throw new Error("Project scope mismatch.");
       const cp = await plane();
+      const inner = cp.createLoader();
+      const loader: TrustedMcpLoader = {
+        ...inner,
+        async invokeTool(ctx, request) {
+          try {
+            return await inner.invokeTool(ctx, request);
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "expired"
+            )
+              notifyExpired(request.server_id);
+            throw error;
+          }
+        },
+      };
       return {
-        loader: cp.createLoader(),
+        loader,
         async listServerIds() {
           const ids = [];
           for (const entry of CATALOG) {
-            if (
-              entry.kind === "mcp" &&
-              (await mcpStatus(cp, entry)) === "installed"
-            )
-              ids.push(entry.id);
+            if (entry.kind !== "mcp") continue;
+            const status = await mcpStatus(cp, entry);
+            if (status === "installed") ids.push(entry.id);
+            else if (status === "expired") notifyExpired(entry.id);
           }
           return ids;
         },

@@ -11,15 +11,19 @@ import {
   EXTENSION_CHANNEL,
   findExtension,
 } from "../runtime/extension-catalog";
-import { type CatalogStatus, ExtensionAction } from "../runtime/extension-wire";
+import {
+  type CatalogStatus,
+  ExtensionAction,
+  type OperatorAction,
+} from "../runtime/extension-wire";
 
 type Project = {
-  extensionAction(action: ExtensionAction): Promise<CatalogStatus>;
+  extensionAction(action: OperatorAction): Promise<CatalogStatus>;
 };
 
 export function extensionController(
   project: () => Project | undefined,
-  confirm: (entry: CatalogEntry) => Promise<boolean>,
+  confirm: (entry: CatalogEntry, restoring: boolean) => Promise<boolean>,
 ): DesktopExtensions {
   let reviewing = false;
   return {
@@ -39,7 +43,7 @@ export function extensionController(
           description: expired.includes(id)
             ? `Approval expired. Add again to renew. ${description}`
             : conflicts.includes(id)
-              ? `Archive the customized skill before reinstalling. ${description}`
+              ? `Add again to review restoring customized instructions. ${description}`
               : description,
           permissions,
           installed: installed.includes(id),
@@ -53,9 +57,20 @@ export function extensionController(
       if (!active) return "unavailable";
       reviewing = true;
       try {
-        if (!(await confirm(entry))) return "cancelled";
+        const status =
+          entry.kind !== "mcp"
+            ? await active.extensionAction({ action: "list" })
+            : undefined;
         if (project() !== active) return "unavailable";
-        await active.extensionAction({ action: "install", id });
+        const restoring = status?.conflicts.includes(id) ?? false;
+        if (restoring && !status?.revision) return "unavailable";
+        if (!(await confirm(entry, restoring))) return "cancelled";
+        if (project() !== active) return "unavailable";
+        await active.extensionAction(
+          restoring && status?.revision
+            ? { action: "restore", id, revision: status.revision }
+            : { action: "install", id },
+        );
         return "installed";
       } catch {
         return "unavailable";
@@ -72,11 +87,13 @@ export function desktopExtensionsMenu(
   project: () => Project | undefined,
   source: () => string,
 ): MenuItemConstructorOptions {
-  const api = extensionController(project, async (entry) => {
+  const api = extensionController(project, async (entry, restoring) => {
     const { response } = await dialog.showMessageBox(window, {
       type: "question",
       title: "Add verified extension",
-      message: `Add ${entry.name} to this project?`,
+      message: restoring
+        ? `Restore bundled instructions for ${entry.name}?`
+        : `Add ${entry.name} to this project?`,
       detail: [
         entry.description,
         `Bundled with MARS · v${entry.version}`,
@@ -84,9 +101,14 @@ export function desktopExtensionsMenu(
         ...entry.permissions,
         entry.kind === "mcp"
           ? "Approval lasts 30 days. Add again after expiry to renew."
-          : "A customized active skill is never replaced. To reinstall, archive it first. Adding restores archived skills to the bundled version and keeps prior content in skill version history.",
+          : restoring
+            ? `This replaces customized instructions in this selection (${entry.assets.map((a) => a.file.replace(/\.md$/, "")).join(", ")}) with the bundled versions. Previous content stays in skill version history.`
+            : "Adding restores archived skills to the bundled version and keeps prior content in version history. Customized active skills require separate confirmation.",
       ].join("\n\n"),
-      buttons: ["Cancel", "Add to project"],
+      buttons: [
+        "Cancel",
+        restoring ? "Restore bundled instructions" : "Add to project",
+      ],
       defaultId: 0,
       cancelId: 0,
     });
@@ -127,9 +149,9 @@ export function desktopExtensionsMenu(
                 }
               : {
                   type: "warning",
-                  message: "Extension not added",
+                  message: "Could not confirm installation",
                   detail:
-                    "Check that a local project is open. If a skill has customized instructions, archive it first, then add the extension again.",
+                    "Reopen the project and check the extension list before trying again.",
                 },
           );
         },
