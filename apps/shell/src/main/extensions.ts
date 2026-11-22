@@ -23,7 +23,7 @@ type Project = {
 
 export function extensionController(
   project: () => Project | undefined,
-  confirm: (entry: CatalogEntry, restoring: boolean) => Promise<boolean>,
+  confirm: (entry: CatalogEntry, customized: string[]) => Promise<boolean>,
 ): DesktopExtensions {
   let reviewing = false;
   return {
@@ -62,9 +62,13 @@ export function extensionController(
             ? await active.extensionAction({ action: "list" })
             : undefined;
         if (project() !== active) return "unavailable";
-        const restoring = status?.conflicts.includes(id) ?? false;
-        if (restoring && !status?.revision) return "unavailable";
-        if (!(await confirm(entry, restoring))) return "cancelled";
+        const customized = entry.assets
+          .map((asset) => asset.file.replace(/\.md$/, ""))
+          .filter((name) => status?.conflicts.includes(name));
+        const restoring = customized.length > 0;
+        if (status?.conflicts.includes(id) && (!restoring || !status.revision))
+          return "unavailable";
+        if (!(await confirm(entry, customized))) return "cancelled";
         if (project() !== active) return "unavailable";
         await active.extensionAction(
           restoring && status?.revision
@@ -87,7 +91,8 @@ export function desktopExtensionsMenu(
   project: () => Project | undefined,
   source: () => string,
 ): MenuItemConstructorOptions {
-  const api = extensionController(project, async (entry, restoring) => {
+  const api = extensionController(project, async (entry, customized) => {
+    const restoring = customized.length > 0;
     const { response } = await dialog.showMessageBox(window, {
       type: "question",
       title: "Add verified extension",
@@ -102,7 +107,7 @@ export function desktopExtensionsMenu(
         entry.kind === "mcp"
           ? "Approval lasts 30 days. Add again after expiry to renew."
           : restoring
-            ? `This replaces customized instructions in this selection (${entry.assets.map((a) => a.file.replace(/\.md$/, "")).join(", ")}) with the bundled versions. Previous content stays in skill version history.`
+            ? `Only these customized instructions will be replaced with their bundled versions: ${customized.join(", ")}. Previous content stays in skill version history.`
             : "Adding restores archived skills to the bundled version and keeps prior content in version history. Customized active skills require separate confirmation.",
       ].join("\n\n"),
       buttons: [
@@ -151,7 +156,7 @@ export function desktopExtensionsMenu(
                   type: "warning",
                   message: "Could not confirm installation",
                   detail:
-                    "Reopen the project and check the extension list before trying again.",
+                    "Your task service was not stopped by the catalog. Check the extension list before retrying; if it stays unavailable, reopen the project after running tasks finish.",
                 },
           );
         },

@@ -116,9 +116,13 @@ export function startLocalWorkbench(options: WorkbenchOptions) {
     return new Promise((resolve, reject) => {
       const token = randomUUID();
       const deadline = setTimeout(() => {
-        stopping = true;
-        child.kill("SIGKILL");
-        finish(null);
+        // Stop waiting, not the task service. Keep this token as a fence:
+        // no second mutation can start until the late reply or child exit.
+        reject(
+          new Error(
+            "Catalog response timed out; installation status is unknown.",
+          ),
+        );
       }, options.extensionTimeoutMs ?? 60_000);
       const finish = (value: CatalogStatus | null) => {
         if (pending?.token !== token) return;

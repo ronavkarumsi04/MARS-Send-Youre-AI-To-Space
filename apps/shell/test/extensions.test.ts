@@ -135,7 +135,7 @@ test("native recovery requires consent to restore the reviewed revision, preserv
     extensionController(
       () => host,
       async (_entry, restore) => {
-        expect(restore).toBe(true);
+        expect(restore).toEqual([skill]);
         return fn();
       },
     );
@@ -157,28 +157,57 @@ test("native recovery requires consent to restore the reviewed revision, preserv
   ).toBe(true);
 });
 
-test("a nonresponsive extension child exits and releases queued callers", async () => {
+test("a stalled catalog releases callers without killing the task service or sending duplicate mutations", async () => {
   const runtime = join(root, "apps", "shell", "src", "runtime");
   await mkdir(runtime, { recursive: true });
   await symlink(process.execPath, join(root, "bun"));
   await writeFile(
     join(runtime, "workbench.ts"),
-    'process.stdin.resume(); console.log("MARS_WORKBENCH_READY");',
+    `
+    import {createInterface} from "node:readline";
+    let count = 0;
+    for await (const line of createInterface({input:process.stdin})) {
+      const command = JSON.parse(line);
+      if (!command.token) { console.log("MARS_WORKBENCH_READY"); continue; }
+      count++;
+      if (count === 1) {
+        while (!await Bun.file("finish-task").exists()) await Bun.sleep(5);
+        await Bun.write("task-completed", "yes");
+      }
+      console.log("MARS_EXTENSIONS " + JSON.stringify({token:command.token,status:{installed:["mars-change-summary"],conflicts:[],expired:[]}}));
+      await Bun.write("command-count", String(count));
+    }
+  `,
   );
   const host = startLocalWorkbench({
     resources: root,
     state,
     source,
-    extensionTimeoutMs: 100,
+    extensionTimeoutMs: 200,
   });
   try {
     const results = await Promise.allSettled([
       host.extensionAction({ action: "install", id: skill }),
+      host.extensionAction({ action: "install", id: plugin }),
       host.extensionAction({ action: "list" }),
     ]);
-    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
-    await host.exited;
-    expect((await host.connection()).ok).toBe(false);
+    expect(results.map((r) => r.status)).toEqual([
+      "rejected",
+      "rejected",
+      "rejected",
+    ]);
+    await Bun.write(join(root, "finish-task"), "finish");
+    for (
+      let i = 0;
+      i < 100 && !(await Bun.file(join(root, "command-count")).exists());
+      i++
+    )
+      await Bun.sleep(10);
+    expect(await Bun.file(join(root, "task-completed")).text()).toBe("yes");
+    expect(await Bun.file(join(root, "command-count")).text()).toBe("1");
+    expect((await host.extensionAction({ action: "list" })).installed).toEqual([
+      skill,
+    ]);
   } finally {
     await host.stop();
   }
