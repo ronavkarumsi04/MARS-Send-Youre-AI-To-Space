@@ -269,9 +269,13 @@ button:disabled {
 }
 
 .main {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   background: var(--pageBg);
+}
+
+.main > :not(.transcript) {
+  flex-shrink: 0;
 }
 
 .main-toolbar {
@@ -325,6 +329,7 @@ button:disabled {
 }
 
 .transcript {
+  flex: 1 0 160px;
   overflow: auto;
   padding: 22px;
   font-family: var(--mono);
@@ -465,6 +470,7 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  min-inline-size: 0;
   margin: 8px 0;
   padding: 8px 10px;
   border: 1px solid var(--borderMuted);
@@ -699,6 +705,10 @@ button:disabled {
 .team-composer-input,
 .team-search-input {
   flex: 1;
+}
+
+.model-select {
+  max-width: 100%;
 }
 
 @media (prefers-reduced-motion: reduce) {

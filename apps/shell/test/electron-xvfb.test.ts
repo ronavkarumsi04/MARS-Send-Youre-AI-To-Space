@@ -417,6 +417,14 @@ test.skipIf(!CAN_RUN_ELECTRON_XVFB)(
         "Boolean(document.querySelector('[data-control=\"launch-model\"]'))",
         "launch controls on pending task",
       );
+      expect(
+        await cdp.evaluate<boolean>(`(() => {
+          const bottom = (selector) => document.querySelector(selector).getBoundingClientRect().bottom;
+          const transcriptTop = document.querySelector(".transcript").getBoundingClientRect().top;
+          const cardBottom = bottom('[data-card="approval-card"]');
+          return bottom('[data-action="start-task"]') < cardBottom && cardBottom <= transcriptTop;
+        })()`),
+      ).toBe(true);
 
       await cdp.evaluate(`(() => {
         const read = document.querySelector('[data-control="approval-read"]');
