@@ -1344,6 +1344,88 @@ describe("interactive renderer controller flows", () => {
     }
   });
 
+  test("regression: Team Chat sends after a renderer reload use fresh client_message_ids", async () => {
+    const { bridge, close } = await startTestWorkbench();
+    try {
+      // One host service outlives both renderer loads, as in the desktop app.
+      const baseTeam = toShellTeamChat(
+        createTeamChatBridge({ service: new FixtureTeamService() }),
+      );
+      const sentIds: string[] = [];
+      const spyTeam: TeamChatBridgeApi = {
+        ...baseTeam,
+        "team.send": async (params) => {
+          sentIds.push(params.input.client_message_id);
+          return baseTeam["team.send"](params);
+        },
+      };
+      const sendFromFreshRenderer = async (bodies: string[]) => {
+        const doc = new MiniDocument();
+        const controller = createController(bridge, doc, doc.root, spyTeam);
+        await controller.load();
+        findByAttr(doc.root, "data-action", "toggle-team-chat")?.click();
+        await waitFor(
+          () =>
+            findByAttr(doc.root, "data-focus-key", "team-composer") !==
+            undefined,
+        );
+        for (const body of bodies) {
+          const before = findAll(
+            doc.root,
+            (el) => el.getAttribute("data-message-id") !== null,
+          ).length;
+          const box = findByAttr(doc.root, "data-focus-key", "team-composer");
+          if (!box) throw new Error("composer missing");
+          box.value = body;
+          box.dispatch("input");
+          findAll(
+            doc.root,
+            (el) =>
+              el.tagName === "BUTTON" && el.textContent === "Send message",
+          )[0]?.click();
+          await waitFor(
+            () =>
+              findAll(
+                doc.root,
+                (el) => el.getAttribute("data-message-id") !== null,
+              ).length > before ||
+              findByAttr(doc.root, "data-team-notice", "true") !== undefined,
+          );
+          expect(
+            findByAttr(doc.root, "data-team-notice", "true"),
+          ).toBeUndefined();
+          expect(
+            findByAttr(doc.root, "data-focus-key", "team-composer")?.value ??
+              "",
+          ).toBe("");
+        }
+      };
+
+      await sendFromFreshRenderer(["Before reload", "Same text"]);
+      // Reload: a new renderer with a new controller, same host service.
+      await sendFromFreshRenderer(["Different text after reload", "Same text"]);
+
+      expect(sentIds).toHaveLength(4);
+      expect(new Set(sentIds).size).toBe(4);
+      const state = await baseTeam["team.state"]({});
+      if (!state.ok) throw new Error(`team.state failed: ${state.code}`);
+      const convId = state.value.conversations[0]?.conversation_id ?? "";
+      const page = await baseTeam["team.open"]({
+        conversation_id: convId,
+        limit: 4,
+      });
+      if (!page.ok) throw new Error(`team.open failed: ${page.code}`);
+      expect(page.value.messages.map((m) => m.body)).toEqual([
+        "Before reload",
+        "Same text",
+        "Different text after reload",
+        "Same text",
+      ]);
+    } finally {
+      close();
+    }
+  });
+
   test("regression: renderer refuses to present an unverified bridge export as verified", async () => {
     let actualSha = "";
     const { data, bridge, close } = await startTestWorkbench((fixture) => {
