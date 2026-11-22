@@ -1964,5 +1964,5 @@ p {
 
 .eyebrow,
 .settings-content .settings-index {
-  font-family: "Barlow Condensed", var(--mono);
+  font-family: "Barlow Condensed", "Commit Mono", monospace;
 }
