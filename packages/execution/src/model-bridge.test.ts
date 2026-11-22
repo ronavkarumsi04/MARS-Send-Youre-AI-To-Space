@@ -3,7 +3,23 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadModelRegistry } from "@mars/providers";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { createModelBridge, toChatRequest } from "./model-bridge";
+import {
+  createModelBridge,
+  NoEligibleModelError,
+  selectExecutionModel,
+  toChatRequest,
+} from "./model-bridge";
+
+test("model selection rejects an unknown model with a typed configuration-free error", async () => {
+  const registry = await loadModelRegistry({
+    cwd: "/nonexistent-model-selection",
+    home: "/nonexistent-model-selection",
+    env: {},
+  });
+  expect(() => selectExecutionModel(registry, "private-model-name")).toThrow(
+    NoEligibleModelError,
+  );
+});
 
 async function fixture(
   pricing = { free: true, inputPerMTokUsd: 0, outputPerMTokUsd: 0 },

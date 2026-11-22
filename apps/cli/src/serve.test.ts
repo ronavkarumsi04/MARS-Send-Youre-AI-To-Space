@@ -152,6 +152,55 @@ test("mars serve sanitizes startup errors without echoing host paths", async () 
   expect(error).not.toContain(privatePath);
 }, 30000);
 
+test("mars serve with SearXNG explains missing model configuration without leaking paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mars-cli-searxng-"));
+  const source = join(root, "source");
+  await mkdir(source);
+  try {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        entrypoint,
+        "serve",
+        "--source",
+        source,
+        "--state",
+        join(root, "state"),
+        "--port",
+        "0",
+        "--research-search",
+        "searxng",
+        "--research-searxng-url",
+        "http://127.0.0.1:8080",
+      ],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          MARS_HOME: join(root, "models"),
+        },
+      },
+    );
+    const [output, error, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exit).toBe(1);
+    expect(output).toBe("");
+    expect(error).toContain(
+      "No eligible configured model; configure a tool-capable free model",
+    );
+    expect(error).not.toContain("could not start or stop safely");
+    expect(error).not.toContain(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("mars serve --research-search refuses to start without the named credential and names only the variable", async () => {
   const root = await mkdtemp(join(tmpdir(), "mars-cli-research-"));
   const source = join(root, "source");

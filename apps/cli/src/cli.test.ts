@@ -17,7 +17,13 @@ test("CLI doctor reports actual initialization and explicit limitations", async 
   const report = JSON.parse(output);
   expect(report.execution.session_initialized).toBe(true);
   expect(report.execution.model_requests).toBe(0);
-  expect(report.limitations.join(" ")).toContain("not implemented");
+  expect(report.limitations.join(" ")).toContain(
+    "training is implemented and offline-verified only",
+  );
+  expect(report.limitations.join(" ")).toContain("QLoRA remains unverified");
+  expect(report.limitations.join(" ")).not.toContain(
+    "training is not implemented",
+  );
 }, 30_000);
 
 test("CLI rejects unknown commands with a usage error", async () => {

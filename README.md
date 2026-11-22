@@ -51,6 +51,38 @@ The installer file is local setup tooling, not product source. Bun's bundled pla
 
 Lifecycle scripts stay disabled: optional `onnxruntime-node` and `protobufjs` postinstalls are **not required by these probes**. Voice/embedding/transformer functionality is untested; do not broadly trust dependencies to enable it.
 
+### Using `mars` in the examples
+
+In this source checkout, `mars` means `bun apps/cli/src/main.ts`; no global
+executable is installed. The linked docs use that shorthand. To run their
+commands from any directory, define this shell function (add it to your shell
+startup file to keep it across terminals, and replace the path with your clone):
+
+```sh
+mars() { bun /absolute/path/to/MARS-Send-Youre-AI-To-Space/apps/cli/src/main.ts "$@"; }
+mars --help
+```
+
+The current directory still selects the project for commands with `--source`
+defaults. Without the function, use the full `bun` command from the repo root.
+
+### Optional Python optimization worker
+
+The real GEPA worker tests, including the reflection-prompt scrubbing test, skip
+when `packages/optimization/python/.venv` is missing. The remaining offline
+checks require no Python worker. To include those tests, install
+[uv](https://docs.astral.sh/uv/getting-started/installation/) and run from the
+repository root:
+
+```sh
+uv venv --python 3.12 packages/optimization/python/.venv
+uv pip install --python packages/optimization/python/.venv/bin/python -r packages/optimization/python/requirements.lock
+bun test packages/optimization/src/optimization.test.ts
+```
+
+This separate worker environment is optional and does not configure a model
+provider or enable paid requests.
+
 ## Commands
 
 | Command | Purpose |
@@ -62,7 +94,7 @@ Lifecycle scripts stay disabled: optional `onnxruntime-node` and `protobufjs` po
 | `bun apps/cli/src/main.ts render [file] [--connectors ids] [--address a@b.com] [--follow-up N] [--json]` | Render MARS Output Format text (file or stdin) for a terminal; follow-ups, `app://` triggers and `mars://review` links are listed as proposals, nothing is executed |
 | `bun run smoke:execution` | No-provider/no-tool SDK and native search probe |
 | `bun run audit:sources` | Validate source references, spec digest, package pins, installed versions, and lockfile integrity |
-| `bun run audit:sources:remote` | Fetch immutable source/license files and emit content hashes; network required |
+| `bun run audit:sources:remote` | Fetch immutable source/license files and Git directory trees and emit hashes; network required |
 | `bun run format` | Apply Biome formatting and import organization |
 
 A small Bun build emits the CLI and provider library bundles with `bun run build`; the execution package still runs TypeScript directly. There are no existing database migrations, production data, or schema-upgrade guarantees at version 0.0.1.

@@ -510,6 +510,10 @@ export async function runEvolution(
   smoke = runLiveSmoke,
 ): Promise<void> {
   const [command, ...rest] = args;
+  if (command === "--help" || command === "-h") {
+    console.log(EVOLUTION_USAGE);
+    return;
+  }
   const { values } = parseArgs({
     args: rest,
     options: {

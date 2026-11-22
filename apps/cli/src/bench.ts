@@ -90,6 +90,7 @@ export async function runBench(
   io: {
     env?: Record<string, string | undefined>;
     fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+    err?: (line: string) => void;
   } = {},
 ): Promise<void> {
   const env = io.env ?? process.env;
@@ -247,6 +248,10 @@ export async function runBench(
     values["max-usd-per-task"] === undefined
       ? maxUsd / trials
       : nonNegative("--max-usd-per-task", values["max-usd-per-task"]);
+  const err = io.err ?? ((line: string) => console.error(line));
+  let completed = 0;
+  if (!live)
+    err(`Offline benchmark: ${trials} scripted trials (provider requests: 0).`);
   const run = await runEditBenchmark({
     suite,
     arms,
@@ -275,6 +280,17 @@ export async function runBench(
     repository: values.repository ?? basename(process.cwd()),
     outDir,
     simulated: !live,
+    ...(!live
+      ? {
+          onTrial: () => {
+            completed++;
+            if (completed === 1 || completed % 25 === 0 || completed === trials)
+              err(
+                `Offline benchmark: ${completed}/${trials} trials completed.`,
+              );
+          },
+        }
+      : {}),
     lineages,
     ...(signer ? { signer } : {}),
     ...(values["seed-salt"] !== undefined
@@ -296,7 +312,8 @@ export async function runBench(
         report_sha256: run.report.report_sha256,
         signed: run.report.attestation !== undefined,
         trials: run.trials.length,
-        model_requests: model.requests ? model.requests() : null,
+        scripted_model_requests: live ? 0 : (model.requests?.() ?? 0),
+        provider_requests: live ? null : 0,
         bar_met: verdict.met,
         exploratory: verdict.exploratory,
         verdict: verdict.summary,

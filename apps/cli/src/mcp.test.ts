@@ -41,7 +41,7 @@ async function execMcpCli(args: string[]): Promise<string> {
 
 describe("mars mcp CLI flow", () => {
   it("explains which explicit permissions HTTP tools and credentials need", async () => {
-    await expect(execMcpCli(["--help"])).rejects.toThrow(
+    expect(await execMcpCli(["--help"])).toMatch(
       /Explicit review permissions replace the defaults.*--permission network\.connect:<origin>\.\s+If using a credential.*--permission credential\.use:<ref>/,
     );
   });
