@@ -30,6 +30,139 @@ const send = (over: Partial<SendMessageInput> = {}): SendMessageInput => ({
   ...over,
 });
 
+test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+  "pagination rejects non-finite limit %s",
+  (limit) => {
+    const service = new FixtureTeamService();
+    expect(service.openConversation(U.ada, C.dmAdaGrace, { limit })).toEqual({
+      ok: false,
+      code: "invalid",
+    });
+  },
+);
+
+test.each(["", "seq:", "seq: ", "seq:1e2", "seq:0x10", "seq:9007199254740992"])(
+  "pagination rejects malformed cursor %s",
+  (before) => {
+    const service = new FixtureTeamService();
+    expect(service.openConversation(U.ada, C.dmAdaGrace, { before })).toEqual({
+      ok: false,
+      code: "invalid",
+    });
+  },
+);
+
+test("generated message IDs do not collide with supplied dataset messages", () => {
+  const dataset = structuredClone(FIXTURE);
+  const existing = dataset.messages.find(
+    (message) => message.conversation_id === C.dmGraceLinus,
+  );
+  if (!existing) throw new Error("missing message");
+  existing.message_id = `msg_${C.dmAdaGrace}_5`;
+  const service = new FixtureTeamService({ dataset });
+  const input = send();
+  const result = ok(service.sendMessage(U.ada, input));
+  expect(result.message_id).not.toBe(existing.message_id);
+  expect(ok(service.sendMessage(U.ada, input))).toEqual({
+    ...result,
+    duplicate: true,
+  });
+});
+
+test("generated message IDs respect the schema length limit", () => {
+  const longDataset = structuredClone(FIXTURE);
+  const conversationId = "c".repeat(128);
+  longDataset.conversations = longDataset.conversations.map((conversation) => ({
+    ...conversation,
+    conversation_id:
+      conversation.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : conversation.conversation_id,
+  }));
+  longDataset.participants = longDataset.participants.map((participant) => ({
+    ...participant,
+    conversation_id:
+      participant.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : participant.conversation_id,
+  }));
+  longDataset.messages = longDataset.messages.map((message) => ({
+    ...message,
+    conversation_id:
+      message.conversation_id === C.dmAdaGrace
+        ? conversationId
+        : message.conversation_id,
+  }));
+  const longService = new FixtureTeamService({ dataset: longDataset });
+  const sent = ok(
+    longService.sendMessage(U.ada, send({ conversation_id: conversationId })),
+  );
+  expect(sent.message_id.length).toBeLessThanOrEqual(128);
+  expect(
+    ok(
+      longService.sendMessage(
+        U.ada,
+        send({
+          conversation_id: conversationId,
+          client_message_id: "long_2",
+          reply_to: sent.message_id,
+        }),
+      ),
+    ).sequence,
+  ).toBe(6);
+});
+
+test("new references do not collide with IDs in a supplied dataset", () => {
+  const dataset = structuredClone(FIXTURE);
+  const original = dataset.references[0];
+  if (!original) throw new Error("missing reference");
+  const oldId = original.reference_id;
+  original.reference_id = "ref_sent_1";
+  dataset.shares = dataset.shares.map((share) => ({
+    ...share,
+    reference_id:
+      share.reference_id === oldId ? "ref_sent_1" : share.reference_id,
+  }));
+  const service = new FixtureTeamService({ dataset });
+  const result = ok(
+    service.sendMessage(
+      U.ada,
+      send({
+        references: [
+          {
+            kind: "file",
+            repo_id: R.site,
+            commit_sha: SITE_SHA,
+            path: "src/style.css",
+            line_start: null,
+            line_end: null,
+            symbol: null,
+          },
+        ],
+      }),
+    ),
+  );
+  const message = ok(
+    service.openConversation(U.ada, C.dmAdaGrace),
+  ).messages.find((entry) => entry.message_id === result.message_id);
+  expect(message?.references[0]).toMatchObject({
+    state: "ok",
+    path: "src/style.css",
+    repo_id: R.site,
+  });
+  expect(message?.references[0]?.reference_id).not.toBe("ref_sent_1");
+});
+
+test("default fixture clock rolls over midnight with valid chronological timestamps", () => {
+  const service = new FixtureTeamService();
+  for (let i = 0; i < 561; i++) {
+    ok(service.sendMessage(U.ada, send({ client_message_id: `clock_${i}` })));
+  }
+  const messages = ok(service.openConversation(U.ada, C.dmAdaGrace)).messages;
+  expect(messages.at(-2)?.created_at).toBe("2026-11-04T00:00:00.000Z");
+  expect(messages.at(-1)?.created_at).toBe("2026-11-04T00:01:00.000Z");
+});
+
 function ok<T>(
   result: { ok: true; value: T } | { ok: false; code: string },
 ): T {
