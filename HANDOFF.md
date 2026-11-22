@@ -6,6 +6,10 @@
 
 Copy uses a dedicated, write-only, length-bounded native clipboard bridge restricted to the owning live shell main frame; all Chromium permissions stay denied. Conversation history, explicit provider consent and the separate **Make a task** handoff are preserved. Verification uses fixture-backed Electron with seeded local conversations, not live model generation. See `documentation/SHELL.md` and the PR's rendered evidence.
 
+## Desktop installer releases
+
+On Ronav's fork, pushing a `vMAJOR.MINOR.PATCH` tag from a commit with the desktop release workflow publishes the Apple Silicon and Intel macOS disk images and the Ubuntu/Debian x64 package on [GitHub Releases](https://github.com/ronavkarumsi04/MARS-Send-Youre-AI-To-Space/releases) after the full installer matrix passes. PR, `main` branch, and manual runs still upload Actions artifacts without publishing a release.
+
 ## Editor decision document
 
 `documentation/EDITOR_INTEGRATION.md` presents Monaco versus Code OSS for Tanay
