@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
+import { createTeamChatBridge } from "../src/main/team-chat-bridge";
 import { createController } from "../src/renderer/controller";
 import { READ_METHODS, type ShellBridge } from "../src/shared/methods";
+import {
+  TEAM_CHAT_METHODS,
+  type TeamChatBridgeApi,
+} from "../src/shared/team-chat";
 import { findAll, MiniDocument, serialize } from "./mini-dom";
 import { fakeBridge, loadFixtureData, type RecordedCall } from "./test-utils";
 
@@ -32,6 +37,57 @@ function fakeTimers() {
     },
   };
 }
+
+test("auto-refresh preserves unsubmitted Team Chat search text, focus, and caret", async () => {
+  const fixture = await loadFixtureData();
+  const teamBridge = createTeamChatBridge();
+  const teamApi = Object.fromEntries(
+    TEAM_CHAT_METHODS.map((method) => [
+      method,
+      (params: unknown) => teamBridge.call(method, params),
+    ]),
+  ) as TeamChatBridgeApi;
+  const doc = new MiniDocument();
+  const timers = fakeTimers();
+  const controller = createController(
+    fakeBridge(fixture),
+    doc,
+    doc.root,
+    teamApi,
+    timers,
+  );
+  try {
+    await controller.load();
+    findAll(
+      doc.root,
+      (element) => element.getAttribute("data-action") === "toggle-team-chat",
+    )[0]?.click();
+    await Bun.sleep(0);
+    const search = () =>
+      findAll(
+        doc.root,
+        (element) => element.getAttribute("class") === "team-search-input",
+      )[0];
+    const input = search();
+    if (!input) throw new Error("search input missing");
+    input.value = "unfinished search";
+    input.dispatch("input");
+    input.focus();
+    input.setSelectionRange(3, 8, "backward");
+    timers.advance(3000);
+    await controller.settled();
+    const refreshed = search();
+    expect(refreshed).not.toBe(input);
+    expect(refreshed?.value).toBe("unfinished search");
+    expect(doc.activeElement).toBe(refreshed);
+    expect(refreshed?.selectionStart).toBe(3);
+    expect(refreshed?.selectionEnd).toBe(8);
+    expect(refreshed?.selectionDirection).toBe("backward");
+    expect(doc.root.textContent).not.toContain("Search results (");
+  } finally {
+    controller.dispose();
+  }
+});
 
 test.each(["pending", "running"] as const)(
   "auto-refresh: a selected %s task reaches completed without user input or mutations",

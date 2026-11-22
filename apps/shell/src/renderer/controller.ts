@@ -206,6 +206,9 @@ export function createController(
         onResolveReference: (messageId, referenceId) =>
           void resolveTeamReference(messageId, referenceId),
         onSearch: (query) => void searchTeamMessages(query),
+        onSearchChange: (query) => {
+          teamState = { ...teamState, searchQuery: query };
+        },
         onSwitchViewer: (viewer) => void switchTeamViewer(viewer),
         onLoadOlder: () => void loadOlderTeamMessages(),
       },
