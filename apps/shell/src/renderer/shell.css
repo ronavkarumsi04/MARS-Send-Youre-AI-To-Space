@@ -377,7 +377,11 @@ a {
   display: flex;
   width: 100%;
   border: 0;
-  padding: 12px 0;
+  padding: 12px 14px;
+  border-radius: max(
+    var(--radius-min),
+    calc(var(--radius-xl) - var(--rail-padding))
+  );
   text-align: left;
   font-size: 14px;
 }
@@ -1106,8 +1110,12 @@ a {
 }
 .inspector-section {
   margin-bottom: 24px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--borderMuted);
+  padding: 12px;
+  background: var(--infoBg);
+  border: 1px solid var(--borderMuted);
+  border-top-color: var(--surface-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
 }
 .minor-title {
   font: 9px / 1.5 var(--mono);
@@ -1210,9 +1218,16 @@ a {
   border-color: var(--blue);
 }
 .library-item {
-  border-top: 1px solid var(--paperLine);
-  padding-top: 20px;
+  border: 1px solid var(--paperLine);
+  border-top-color: var(--surface-light);
+  border-radius: var(--panel-inner-radius);
+  padding: 12px;
+  background: var(--cardBg);
+  box-shadow: var(--elev-1);
   margin-top: 20px;
+}
+.library-item .connect-action {
+  border-radius: max(var(--radius-min), calc(var(--panel-inner-radius) - 12px));
 }
 .library-item h3 {
   margin: 9px 0;
@@ -1512,8 +1527,16 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 30px;
-  border-bottom: 1px solid var(--borderMuted);
+  padding: 10px;
+  margin: 0 8px 10px;
+  background: var(--cardBg);
+  border: 1px solid var(--borderMuted);
+  border-top-color: var(--surface-light);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-2);
+}
+.team-search :is(input, button) {
+  border-radius: calc(var(--radius-xl) - 10px);
 }
 .team-search-input {
   flex: 1;
@@ -1528,6 +1551,8 @@ a {
   grid-template-columns: 185px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
+  gap: 10px;
+  margin: 0 8px 8px;
 }
 .team-conv-list {
   display: flex;
@@ -1666,15 +1691,19 @@ a {
 .team-conversations {
   min-height: 0;
   overflow: auto;
-  border-right: 1px solid var(--borderMuted);
+  border: 1px solid var(--borderMuted);
+  border-top-color: var(--surface-light);
+  border-radius: var(--radius-xl);
+  padding: 6px;
   background: var(--cardBg);
+  box-shadow: var(--elev-1);
 }
 .team-conversations .eyebrow {
   margin: 20px 16px 8px;
 }
 .team-conv-list {
   border: 0;
-  padding: 0 9px 18px;
+  padding: 0;
 }
 .team-conv-item {
   flex-wrap: wrap;
@@ -1711,7 +1740,12 @@ a {
   white-space: nowrap;
 }
 .team-thread {
-  background: var(--pageBg);
+  background: var(--cardBg);
+  border: 1px solid var(--borderMuted);
+  border-top-color: var(--surface-light);
+  border-radius: var(--radius-xl);
+  padding: 6px;
+  box-shadow: var(--elev-1);
 }
 .team-message {
   padding: 12px 8px 18px;
@@ -1741,7 +1775,7 @@ a {
   border-radius: var(--radius-sm);
 }
 .team-composer {
-  --compose-radius: var(--radius-xl);
+  --compose-radius: calc(var(--radius-xl) - 6px);
   --compose-padding: 10px;
   --compose-inner-radius: max(
     var(--radius-min),
@@ -1818,7 +1852,7 @@ a {
   border-radius: var(--radius-lg);
 }
 .team-message {
-  background: var(--cardBg);
+  background: var(--infoBg);
   padding: 12px;
 }
 .extension-grid {
@@ -2015,13 +2049,13 @@ a {
     padding-inline: 20px;
   }
   .team-search {
-    padding-inline: 20px;
+    padding-inline: 10px;
   }
   .team-layout {
     grid-template-columns: 130px minmax(0, 1fr);
   }
   .team-thread {
-    padding: 14px;
+    padding: 6px;
   }
   .team-composer {
     flex-wrap: wrap;
@@ -2104,7 +2138,6 @@ a {
   .team-conv-list {
     max-height: 140px;
     border-right: 0;
-    border-bottom: 1px solid var(--borderMuted);
   }
   .team-thread {
     min-height: 350px;
@@ -2231,7 +2264,7 @@ a {
     font-size: 24px;
   }
   .team-search {
-    padding: 6px 12px;
+    padding: 10px;
   }
   .team-layout {
     display: flex;
@@ -2240,15 +2273,15 @@ a {
   }
   .team-conversations {
     flex: none;
-    max-height: 95px;
-    border: 0;
+    max-height: none;
+    overflow: hidden;
   }
   .team-conversations .eyebrow {
     margin: 5px 12px 0;
   }
   .team-conv-list {
     flex-direction: row;
-    padding: 4px 8px;
+    padding: 4px 0;
     overflow-x: auto;
   }
   .team-conv-item {
@@ -2267,7 +2300,7 @@ a {
   .team-thread {
     flex: 1;
     min-height: 0;
-    padding: 6px 12px;
+    padding: 6px;
     gap: 5px;
   }
   .team-composer {
