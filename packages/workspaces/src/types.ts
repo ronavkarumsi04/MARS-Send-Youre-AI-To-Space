@@ -80,8 +80,6 @@ export interface LocalWorkspaceProviderOptions {
   sandbox?: SandboxRunner;
   now?: () => Date;
   testHooks?: {
-    /** Test-only hook for file read path replacement races. */
-    readPhase?(phase: "before-open" | "after-open"): void | Promise<void>;
     /** Test-only hook for failing restore rollback before the backup rename. */
     recoveryPhase?(phase: "before-rollback-rename"): void | Promise<void>;
     /** Test-only hook for write transaction failure injection. */

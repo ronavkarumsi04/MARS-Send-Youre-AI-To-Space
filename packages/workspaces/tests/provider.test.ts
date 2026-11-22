@@ -58,40 +58,6 @@ import {
 
 const digest = "a".repeat(64);
 
-test.each([false, true])(
-  "read refuses a parent symlink swap (restored after open: %s)",
-  async (restore) => {
-    let tree = "";
-    let outside = "";
-    const f = await makeFixture({
-      testHooks: {
-        async readPhase(phase) {
-          if (phase === "before-open") {
-            await rename(join(tree, "parent"), join(tree, "parent-backup"));
-            await symlink(outside, join(tree, "parent"));
-          } else if (restore) {
-            await rm(join(tree, "parent"));
-            await rename(join(tree, "parent-backup"), join(tree, "parent"));
-          }
-        },
-      },
-    });
-    try {
-      tree = await f.provider.workspacePath(context, f.workspace);
-      outside = join(f.base, "outside");
-      await mkdir(outside);
-      await mkdir(join(tree, "parent"));
-      await writeFile(join(tree, "parent", "file.txt"), "inside\n");
-      await writeFile(join(outside, "file.txt"), "outside\n");
-      await expect(
-        f.provider.read(context, f.workspace, "parent/file.txt"),
-      ).rejects.toMatchObject({ code: "policy" });
-    } finally {
-      await f.close();
-    }
-  },
-);
-
 test("path filters compare ignore and secret names case-insensitively", () => {
   expect(isIgnored(".Git")).toBe(true);
   expect(isIgnored("Node_Modules")).toBe(true);

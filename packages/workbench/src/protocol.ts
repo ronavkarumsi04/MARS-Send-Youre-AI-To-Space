@@ -141,12 +141,6 @@ export const ArtifactDataSchema = z
   })
   .strict();
 export type ArtifactData = z.infer<typeof ArtifactDataSchema>;
-export const TaskFileResultSchema = ArtifactDataSchema.extend({
-  path: z.string().min(1).max(4096),
-  size: z.number().int().nonnegative(),
-  sha256: sha256Hex,
-}).strict();
-export type TaskFileResult = z.infer<typeof TaskFileResultSchema>;
 export const StartParamsSchema = z
   .object({
     task_id: id,
@@ -435,10 +429,6 @@ export const RpcRequestSchema = z.discriminatedUnion("method", [
     z.object({ task_id: id, artifact: ArtifactRefSchema }).strict(),
   ),
   method("tasks.diff", taskId),
-  method(
-    "tasks.file",
-    z.object({ task_id: id, path: z.string().min(1).max(4096) }).strict(),
-  ),
   method(
     "tasks.evidence",
     z

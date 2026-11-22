@@ -853,28 +853,15 @@ export async function createLocalWorkspaceProvider(
         const absolute = await resolveSafePath(treeDir(current), path);
         let handle: FileHandle | undefined;
         try {
-          await options.testHooks?.readPhase?.("before-open");
           handle = await open(
             absolute,
             constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
           );
           const info = await handle.stat();
-          await options.testHooks?.readPhase?.("after-open");
           if (!info.isFile())
             throw new WorkspacePolicyError(
               "Workspace path is not a regular file",
             );
-          const tree = treeDir(current);
-          await resolveSafePath(tree, path);
-          const checked = await lstat(absolute);
-          if (
-            !checked.isFile() ||
-            checked.dev !== info.dev ||
-            checked.ino !== info.ino ||
-            (await realpath(tree)) !== tree ||
-            !isInsideOrEqual(tree, await realpath(absolute))
-          )
-            throw new WorkspacePolicyError("Workspace read path changed");
           if (info.size > limits.maxFileBytes)
             throw new LimitExceededError("File exceeds maxFileBytes");
           const data = await readBounded(handle, limits.maxFileBytes);

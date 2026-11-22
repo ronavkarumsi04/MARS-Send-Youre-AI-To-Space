@@ -316,7 +316,6 @@ export type WorkbenchHostApi = WorkbenchOperations &
   Required<
     Pick<
       WorkbenchOperations,
-      | "file"
       | "memoryProposals"
       | "acceptMemoryProposal"
       | "rejectMemoryProposal"
@@ -2825,7 +2824,6 @@ export async function createWorkbenchHost(
     Required<
       Pick<
         WorkbenchOperations,
-        | "file"
         | "journal"
         | "memoryProposals"
         | "acceptMemoryProposal"
@@ -3458,39 +3456,6 @@ export async function createWorkbenchHost(
         media_type: ref.media_type,
       };
     },
-    async file(context, taskId, path) {
-      checkContext(context);
-      await options.store.inspect(context, taskId);
-      const workspace = await options.workspace.reopen(context, taskId);
-      const ref = await options.workspace.read(context, workspace, path);
-      const metadata = {
-        path,
-        data_base64: "",
-        media_type: ref.media_type,
-        size: ref.byte_length,
-        sha256: ref.sha256,
-      };
-      if (
-        4 * Math.ceil(ref.byte_length / 3) +
-          Buffer.byteLength(JSON.stringify({ result: metadata })) >
-        MAX_RESPONSE_BYTES
-      )
-        throw new WorkbenchError("too_large");
-      const bytes = await options.store.artifacts.get(context, ref);
-      const result = {
-        ...metadata,
-        data_base64: Buffer.from(bytes).toString("base64"),
-      };
-      const patterns = await privatePatterns(context, taskId);
-      assertPublicBytes(bytes, patterns);
-      assertPublicBytes(
-        new TextEncoder().encode(JSON.stringify(result)),
-        patterns,
-      );
-      if (Buffer.byteLength(JSON.stringify({ result })) > MAX_RESPONSE_BYTES)
-        throw new WorkbenchError("too_large");
-      return result;
-    },
     async diff(context, taskId) {
       checkContext(context);
       await options.store.inspect(context, taskId);
@@ -3745,7 +3710,6 @@ export async function createWorkbenchHost(
     events: track(api.events),
     journal: track(api.journal),
     artifact: track(api.artifact),
-    file: track(api.file),
     diff: track(api.diff),
     evidence: track(api.evidence),
     checkpoint: track(api.checkpoint),
