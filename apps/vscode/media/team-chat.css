@@ -391,6 +391,24 @@ select {
   padding: 8px 12px 10px;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
+.handoff {
+  max-height: min(55vh, 34rem);
+  overflow: auto;
+}
+.handoff form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 6px;
+}
+.handoff label {
+  display: grid;
+}
+.handoff label:has(textarea) {
+  grid-column: 1 / -1;
+}
+.evidence-card p {
+  overflow-wrap: anywhere;
+}
 .reply-bar {
   display: flex;
   align-items: center;

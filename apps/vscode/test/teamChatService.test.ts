@@ -15,6 +15,8 @@ import {
   FAKE_TEAM_TOKEN,
   type FakeTeamOptions,
   FakeTeamServer,
+  fakeHandoffWorkbench,
+  HANDOFF_CAPABILITIES,
 } from "./teamFixtures";
 
 const ADA = "user_ada";
@@ -30,6 +32,9 @@ function setup(
     fetch?: StreamFetchLike;
     pageSize?: number;
     maxLoaded?: number;
+    workbench?: ConstructorParameters<
+      typeof TeamChatController
+    >[0]["workbench"];
   } = {},
 ) {
   const server = new FakeTeamServer(options);
@@ -88,6 +93,7 @@ function setup(
     service,
     ...(realtime ? { realtime } : {}),
     viewer: "service",
+    ...(options.workbench ? { workbench: options.workbench } : {}),
     pageSize: options.pageSize ?? 50,
     ...(options.maxLoaded !== undefined
       ? { maxLoaded: options.maxLoaded }
@@ -111,6 +117,131 @@ function setup(
     statuses,
   };
 }
+
+test("task handoff keeps drafts local, replays the same launch and publishes only reviewed evidence", async () => {
+  const workbench = fakeHandoffWorkbench();
+  let connected = false;
+  const { server, controller, dm, last } = setup({
+    capabilities: HANDOFF_CAPABILITIES,
+    workbench: () => (connected ? workbench : undefined),
+  });
+  const handle = (message: Parameters<typeof controller.handleMessage>[0]) =>
+    controller.handleMessage(message);
+  await handle({ type: "ready" });
+  await handle({ type: "selectConversation", conversationId: dm });
+  const message = last().selected?.messages[0];
+  if (!message) throw new Error("missing source message");
+  const initialCount = server.messages.length;
+  const draft = {
+    type: "taskLinkDraft",
+    conversationId: dm,
+    messageIds: [message.message_id],
+    referenceIds: [],
+  };
+  await handle(draft);
+  expect(last().task_link_draft?.excerpts[0]?.excerpt).toBe(message.body);
+  await handle({ type: "clearTaskLink" });
+  expect(last().task_link_draft).toBeNull();
+  expect(workbench.creates).toHaveLength(0);
+  expect(server.messages).toHaveLength(initialCount);
+
+  await handle(draft);
+  const linkId = last().task_link_draft?.link.link_id;
+  if (!linkId) throw new Error("missing draft link");
+  const confirm = {
+    type: "taskLinkConfirm",
+    linkId,
+    request: "Prepare the release",
+    acceptanceCriteria: ["Review the release checklist"],
+    budget: {
+      max_tokens: 1000,
+      max_usd: 0,
+      max_duration_ms: 60_000,
+      max_depth: 0,
+      max_concurrency: 1,
+    },
+  };
+  await handle(confirm);
+  expect(last().notice?.text).toContain("Connect to a MARS Workbench");
+  expect(last().task_link_draft?.link.link_id).toBe(linkId);
+  connected = true;
+  workbench.loseNextAcknowledgement();
+  await handle(confirm);
+  expect(last().notice?.text).toContain("Retry uses the same task");
+  expect(last().task_link_draft?.link.link_id).toBe(linkId);
+  await handle(confirm);
+  expect(workbench.tasks.size).toBe(1);
+  expect(workbench.creates).toHaveLength(2);
+  expect(workbench.creates[0]).toEqual(workbench.creates[1]);
+  expect(workbench.creates[0]?.launchKey).toBe(
+    server.links.get(linkId)?.launch_key,
+  );
+  expect(workbench.creates[0]?.task.provenance?.message_ids).toEqual([
+    message.message_id,
+  ]);
+  expect(last().task_link?.link).toMatchObject({
+    status: "created",
+    task_revision: 0,
+  });
+  expect(last().task_link_draft).toBeNull();
+
+  const summary = "Private release result";
+  const preview = {
+    type: "sharePreview",
+    linkId,
+    summary,
+    includeDiffDigest: true,
+    includeChecks: false,
+  };
+  await handle(preview);
+  expect(last().share_preview?.card.summary).toBe(summary);
+  const cancelledDigest = last().share_preview?.preview_sha256;
+  await handle({ type: "clearShare" });
+  await handle({ type: "shareCreate", linkId, previewSha256: cancelledDigest });
+  expect(last().share_preview).toBeNull();
+  expect(server.messages).toHaveLength(initialCount);
+
+  await handle(preview);
+  const reviewed = last().share_preview?.preview_sha256;
+  expect(reviewed).toBeDefined();
+  await handle({ type: "shareCreate", linkId, previewSha256: "0".repeat(64) });
+  expect(server.calls.some((call) => call.method === "shares.create")).toBe(
+    false,
+  );
+  await handle({ type: "shareCreate", linkId, previewSha256: reviewed });
+  expect(last().share_result?.summary).toBe(summary);
+  expect(server.messages).toHaveLength(initialCount + 1);
+
+  await handle(preview);
+  const oldEvidence = last().share_preview?.preview_sha256;
+  workbench.changeDiff();
+  await handle({ type: "shareCreate", linkId, previewSha256: oldEvidence });
+  expect(last().notice?.text).toContain("no longer matches the preview");
+  expect(server.messages).toHaveLength(initialCount + 1);
+  await handle(preview);
+  await handle({
+    type: "shareCreate",
+    linkId,
+    previewSha256: last().share_preview?.preview_sha256,
+  });
+  expect(server.messages).toHaveLength(initialCount + 2);
+
+  const teammate = new RpcTeamService(new TeamClient(server.transport(GRACE)));
+  const reloaded = await teammate.openConversation(GRACE, dm, { limit: 50 });
+  if (!reloaded.ok) throw new Error(reloaded.code);
+  const cards = reloaded.value.messages.filter(
+    ({ kind }) => kind === "result_card",
+  );
+  expect(cards.map(({ payload }) => payload?.summary)).toEqual([
+    summary,
+    summary,
+  ]);
+  expect(cards[0]?.payload).toMatchObject({
+    stale: true,
+    superseded_by: cards[1]?.payload?.share_id,
+  });
+  expect(cards[1]?.payload?.stale).toBe(false);
+});
 
 async function until(check: () => boolean, tries = 200): Promise<void> {
   for (let i = 0; i < tries; i++) {

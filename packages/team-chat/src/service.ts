@@ -1,3 +1,4 @@
+import type { MessageKind, ResultCard, ResultShare } from "@mars/contracts";
 import { cloneFixture, FIXTURE } from "./fixture";
 import {
   type FixtureDataset,
@@ -69,6 +70,8 @@ export type ReferenceView =
   | { reference_id: string; state: "restricted" };
 
 export interface MessageView {
+  kind?: MessageKind;
+  payload?: ResultShare;
   message_id: string;
   conversation_id: string;
   author_id: string;
@@ -203,21 +206,7 @@ export interface TaskLinkView {
   link: TaskLinkRecordView;
 }
 
-export interface EvidenceShareCardView {
-  link_id: string;
-  requester_id: string;
-  attested_by: string;
-  summary: string;
-  run_status: string;
-  verified: boolean;
-  verified_reason: string | null;
-  task_revision: number;
-  diff_sha256: string | null;
-  evidence_event_id: string | null;
-  evidence_sha256: string;
-  export_status: "not_exported";
-  git_status: "unknown" | "clean" | "dirty";
-}
+export type EvidenceShareCardView = ResultCard;
 
 export interface EvidenceSharePreviewView {
   preview_sha256: string;

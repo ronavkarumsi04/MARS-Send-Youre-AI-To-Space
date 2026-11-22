@@ -422,7 +422,10 @@ class TeamChatViewProvider
       this.controller?.refreshMentionIndex(),
     );
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly workbench: WorkbenchViewProvider,
+  ) {}
 
   dispose(): void {
     this.workspaceListener.dispose();
@@ -500,6 +503,7 @@ class TeamChatViewProvider
       service,
       realtime,
       viewer: "service",
+      workbench: () => this.workbench.active?.currentClient,
       pageSize: 50,
     });
     return controller;
@@ -634,7 +638,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let teamChat: TeamChatViewProvider | undefined;
   const registerTeamChat = () => {
     if (teamChat || !teamChatEnabled()) return;
-    teamChat = new TeamChatViewProvider(context);
+    teamChat = new TeamChatViewProvider(context, provider);
     context.subscriptions.push(
       teamChat,
       vscode.window.registerWebviewViewProvider(TEAM_CHAT_VIEW_ID, teamChat),

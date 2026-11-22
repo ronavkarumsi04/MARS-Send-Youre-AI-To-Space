@@ -6,7 +6,11 @@ import { TeamClient } from "../../src/teamChat/client";
 import { TeamChatController } from "../../src/teamChat/controller";
 import { TeamRealtime } from "../../src/teamChat/realtime";
 import { RpcTeamService } from "../../src/teamChat/service";
-import { FakeTeamServer } from "../../test/teamFixtures";
+import {
+  FakeTeamServer,
+  fakeHandoffWorkbench,
+  HANDOFF_CAPABILITIES,
+} from "../../test/teamFixtures";
 
 const params = new URLSearchParams(window.location.search);
 export const scenario = params.get("scenario") ?? "inbox";
@@ -19,7 +23,11 @@ let saved: unknown;
  * page): the same code path the extension host runs.
  */
 function serviceController(): TeamChatController {
-  const server = new FakeTeamServer();
+  const handoff = scenario === "handoff";
+  const server = new FakeTeamServer(
+    handoff ? { capabilities: HANDOFF_CAPABILITIES } : {},
+  );
+  const workbench = fakeHandoffWorkbench();
   server.seedDm("user_ada", "user_grace", [
     "Hi Ada, the launch key evidence is in the review now.",
     "Thanks! Looking at it this afternoon.",
@@ -57,6 +65,7 @@ function serviceController(): TeamChatController {
     service,
     realtime,
     viewer: "service",
+    ...(handoff ? { workbench: () => workbench } : {}),
     pageSize: 50,
   });
   Object.assign(globalThis, { __teamServer: server });
@@ -64,7 +73,7 @@ function serviceController(): TeamChatController {
 }
 
 export const controller =
-  scenario === "service"
+  scenario === "service" || scenario === "handoff"
     ? serviceController()
     : new TeamChatController({
         post: (state) => window.postMessage({ type: "state", state }, "*"),

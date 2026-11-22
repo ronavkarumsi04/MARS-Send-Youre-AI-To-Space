@@ -37,6 +37,7 @@ const SCENARIOS: { name: string; width: number; height: number }[] = [
   { name: "failed", width: 1400, height: 900 },
   { name: "narrow", width: 560, height: 900 },
   { name: "service", width: 1400, height: 900 },
+  { name: "handoff", width: 1400, height: 900 },
 ];
 
 const THEME = `

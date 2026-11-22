@@ -45,6 +45,58 @@ async function pressEnter(): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  if (scenario === "handoff") {
+    const create = '[data-focus-key^="task-draft-"]';
+    await click(create);
+    const draft = await waitFor('[aria-label="Task link draft"] blockquote');
+    if (
+      !draft.textContent?.includes("Release checklist") &&
+      !draft.textContent?.includes("launch key evidence")
+    )
+      throw new Error("harness: task draft missing the selected excerpt");
+    await click(key("linked-task-cancel"));
+    if (document.querySelector('[aria-label="Task link draft"]'))
+      throw new Error("harness: cancelled task draft is still open");
+    await click(create);
+    for (const [field, value] of Object.entries({
+      request: "Prepare the release",
+      criteria: "Review the release checklist",
+      tokens: "1000",
+      usd: "0",
+      seconds: "60",
+      depth: "0",
+      concurrency: "1",
+    })) {
+      const input = await waitFor<HTMLInputElement | HTMLTextAreaElement>(
+        key(`linked-task-${field}`),
+      );
+      input.value = value;
+    }
+    await click(key("linked-task-confirm"));
+    await click(key("share-evidence"));
+    const summary = await waitFor<HTMLTextAreaElement>(key("share-summary"));
+    summary.value = "Release checklist reviewed.";
+    await click(key("share-preview"));
+    await waitFor('[aria-label="Private evidence preview"]');
+    if (document.querySelector('[aria-label="Shared evidence"]')) {
+      throw new Error("harness: evidence posted before confirmation");
+    }
+    await click(key("share-cancel"));
+    if (
+      document.querySelector('[aria-label="Private evidence preview"]') ||
+      document.querySelector('[aria-label="Shared evidence"]')
+    ) {
+      throw new Error("harness: cancelled evidence remained visible");
+    }
+    await click(key("share-preview"));
+    await click(key("share-publish"));
+    const card = await waitFor('[aria-label="Shared evidence"]');
+    if (!card.textContent?.includes(summary.value))
+      throw new Error(
+        "harness: published evidence card is missing the reviewed summary",
+      );
+    return;
+  }
   if (scenario === "service") {
     // Real adapter over the in-page stub: wait for the inbox, send through
     // messages.send, then let a poll deliver another member's message.

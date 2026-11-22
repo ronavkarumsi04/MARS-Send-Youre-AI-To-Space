@@ -1,4 +1,10 @@
-import { AGENT_MAX_MESSAGES, type TeamDeliveryEvent } from "@mars/contracts";
+import {
+  AGENT_MAX_MESSAGES,
+  SHARE_MAX_VERIFY_EVENT_IDS,
+  type Task,
+  TaskLinkSchema,
+  type TeamDeliveryEvent,
+} from "@mars/contracts";
 import {
   type AgentPreviewView,
   type AgentRequestView,
@@ -18,6 +24,9 @@ import {
   type TeamResult,
   type TeamService,
 } from "@mars/team-chat";
+import type { MarsClient } from "../client";
+import { sameScope } from "../protocol";
+import { buildPendingTask } from "../taskFactory";
 import {
   type AgentDraft,
   type PendingSend,
@@ -42,6 +51,9 @@ export interface TeamRealtimeSource {
 
 export interface TeamChatControllerOptions {
   post: (state: TeamChatViewState) => void;
+  workbench?: () =>
+    | Pick<MarsClient, "server" | "create" | "inspect" | "evidence">
+    | undefined;
   service?: TeamService;
   realtime?: TeamRealtimeSource;
   viewer?: string;
@@ -139,9 +151,13 @@ export class TeamChatController {
   private agentDraft: (AgentDraft & { conversationId: string }) | null = null;
   private agentRequestState: AgentRequestView | null = null;
   private taskLinkDraftState: TaskLinkDraftView | null = null;
+  private pendingLinkedTask: Task | null = null;
   private taskLinkState: TaskLinkView | null = null;
   private sharePreviewState: EvidenceSharePreviewView | null = null;
   private shareResultState: EvidenceShareView | null = null;
+  private shareSelection:
+    | Parameters<NonNullable<TeamService["sharePreview"]>>[1]["selection"]
+    | null = null;
   private notice: TeamChatNotice | null = null;
   private search: TeamChatViewState["search"] = null;
   private announcement: TeamChatAnnouncement | null = null;
@@ -303,10 +319,7 @@ export class TeamChatController {
       this.agentPreviewState = null;
       this.agentDraft = null;
       this.agentRequestState = null;
-      this.taskLinkDraftState = null;
-      this.taskLinkState = null;
-      this.sharePreviewState = null;
-      this.shareResultState = null;
+      this.clearHandoff();
       this.notice = null;
       this.search = null;
       this.announcement = null;
@@ -443,45 +456,22 @@ export class TeamChatController {
         );
         return this.emit();
       case "taskLinkConfirm":
-        await this.runTaskLinkConfirm(message.linkId, message.workbench, {
-          ...(message.target.repo_id !== undefined
-            ? { repo_id: message.target.repo_id }
-            : {}),
-          ...(message.target.base_revision !== undefined
-            ? { base_revision: message.target.base_revision }
-            : {}),
-        });
-        return this.emit();
-      case "taskLinkCreated":
-        await this.runTaskLinkCreated(message.linkId, message.taskRevision);
+        await this.runTaskLinkConfirm(message);
         return this.emit();
       case "taskLinkInspect":
         await this.runTaskLinkInspect(message.linkId);
         return this.emit();
       case "clearTaskLink":
-        this.taskLinkDraftState = null;
-        this.taskLinkState = null;
+        this.clearHandoff();
         return this.emit();
       case "sharePreview":
-        await this.runSharePreview(
-          message.linkId,
-          message.evidence,
-          message.runStatus,
-          message.selection,
-        );
+        await this.runSharePreview(message);
         return this.emit();
       case "shareCreate":
-        await this.runShareCreate(
-          message.linkId,
-          message.evidence,
-          message.runStatus,
-          message.selection,
-          message.previewSha256,
-        );
+        await this.runShareCreate(message);
         return this.emit();
       case "clearShare":
-        this.sharePreviewState = null;
-        this.shareResultState = null;
+        this.clearShare();
         return this.emit();
     }
   }
@@ -512,6 +502,7 @@ export class TeamChatController {
     if (this.selected?.conversation.conversation_id === conversationId) {
       this.selected = null;
       this.panel = null;
+      this.clearHandoff();
     }
     if (this.agentDraft?.conversationId === conversationId)
       this.agentDraft = null;
@@ -567,6 +558,7 @@ export class TeamChatController {
       this.panel = null;
       this.agentDraft = null;
       this.agentPreviewState = null;
+      this.clearHandoff();
     }
     const page = await this.service.openConversation(
       this.viewer,
@@ -1341,6 +1333,7 @@ export class TeamChatController {
     messageIds: string[],
     referenceIds: string[],
   ): Promise<void> {
+    if (this.selected?.conversation.conversation_id !== conversationId) return;
     if (!this.service.taskLinkDraft) {
       this.notice = {
         kind: "error",
@@ -1357,47 +1350,106 @@ export class TeamChatController {
       this.failed(result.code, conversationId);
       return;
     }
+    if (
+      result.value.link.conversation_id !== conversationId ||
+      result.value.link.requester_id !== this.me()
+    ) {
+      this.handoffError("The task draft does not match this conversation.");
+      return;
+    }
     this.notice = null;
+    this.clearHandoff();
     this.taskLinkDraftState = result.value;
   }
 
-  private async runTaskLinkConfirm(
-    linkId: string,
-    workbench: {
-      scope: Record<string, unknown>;
-      task_id: string;
-      request_id: string;
-    },
-    target: { repo_id?: string; base_revision?: string },
-  ): Promise<void> {
-    if (!this.service.taskLinkConfirm) return;
-    const result = await this.service.taskLinkConfirm(this.viewer, {
-      link_id: linkId,
-      workbench,
-      target,
-    });
-    if (!result.ok) {
-      this.failed(result.code);
-      return;
-    }
-    this.notice = null;
-    this.taskLinkState = { view: "requester", link: result.value };
+  private handoffError(text: string): void {
+    this.notice = { kind: "error", text };
   }
 
-  private async runTaskLinkCreated(
-    linkId: string,
-    taskRevision: number,
+  private clearShare(): void {
+    this.shareSelection = null;
+    this.sharePreviewState = null;
+    this.shareResultState = null;
+  }
+
+  private clearHandoff(): void {
+    this.pendingLinkedTask = null;
+    this.taskLinkDraftState = null;
+    this.taskLinkState = null;
+    this.clearShare();
+  }
+
+  private async runTaskLinkConfirm(
+    message: Extract<TeamChatWebviewMessage, { type: "taskLinkConfirm" }>,
   ): Promise<void> {
-    if (!this.service.taskLinkCreated) return;
+    const draft = this.taskLinkDraftState;
+    const link = TaskLinkSchema.safeParse(draft?.link);
+    if (
+      !link.success ||
+      link.data.link_id !== message.linkId ||
+      link.data.requester_id !== this.me() ||
+      link.data.conversation_id !== this.selected?.conversation.conversation_id
+    )
+      return;
+    const client = this.options.workbench?.();
+    const scope = client?.server?.scope;
+    if (!client || !scope)
+      return this.handoffError(
+        "Connect to a MARS Workbench before creating the task.",
+      );
+    if (!this.service.taskLinkConfirm || !this.service.taskLinkCreated) return;
+    if (!this.pendingLinkedTask) {
+      const built = buildPendingTask(
+        {
+          request: message.request,
+          acceptance_criteria: message.acceptanceCriteria,
+          budget: message.budget,
+        },
+        scope,
+        () => link.data.launch_key,
+      );
+      if (!built.ok) return this.handoffError(built.reason);
+      this.pendingLinkedTask = {
+        ...built.task,
+        provenance: {
+          source: "team_chat",
+          conversation_id: link.data.conversation_id,
+          message_ids: link.data.provenance.map(({ message_id }) => message_id),
+          reference_ids: link.data.reference_ids,
+        },
+      };
+    }
+    const task = this.pendingLinkedTask;
+    if (!sameScope(task.scope, scope))
+      return this.handoffError(
+        "Reconnect to the original Workbench to retry this task.",
+      );
+    const confirmed = await this.service.taskLinkConfirm(this.viewer, {
+      link_id: message.linkId,
+      workbench: { scope, task_id: task.task_id, request_id: task.task_id },
+      target: {},
+    });
+    if (!confirmed.ok) return this.failed(confirmed.code);
+    this.taskLinkState = { view: "requester", link: confirmed.value };
+    let created: Task;
+    try {
+      created = await client.create(task, { launchKey: link.data.launch_key });
+    } catch {
+      return this.handoffError(
+        "Workbench did not acknowledge the task. Retry uses the same task and request.",
+      );
+    }
     const result = await this.service.taskLinkCreated(this.viewer, {
-      link_id: linkId,
-      task_revision: taskRevision,
+      link_id: message.linkId,
+      task_revision: created.revision,
     });
     if (!result.ok) {
       this.failed(result.code);
       return;
     }
     this.notice = null;
+    this.taskLinkDraftState = null;
+    this.pendingLinkedTask = null;
     this.taskLinkState = { view: "requester", link: result.value };
   }
 
@@ -1408,18 +1460,55 @@ export class TeamChatController {
       this.failed(result.code);
       return;
     }
+    if (
+      result.value.link.conversation_id !==
+      this.selected?.conversation.conversation_id
+    )
+      return;
+    this.clearShare();
     this.taskLinkState = result.value;
   }
 
+  private async linkedEvidence(linkId: string) {
+    const view = this.taskLinkState;
+    if (
+      !view ||
+      view.view !== "requester" ||
+      view.link.link_id !== linkId ||
+      view.link.requester_id !== this.me() ||
+      view.link.conversation_id !==
+        this.selected?.conversation.conversation_id ||
+      (view.link.status !== "created" && view.link.status !== "shared")
+    )
+      return null;
+    const link = TaskLinkSchema.safeParse(view.link);
+    const binding = link.success ? link.data.workbench : null;
+    const client = this.options.workbench?.();
+    const scope = client?.server?.scope;
+    if (!binding || !client || !scope || !sameScope(scope, binding.scope)) {
+      this.handoffError(
+        "Connect to this task's Workbench before sharing evidence.",
+      );
+      return null;
+    }
+    try {
+      const task = await client.inspect(binding.task_id);
+      const evidence = await client.evidence(binding.task_id);
+      if (task.revision !== evidence.task_revision) {
+        this.handoffError(
+          "The task changed while loading evidence. Try again.",
+        );
+        return null;
+      }
+      return { evidence, run_status: task.status };
+    } catch {
+      this.handoffError("Could not load evidence from the task's Workbench.");
+      return null;
+    }
+  }
+
   private async runSharePreview(
-    linkId: string,
-    evidence: Record<string, unknown>,
-    runStatus: string,
-    selection: {
-      summary: string;
-      include_diff_digest: boolean;
-      verify_event_ids: string[];
-    },
+    message: Extract<TeamChatWebviewMessage, { type: "sharePreview" }>,
   ): Promise<void> {
     if (!this.service.sharePreview) {
       this.notice = {
@@ -1428,10 +1517,22 @@ export class TeamChatController {
       };
       return;
     }
+    this.clearShare();
+    const input = await this.linkedEvidence(message.linkId);
+    if (!input) return;
+    const selection = {
+      summary: message.summary,
+      include_diff_digest: message.includeDiffDigest,
+      verify_event_ids: message.includeChecks
+        ? input.evidence.verify_records
+            .filter((record) => !record.stale)
+            .slice(-SHARE_MAX_VERIFY_EVENT_IDS)
+            .map((record) => record.event_id)
+        : [],
+    };
     const result = await this.service.sharePreview(this.viewer, {
-      link_id: linkId,
-      evidence,
-      run_status: runStatus,
+      link_id: message.linkId,
+      ...input,
       selection,
     });
     if (!result.ok) {
@@ -1440,18 +1541,11 @@ export class TeamChatController {
     }
     this.notice = null;
     this.sharePreviewState = result.value;
+    this.shareSelection = selection;
   }
 
   private async runShareCreate(
-    linkId: string,
-    evidence: Record<string, unknown>,
-    runStatus: string,
-    selection: {
-      summary: string;
-      include_diff_digest: boolean;
-      verify_event_ids: string[];
-    },
-    previewSha256: string,
+    message: Extract<TeamChatWebviewMessage, { type: "shareCreate" }>,
   ): Promise<void> {
     if (!this.service.shareCreate) {
       this.notice = {
@@ -1460,20 +1554,41 @@ export class TeamChatController {
       };
       return;
     }
+    const preview = this.sharePreviewState;
+    const selection = this.shareSelection;
+    if (
+      !preview ||
+      !selection ||
+      preview.card.link_id !== message.linkId ||
+      preview.preview_sha256 !== message.previewSha256
+    )
+      return;
+    const input = await this.linkedEvidence(message.linkId);
+    if (!input) return;
     const result = await this.service.shareCreate(this.viewer, {
-      link_id: linkId,
-      evidence,
-      run_status: runStatus,
+      link_id: message.linkId,
+      ...input,
       selection,
-      preview_sha256: previewSha256,
+      preview_sha256: preview.preview_sha256,
     });
     if (!result.ok) {
-      this.failed(result.code);
+      if (result.code === "conflict" || result.code === "invalid") {
+        this.clearShare();
+        this.handoffError(
+          "The evidence no longer matches the preview. Review a new preview before publishing.",
+        );
+      } else this.failed(result.code);
       return;
     }
     this.notice = null;
-    this.sharePreviewState = null;
+    this.clearShare();
     this.shareResultState = result.value;
+    if (this.taskLinkState?.link.link_id === message.linkId) {
+      this.taskLinkState = {
+        ...this.taskLinkState,
+        link: { ...this.taskLinkState.link, status: "shared" },
+      };
+    }
     if (this.selected) {
       await this.select(this.selected.conversation.conversation_id);
     }
@@ -1538,6 +1653,7 @@ export class TeamChatController {
       agent_draft: this.agentDraft,
       agent_request: this.agentRequestState,
       task_link_draft: this.taskLinkDraftState,
+      task_link_attempted: this.pendingLinkedTask !== null,
       task_link: this.taskLinkState,
       share_preview: this.sharePreviewState,
       share_result: this.shareResultState,

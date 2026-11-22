@@ -1,3 +1,4 @@
+import { BudgetSchema, SHARE_MAX_SUMMARY_CHARS } from "@mars/contracts";
 import {
   type AgentPreviewView,
   type AgentRequestView,
@@ -179,26 +180,9 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("taskLinkConfirm"),
       linkId: id,
-      workbench: z
-        .object({
-          scope: z.record(z.unknown()),
-          task_id: id,
-          request_id: id,
-        })
-        .strict(),
-      target: z
-        .object({
-          repo_id: id.optional(),
-          base_revision: z.string().min(1).max(128).optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("taskLinkCreated"),
-      linkId: id,
-      taskRevision: z.number().int().positive(),
+      request: z.string().max(20_000),
+      acceptanceCriteria: z.array(z.string().max(20_000)).max(50),
+      budget: BudgetSchema,
     })
     .strict(),
   z.object({ type: z.literal("taskLinkInspect"), linkId: id }).strict(),
@@ -208,30 +192,15 @@ export const TeamChatWebviewMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("sharePreview"),
       linkId: id,
-      evidence: z.record(z.unknown()),
-      runStatus: z.string().min(1).max(64),
-      selection: z
-        .object({
-          summary: z.string().min(1).max(4000),
-          include_diff_digest: z.boolean(),
-          verify_event_ids: z.array(id).max(100),
-        })
-        .strict(),
+      summary: z.string().trim().min(1).max(SHARE_MAX_SUMMARY_CHARS),
+      includeDiffDigest: z.boolean(),
+      includeChecks: z.boolean(),
     })
     .strict(),
   z
     .object({
       type: z.literal("shareCreate"),
       linkId: id,
-      evidence: z.record(z.unknown()),
-      runStatus: z.string().min(1).max(64),
-      selection: z
-        .object({
-          summary: z.string().min(1).max(4000),
-          include_diff_digest: z.boolean(),
-          verify_event_ids: z.array(id).max(100),
-        })
-        .strict(),
       previewSha256: z.string().regex(/^[0-9a-f]{64}$/),
     })
     .strict(),
@@ -311,6 +280,7 @@ export interface TeamChatViewState {
   agent_draft?: (AgentDraft & { conversationId: string }) | null;
   agent_request?: AgentRequestView | null;
   task_link_draft?: TaskLinkDraftView | null;
+  task_link_attempted?: boolean;
   task_link?: TaskLinkView | null;
   share_preview?: EvidenceSharePreviewView | null;
   share_result?: EvidenceShareView | null;

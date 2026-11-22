@@ -379,6 +379,13 @@ export class RpcTeamService implements TeamService {
     );
     return {
       message_id: message.message_id,
+      kind: message.kind,
+      ...(message.kind === "result_card" &&
+      !message.deleted &&
+      message.payload?.message_id === message.message_id &&
+      message.payload.requester_id === message.author_id
+        ? { payload: message.payload }
+        : {}),
       conversation_id: message.conversation_id,
       author_id: message.author_id,
       author_name: message.author_id,

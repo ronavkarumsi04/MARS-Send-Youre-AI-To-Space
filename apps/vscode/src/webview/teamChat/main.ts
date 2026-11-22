@@ -1,4 +1,5 @@
 /// <reference lib="dom" />
+import { BudgetSchema, SHARE_MAX_SUMMARY_CHARS } from "@mars/contracts";
 import {
   buildSend,
   type ComposerEnvironment,
@@ -6,6 +7,7 @@ import {
   chipLabel,
   composerProblem,
   EMPTY_COMPOSER,
+  type EvidenceShareCardView,
   keyIntent,
   MAX_MESSAGE_CHARS,
   MAX_REFERENCES_PER_MESSAGE,
@@ -44,6 +46,8 @@ let composer: ComposerState = EMPTY_COMPOSER;
 let composerConversation: string | null = null;
 /** Saved conversation id to re-select on first render; cleared once applied. */
 let pendingRestore: string | null | undefined;
+type SavedLink = { viewerId: string; conversationId: string; linkId: string };
+let savedLinks: SavedLink[] = [];
 let composerError: string | null = null;
 let previewDraftId: string | null = null;
 let confirmedDraftId: string | null = null;
@@ -666,6 +670,46 @@ function messageFocusKey(messageId: string): string {
   return `message-${messageId}`;
 }
 
+function evidenceCard(card: EvidenceShareCardView, label: string): HTMLElement {
+  const checks = h("ul");
+  for (const record of card.verify_records)
+    checks.append(
+      h(
+        "li",
+        {},
+        `${record.event_id}: ${record.verdict} (${record.assurance})`,
+      ),
+    );
+  return h(
+    "section",
+    { class: "evidence-card", label },
+    h("strong", {}, label),
+    h("p", { class: "body" }, card.summary),
+    h(
+      "p",
+      {},
+      `Task ${card.run_status} · revision ${card.task_revision} · ${card.verified ? "Verified" : "Not verified"} · attested by ${card.attested_by}`,
+    ),
+    card.verified_reason ? h("p", {}, card.verified_reason) : null,
+    card.diff_sha256
+      ? h("p", { class: "mono" }, `Diff SHA-256: ${card.diff_sha256}`)
+      : null,
+    card.verify_records.length ? checks : null,
+    h(
+      "details",
+      {},
+      h("summary", {}, "Evidence details"),
+      h(
+        "p",
+        {},
+        `Workspace ${card.workspace.workspace_id} · revision ${card.workspace.revision} · Git ${card.git_status}`,
+      ),
+      h("p", { class: "mono" }, `Evidence SHA-256: ${card.evidence_sha256}`),
+      h("p", {}, "Artifacts not exported."),
+    ),
+  );
+}
+
 function renderMessage(
   s: TeamChatViewState,
   message: MessageView,
@@ -688,6 +732,7 @@ function renderMessage(
       )
     : null;
   if (reply) reply.className = "reply-quote";
+  const card = message.kind === "result_card" ? message.payload : undefined;
   const item = h(
     "li",
     {
@@ -720,9 +765,47 @@ function renderMessage(
         },
         { secondary: true },
       ),
+      s.capabilities.links && !card
+        ? button(
+            "Create task",
+            `task-draft-${message.message_id}`,
+            () => {
+              post({
+                type: "taskLinkDraft",
+                conversationId: message.conversation_id,
+                messageIds: [message.message_id],
+                referenceIds: message.references.flatMap((ref) =>
+                  ref.state === "ok" ? [ref.reference_id] : [],
+                ),
+              });
+            },
+            { secondary: true },
+          )
+        : null,
     ),
     reply,
-    h("p", { class: "body" }, message.body),
+    card
+      ? evidenceCard(card, "Shared evidence")
+      : h("p", { class: "body" }, message.body),
+    card?.stale
+      ? h(
+          "p",
+          { class: "muted" },
+          card.superseded_by
+            ? "Stale — superseded by a newer share."
+            : "Stale — candidate changed.",
+        )
+      : null,
+    card && s.capabilities.links
+      ? button(
+          "Inspect task link",
+          `inspect-${message.message_id}`,
+          () => {
+            post({ type: "taskLinkInspect", linkId: card.link_id });
+          },
+          { secondary: true },
+        )
+      : null,
     message.references.length > 0 ? renderChips(message, panelRef) : null,
     renderReactions(s, message),
   );
@@ -894,7 +977,255 @@ function renderThread(
         )
       : null,
     h("div", { class: "thread-body" }, scroller, jumpButton),
+    renderHandoff(s, selected),
     composerRoot,
+  );
+}
+
+let taskForm: HTMLElement | null = null;
+let taskFormId: string | null = null;
+let evidenceForm: HTMLElement | null = null;
+let evidenceFormId: string | null = null;
+
+function labelled<T extends HTMLElement>(label: string, input: T): HTMLElement {
+  return h("label", {}, label, input);
+}
+
+function taskDraftForm(linkId: string): HTMLElement {
+  const request = h("textarea", { key: "linked-task-request" });
+  request.required = true;
+  request.maxLength = 20_000;
+  const criteria = h("textarea", { key: "linked-task-criteria" });
+  criteria.required = true;
+  const numberField = (key: string, min: number, step = "1") => {
+    const input = h("input", { key: `linked-task-${key}` });
+    input.type = "number";
+    input.min = String(min);
+    input.step = step;
+    input.required = true;
+    return input;
+  };
+  const tokens = numberField("tokens", 1);
+  const usd = numberField("usd", 0, "any");
+  const seconds = numberField("seconds", 1);
+  const depth = numberField("depth", 0);
+  const concurrency = numberField("concurrency", 1);
+  const error = h("p", { role: "alert" });
+  const form = h(
+    "form",
+    {},
+    labelled("Task request", request),
+    labelled("Acceptance criteria (one per line)", criteria),
+    labelled("Token limit", tokens),
+    labelled("USD limit", usd),
+    labelled("Time limit (seconds)", seconds),
+    labelled("Depth limit", depth),
+    labelled("Concurrency limit", concurrency),
+    error,
+    button("Confirm", "linked-task-confirm", () => {
+      if (!form.reportValidity()) return;
+      const acceptanceCriteria = criteria.value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const budget = BudgetSchema.safeParse({
+        max_tokens: tokens.valueAsNumber,
+        max_usd: usd.valueAsNumber,
+        max_duration_ms: seconds.valueAsNumber * 1000,
+        max_depth: depth.valueAsNumber,
+        max_concurrency: concurrency.valueAsNumber,
+      });
+      if (
+        !budget.success ||
+        !request.value.trim() ||
+        !acceptanceCriteria.length ||
+        acceptanceCriteria.length > 50
+      ) {
+        error.textContent =
+          "Enter a request, 1–50 acceptance criteria and valid budget limits.";
+        return;
+      }
+      error.textContent = "";
+      post({
+        type: "taskLinkConfirm",
+        linkId,
+        request: request.value,
+        acceptanceCriteria,
+        budget: budget.data,
+      });
+    }),
+    button(
+      "Cancel",
+      "linked-task-cancel",
+      () => post({ type: "clearTaskLink" }),
+      { secondary: true },
+    ),
+  );
+  form.addEventListener("submit", (event) => event.preventDefault());
+  return form;
+}
+
+function shareForm(linkId: string): HTMLElement {
+  const summary = h("textarea", { key: "share-summary" });
+  summary.required = true;
+  summary.maxLength = SHARE_MAX_SUMMARY_CHARS;
+  const diff = h("input", { key: "share-diff" });
+  diff.type = "checkbox";
+  const checks = h("input", { key: "share-checks" });
+  checks.type = "checkbox";
+  const form = h(
+    "form",
+    {},
+    labelled("Summary", summary),
+    labelled("Include diff digest", diff),
+    labelled("Include recent verification checks", checks),
+    button("Preview evidence", "share-preview", () => {
+      if (!form.reportValidity() || !summary.value.trim()) return;
+      post({
+        type: "sharePreview",
+        linkId,
+        summary: summary.value,
+        includeDiffDigest: diff.checked,
+        includeChecks: checks.checked,
+      });
+    }),
+    button(
+      "Cancel",
+      "share-form-cancel",
+      () => {
+        evidenceForm = null;
+        post({ type: "clearShare" });
+      },
+      { secondary: true },
+    ),
+  );
+  form.addEventListener("submit", (event) => event.preventDefault());
+  return form;
+}
+
+function renderHandoff(
+  s: TeamChatViewState,
+  selected: SelectedConversation,
+): HTMLElement | null {
+  const draft = s.task_link_draft;
+  if (draft?.link.link_id !== taskFormId) {
+    taskFormId = draft?.link.link_id ?? null;
+    taskForm = taskFormId ? taskDraftForm(taskFormId) : null;
+  }
+  const link = s.task_link;
+  if (link?.link.link_id !== evidenceFormId) {
+    evidenceFormId = link?.link.link_id ?? null;
+    evidenceForm = null;
+  }
+  if (draft) {
+    taskForm
+      ?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        "input, textarea",
+      )
+      .forEach((field) => {
+        field.readOnly = Boolean(s.task_link_attempted);
+      });
+    const confirm = taskForm?.querySelector<HTMLButtonElement>(
+      '[data-focus-key="linked-task-confirm"]',
+    );
+    if (confirm)
+      confirm.textContent = s.task_link_attempted ? "Retry" : "Confirm";
+    const cancel = taskForm?.querySelector<HTMLButtonElement>(
+      '[data-focus-key="linked-task-cancel"]',
+    );
+    if (cancel) cancel.textContent = s.task_link_attempted ? "Close" : "Cancel";
+    const references = selected.messages.flatMap(
+      (message) => message.references,
+    );
+    return h(
+      "section",
+      { class: "composer handoff", label: "Task link draft" },
+      h("strong", {}, "Create a pending Workbench task"),
+      ...draft.excerpts.map((excerpt) =>
+        h(
+          "blockquote",
+          {},
+          `${excerpt.author_id}: ${excerpt.excerpt}${excerpt.truncated ? "…" : ""}`,
+        ),
+      ),
+      ...draft.link.reference_ids.map((id) => {
+        const ref = references.find(
+          (candidate) => candidate.reference_id === id,
+        );
+        return h("p", {}, ref ? chipText(ref) : "Reference no longer loaded");
+      }),
+      taskForm,
+    );
+  }
+  if (!link) {
+    const saved = savedLinks.find(
+      (item) =>
+        item.viewerId === s.viewer.user_id &&
+        item.conversationId === selected.conversation.conversation_id,
+    );
+    return saved && s.capabilities.links
+      ? h(
+          "div",
+          { class: "composer handoff" },
+          button(
+            "Inspect last linked task",
+            "linked-task-reopen",
+            () => {
+              post({ type: "taskLinkInspect", linkId: saved.linkId });
+            },
+            { secondary: true },
+          ),
+        )
+      : null;
+  }
+  const linkId = link.link.link_id;
+  const canShare =
+    s.capabilities.shares &&
+    link.view === "requester" &&
+    link.link.requester_id === s.viewer.user_id &&
+    (link.link.status === "created" || link.link.status === "shared");
+  const preview = s.share_preview;
+  return h(
+    "section",
+    { class: "composer handoff", label: "Task link status" },
+    h("strong", {}, `Linked task: ${link.link.status}`),
+    link.link.task_revision === null
+      ? null
+      : h("p", {}, `Workbench revision ${link.link.task_revision}`),
+    button(
+      "Close task link",
+      "linked-task-close",
+      () => post({ type: "clearTaskLink" }),
+      { secondary: true },
+    ),
+    canShare && !preview && !evidenceForm
+      ? button("Share evidence", "share-evidence", () => {
+          evidenceForm = shareForm(linkId);
+          render();
+          evidenceForm.querySelector("textarea")?.focus();
+        })
+      : null,
+    canShare && !preview ? evidenceForm : null,
+    canShare && preview
+      ? h(
+          "section",
+          { label: "Private evidence preview" },
+          evidenceCard(preview.card, "Private evidence preview"),
+          button("Publish evidence", "share-publish", () => {
+            post({
+              type: "shareCreate",
+              linkId,
+              previewSha256: preview.preview_sha256,
+            });
+          }),
+          button("Cancel", "share-cancel", () => post({ type: "clearShare" }), {
+            secondary: true,
+          }),
+        )
+      : null,
+    s.share_result
+      ? h("p", { role: "status" }, "Evidence published to this conversation.")
+      : null,
   );
 }
 
@@ -1322,6 +1653,22 @@ function render(): void {
   const focusKey = (document.activeElement as HTMLElement | null)?.dataset
     ?.focusKey;
   const selectedId = s.selected?.conversation.conversation_id ?? null;
+  const linked = s.task_link;
+  if (linked?.view === "requester" && linked.link.task_revision !== null) {
+    const item = {
+      viewerId: s.viewer.user_id,
+      conversationId: linked.link.conversation_id,
+      linkId: linked.link.link_id,
+    };
+    savedLinks = [
+      item,
+      ...savedLinks.filter(
+        (entry) =>
+          entry.viewerId === item.viewerId &&
+          entry.conversationId !== item.conversationId,
+      ),
+    ].slice(0, 20);
+  }
   if (selectedId !== composerConversation) {
     composerConversation = selectedId;
     composer = EMPTY_COMPOSER;
@@ -1405,7 +1752,17 @@ function render(): void {
   target?.focus();
   if (pendingRestore === undefined) {
     // First render: read the saved selection before anything overwrites it.
-    const saved = vscode.getState() as { conversationId?: unknown } | undefined;
+    const saved = vscode.getState() as
+      | { conversationId?: unknown; links?: SavedLink[] }
+      | undefined;
+    if (Array.isArray(saved?.links) && !savedLinks.length) {
+      savedLinks = saved.links.filter(
+        (link) =>
+          link?.viewerId === s.viewer.user_id &&
+          typeof link.linkId === "string",
+      );
+      if (savedLinks.length) queueMicrotask(render);
+    }
     pendingRestore =
       typeof saved?.conversationId === "string" &&
       saved.conversationId !== selectedId &&
@@ -1418,7 +1775,7 @@ function render(): void {
   if (pendingRestore !== null && pendingRestore === selectedId)
     pendingRestore = null;
   if (pendingRestore === null && s.selected)
-    vscode.setState({ conversationId: selectedId });
+    vscode.setState({ conversationId: selectedId, links: savedLinks });
 }
 
 window.addEventListener(
