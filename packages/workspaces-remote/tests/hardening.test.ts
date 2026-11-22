@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { getEventListeners } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
@@ -101,23 +101,21 @@ test("completed remote polling removes abort listeners from the run signal", asy
   const fx = await remoteFixture();
   const OriginalController = globalThis.AbortController;
   const controllers: AbortController[] = [];
-  let controllerSpy: ReturnType<typeof spyOn> | undefined;
   try {
     const ws = await fx.provider.prepare(context, "poll-listeners");
-    controllerSpy = spyOn(globalThis, "AbortController").mockImplementation(
-      () => {
-        const controller = new OriginalController();
-        controllers.push(controller);
-        return controller;
-      },
-    );
+    globalThis.AbortController = class extends OriginalController {
+      constructor() {
+        super();
+        controllers.push(this);
+      }
+    };
     await fx.provider.execute(context, ws, ["sleep", "0.1"], budget);
     expect(controllers.length).toBeGreaterThan(0);
     const controller = controllers[0];
     if (!controller) throw new Error("Run controller was not created");
     expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
   } finally {
-    controllerSpy?.mockRestore();
+    globalThis.AbortController = OriginalController;
     await fx.close();
   }
 }, 30_000);
