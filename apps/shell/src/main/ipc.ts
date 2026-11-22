@@ -7,13 +7,19 @@ import type { Bridge } from "./bridge";
 import type { TeamChatBridge } from "./team-chat-bridge";
 
 export type IpcEventLike = {
-  sender: object;
-  senderFrame: { url: string } | null;
+  sender?: unknown;
+  senderFrame?: { url?: string } | null;
 };
 
-type SenderPolicy = {
+export type IpcContentsLike = {
+  mainFrame: { url?: string };
+  isDestroyed(): boolean;
+};
+
+type SenderOptions = {
   trustedOrigin: string;
-  trustedContents: { readonly mainFrame: { url: string } };
+  trustedContents: IpcContentsLike;
+  pathname?: string;
 };
 
 export type IpcMainLike = {
@@ -23,21 +29,23 @@ export type IpcMainLike = {
   ): void;
 };
 
-function trustedSender(event: IpcEventLike, policy: SenderPolicy): boolean {
+export function trustedSender(
+  event: IpcEventLike,
+  { trustedOrigin, trustedContents, pathname }: SenderOptions,
+): boolean {
   try {
-    const frame = event.senderFrame;
     if (
-      !frame ||
-      event.sender !== policy.trustedContents ||
-      frame !== policy.trustedContents.mainFrame
+      trustedContents.isDestroyed() ||
+      event.sender !== trustedContents ||
+      event.senderFrame !== trustedContents.mainFrame
     )
       return false;
-    const trusted = new URL(policy.trustedOrigin);
-    const sender = new URL(frame.url);
+    const trusted = new URL(trustedOrigin);
+    const sender = new URL(event.senderFrame?.url ?? "");
     return (
       sender.protocol === trusted.protocol &&
       sender.host === trusted.host &&
-      sender.pathname === "/index.html" &&
+      (pathname === undefined || sender.pathname === pathname) &&
       sender.username === "" &&
       sender.password === ""
     );
@@ -49,10 +57,10 @@ function trustedSender(event: IpcEventLike, policy: SenderPolicy): boolean {
 export function registerAssistantBridge(
   ipcMain: IpcMainLike,
   assistant: ReturnType<typeof createAssistant>,
-  options: SenderPolicy,
+  options: SenderOptions,
 ): void {
   ipcMain.handle(ASSISTANT_CHANNEL, async (event, payload) => {
-    if (!trustedSender(event, options))
+    if (!trustedSender(event, { ...options, pathname: "/index.html" }))
       return { ok: false, error: "Chat request refused." };
     try {
       return await assistant.call(payload);
@@ -85,11 +93,12 @@ function requestPayload(
 export function registerBridge(
   ipcMain: IpcMainLike,
   bridge: Bridge,
-  options: SenderPolicy,
+  options: SenderOptions,
 ): void {
   ipcMain.handle(BRIDGE_CHANNEL, async (event, payload) => {
     try {
-      if (!trustedSender(event, options)) return bridgeFailure("refused");
+      if (!trustedSender(event, { ...options, pathname: "/index.html" }))
+        return bridgeFailure("refused");
       const request = requestPayload(payload);
       if (!request) return bridgeFailure("refused");
       return await bridge.call(request.method, request.params);
@@ -102,11 +111,12 @@ export function registerBridge(
 export function registerTeamChatBridge(
   ipcMain: IpcMainLike,
   teamChat: TeamChatBridge,
-  options: SenderPolicy,
+  options: SenderOptions,
 ): void {
   ipcMain.handle(TEAM_CHAT_CHANNEL, async (event, payload) => {
     try {
-      if (!trustedSender(event, options)) return fail("forbidden");
+      if (!trustedSender(event, { ...options, pathname: "/index.html" }))
+        return fail("forbidden");
       const request = requestPayload(payload);
       if (!request) return fail("invalid");
       return await teamChat.call(request.method, request.params);

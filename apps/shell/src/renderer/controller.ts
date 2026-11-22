@@ -1945,7 +1945,11 @@ export function createController(
         loadPromise = undefined;
         if (disposed) return;
         if (loadRequested) void load();
-        else if (state.selectedTask?.status === "running")
+        else if (
+          state.selectedTask?.task_id === selectedId &&
+          (state.selectedTask?.status === "running" ||
+            state.selectedTask?.status === "pending")
+        )
           cancelRefresh = scheduleRefresh?.(
             () => void load(true),
             refreshDelay,

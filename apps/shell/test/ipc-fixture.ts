@@ -1,7 +1,7 @@
 export function ipcFixture() {
   const trustedOrigin = "mars-shell://app";
   const mainFrame = { url: `${trustedOrigin}/index.html` };
-  const trustedContents = { mainFrame };
+  const trustedContents = { mainFrame, isDestroyed: () => false };
   const otherContents = { mainFrame: { ...mainFrame } };
   return {
     options: { trustedOrigin, trustedContents },

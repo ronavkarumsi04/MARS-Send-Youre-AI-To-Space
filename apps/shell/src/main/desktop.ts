@@ -21,6 +21,7 @@ import {
 } from "electron";
 import { DESKTOP_MODEL_CHANNEL } from "../shared/desktop-model";
 import { desktopExtensionsMenu } from "./extensions";
+import { trustedSender } from "./ipc";
 import { startLocalWorkbench } from "./local-workbench";
 import { hasRemovableKey } from "./model-key";
 import { SHELL_WEB_PREFERENCES } from "./security";
@@ -162,7 +163,10 @@ export async function createDesktop(
     if (
       !modelWindow ||
       modelWindow.isDestroyed() ||
-      event.sender !== modelWindow.webContents ||
+      !trustedSender(event, {
+        trustedOrigin: "mars-shell://app",
+        trustedContents: modelWindow.webContents,
+      }) ||
       event.senderFrame?.url !== settingsPage
     )
       return "refused";
