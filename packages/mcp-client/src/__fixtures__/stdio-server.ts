@@ -164,6 +164,9 @@ rl.on("line", (line) => {
 
     if (name === "echo") {
       if (args.exit === true) process.exit(0);
+      if (args.nonObjectLines === true) {
+        process.stdout.write('null\n[]\n42\n"text"\n');
+      }
       if (args.log === true) {
         process.stderr.write("x".repeat(1024 * 1024), () => {
           send({
