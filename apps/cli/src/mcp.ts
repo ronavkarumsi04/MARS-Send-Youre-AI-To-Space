@@ -19,6 +19,7 @@ import {
 import { CliUsageError } from "./cli-errors";
 import {
   type Ask,
+  confirmMigrationRefresh,
   LAUNCH_WARNING,
   layout,
   migrationLayout,
@@ -490,36 +491,52 @@ async function handleReapprove(
     out(
       `To turn it on: mars mcp approve ${reviewId}${scopeFlags(values["state-dir"], values.owner, values.project)}`,
     );
+  let authorization:
+    | Pick<Grant, "permissions" | "credential_bindings">
+    | undefined;
   if (config.transport.launch) {
-    const pending = reviews.findLast((r) => r.state === "pending");
-    if (pending) return next(pending.review_id);
+    const pending = reviews.find(
+      (r) =>
+        r.review_id === config.migration_review_id && r.state === "pending",
+    );
+    if (!pending) {
+      out(
+        "This server already uses protected launch settings. Use mars mcp list to see its approval status.",
+      );
+      return;
+    }
+    if (Date.parse(pending.expires_at) > Date.now())
+      return next(pending.review_id);
     out(
-      "This server already uses protected launch settings. Use mars mcp list to see its approval status.",
+      `Your review expired, but your file choices are saved. ${LAUNCH_WARNING}`,
     );
-    return;
+    await confirmMigrationRefresh(options.ask);
+    authorization = pending;
+  } else {
+    authorization = activeGrant(grants);
+    if (!authorization)
+      throw new CliUsageError(
+        "No active old approval. Use mars mcp review to register this server again.",
+      );
+    config.transport.launch = await migrationLayout(
+      config.transport,
+      out,
+      options.ask,
+    );
   }
-  const grant = activeGrant(grants);
-  if (!grant)
-    throw new CliUsageError(
-      "No active old approval. Use mars mcp review to register this server again.",
-    );
-  config.transport.launch = await migrationLayout(
-    config.transport,
-    out,
-    options.ask,
-  );
   const evidence = await cp.probe.observeServer(ctx, config, {
     allowUnapprovedStdioProbe: true,
   });
   const review = await cp.admin.submitCandidate(ctx, {
     evidence,
-    permissions: grant.permissions,
-    credential_bindings: grant.credential_bindings,
+    permissions: authorization.permissions,
+    credential_bindings: authorization.credential_bindings,
   });
   await cp.registry.upsert({
     ...config,
-    permissions: grant.permissions,
-    credential_bindings: grant.credential_bindings,
+    migration_review_id: review.review_id,
+    permissions: authorization.permissions,
+    credential_bindings: authorization.credential_bindings,
   });
   out(
     `Tools: ${evidence.tools.map((t) => t.name).join(", ")}. Your previous permissions are unchanged.`,

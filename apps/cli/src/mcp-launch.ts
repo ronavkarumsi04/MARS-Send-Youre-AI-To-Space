@@ -48,10 +48,9 @@ async function suggestedRoot(config: StdioTransportConfig) {
 }
 
 export type Ask = (question: string) => Promise<string>;
-export async function migrationLayout(
-  config: StdioTransportConfig,
-  out: (s: string) => void,
-  ask?: Ask,
+async function withTerminal<T>(
+  ask: Ask | undefined,
+  run: (ask: Ask) => Promise<T>,
 ) {
   if (!ask && !stdin.isTTY)
     throw new CliUsageError(
@@ -66,6 +65,30 @@ export async function migrationLayout(
       "A terminal is required. Nothing has been started.",
     );
   try {
+    return await run(question);
+  } finally {
+    reader?.close();
+  }
+}
+
+async function confirmDiscovery(ask: Ask) {
+  if (
+    (await ask("Start the selected copy now to review its tools? [yes/no] "))
+      .trim()
+      .toLowerCase() !== "yes"
+  )
+    throw new CliUsageError("Canceled. Your server remains paused.");
+}
+
+export const confirmMigrationRefresh = (ask?: Ask) =>
+  withTerminal(ask, confirmDiscovery);
+
+export async function migrationLayout(
+  config: StdioTransportConfig,
+  out: (s: string) => void,
+  ask?: Ask,
+) {
+  return withTerminal(ask, async (question) => {
     out(`Program: ${JSON.stringify(config.command)}\n${LAUNCH_WARNING}`);
     const suggested = await suggestedRoot(config);
     const commandRoot =
@@ -102,18 +125,7 @@ export async function migrationLayout(
         )
       : false;
     const plan = layout(config, kinds, commandRoot, pinCwd);
-    if (
-      !/^yes$/i.test(
-        (
-          await question(
-            "Start the selected copy now to review its tools? [yes/no] ",
-          )
-        ).trim(),
-      )
-    )
-      throw new CliUsageError("Canceled. Your server remains paused.");
+    await confirmDiscovery(question);
     return plan;
-  } finally {
-    reader?.close();
-  }
+  });
 }

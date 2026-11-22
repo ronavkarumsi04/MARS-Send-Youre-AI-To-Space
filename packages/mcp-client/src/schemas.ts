@@ -133,6 +133,7 @@ export const McpServerConfigSchema = z
     credential_bindings: z.array(CredentialBindingSchema).default([]),
     registered_at: z.string().datetime(),
     legacy_notice_grant: z.string().optional(),
+    migration_review_id: z.string().uuid().optional(),
   })
   .strict();
 

@@ -273,10 +273,30 @@ for line in sys.stdin:
     expect((await cp.readState()).state.reviews).toHaveLength(before);
     const migration = await run(["reapprove", "demo"], answers);
     expect(answers).toHaveLength(0);
-    const reviewId = /mars mcp approve ([a-z0-9-]+)/.exec(migration)?.[1];
+    let reviewId = /mars mcp approve ([a-z0-9-]+)/.exec(migration)?.[1];
     if (!reviewId) throw new Error(migration);
     expect(await run(["reapprove", "demo"])).toContain(reviewId);
     expect((await cp.readState()).state.reviews).toHaveLength(before + 1);
+    if (scenario === "sibling imports") {
+      const loaded = await cp.store.load();
+      const pending = loaded.state.reviews.find(
+        (r) => r.review_id === reviewId,
+      );
+      if (!pending) throw new Error("Missing migration review");
+      pending.expires_at = new Date(0).toISOString();
+      await cp.store.commit(loaded.revision, loaded.state, []);
+      await expect(run(["approve", reviewId])).rejects.toThrow(
+        "approval_invalid",
+      );
+      await expect(run(["reapprove", "demo"], ["no"])).rejects.toThrow(
+        "remains paused",
+      );
+      const refreshed = await run(["reapprove", "demo"], ["yes"]);
+      expect(refreshed).toContain("file choices are saved");
+      expect(refreshed).not.toContain(reviewId);
+      reviewId = /mars mcp approve ([a-z0-9-]+)/.exec(refreshed)?.[1];
+      if (!reviewId) throw new Error(refreshed);
+    }
     await run(["approve", reviewId]);
     expect(await run(["list"])).not.toContain("is paused");
     expect(await run(["reapprove", "demo"])).toContain(
