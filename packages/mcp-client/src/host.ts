@@ -46,6 +46,7 @@ export interface HostMcpControlPlaneOptions {
 }
 
 export interface HostMcpControlPlane {
+  readonly packageStore: McpPackageStore;
   readonly stateDir: string;
   readonly registry: FileMcpRegistry;
   readonly store: FileTrustStore;
@@ -286,6 +287,7 @@ export async function createHostMcpControlPlane(
 
   return {
     stateDir,
+    packageStore,
     registry,
     store,
     probe,

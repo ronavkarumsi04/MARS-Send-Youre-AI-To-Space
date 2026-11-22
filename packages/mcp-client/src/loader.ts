@@ -9,6 +9,7 @@ import {
   type Permission,
 } from "@mars/integration-trust";
 import { type McpAuthentication, selectMcpAuthentication } from "./credentials";
+import { McpReapprovalRequired } from "./package-launch";
 import type { McpPackageStore } from "./package-store";
 import {
   buildDescriptorHash,
@@ -326,6 +327,11 @@ export function createTrustedMcpLoader(
       } catch (error) {
         if (
           error instanceof IntegrationTrustError &&
+          error.code === "reapproval_required"
+        )
+          throw new McpReapprovalRequired(serverId);
+        if (
+          error instanceof IntegrationTrustError &&
           (error.code === "revoked" ||
             error.code === "drift" ||
             error.code === "expired")
@@ -472,6 +478,11 @@ export function createTrustedMcpLoader(
           signal,
         );
       } catch (error) {
+        if (
+          error instanceof IntegrationTrustError &&
+          error.code === "reapproval_required"
+        )
+          throw new McpReapprovalRequired(request.server_id);
         if (
           error instanceof IntegrationTrustError &&
           (error.code === "revoked" ||

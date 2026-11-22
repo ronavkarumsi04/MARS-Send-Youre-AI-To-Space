@@ -51,7 +51,15 @@ export const StdioTransportConfigSchema = z
           z.union([
             z.literal("text"),
             z.literal("data"),
-            z.object({ code: z.string().min(1).nullable() }).strict(),
+            z
+              .object({
+                code: z.string().min(1).nullable(),
+                sha256: z
+                  .string()
+                  .regex(/^[a-f0-9]{64}$/)
+                  .optional(),
+              })
+              .strict(),
           ]),
         ),
       })

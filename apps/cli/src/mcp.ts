@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import type { Scope } from "@mars/contracts";
 import {
   type CredentialBinding,
+  type Grant,
   normalizePermission,
   type Permission,
   PermissionSchema,
@@ -48,9 +49,17 @@ function scopeFlags(stateDir?: string, owner?: string, project?: string) {
     ["--owner", owner],
     ["--project", project],
   ]
-    .filter(([, v]) => v !== undefined)
-    .map(([k, v]) => ` ${k} '${v!.replaceAll("'", "'\"'\"'")}'`)
+    .map(([k, v]) =>
+      v === undefined ? "" : ` ${k} '${v.replaceAll("'", "'\"'\"'")}'`,
+    )
     .join("");
+}
+
+function activeGrant(grants: Grant[], now = Date.now()) {
+  const latest = grants.findLast((g) => g.state !== "superseded");
+  return latest?.state === "approved" && Date.parse(latest.expires_at) > now
+    ? latest
+    : undefined;
 }
 
 function parsePermissionFlag(raw: string): Permission {
@@ -163,10 +172,7 @@ export async function openRuntimeMcp(
           { schema_version: 1, scope, request_id: "mcp-upgrade-notice" },
           { kind: "mcp", integration_id: s.id },
         );
-        const grant = grants.findLast(
-          (g) =>
-            g.state === "approved" && Date.parse(g.expires_at) > Date.now(),
-        );
+        const grant = activeGrant(grants);
         if (
           grant &&
           s.legacy_notice_grant !== grant.grant_id &&
@@ -220,9 +226,7 @@ async function handleList(
         notice:
           server.transport.type === "stdio" &&
           !server.transport.launch &&
-          inspected.grants.some(
-            (g) => g.state === "approved" && Date.parse(g.expires_at) > nowMs,
-          )
+          activeGrant(inspected.grants, nowMs)
             ? reapprovalMessage(server.id).replace(
                 `mcp reapprove ${server.id}`,
                 `mcp reapprove ${server.id}${scopeFlags(values["state-dir"], values.owner, values.project)}`,
@@ -494,9 +498,7 @@ async function handleReapprove(
     );
     return;
   }
-  const grant = grants.findLast(
-    (g) => g.state === "approved" && Date.parse(g.expires_at) > Date.now(),
-  );
+  const grant = activeGrant(grants);
   if (!grant)
     throw new CliUsageError(
       "No active old approval. Use mars mcp review to register this server again.",

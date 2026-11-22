@@ -29,7 +29,7 @@ export function layout(
     arguments: kinds.map((kind) => {
       if (kind === "text" || kind === "data") return kind;
       if (kind === "file") return { code: null };
-      if (kind.startsWith("folder:") && kind.length > 7)
+      if (kind.startsWith("folder:") && kind.length > "folder:".length)
         return { code: kind.slice(7) };
       throw new CliUsageError(
         "Choose text, data, file, or folder:<program folder>.",
@@ -60,7 +60,11 @@ export async function migrationLayout(
   const reader = ask
     ? undefined
     : createInterface({ input: stdin, output: stderr });
-  const question = ask ?? ((prompt: string) => reader!.question(prompt));
+  const question = ask ?? reader?.question.bind(reader);
+  if (!question)
+    throw new CliUsageError(
+      "A terminal is required. Nothing has been started.",
+    );
   try {
     out(`Program: ${JSON.stringify(config.command)}\n${LAUNCH_WARNING}`);
     const suggested = await suggestedRoot(config);

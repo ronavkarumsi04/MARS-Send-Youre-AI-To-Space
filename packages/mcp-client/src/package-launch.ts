@@ -32,12 +32,16 @@ export async function preparePackageLaunch(
   signal?: AbortSignal,
 ) {
   if (!config.launch) throw new McpReapprovalRequired(id);
+  if (!process.getuid)
+    throw new Error(
+      "Protected local MCP servers require a POSIX host; this server was not started.",
+    );
   if (!store) throw new IntegrationTrustError("store_location_unsafe");
   const packages = store;
   const { arguments: roles, command_root } = config.launch;
   if (roles.length !== config.args.length)
     throw new Error("Choose a purpose for every server argument.");
-  const cwd = config.cwd ?? process.cwd();
+  const cwd = await realpath(config.cwd ?? process.cwd());
   const command = resolveStdioExecutable(config);
   const exclude = config.args.flatMap((arg, i) =>
     roles[i] === "data" ? [fromCwd(cwd, arg)] : [],
@@ -120,6 +124,19 @@ export async function preparePackageLaunch(
     },
     install: async () => {
       for (const rev of revisions.values()) await rev.install();
+    },
+    verifyPublished: async () => {
+      for (const [i, path] of args.entries()) {
+        const role = roles[i];
+        if (
+          typeof role === "object" &&
+          role.sha256 &&
+          new Bun.CryptoHasher("sha256")
+            .update(await Bun.file(path).arrayBuffer())
+            .digest("hex") !== role.sha256
+        )
+          throw new IntegrationTrustError("drift");
+      }
     },
   };
 }

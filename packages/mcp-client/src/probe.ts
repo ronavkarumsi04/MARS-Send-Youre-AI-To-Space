@@ -1,5 +1,4 @@
 import { createReadStream } from "node:fs";
-import { resolve } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
 import {
   type AuthorizedArtifact,
@@ -76,9 +75,8 @@ async function hashFileOrSpec(
 ): Promise<string> {
   signal?.throwIfAborted();
   if (filePath) {
-    const abs = resolve(filePath);
     const hasher = new Bun.CryptoHasher("sha256");
-    for await (const chunk of createReadStream(abs, { signal }))
+    for await (const chunk of createReadStream(filePath, { signal }))
       hasher.update(chunk);
     return hasher.digest("hex");
   }
@@ -139,6 +137,7 @@ export async function verifyMcpConfig(
   ) {
     throw new IntegrationTrustError("drift");
   }
+  await artifact?.verifyPublished();
   return artifact?.config ?? server.transport;
 }
 
@@ -412,7 +411,9 @@ export class McpEvidenceProbe implements EvidenceProbe {
       }
     }
 
-    if (allowUnapproved) await launch.install();
+    // Only an explicit discovery or a matched trust baseline reaches publication.
+    await launch.install();
+    await launch.verifyPublished();
     const descriptor = await probeMcpServerDescriptor(
       { ...server, transport: launch.config },
       this.probeTimeoutMs,
