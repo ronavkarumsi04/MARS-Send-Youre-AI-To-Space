@@ -1,6 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
@@ -101,12 +109,30 @@ async function loadOrCreateHostSigningKey(dir: string): Promise<Uint8Array> {
       throw error;
     }
     const fresh = randomBytes(32);
-    await writeFile(keyPath, `${fresh.toString("hex")}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await chmod(keyPath, 0o600);
-    return new Uint8Array(fresh);
+    const temporaryPath = resolve(dir, `.host-approval.${randomUUID()}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${fresh.toString("hex")}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      try {
+        await link(temporaryPath, keyPath);
+      } catch (error) {
+        if (
+          !error ||
+          typeof error !== "object" ||
+          !("code" in error) ||
+          error.code !== "EEXIST"
+        ) {
+          throw error;
+        }
+        return await loadOrCreateHostSigningKey(dir);
+      }
+      return new Uint8Array(fresh);
+    } finally {
+      await rm(temporaryPath, { force: true });
+    }
   }
 }
 
