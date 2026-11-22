@@ -29,7 +29,7 @@ export function renderExtensions(
 ): ShellElement {
   const categories = [
     {
-      icon: "⌘",
+      icon: "01",
       title: "MCP servers",
       subtitle: "Connect tools and data",
       body: "MCP is the connection between MARS and an external tool, like a repository service or database. Each server needs its own permissions and sometimes a separate API key.",
@@ -38,7 +38,7 @@ export function renderExtensions(
         "MARS checks a server’s identity and permissions before allowing access. A familiar name alone is not verification.",
     },
     {
-      icon: "✧",
+      icon: "02",
       title: "Skills",
       subtitle: "Teach a repeatable workflow",
       body: "A skill is a set of instructions for a specific kind of work: reviewing code, writing tests, or following your team’s conventions. It doesn’t add a new external connection.",
@@ -47,7 +47,7 @@ export function renderExtensions(
         "MARS discovers SKILL.md files in your project’s skills, .claude/skills, .codex/skills, and .agents/skills folders when a task starts.",
     },
     {
-      icon: "◇",
+      icon: "03",
       title: "Plugins",
       subtitle: "Bundle capabilities together",
       body: "A plugin is a package that can include skills, tools, and configuration. It’s not the same thing as an MCP server, though a plugin can include one.",
@@ -84,8 +84,8 @@ export function renderExtensions(
       doc,
       "section",
       { class: "extensions-content" },
-      h(doc, "p", { class: "eyebrow" }, "MAKE MARS YOURS"),
-      h(doc, "h1", {}, "More capable. Still in your control."),
+      h(doc, "p", { class: "eyebrow" }, "03 / EXPAND YOUR ORBIT"),
+      h(doc, "h1", {}, "More possibility.", h(doc, "span", {}, "Same MARS.")),
       h(
         doc,
         "p",
@@ -153,26 +153,31 @@ export function renderExtensions(
           );
         }),
       ),
-      ...categories.map((item) =>
-        h(
-          doc,
-          "article",
-          { class: "extension-category" },
+      h(
+        doc,
+        "div",
+        { class: "extension-grid" },
+        ...categories.map((item) =>
           h(
             doc,
-            "span",
-            { class: "extension-icon", "aria-hidden": "true" },
-            item.icon,
-          ),
-          h(
-            doc,
-            "div",
-            {},
-            h(doc, "h2", {}, item.title),
-            h(doc, "p", { class: "extension-subtitle" }, item.subtitle),
-            h(doc, "p", {}, item.body),
-            h(doc, "span", { class: "extension-state" }, item.state),
-            h(doc, "p", { class: "extension-detail" }, item.detail),
+            "article",
+            { class: "extension-category" },
+            h(
+              doc,
+              "span",
+              { class: "extension-icon", "aria-hidden": "true" },
+              item.icon,
+            ),
+            h(
+              doc,
+              "div",
+              {},
+              h(doc, "h2", {}, item.title),
+              h(doc, "p", { class: "extension-subtitle" }, item.subtitle),
+              h(doc, "p", {}, item.body),
+              h(doc, "span", { class: "extension-state" }, item.state),
+              h(doc, "p", { class: "extension-detail" }, item.detail),
+            ),
           ),
         ),
       ),

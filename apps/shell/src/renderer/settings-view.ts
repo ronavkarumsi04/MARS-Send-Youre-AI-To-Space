@@ -48,7 +48,8 @@ export function renderSettings(
       doc,
       "div",
       { class: "settings-content" },
-      h(doc, "h1", {}, "Settings"),
+      h(doc, "p", { class: "eyebrow" }, "04 / MAKE YOURSELF AT HOME"),
+      h(doc, "h1", {}, "Settings."),
       h(
         doc,
         "p",
@@ -59,7 +60,13 @@ export function renderSettings(
         doc,
         "section",
         { class: "settings-block", "aria-label": "Model connection" },
-        h(doc, "h2", {}, "Model connection"),
+        h(
+          doc,
+          "p",
+          { class: "settings-index", "aria-hidden": "true" },
+          "01 / MODEL",
+        ),
+        h(doc, "h2", {}, "A mind for your mission."),
         h(
           doc,
           "div",
@@ -94,6 +101,12 @@ export function renderSettings(
         doc,
         "section",
         { class: "settings-block" },
+        h(
+          doc,
+          "p",
+          { class: "settings-index", "aria-hidden": "true" },
+          "02 / YOUR DATA",
+        ),
         h(doc, "h2", {}, "Privacy"),
         h(
           doc,
@@ -106,6 +119,12 @@ export function renderSettings(
         doc,
         "section",
         { class: "settings-block" },
+        h(
+          doc,
+          "p",
+          { class: "settings-index", "aria-hidden": "true" },
+          "03 / CAPABILITIES",
+        ),
         h(doc, "h2", {}, "Project extensions"),
         h(
           doc,

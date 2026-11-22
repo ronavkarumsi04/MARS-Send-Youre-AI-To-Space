@@ -337,6 +337,7 @@ function taskHeader(
     doc,
     "header",
     { class: "task-header" },
+    h(doc, "p", { class: "eyebrow" }, "02 / IN MOTION"),
     h(doc, "h1", HEADING_ATTRS, `Task ${task.task_id}`),
     h(
       doc,
@@ -1293,7 +1294,7 @@ export function renderShell(
       { class: "brand-row" },
       h(doc, "span", { class: "brand-orbit", "aria-hidden": "true" }),
       h(doc, "h1", { class: "brand" }, "MARS"),
-      h(doc, "span", { class: "brand-tag" }, "DESKTOP"),
+      h(doc, "span", { class: "brand-tag" }, "YOUR IDEAS. IN ORBIT."),
     ),
     h(
       doc,
@@ -1341,6 +1342,7 @@ export function renderShell(
       doc,
       "section",
       { class: "team-chat sidebar-bottom" },
+      h(doc, "span", { class: "sidebar-label" }, "BETTER TOGETHER"),
       teamChatBtn,
       h(
         doc,

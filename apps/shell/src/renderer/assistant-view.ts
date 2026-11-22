@@ -50,7 +50,7 @@ export function renderAssistant(
     maxlength: "8000",
     class: "assistant-input",
     "aria-label": "Message MARS",
-    placeholder: "Message MARS…",
+    placeholder: "What’s on your mind?",
     "data-focus-key": "assistant-input",
     disabled: state.busy || state.loading,
   });
@@ -164,23 +164,45 @@ export function renderAssistant(
                 { class: "orbit-mark", "aria-hidden": "true" },
                 "✳",
               ),
-              h(doc, "p", { class: "eyebrow" }, "MARS  /  ASSISTANT"),
-              h(doc, "h1", {}, "Start a", h(doc, "span", {}, "conversation.")),
+              h(doc, "p", { class: "eyebrow" }, "01 / A SPACE TO THINK"),
+              h(
+                doc,
+                "h1",
+                {},
+                "Small thought.",
+                h(doc, "span", {}, "Giant leap."),
+              ),
               h(
                 doc,
                 "p",
                 { class: "welcome-subtitle" },
-                "Think through an idea, then turn your plan into a task.",
+                "Good things start with a conversation. Explore an idea, find a direction, then put MARS to work.",
               ),
               h(
                 doc,
                 "div",
                 { class: "suggestion-grid" },
-                ...suggestions.map(([title, prompt]) =>
-                  action(doc, `${title}  ↗`, "suggestion", () => {
+                ...suggestions.map(([title, prompt], index) => {
+                  const suggestion = action(doc, "", "suggestion", () => {
                     state.onDraft?.(prompt ?? "");
-                  }),
-                ),
+                  });
+                  suggestion.append(
+                    h(
+                      doc,
+                      "span",
+                      { class: "suggestion-number", "aria-hidden": "true" },
+                      `0${index + 1}`,
+                    ),
+                    h(doc, "span", {}, title ?? ""),
+                    h(
+                      doc,
+                      "span",
+                      { class: "suggestion-arrow", "aria-hidden": "true" },
+                      "↗",
+                    ),
+                  );
+                  return suggestion;
+                }),
               ),
             ),
           ]
