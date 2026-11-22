@@ -1,35 +1,7 @@
 import { parseArgs } from "node:util";
 import type { ModelConfig, ProviderConfig } from "@mars/contracts";
-import {
-  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
-  probeExecution,
-} from "@mars/execution";
-import {
-  discoverModels,
-  loadModelRegistry,
-  ModelRouter,
-} from "@mars/providers";
-import { remoteWorkspaceDoctor } from "@mars/workspaces-remote";
-import { runBench } from "./bench";
 import { cliErrorMessage } from "./cli-errors";
-import { runCommands } from "./commands";
-import { runDatasets } from "./datasets";
-import { runEvolution } from "./evolution";
 import { requestsHelp } from "./help";
-import { runMcp } from "./mcp";
-import { runMemory } from "./memory";
-import { omnirouteDoctorReport } from "./omniroute";
-import { runRender } from "./render";
-import { RESEARCH_SEARCH_PROVIDERS, runServer } from "./serve";
-import { runSession } from "./session/app";
-import { runSkills } from "./skills";
-import {
-  runSpecialistsEvaluate,
-  SPECIALISTS_EVAL_USAGE,
-} from "./specialists-eval";
-import { runTeam, teamDoctorReport } from "./team";
-import { runVault } from "./vault";
-import { splitVllmServeArgs, vllmDoctorReport } from "./vllm";
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -39,6 +11,9 @@ function requiredString(value: unknown, name: string): string {
 }
 
 async function runModels(args: string[]): Promise<void> {
+  const { discoverModels, loadModelRegistry, ModelRouter } = await import(
+    "@mars/providers"
+  );
   const trustProjectConfig =
     args.includes("--trust-project") ||
     process.env.MARS_TRUST_PROJECT_CONFIG === "1";
@@ -210,6 +185,9 @@ async function runModels(args: string[]): Promise<void> {
     return;
   }
   if (subcommand === "test") {
+    const { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } = await import(
+      "@mars/execution"
+    );
     const { values, positionals } = parseArgs({
       args: commandArgs.slice(1),
       options: { prompt: { type: "string" } },
@@ -282,6 +260,12 @@ try {
       "Usage: mars smoke\nInitialize the execution SDK and native search without model requests.",
     );
   } else if (command === "doctor") {
+    const { probeExecution } = await import("@mars/execution");
+    const { remoteWorkspaceDoctor } = await import("@mars/workspaces-remote");
+    const { omnirouteDoctorReport } = await import("./omniroute");
+    const { vllmDoctorReport } = await import("./vllm");
+    const { teamDoctorReport } = await import("./team");
+    const { RESEARCH_SEARCH_PROVIDERS } = await import("./serve");
     const doctorArgs = parseArgs({
       args,
       strict: true,
@@ -373,35 +357,52 @@ try {
     };
     console.log(JSON.stringify(report, null, 2));
   } else if (command === "smoke") {
+    const { probeExecution } = await import("@mars/execution");
     console.log(JSON.stringify(await probeExecution(), null, 2));
   } else if (command === "models") {
     await runModels(args);
   } else if (command === "session") {
+    const { runSession } = await import("./session/app");
     await runSession(args);
   } else if (command === "render") {
+    const { runRender } = await import("./render");
     await runRender(args);
   } else if (command === "commands") {
+    const { runCommands } = await import("./commands");
     await runCommands(args);
   } else if (command === "serve") {
+    const { runServer } = await import("./serve");
+    const { splitVllmServeArgs } = await import("./vllm");
     const serve = splitVllmServeArgs(args);
     await runServer(serve.args, serve.vllm ? { vllm: serve.vllm } : {});
   } else if (command === "vault") {
+    const { runVault } = await import("./vault");
     await runVault(args);
   } else if (command === "mcp") {
+    const { runMcp } = await import("./mcp");
     await runMcp(args);
   } else if (command === "memory") {
+    const { runMemory } = await import("./memory");
     await runMemory(args);
   } else if (command === "skills") {
+    const { runSkills } = await import("./skills");
     await runSkills(args);
   } else if (command === "team") {
+    const { runTeam } = await import("./team");
     await runTeam(args);
   } else if (command === "evolution") {
+    const { runEvolution } = await import("./evolution");
     await runEvolution(args);
   } else if (command === "datasets") {
+    const { runDatasets } = await import("./datasets");
     await runDatasets(args);
   } else if (command === "bench") {
+    const { runBench } = await import("./bench");
     await runBench(args);
   } else if (command === "specialists") {
+    const { runSpecialistsEvaluate, SPECIALISTS_EVAL_USAGE } = await import(
+      "./specialists-eval"
+    );
     if (help) {
       console.log(SPECIALISTS_EVAL_USAGE);
     } else if (process.argv[3] === "evaluate") {

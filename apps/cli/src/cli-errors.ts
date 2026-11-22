@@ -1,4 +1,4 @@
-import { NoEligibleModelError } from "@mars/execution";
+import { NoEligibleModelError } from "@mars/execution/errors";
 
 /**
  * A command-line mistake whose message is safe to print verbatim. Subclasses must keep it

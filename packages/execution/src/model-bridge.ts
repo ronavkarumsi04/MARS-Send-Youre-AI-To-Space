@@ -19,6 +19,9 @@ import {
   type SimpleStreamOptions,
   toolWireSchema,
 } from "@oh-my-pi/pi-ai";
+import { NoEligibleModelError } from "./errors";
+
+export { NoEligibleModelError } from "./errors";
 
 export interface BudgetLedger {
   deadline: number;
@@ -39,15 +42,6 @@ export class ExecutionLimitError extends Error {
   constructor() {
     super("Task execution budget exhausted or unverifiable.");
     this.name = "ExecutionLimitError";
-  }
-}
-
-export class NoEligibleModelError extends Error {
-  constructor() {
-    super(
-      "No eligible configured model; configure a tool-capable free model or explicitly select a priced, user-authorized paid model.",
-    );
-    this.name = "NoEligibleModelError";
   }
 }
 
