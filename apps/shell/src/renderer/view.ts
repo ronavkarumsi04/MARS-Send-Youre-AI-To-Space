@@ -1160,6 +1160,13 @@ export function renderShell(
   doc: ShellDocument,
   state: ShellState,
 ): ShellElement {
+  const masthead = h(
+    doc,
+    "header",
+    { class: "masthead" },
+    h(doc, "span", { class: "masthead-dots", "aria-hidden": "true" }),
+    "MARS / workbench",
+  );
   if (state.error) {
     const retry = h(
       doc,
@@ -1170,11 +1177,17 @@ export function renderShell(
     retry.addEventListener("click", () => state.onRefresh?.());
     return h(
       doc,
-      "main",
-      { class: "connection-error", role: "alert" },
-      h(doc, "h1", HEADING_ATTRS, "MARS Shell"),
-      h(doc, "p", {}, state.error),
-      retry,
+      "div",
+      {},
+      masthead,
+      h(
+        doc,
+        "main",
+        { class: "connection-error", role: "alert" },
+        h(doc, "h1", HEADING_ATTRS, "MARS"),
+        h(doc, "p", {}, state.error),
+        retry,
+      ),
     );
   }
   const task = state.selectedTask;
@@ -1212,7 +1225,7 @@ export function renderShell(
     doc,
     "nav",
     { class: "sidebar", "aria-label": "Sidebar" },
-    h(doc, "h1", { class: "brand" }, "MARS Shell"),
+    h(doc, "h1", { class: "brand" }, "MARS"),
     h(doc, "h2", { class: "section-title" }, "Sessions"),
     ...taskList(doc, state.tasks, task?.task_id, state.onSelect),
     h(
@@ -1314,6 +1327,7 @@ export function renderShell(
     doc,
     "div",
     { class: "app-shell" },
+    masthead,
     sidebar,
     main,
     inspector,

@@ -7,11 +7,14 @@
       content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MARS Shell</title>
+    <title>MARS</title>
     <link rel="stylesheet" href="./shell.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <header class="masthead"><span class="masthead-dots" aria-hidden="true"></span>MARS / workbench</header>
+      <main class="connection-error" role="status">Opening MARS…</main>
+    </div>
     <script type="module" src="./renderer.js"></script>
   </body>
 </html>
