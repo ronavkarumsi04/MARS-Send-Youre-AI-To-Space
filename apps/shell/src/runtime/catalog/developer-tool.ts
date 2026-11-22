@@ -4,6 +4,29 @@ const limit = 32_768;
 const displayLimit = 40;
 type Fields = Record<string, string>;
 
+// Compare exact JSON decimals, not their rounded IEEE-754 approximations.
+function parseDocument(text: string): unknown {
+  return JSON.parse(
+    text,
+    (_key: string, value: unknown, context?: { source?: string }) => {
+      if (typeof value === "string") return `s:${value}`;
+      if (typeof value !== "number") return value;
+      const parts = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(
+        context?.source ?? "",
+      );
+      if (!parts) throw new Error();
+      const fraction = parts[3] ?? "";
+      const digits = `${parts[2]}${fraction}`.replace(/^0+/, "");
+      if (!digits) return "n:0";
+      const coefficient = digits.replace(/0+$/, "");
+      const power =
+        BigInt(parts[4] ?? 0) +
+        BigInt(digits.length - coefficient.length - fraction.length);
+      return `n:${parts[1]}${coefficient}e${power}`;
+    },
+  );
+}
+
 function compareJson({ before, after }: Fields) {
   if (before === undefined || after === undefined) throw new Error();
   const paths: { change: string; path: string }[] = [];
@@ -26,8 +49,7 @@ function compareJson({ before, after }: Fields) {
       return;
     }
     for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-      const pointer =
-        path + "/" + key.replaceAll("~", "~0").replaceAll("/", "~1");
+      const pointer = `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
       if (!Object.hasOwn(a, key)) found("added", pointer);
       else if (!Object.hasOwn(b, key)) found("removed", pointer);
       else
@@ -39,7 +61,7 @@ function compareJson({ before, after }: Fields) {
         );
     }
   };
-  compare(JSON.parse(before), JSON.parse(after), "", 0);
+  compare(parseDocument(before), parseDocument(after), "", 0);
   return { count, paths, omitted: count - paths.length };
 }
 

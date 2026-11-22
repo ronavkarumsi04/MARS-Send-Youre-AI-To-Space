@@ -36,7 +36,7 @@ const plan = {
 };
 const developerTool = {
   file: "developer-tool.ts",
-  sha256: "9311d8957c50d98e5b235b2eb2a4c418dacccba139b54ce2890bf8b61c9742ac",
+  sha256: "d72e2219117aa8e273dc2880f6b55cc17fef40ccff21b03183f626a61cd16c4f",
 };
 
 function skill(asset: Asset, name: string, description: string): CatalogEntry {

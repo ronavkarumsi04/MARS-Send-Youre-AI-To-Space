@@ -129,6 +129,14 @@ test("supplied JSON and unified patches are processed offline by independently a
       after: "{}",
     });
     expect(invalid.is_error).toBe(true);
+    const exact = await call("mars-json-compare", "compare_json", {
+      before: '{"id":9007199254740992,"ratio":123e-2,"mixed":"10"}',
+      after: '{"id":9007199254740993,"ratio":1.2300,"mixed":10}',
+    });
+    expect(JSON.parse(exact.content[0]?.text ?? "").paths).toEqual([
+      { change: "changed", path: "/id" },
+      { change: "changed", path: "/mixed" },
+    ]);
   } finally {
     await runtime.loader.closeAll();
   }
