@@ -21,6 +21,12 @@ In the installed app, choose **Project → Add Verified Extension**, pick an ite
 - A **skill** supplies instructions, not executable code. Choose **Bug triage**, **Code review**, **Test planning**, **Change summary**, or **Test handoff** for focused guidance on the corresponding task.
 - A **plugin** groups extensions into a single install. The **Bug investigation kit** combines triage and test planning; the **Pull request review kit** adds review, test planning, and test handoff; the **Release handoff kit** combines change summary and test handoff. Shared skills are reused and customized content is never replaced silently.
 
+Two optional upstream reference servers are bundled, not downloaded on Add:
+- **Filesystem · project browser** (2.4.0): lists directory names, including hidden names, in the chosen project. Uses stdio with a fixed, read-only, confined root; only `list_allowed_directories` and `list_directory` are granted. It cannot read file contents or edit files through an approved tool.
+- **Sequential Thinking** (2.2.0): tracks supplied steps and branches in memory per connection. Thought logging is disabled; it requires no key.
+
+Both npm packages have provenance from the [upstream release](https://github.com/modelcontextprotocol/servers/tree/c799c8552b0f27b7a33a7b9233773da144dddcf5). Packaging builds standalone files from the frozen Bun dependency graph, inlines the upstream package version, and checks the final SHA-256. The [upstream license](https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/LICENSE) covers MIT and Apache-2.0 contributions; the installer includes the [license texts and dependency notices](../apps/shell/src/runtime/catalog/THIRD-PARTY-NOTICES.txt). No cloud, browser, remote HTTP, or credentialed integrations are included.
+
 An expired MCP stays in the catalog with a renewal notice; adding it again requires approval. A task encountering an expired MCP triggers a desktop renewal notice. To restore a customized active skill, add the skill or kit again and explicitly confirm **Restore bundled instructions**; cancel leaves your edits untouched. The prior content remains in the skill's version history.
 
 Here, **verified** means the payload matches a SHA-256 pin in the catalog shipped with MARS. It is not third-party certification. There are no remote downloads or custom URLs/commands. Adding any MCP requires explicit approval; the workbench checks the grant and artifact on use. In attach-only mode the external workbench, not the shell, manages its own extensions.

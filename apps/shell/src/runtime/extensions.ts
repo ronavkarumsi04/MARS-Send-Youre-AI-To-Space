@@ -83,12 +83,19 @@ export function projectExtensions(
       transport: {
         type: "stdio",
         command: process.execPath,
-        args: ["--no-env-file", script, ...entry.args],
+        args: [
+          "--no-env-file",
+          script,
+          ...entry.args,
+          ...(entry.projectRootArg ? [source] : []),
+        ],
         cwd: dir,
         entrypoint: script,
         env_allowlist: [],
       },
-      permissions: [{ capability: "tool.invoke", resource: entry.tool }],
+      permissions: [entry.tool, ...(entry.additionalTools ?? [])].map(
+        (resource) => ({ capability: "tool.invoke", resource }),
+      ),
       credential_bindings: [],
     };
   }

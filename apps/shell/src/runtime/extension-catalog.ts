@@ -19,7 +19,13 @@ const handoff = {
 };
 type Asset = { file: string; sha256: string };
 export type CatalogEntry = Extension & { assets: Asset[] } & (
-    | { kind: "mcp"; tool: string; args: string[] }
+    | {
+        kind: "mcp";
+        tool: string;
+        additionalTools?: string[];
+        projectRootArg?: true;
+        args: string[];
+      }
     | { kind: "skill" | "plugin" }
   );
 const triage = {
@@ -89,6 +95,50 @@ function offlineTool(
   };
 }
 export const CATALOG: CatalogEntry[] = [
+  {
+    id: "mcp-filesystem",
+    name: "Filesystem · project browser",
+    kind: "mcp",
+    version: "2.4.0",
+    description:
+      "Browse directory names in the open project with the Model Context Protocol project's Filesystem server.",
+    tool: "list_directory",
+    additionalTools: ["list_allowed_directories"],
+    projectRootArg: true,
+    args: ["--transport", "stdio", "--read-only", "--confine-roots", "--"],
+    assets: [
+      {
+        file: "filesystem.mjs",
+        sha256:
+          "ab26fa7309c235f093424372e9866363bdd2b586145d367f33535d920277710c",
+      },
+    ],
+    permissions: [
+      "List names in any directory in the selected project, including hidden names",
+      "No tool grant for reading file contents or writing files. No credentials or remote connection.",
+    ],
+  },
+  {
+    id: "mcp-sequential-thinking",
+    name: "Sequential Thinking",
+    kind: "mcp",
+    version: "2.2.0",
+    description:
+      "Track steps, branches and revisions while solving a multi-step task using the Model Context Protocol project's server.",
+    tool: "sequentialthinking",
+    args: ["--transport", "stdio"],
+    assets: [
+      {
+        file: "sequential-thinking.mjs",
+        sha256:
+          "2af778645fc56a7bb4a322d75d8f2d954017c0871ce272fe44e26a2e89ca06a4",
+      },
+    ],
+    permissions: [
+      "Process supplied reasoning steps in memory for this connection; thought logging is disabled",
+      "No credentials or remote connection.",
+    ],
+  },
   offlineTool(
     "mars-json-compare",
     "JSON comparison",
