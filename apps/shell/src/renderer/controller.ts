@@ -395,6 +395,18 @@ export function createController(
       },
       onOpenTeamChat: () => void openTeamChatPane(),
       onComposerChange: (patch) => {
+        const submitButton = () =>
+          Array.from(root.querySelectorAll("[data-action]")).find(
+            (el) => el.getAttribute("data-action") === "create-task",
+          );
+        const previousSubmit =
+          patch.startNow === true
+            ? submitButton()?.getBoundingClientRect?.()
+            : undefined;
+        const keepSubmitVisible =
+          previousSubmit &&
+          previousSubmit.top >= 0 &&
+          previousSubmit.bottom <= globalThis.innerHeight;
         composer = { ...composer, ...patch };
         if (
           "startNow" in patch ||
@@ -404,6 +416,8 @@ export function createController(
           "submitting" in patch
         ) {
           render();
+          if (keepSubmitVisible)
+            submitButton()?.scrollIntoView?.({ block: "nearest" });
         }
       },
       onComposerApprovalChange: (key, val) => {

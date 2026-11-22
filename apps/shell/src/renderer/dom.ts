@@ -25,7 +25,7 @@ export interface ShellElement {
   replaceChildren(...nodes: (ShellElement | ShellText)[]): void;
   querySelectorAll(selectors: string): ArrayLike<ShellElement>;
   scrollIntoView?(options: { block: "nearest" }): void;
-  getBoundingClientRect?(): { top: number };
+  getBoundingClientRect?(): { top: number; bottom: number };
   focus(options?: { preventScroll?: boolean }): void;
   addEventListener(
     type: string,
