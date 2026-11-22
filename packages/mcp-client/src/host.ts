@@ -1,14 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import {
-  chmod,
-  link,
-  lstat,
-  mkdir,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, link, lstat, mkdir, open, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { RequestContext, Scope } from "@mars/contracts";
@@ -26,6 +19,7 @@ import {
   type TrustState,
 } from "@mars/integration-trust";
 import { createTrustedMcpLoader, type TrustedMcpLoader } from "./loader";
+import { McpPackageStore } from "./package-store";
 import { McpEvidenceProbe } from "./probe";
 import { FileMcpRegistry } from "./registry";
 import type { McpCredentialResolver } from "./schemas";
@@ -52,6 +46,7 @@ export interface HostMcpControlPlaneOptions {
 }
 
 export interface HostMcpControlPlane {
+  readonly packageStore: McpPackageStore;
   readonly stateDir: string;
   readonly registry: FileMcpRegistry;
   readonly store: FileTrustStore;
@@ -59,6 +54,8 @@ export interface HostMcpControlPlane {
   readonly admin: IntegrationTrustAdmin;
   readonly gate: IntegrationGate;
   readonly loader: TrustedMcpLoader;
+  /** Isolates connections so closing one task doesn't stop another task's tools. */
+  createLoader(): TrustedMcpLoader;
   signHostProof(params: {
     review_id: string;
     review_revision: number;
@@ -83,57 +80,58 @@ export function defaultHostMcpStateDir(): string {
   return resolve(homedir(), ".local", "state", "mars", "integration-trust");
 }
 
+async function readHostSigningKey(keyPath: string): Promise<Uint8Array> {
+  if (!(await lstat(keyPath)).isFile()) {
+    throw new IntegrationTrustError("store_location_unsafe");
+  }
+  const file = await open(
+    keyPath,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const hex = (await file.readFile("utf8")).trim();
+    if (!/^(?:[a-f\d]{2}){32,}$/i.test(hex)) {
+      throw new IntegrationTrustError("store_corrupt");
+    }
+    return Buffer.from(hex, "hex");
+  } finally {
+    await file.close();
+  }
+}
+
 async function loadOrCreateHostSigningKey(dir: string): Promise<Uint8Array> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  if ((await lstat(dir)).isSymbolicLink()) {
+    throw new IntegrationTrustError("store_location_unsafe");
+  }
   await chmod(dir, 0o700);
   const keyPath = resolve(dir, "host-approval.key");
   try {
-    const st = await lstat(keyPath);
-    if (st.isSymbolicLink()) {
-      throw new IntegrationTrustError("store_location_unsafe");
-    }
-    const hex = (await readFile(keyPath, "utf8")).trim();
-    const bytes = Buffer.from(hex, "hex");
-    if (bytes.length < 32) {
-      throw new IntegrationTrustError("store_corrupt");
-    }
-    return new Uint8Array(bytes);
+    return await readHostSigningKey(keyPath);
   } catch (error) {
-    if (error instanceof IntegrationTrustError) throw error;
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code?: unknown }).code !== "ENOENT"
-    ) {
-      throw error;
-    }
-    const fresh = randomBytes(32);
-    const temporaryPath = resolve(dir, `.host-approval.${randomUUID()}.tmp`);
-    try {
-      await writeFile(temporaryPath, `${fresh.toString("hex")}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: "wx",
-      });
-      try {
-        await link(temporaryPath, keyPath);
-      } catch (error) {
-        if (
-          !error ||
-          typeof error !== "object" ||
-          !("code" in error) ||
-          error.code !== "EEXIST"
-        ) {
-          throw error;
-        }
-        return await loadOrCreateHostSigningKey(dir);
-      }
-      return new Uint8Array(fresh);
-    } finally {
-      await rm(temporaryPath, { force: true });
-    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+
+  // A hard link publishes a complete key without replacing another host's key.
+  const temporary = resolve(dir, `.host-approval.${randomUUID()}.tmp`);
+  const file = await open(temporary, "wx", 0o600);
+  try {
+    try {
+      await file.writeFile(`${randomBytes(32).toString("hex")}\n`);
+      await file.chmod(0o600);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    try {
+      await link(temporary, keyPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  } finally {
+    await unlink(temporary);
+  }
+  return readHostSigningKey(keyPath);
 }
 
 export function defaultRequestContext(
@@ -180,6 +178,10 @@ export async function createHostMcpControlPlane(
   const keyDir = resolve(stateDir, "keys");
 
   const registry = new FileMcpRegistry({ dir: registryDir, workspaceRoots });
+  const packageStore = new McpPackageStore({
+    directory: resolve(registryDir, "packages-v1"),
+    workspaceRoots,
+  });
   const store = new FileTrustStore({ directory: trustDir, workspaceRoots });
   // Validate store location before creating key directory.
   await store.load();
@@ -201,6 +203,7 @@ export async function createHostMcpControlPlane(
   // call — after verifying the signed host proof — may probe its target review.
   const approvalProbeContext = new AsyncLocalStorage<string>();
   const probe = new McpEvidenceProbe({
+    packageStore,
     registry,
     scope,
     ...(options.clock ? { clock: options.clock } : {}),
@@ -263,31 +266,35 @@ export async function createHostMcpControlPlane(
     },
   };
 
-  const loader = createTrustedMcpLoader({
-    gate,
-    registry,
-    ...(options.credentialResolver
-      ? { credentialResolver: options.credentialResolver }
-      : {}),
-    isGrantActive: async (grantId) => {
-      const { state } = await store.load();
-      const grant = state.grants.find((g) => g.grant_id === grantId);
-      return (
-        grant?.state === "approved" &&
-        (options.clock?.().getTime() ?? Date.now()) <
-          Date.parse(grant.expires_at)
-      );
-    },
-  });
+  const createLoader = () =>
+    createTrustedMcpLoader({
+      packageStore,
+      gate,
+      registry,
+      ...(options.credentialResolver
+        ? { credentialResolver: options.credentialResolver }
+        : {}),
+      isGrantActive: async (grantId) => {
+        const { state } = await store.load();
+        const grant = state.grants.find((g) => g.grant_id === grantId);
+        return (
+          grant?.state === "approved" &&
+          (options.clock?.().getTime() ?? Date.now()) <
+            Date.parse(grant.expires_at)
+        );
+      },
+    });
 
   return {
     stateDir,
+    packageStore,
     registry,
     store,
     probe,
     admin,
     gate,
-    loader,
+    loader: createLoader(),
+    createLoader,
     signHostProof(params) {
       const challenge: ApprovalChallenge = {
         review_id: params.review_id,

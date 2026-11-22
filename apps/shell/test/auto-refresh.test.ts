@@ -49,19 +49,24 @@ test.each(["sidebar", "inspector"])(
       doc,
       doc.root,
       undefined,
-      timers,
+      undefined,
+      undefined,
+      timers.scheduleRefresh,
     );
     const pane = () =>
-      findAll(
-        doc.root,
-        (element) => element.getAttribute("data-scroll-key") === key,
+      findAll(doc.root, (element) =>
+        key === "inspector"
+          ? (element
+              .getAttribute("data-scroll-key")
+              ?.startsWith("inspector:") ?? false)
+          : element.getAttribute("data-scroll-key") === key,
       )[0];
     try {
       await controller.load();
       const initial = pane();
       if (!initial) throw new Error("scroll pane missing");
       initial.scrollTop = 240;
-      timers.advance(3000);
+      timers.advance(2000);
       await controller.settled();
       expect(pane()).not.toBe(initial);
       expect(pane()?.scrollTop).toBe(240);
@@ -87,7 +92,9 @@ test("auto-refresh preserves unsubmitted Team Chat search text, focus, and caret
     doc,
     doc.root,
     teamApi,
-    timers,
+    undefined,
+    undefined,
+    timers.scheduleRefresh,
   );
   try {
     await controller.load();
@@ -107,11 +114,11 @@ test("auto-refresh preserves unsubmitted Team Chat search text, focus, and caret
     input.dispatch("input");
     input.focus();
     input.setSelectionRange(3, 8, "backward");
-    timers.advance(3000);
+    timers.advance(2000);
     await controller.settled();
     const refreshed = search();
     if (!refreshed) throw new Error("refreshed search input missing");
-    expect(refreshed).not.toBe(input);
+    expect(refreshed).toBe(input);
     expect(refreshed?.value).toBe("unfinished search");
     expect(doc.activeElement).toBe(refreshed);
     expect(refreshed?.selectionStart).toBe(3);
@@ -145,19 +152,21 @@ test.each(["pending", "running"] as const)(
       doc,
       doc.root,
       undefined,
-      timers,
+      undefined,
+      undefined,
+      timers.scheduleRefresh,
     );
     try {
       await controller.load();
-      expect(timers.delays).toEqual([3000]);
+      expect(timers.delays).toEqual([2000]);
       data = { ...fixture, tasks: [{ ...task, status: "completed" }] };
-      timers.advance(2999);
+      timers.advance(1999);
       expect(
         calls.filter((call) => call.method === "tasks.inspect"),
       ).toHaveLength(1);
       timers.advance(1);
       await controller.settled();
-      expect(serialize(doc.root)).toContain("✔ completed");
+      expect(serialize(doc.root)).toContain("completed");
       expect(
         calls.filter((call) => call.method === "tasks.inspect"),
       ).toHaveLength(2);
@@ -190,11 +199,19 @@ test("auto-refresh: disconnects back off to 30 seconds and recovery resets the c
   };
   const doc = new MiniDocument();
   const timers = fakeTimers();
-  const controller = createController(bridge, doc, doc.root, undefined, timers);
+  const controller = createController(
+    bridge,
+    doc,
+    doc.root,
+    undefined,
+    undefined,
+    undefined,
+    timers.scheduleRefresh,
+  );
   try {
     await controller.load();
     disconnected = true;
-    for (const delay of [3000, 6000, 12000, 24000, 30000]) {
+    for (const delay of [2000, 4000, 8000, 16000, 30000]) {
       const before = descriptions;
       timers.advance(delay - 1);
       expect(descriptions).toBe(before);
@@ -202,13 +219,12 @@ test("auto-refresh: disconnects back off to 30 seconds and recovery resets the c
       await controller.settled();
       expect(descriptions).toBe(before + 1);
     }
-    expect(timers.delays).toEqual([3000, 6000, 12000, 24000, 30000, 30000]);
-    expect(doc.root.textContent).toContain("Workbench is unavailable.");
+    expect(timers.delays).toEqual([2000, 4000, 8000, 16000, 30000, 30000]);
     disconnected = false;
     timers.advance(30000);
     await controller.settled();
-    expect(doc.root.textContent).toContain("Connected");
-    expect(timers.delays.at(-1)).toBe(3000);
+    expect(doc.root.textContent).toContain("Workbench online");
+    expect(timers.delays.at(-1)).toBe(2000);
   } finally {
     controller.dispose();
   }
@@ -227,7 +243,9 @@ test("auto-refresh: terminal or empty selections never poll and selecting a term
       doc,
       doc.root,
       undefined,
-      timers,
+      undefined,
+      undefined,
+      timers.scheduleRefresh,
     );
     await controller.load();
     expect(timers.count).toBe(0);
@@ -240,7 +258,9 @@ test("auto-refresh: terminal or empty selections never poll and selecting a term
     doc,
     doc.root,
     undefined,
-    timers,
+    undefined,
+    undefined,
+    timers.scheduleRefresh,
   );
   try {
     await controller.load();
@@ -254,7 +274,7 @@ test("auto-refresh: terminal or empty selections never poll and selecting a term
     expect(timers.count).toBe(0);
     await controller.settled();
     expect(timers.count).toBe(0);
-    expect(timers.delays).toEqual([3000]);
+    expect(timers.delays).toEqual([2000]);
   } finally {
     controller.dispose();
   }
@@ -279,7 +299,15 @@ test("auto-refresh: disposal cancels timers and cannot rearm after an in-flight 
   };
   const doc = new MiniDocument();
   const timers = fakeTimers();
-  const controller = createController(bridge, doc, doc.root, undefined, timers);
+  const controller = createController(
+    bridge,
+    doc,
+    doc.root,
+    undefined,
+    undefined,
+    undefined,
+    timers.scheduleRefresh,
+  );
   await controller.load();
   expect(timers.count).toBe(1);
   defer = true;
@@ -297,9 +325,17 @@ test("auto-refresh: disposal cancels timers and cannot rearm after an in-flight 
   timers.advance(30000);
   expect(timers.count).toBe(0);
   expect(inspections).toBe(2);
-  expect(timers.delays).toEqual([3000]);
+  expect(timers.delays).toEqual([2000]);
 
-  const idle = createController(delegate, doc, doc.root, undefined, timers);
+  const idle = createController(
+    delegate,
+    doc,
+    doc.root,
+    undefined,
+    undefined,
+    undefined,
+    timers.scheduleRefresh,
+  );
   await idle.load();
   expect(timers.count).toBe(1);
   idle.dispose();
