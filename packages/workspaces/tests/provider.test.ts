@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import {
   chmod,
   cp,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -57,6 +58,53 @@ import {
 } from "./helpers";
 
 const digest = "a".repeat(64);
+
+test.skipIf(process.platform === "linux")(
+  "bounded reads fail closed without a root-anchored platform primitive",
+  async () => {
+    const f = await makeFixture();
+    try {
+      await expect(
+        f.provider.readBytes(context, f.workspace, "tracked.txt", 100),
+      ).rejects.toMatchObject({ code: "policy" });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "bounded reads store nothing and reject hardlinks",
+  async () => {
+    const artifacts = createInMemoryArtifactStore();
+    const put = artifacts.put.bind(artifacts);
+    let writes = 0;
+    artifacts.put = async (...args) => {
+      writes++;
+      return put(...args);
+    };
+    const f = await makeFixture({ artifactStore: artifacts });
+    try {
+      const before = writes;
+      expect(
+        Buffer.from(
+          await f.provider.readBytes(context, f.workspace, "tracked.txt", 100),
+        ).toString(),
+      ).toBe("baseline tracked\n");
+      await expect(
+        f.provider.readBytes(context, f.workspace, "tracked.txt", 1),
+      ).rejects.toMatchObject({ code: "limit_exceeded" });
+      const tree = await f.provider.workspacePath(context, f.workspace);
+      await link(join(tree, "tracked.txt"), join(tree, "hard.txt"));
+      await expect(
+        f.provider.readBytes(context, f.workspace, "hard.txt", 100),
+      ).rejects.toMatchObject({ code: "policy" });
+      expect(writes).toBe(before);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.each([false, true])(
   "read refuses a parent symlink swap (restored after open: %s)",

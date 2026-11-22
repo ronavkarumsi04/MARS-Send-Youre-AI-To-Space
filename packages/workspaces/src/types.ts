@@ -150,6 +150,13 @@ export interface PatchExportResult {
 }
 
 export interface LocalWorkspaceProvider extends ExecutionProvider {
+  /** Bounded bytes without artifact storage; fails closed without anchored reads. */
+  readBytes(
+    context: RequestContext,
+    workspace: WorkspaceRef,
+    relativePath: string,
+    maxBytes: number,
+  ): Promise<Uint8Array>;
   search(
     context: RequestContext,
     workspace: WorkspaceRef,

@@ -847,6 +847,18 @@ export async function createLocalWorkspaceProvider(
         searchWorkspaceTree(tree, request, limits, extraIgnores),
       );
     },
+    async readBytes(context, workspace, relativePath, maxBytes) {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
+        throw new WorkspacePolicyError("Invalid read bound");
+      return withWorkspace(context, workspace, async (current) => {
+        const path = validateRelativePath(relativePath, limits, extraIgnores);
+        return readAnchored(
+          treeDir(current),
+          path,
+          Math.min(maxBytes, limits.maxFileBytes),
+        );
+      });
+    },
     async read(context, workspace, relativePath) {
       return withWorkspace(context, workspace, async (current) => {
         const path = validateRelativePath(relativePath, limits, extraIgnores);
@@ -860,7 +872,7 @@ export async function createLocalWorkspaceProvider(
           );
           const info = await handle.stat();
           await options.testHooks?.readPhase?.("after-open");
-          if (!info.isFile())
+          if (!info.isFile() || info.nlink !== 1)
             throw new WorkspacePolicyError(
               "Workspace path is not a regular file",
             );
@@ -1598,6 +1610,7 @@ export async function createLocalWorkspaceProvider(
     ...provider,
     prepare: (...args) => track(() => provider.prepare(...args)),
     read: (...args) => track(() => provider.read(...args)),
+    readBytes: (...args) => track(() => provider.readBytes(...args)),
     write: (...args) => track(() => provider.write(...args)),
     remove: (...args) => track(() => provider.remove(...args)),
     execute: (...args) => track(() => provider.execute(...args)),
@@ -1680,6 +1693,76 @@ function sameArtifact(left: ArtifactRef, right: ArtifactRef): boolean {
     left.media_type === right.media_type &&
     left.byte_length === right.byte_length
   );
+}
+
+async function readAnchored(
+  root: string,
+  path: string,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (process.platform !== "linux")
+    throw new WorkspacePolicyError("Anchored file reads are unavailable");
+  const handles: FileHandle[] = [];
+  const segments = path.split("/");
+  let anchored = false;
+  try {
+    const rootHandle = await open(
+      root,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    handles.push(rootHandle);
+    await lstat(`/proc/self/fd/${rootHandle.fd}`);
+    anchored = true;
+    for (const [index, segment] of segments.entries()) {
+      const parent = handles[handles.length - 1];
+      if (!parent) throw new WorkspacePolicyError();
+      const last = index === segments.length - 1;
+      const handle = await open(
+        `/proc/self/fd/${parent.fd}/${segment}`,
+        constants.O_RDONLY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK |
+          (last ? 0 : constants.O_DIRECTORY),
+      );
+      handles.push(handle);
+      if (last) {
+        const info = await handle.stat();
+        if (!info.isFile() || info.nlink !== 1)
+          throw new WorkspacePolicyError(
+            "Workspace file must be singly linked and regular",
+          );
+        if (info.size > maxBytes)
+          throw new LimitExceededError("File exceeds read bound");
+        const data = await readBounded(handle, maxBytes);
+        const after = await handle.stat();
+        if (
+          after.nlink !== 1 ||
+          after.size !== info.size ||
+          after.mtimeMs !== info.mtimeMs ||
+          after.ctimeMs !== info.ctimeMs
+        )
+          throw new WorkspacePolicyError("Workspace file changed during read");
+        return data;
+      }
+    }
+    throw new WorkspacePolicyError();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      anchored &&
+      code === "ENOENT" &&
+      segments.length === 1 &&
+      handles.length === 1
+    )
+      throw new WorkspaceNotFoundError();
+    if (["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "EPERM"].includes(code ?? ""))
+      throw new WorkspacePolicyError(
+        "Workspace path changed or anchored reads unavailable",
+      );
+    throw error;
+  } finally {
+    for (const handle of handles.reverse()) await handle.close();
+  }
 }
 
 async function readBounded(
