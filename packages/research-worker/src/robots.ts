@@ -20,14 +20,15 @@ export function parseRobots(text: string): RobotsFile {
     const field = line.slice(0, separator).trim().toLowerCase();
     const value = line.slice(separator + 1).trim();
     if (field === "user-agent") {
+      // An empty product token names no crawler: it neither starts a group
+      // nor ends one, so it cannot widen or drop any group's rules.
+      if (value === "") continue;
       if (!current || !collectingAgents) {
         current = { agents: [], rules: [] };
         groups.push(current);
         collectingAgents = true;
       }
-      // An empty product token names no crawler; matching it by prefix would
-      // apply the group to every user agent.
-      if (value !== "") current.agents.push(value.toLowerCase());
+      current.agents.push(value.toLowerCase());
       continue;
     }
     if (!current) continue;

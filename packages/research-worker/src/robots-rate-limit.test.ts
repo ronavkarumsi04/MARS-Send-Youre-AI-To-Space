@@ -15,6 +15,18 @@ describe("robots user-agent groups", () => {
       robotsDecision(file, "MARSResearchWorker/0.1", "/private/x").allowed,
     ).toBe(false);
   });
+
+  test("an empty User-agent line after a group keeps that group's rules", () => {
+    const file = parseRobots(
+      "User-agent: *\nDisallow: /a\nUser-agent:\nDisallow: /b\n",
+    );
+    expect(robotsDecision(file, "MARSResearchWorker/0.1", "/a").allowed).toBe(
+      false,
+    );
+    expect(robotsDecision(file, "MARSResearchWorker/0.1", "/b").allowed).toBe(
+      false,
+    );
+  });
 });
 
 describe("host rate limiter", () => {
