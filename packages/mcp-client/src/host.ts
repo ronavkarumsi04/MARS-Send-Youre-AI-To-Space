@@ -51,6 +51,8 @@ export interface HostMcpControlPlane {
   readonly admin: IntegrationTrustAdmin;
   readonly gate: IntegrationGate;
   readonly loader: TrustedMcpLoader;
+  /** Isolates connections so closing one task doesn't stop another task's tools. */
+  createLoader(): TrustedMcpLoader;
   signHostProof(params: {
     review_id: string;
     review_revision: number;
@@ -237,22 +239,23 @@ export async function createHostMcpControlPlane(
     },
   };
 
-  const loader = createTrustedMcpLoader({
-    gate,
-    registry,
-    ...(options.credentialResolver
-      ? { credentialResolver: options.credentialResolver }
-      : {}),
-    isGrantActive: async (grantId) => {
-      const { state } = await store.load();
-      const grant = state.grants.find((g) => g.grant_id === grantId);
-      return (
-        grant?.state === "approved" &&
-        (options.clock?.().getTime() ?? Date.now()) <
-          Date.parse(grant.expires_at)
-      );
-    },
-  });
+  const createLoader = () =>
+    createTrustedMcpLoader({
+      gate,
+      registry,
+      ...(options.credentialResolver
+        ? { credentialResolver: options.credentialResolver }
+        : {}),
+      isGrantActive: async (grantId) => {
+        const { state } = await store.load();
+        const grant = state.grants.find((g) => g.grant_id === grantId);
+        return (
+          grant?.state === "approved" &&
+          (options.clock?.().getTime() ?? Date.now()) <
+            Date.parse(grant.expires_at)
+        );
+      },
+    });
 
   return {
     stateDir,
@@ -261,7 +264,8 @@ export async function createHostMcpControlPlane(
     probe,
     admin,
     gate,
-    loader,
+    loader: createLoader(),
+    createLoader,
     signHostProof(params) {
       const challenge: ApprovalChallenge = {
         review_id: params.review_id,
